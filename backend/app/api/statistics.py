@@ -32,7 +32,9 @@ def _since_bucket(period: str):
 
 def _granularity_seconds(period: str) -> int:
     """Bucket size in seconds for aggregating chart points."""
-    if period in ("1h", "6h", "24h"):
+    if period == "1h":
+        return 600  # 10-minute buckets → 6 points per hour
+    if period in ("6h", "24h"):
         return 3600  # hourly
     if period in ("7d", "30d", "90d"):
         return 86400  # daily

@@ -45,9 +45,10 @@ def _is_ip_address(s: str) -> bool:
         return False
 
 
-def _hour_bucket(dt: datetime) -> int:
-    """Return unix timestamp of the start of the current hour."""
-    return int(dt.replace(minute=0, second=0, microsecond=0).timestamp())
+def _ten_min_bucket(dt: datetime) -> int:
+    """Return unix timestamp of the start of the current 10-minute window."""
+    floored = dt.replace(minute=(dt.minute // 10) * 10, second=0, microsecond=0)
+    return int(floored.timestamp())
 
 
 def _upsert_snapshot(entity_type, entity_id, inbound_tag, bucket, up_delta, down_delta):
@@ -180,7 +181,7 @@ def sync_traffic_stats():
         stub = stats_command_pb2_grpc.StatsServiceStub(channel)
         has_updates = False
         now = datetime.now()
-        bucket = _hour_bucket(now)
+        bucket = _ten_min_bucket(now)
 
         for c in clients:
             runtime_email = build_runtime_email(c.inbound_tag, c.email)
