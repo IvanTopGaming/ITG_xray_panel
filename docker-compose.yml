@@ -1,0 +1,182 @@
+services:
+  xray:
+    image: ${XRAY_IMAGE:?XRAY_IMAGE is required}
+    container_name: xray-core
+    restart: always
+    command: run -config /etc/xray/config.json
+    environment:
+      - XRAY_LOCATION_ASSET=/etc/xray
+    volumes:
+      - shared_config:/etc/xray
+      - xray_logs:/var/log/xray
+    networks:
+      - panel-net
+
+  socket-proxy:
+    image: ${SOCKET_PROXY_IMAGE:?SOCKET_PROXY_IMAGE is required}
+    container_name: socket-proxy
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CONTAINERS=1
+      - VERSION=1
+      - PING=1
+      - POST=1
+      - GET=1
+      - AUTH=0
+      - BUILD=0
+      - COMMIT=0
+      - CONFIGS=0
+      - DISTRIBUTION=0
+      - EVENTS=0
+      - EXEC=0
+      - GRPC=0
+      - IMAGES=0
+      - INFO=0
+      - NETWORKS=0
+      - NODES=0
+      - PLUGINS=0
+      - SECRETS=0
+      - SERVICES=0
+      - SESSION=0
+      - SWARM=0
+      - SYSTEM=0
+      - TASKS=0
+      - VOLUMES=0
+    networks:
+      - control-net
+
+  redis:
+    image: ${REDIS_IMAGE:?REDIS_IMAGE is required}
+    container_name: panel-redis
+    restart: always
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - control-net
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        XRAY_CORE_REF: ${XRAY_CORE_REF:?XRAY_CORE_REF is required}
+    container_name: panel-backend
+    restart: always
+    volumes:
+      - shared_config:/etc/xray
+      - ./db_data:/app/db
+      - xray_logs:/var/log/xray
+    environment:
+      - XRAY_API_HOST=xray:10085
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - GRPC_DNS_RESOLVER=native
+      - PYTHONUNBUFFERED=1
+      - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - PANEL_USER=${PANEL_ADMIN_USER:-admin}
+      - PANEL_PASSWORD=${PANEL_ADMIN_PASSWORD:?PANEL_ADMIN_PASSWORD is required}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
+      - DOCKER_HOST=tcp://socket-proxy:2375
+    env_file:
+      - .env
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 30 "app:create_app()"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3).read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      socket-proxy:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    networks:
+      - panel-net
+      - control-net
+
+  frontend:
+    build: ./frontend
+    container_name: panel-frontend
+    restart: always
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1/${PANEL_SECRET_PATH}/ >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+    env_file:
+      - .env
+    networks:
+      - panel-net
+
+  caddy:
+    build: ./caddy
+    container_name: panel-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./caddy/caddy.json:/etc/caddy/caddy.json:ro
+      - ./certs:/root/cert:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - PROXY_DOMAIN=${PROXY_DOMAIN:?PROXY_DOMAIN is required}
+    env_file:
+      - .env
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks:
+      - panel-net
+
+  bot:
+    build: ./tg_bot
+    container_name: panel-bot
+    restart: always
+    volumes:
+      - ./bot_data:/app/db
+      - ./bot_config.yaml:/app/config.yaml
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - panel-net
+
+networks:
+  panel-net:
+    driver: bridge
+  control-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  shared_config:
+  xray_logs:

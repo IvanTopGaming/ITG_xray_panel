@@ -1,0 +1,7 @@
+{
+  "backend": "1.0.0",
+  "frontend": "1.0.0",
+  "caddy": "1.0.0",
+  "bot": "1.0.0",
+  "xray_core_ref": "v25.3.6"
+}

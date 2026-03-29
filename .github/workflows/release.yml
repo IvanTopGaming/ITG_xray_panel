@@ -1,0 +1,140 @@
+name: Release (auto patch)
+
+# Triggers on push to main when service source files change.
+# Commits to versions.json / .env.example do NOT re-trigger this workflow
+# because they don't match the path filter below.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "caddy/**"
+      - "tg_bot/**"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Detect → Bump → Build → Push
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use a PAT so the version-bump commit can trigger other workflows
+          # if needed. Falls back to GITHUB_TOKEN (which skips CI on push).
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # ── Detect which services changed ────────────────────────────────────
+      - name: Detect changed services
+        id: changes
+        run: |
+          BEFORE="${{ github.event.before }}"
+          SHA="${{ github.sha }}"
+
+          # Handle: first push, force push (before SHA not in repo), or normal push
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || \
+             ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "First push or force push — treating all services as changed"
+            SERVICES="backend frontend caddy bot"
+          else
+            FILES=$(git diff --name-only "$BEFORE" "$SHA")
+            echo "Changed files:"
+            echo "$FILES"
+
+            SERVICES=""
+            echo "$FILES" | grep -q "^backend/"  && SERVICES="$SERVICES backend"
+            echo "$FILES" | grep -q "^frontend/" && SERVICES="$SERVICES frontend"
+            echo "$FILES" | grep -q "^caddy/"    && SERVICES="$SERVICES caddy"
+            echo "$FILES" | grep -q "^tg_bot/"   && SERVICES="$SERVICES bot"
+            SERVICES=$(echo "$SERVICES" | xargs)
+          fi
+
+          echo "Changed services: '$SERVICES'"
+          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
+
+      # ── Bump patch versions for changed services ─────────────────────────
+      - name: Bump patch versions
+        if: steps.changes.outputs.services != ''
+        run: |
+          python3 scripts/bump_version.py patch ${{ steps.changes.outputs.services }}
+          echo "--- versions.json after bump ---"
+          cat versions.json
+
+      # ── Log in to GitHub Container Registry ──────────────────────────────
+      - name: Log in to GHCR
+        if: steps.changes.outputs.services != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # ── Set up Docker Buildx with layer cache ─────────────────────────────
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.services != ''
+        uses: docker/setup-buildx-action@v3
+
+      # ── Build & push each changed service ────────────────────────────────
+      - name: Build and push images
+        if: steps.changes.outputs.services != ''
+        run: |
+          XRAY_REF=$(python3 -c "import json; print(json.load(open('versions.json'))['xray_core_ref'])")
+
+          for SERVICE in ${{ steps.changes.outputs.services }}; do
+            VERSION=$(python3 -c "import json; print(json.load(open('versions.json'))['$SERVICE'])")
+
+            case $SERVICE in
+              backend)
+                CONTEXT="./backend"
+                IMAGE="ghcr.io/ivantopgaming/panel-backend"
+                BUILD_ARGS="--build-arg XRAY_CORE_REF=$XRAY_REF"
+                ;;
+              frontend)
+                CONTEXT="./frontend"
+                IMAGE="ghcr.io/ivantopgaming/panel-frontend"
+                BUILD_ARGS=""
+                ;;
+              caddy)
+                CONTEXT="./caddy"
+                IMAGE="ghcr.io/ivantopgaming/panel-caddy"
+                BUILD_ARGS=""
+                ;;
+              bot)
+                CONTEXT="./tg_bot"
+                IMAGE="ghcr.io/ivantopgaming/panel-bot"
+                BUILD_ARGS=""
+                ;;
+            esac
+
+            echo "::group::Build $SERVICE v$VERSION"
+            docker buildx build $BUILD_ARGS \
+              --platform linux/amd64 \
+              --tag "$IMAGE:v$VERSION" \
+              --tag "$IMAGE:latest" \
+              --push \
+              --cache-from "type=gha,scope=$SERVICE" \
+              --cache-to   "type=gha,scope=$SERVICE,mode=max" \
+              "$CONTEXT"
+            echo "::endgroup::"
+
+            echo "Pushed $IMAGE:v$VERSION"
+          done
+
+      # ── Commit updated versions.json + .env.example back to main ─────────
+      - name: Commit version bump
+        if: steps.changes.outputs.services != ''
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add versions.json .env.example
+          if git diff --staged --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "chore: bump versions [skip ci]"
+            git push
+          fi

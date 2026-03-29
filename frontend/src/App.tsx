@@ -1,0 +1,74 @@
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ToastContainer, Slide } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+
+import { useAuthStore, AuthState } from '@/stores/authStore';
+import { Layout } from '@/components/layout/Layout';
+import Login from '@/pages/Login';
+import Dashboard from '@/pages/Dashboard';
+import Routing from '@/pages/Routing';
+import System from '@/pages/System';
+import Statistics from '@/pages/Statistics';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
+
+function ProtectedRoute({ children }: { children: JSX.Element }) {
+  const isAuthenticated = useAuthStore((state: AuthState) => state.isAuthenticated());
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  return children;
+}
+
+const basename = window.__PANEL_BASE_URL__ || '/';
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter basename={basename}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <Layout />
+              </ProtectedRoute>
+            }
+          >
+            <Route index element={<Dashboard />} />
+            <Route path="statistics" element={<Statistics />} />
+            <Route path="routing" element={<Routing />} />
+            <Route path="system" element={<System />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+
+      <ToastContainer
+        position="top-right"
+        autoClose={3000}
+        hideProgressBar={false}
+        newestOnTop={true}
+        closeOnClick
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+        theme="dark"
+        transition={Slide}
+        toastClassName="glass-toast"
+        bodyClassName="glass-toast-body"
+        progressClassName="glass-toast-progress"
+      />
+    </QueryClientProvider>
+  );
+}
+
+export default App;

@@ -1,0 +1,149 @@
+import os
+import secrets
+import jwt
+import re
+import tempfile
+from functools import wraps
+from flask import request, jsonify
+
+
+def get_or_create_secret_key():
+    env_key = os.getenv("SECRET_KEY")
+    if env_key:
+        return env_key.strip()
+    key_file = os.path.join(os.getcwd(), "secret.key")
+    if os.path.exists(key_file):
+        try:
+            with open(key_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            pass
+    new_key = secrets.token_hex(32)
+    fd = None
+    temp_path = ""
+    try:
+        fd, temp_path = tempfile.mkstemp(
+            prefix="secret.",
+            suffix=".key",
+            dir=os.path.dirname(key_file) or ".",
+            text=True,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = None
+            f.write(new_key)
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, key_file)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        pass
+    return new_key
+
+
+SECRET_KEY = get_or_create_secret_key()
+TAG_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,50}$")
+EMAIL_PATTERN = re.compile(r"^[^\s\x00-\x1F\x7F]{1,100}$")
+
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        if "Authorization" in request.headers:
+            auth_header = str(request.headers.get("Authorization", "")).strip()
+            scheme, _, value = auth_header.partition(" ")
+            if scheme.lower() == "bearer" and value.strip():
+                token = value.strip()
+        if not token:
+            return jsonify({"message": "Token is missing!"}), 401
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            return jsonify({"message": "Token is expired!"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"message": "Token is invalid!"}), 401
+
+        if payload.get("role") != "admin":
+            return jsonify({"message": "Token is invalid!"}), 401
+
+        from app.models import Admin
+
+        admin = None
+        admin_id = payload.get("admin_id")
+        if admin_id is not None:
+            try:
+                from app.extensions import db
+
+                admin = db.session.get(Admin, int(admin_id))
+            except (TypeError, ValueError):
+                admin = None
+        if admin is None and payload.get("user"):
+            admin = Admin.query.filter_by(username=payload.get("user")).first()
+        if admin is None:
+            return jsonify({"message": "Token is invalid!"}), 401
+
+        token_pwd_version = payload.get("pwdv")
+        if token_pwd_version is None:
+            return jsonify({"message": "Token is invalid!"}), 401
+        try:
+            token_pwd_version = int(token_pwd_version)
+        except (TypeError, ValueError):
+            return jsonify({"message": "Token is invalid!"}), 401
+
+        current_pwd_version = int(admin.password_changed_at or 0)
+        if token_pwd_version != current_pwd_version:
+            return jsonify({"message": "Token is invalid!"}), 401
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+def validate_password(password):
+    if len(password) < 8:
+        return "Password must be at least 8 characters long"
+    if not all(32 <= ord(c) < 127 for c in password):
+        return "Password must contain only printable ASCII characters"
+    if not any(c.isupper() for c in password):
+        return "Password must contain at least one uppercase letter"
+    if not any(c.islower() for c in password):
+        return "Password must contain at least one lowercase letter"
+    if not any(c.isdigit() for c in password):
+        return "Password must contain at least one digit"
+    return None
+
+
+def normalize_tag(value, field_name="Tag"):
+    tag = str(value or "").strip()
+    if not tag:
+        raise ValueError(f"{field_name} required")
+    if not TAG_PATTERN.fullmatch(tag):
+        raise ValueError(f"{field_name} has invalid characters (allowed: A-Z a-z 0-9 . _ -)")
+    return tag
+
+
+def normalize_email(value, field_name="Email"):
+    email = str(value or "").strip()
+    if not email:
+        raise ValueError(f"{field_name} required")
+    if not EMAIL_PATTERN.fullmatch(email):
+        raise ValueError(f"{field_name} has invalid format")
+    return email
+
+
+def parse_int(value, field_name, default=0, min_value=None, max_value=None):
+    if value is None or value == "":
+        value = default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be an integer")
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"{field_name} must be >= {min_value}")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"{field_name} must be <= {max_value}")
+    return parsed

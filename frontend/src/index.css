@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply antialiased overflow-hidden;
+  }
+
+  ::selection {
+    background-color: rgba(208, 188, 255, 0.25);
+    color: #fff;
+  }
+}
+
+/* Custom scrollbar - webkit */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(208, 188, 255, 0.25);
+}
+
+/* Firefox */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+}
+
+/* Shimmer skeleton animation */
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.09) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* Toast */
+.Toastify__toast-container {
+  padding: 16px;
+  width: auto;
+  max-width: 420px;
+}
+
+.glass-toast {
+  background: rgba(30, 27, 36, 0.9) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 16px !important;
+  padding: 4px !important;
+  box-shadow:
+    0 8px 32px -8px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(208, 188, 255, 0.05) !important;
+  margin-bottom: 10px !important;
+}
+
+.glass-toast-body {
+  padding: 8px 12px !important;
+  font-family: 'Roboto', sans-serif !important;
+  font-weight: 500 !important;
+  color: #e5e7eb !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.glass-toast-progress {
+  background: linear-gradient(to right, #d0bcff, #7c3aed) !important;
+  height: 2px !important;
+  border-radius: 0 0 16px 16px !important;
+}

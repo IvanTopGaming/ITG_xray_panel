@@ -1,0 +1,427 @@
+import json
+import socket
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from flask import Blueprint, request, jsonify
+from app.extensions import db
+from app.models import Outbound, Balancer, Client
+from app.utils import token_required, normalize_tag
+from app.services.xray import generate_config_file, restart_xray_container
+
+bp = Blueprint("outbound", __name__)
+ALLOWED_BALANCER_STRATEGIES = {"random", "leastLoad", "leastPing"}
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
+FALSY_VALUES = {"0", "false", "no", "off"}
+
+
+def _normalize_protocol(value):
+    protocol = str(value or "").strip()
+    if not protocol:
+        raise ValueError("Protocol required")
+    if len(protocol) > 30:
+        raise ValueError("Protocol is too long")
+    return protocol
+
+
+def _parse_bool(value, default=True):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raw = str(value).strip().lower()
+    if raw in TRUTHY_VALUES:
+        return True
+    if raw in FALSY_VALUES:
+        return False
+    return default
+
+
+def _normalize_selector(raw_selector):
+    if raw_selector is None:
+        return []
+    if not isinstance(raw_selector, list):
+        raise ValueError("selector must be an array")
+    selector = []
+    for item in raw_selector:
+        selector.append(normalize_tag(item, "selector tag"))
+    return selector
+
+
+def _normalize_port(value):
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if not (1 <= port <= 65535):
+        return 0
+    return port
+
+
+def _parse_host_port(raw_value):
+    value = str(raw_value or "").strip()
+    if not value:
+        return "", 0
+
+    if value.startswith("[") and "]:" in value:
+        host_part, port_part = value.rsplit("]:", 1)
+        host = host_part[1:].strip()
+        return host, _normalize_port(port_part.strip())
+
+    if ":" not in value:
+        return value, 0
+
+    host, port_part = value.rsplit(":", 1)
+    return host.strip(), _normalize_port(port_part.strip())
+
+
+def _extract_outbound_probe_target(protocol, settings):
+    proto = str(protocol or "").strip().lower()
+    if proto in {"freedom", "blackhole", "dns"}:
+        return "", 0
+
+    if proto in {"vless", "vmess"}:
+        vnext = settings.get("vnext", [])
+        if isinstance(vnext, list) and vnext:
+            first = vnext[0] if isinstance(vnext[0], dict) else {}
+            return str(first.get("address", "")).strip(), _normalize_port(first.get("port"))
+
+    if proto in {"trojan", "shadowsocks", "socks", "http"}:
+        servers = settings.get("servers", [])
+        if isinstance(servers, list) and servers:
+            first = servers[0] if isinstance(servers[0], dict) else {}
+            return str(first.get("address", "")).strip(), _normalize_port(first.get("port"))
+
+    if proto == "wireguard":
+        peers = settings.get("peers", [])
+        if isinstance(peers, list) and peers:
+            first = peers[0] if isinstance(peers[0], dict) else {}
+            return _parse_host_port(first.get("endpoint", ""))
+
+    return "", 0
+
+
+def _probe_outbound(host, port, timeout_sec=1.5):
+    started = time.perf_counter()
+    with socket.create_connection((host, port), timeout=timeout_sec):
+        elapsed = (time.perf_counter() - started) * 1000
+        return max(1, int(elapsed))
+
+
+@bp.route("/outbounds", methods=["GET"])
+@token_required
+def get_outbounds():
+    outbounds = Outbound.query.all()
+    return jsonify(
+        [
+            {
+                "tag": o.tag,
+                "protocol": o.protocol,
+                "enable": bool(getattr(o, "enable", True)),
+                "settings": json.loads(o.settings),
+                "streamSettings": json.loads(o.stream_settings),
+                "mux": json.loads(o.mux),
+            }
+            for o in outbounds
+        ]
+    )
+
+
+@bp.route("/outbounds/health", methods=["GET"])
+@token_required
+def get_outbounds_health():
+    checked_at = int(time.time() * 1000)
+    outbounds = Outbound.query.all()
+    result = []
+    pending_probes = []
+
+    for outbound in outbounds:
+        status = {
+            "tag": outbound.tag,
+            "status": "unknown",
+            "rttMs": None,
+            "checkedAt": checked_at,
+            "endpoint": "",
+            "error": "",
+        }
+
+        try:
+            settings = json.loads(outbound.settings or "{}")
+            if not isinstance(settings, dict):
+                settings = {}
+        except Exception:
+            settings = {}
+            status["status"] = "unknown"
+            status["error"] = "invalid settings"
+            result.append(status)
+            continue
+
+        host, port = _extract_outbound_probe_target(outbound.protocol, settings)
+        if not host or not port:
+            status["status"] = "unknown"
+            status["error"] = "unsupported or missing endpoint"
+            result.append(status)
+            continue
+
+        status["endpoint"] = f"{host}:{port}"
+        result.append(status)
+        pending_probes.append((status, host, port))
+
+    if pending_probes:
+        worker_count = min(32, max(1, len(pending_probes)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_status = {
+                executor.submit(_probe_outbound, host, port): status for status, host, port in pending_probes
+            }
+            for future in as_completed(future_to_status):
+                status = future_to_status[future]
+                try:
+                    status["rttMs"] = future.result()
+                    status["status"] = "up"
+                except OSError as exc:
+                    status["status"] = "down"
+                    status["error"] = str(exc)
+                except Exception as exc:
+                    status["status"] = "down"
+                    status["error"] = str(exc)
+
+    return jsonify(result)
+
+
+@bp.route("/outbounds", methods=["POST"])
+@token_required
+def create_outbound():
+    data = request.get_json(silent=True) or {}
+    try:
+        tag = normalize_tag(data.get("tag"))
+        if tag == "api":
+            raise ValueError("Tag 'api' is reserved")
+        protocol = _normalize_protocol(data.get("protocol"))
+        enabled = _parse_bool(data.get("enable"), True)
+        if Outbound.query.filter_by(tag=tag).first():
+            raise ValueError("Tag exists")
+
+        settings = data.get("settings", {})
+        stream_settings = data.get("streamSettings", {})
+        mux = data.get("mux", {})
+        if not isinstance(settings, dict):
+            raise ValueError("settings must be an object")
+        if not isinstance(stream_settings, dict):
+            raise ValueError("streamSettings must be an object")
+        if not isinstance(mux, dict):
+            raise ValueError("mux must be an object")
+
+        new_ob = Outbound(
+            tag=tag,
+            protocol=protocol,
+            enable=enabled,
+            settings=json.dumps(settings),
+            stream_settings=json.dumps(stream_settings),
+            mux=json.dumps(mux),
+        )
+        db.session.add(new_ob)
+        db.session.commit()
+        generate_config_file()
+        restart_xray_container()
+        return jsonify({"tag": new_ob.tag}), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/outbounds/<tag>", methods=["PUT"])
+@token_required
+def update_outbound(tag):
+    try:
+        ob = Outbound.query.filter_by(tag=tag).first()
+        if not ob:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        if "protocol" in data:
+            ob.protocol = _normalize_protocol(data.get("protocol"))
+        if "settings" in data:
+            if not isinstance(data["settings"], dict):
+                raise ValueError("settings must be an object")
+            ob.settings = json.dumps(data["settings"])
+        if "streamSettings" in data:
+            if not isinstance(data["streamSettings"], dict):
+                raise ValueError("streamSettings must be an object")
+            ob.stream_settings = json.dumps(data["streamSettings"])
+        if "mux" in data:
+            if not isinstance(data["mux"], dict):
+                raise ValueError("mux must be an object")
+            ob.mux = json.dumps(data["mux"])
+        if "enable" in data:
+            enabled = _parse_bool(data.get("enable"), bool(getattr(ob, "enable", True)))
+            if tag in ["direct", "block"] and not enabled:
+                raise ValueError("System outbound cannot be disabled")
+            ob.enable = enabled
+        db.session.commit()
+        generate_config_file()
+        restart_xray_container()
+        return jsonify({"status": "updated"}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/outbounds/<tag>", methods=["DELETE"])
+@token_required
+def delete_outbound(tag):
+    try:
+        if tag in ["direct", "block"]:
+            raise ValueError("System outbound")
+        ob = Outbound.query.filter_by(tag=tag).first()
+        if not ob:
+            return jsonify({"error": "Not found"}), 404
+
+        balancers = Balancer.query.all()
+        dependent_balancers = []
+        for balancer in balancers:
+            selector = json.loads(balancer.selector) if balancer.selector else []
+            if tag in selector:
+                dependent_balancers.append(balancer.tag)
+        if dependent_balancers:
+            raise ValueError("Outbound is used by balancers: " + ", ".join(dependent_balancers))
+
+        clients = Client.query.filter_by(preferred_outbound=tag).all()
+        for client in clients:
+            client.preferred_outbound = None
+
+        db.session.delete(ob)
+        db.session.commit()
+        generate_config_file()
+        restart_xray_container()
+        return jsonify({"status": "deleted"}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/balancers", methods=["GET"])
+@token_required
+def get_balancers():
+    balancers = Balancer.query.all()
+    return jsonify(
+        [
+            {
+                "tag": b.tag,
+                "enable": bool(getattr(b, "enable", True)),
+                "selector": json.loads(b.selector),
+                "strategy": b.strategy,
+            }
+            for b in balancers
+        ]
+    )
+
+
+@bp.route("/balancers", methods=["POST"])
+@token_required
+def create_balancer():
+    data = request.get_json(silent=True) or {}
+    try:
+        tag = normalize_tag(data.get("tag"))
+        if Balancer.query.filter_by(tag=tag).first():
+            raise ValueError("Tag exists")
+        if tag == "system_auto_balancer":
+            raise ValueError("Tag 'system_auto_balancer' is reserved")
+
+        selector = _normalize_selector(data.get("selector", []))
+        if not selector:
+            raise ValueError("selector cannot be empty")
+        known_outbounds = {outbound.tag for outbound in Outbound.query.all()}
+        missing_tags = [item for item in selector if item not in known_outbounds]
+        if missing_tags:
+            raise ValueError(f"Unknown outbound tags in selector: {', '.join(missing_tags)}")
+        strategy = str(data.get("strategy", "random")).strip() or "random"
+        if strategy not in ALLOWED_BALANCER_STRATEGIES:
+            raise ValueError("Invalid strategy")
+        enabled = _parse_bool(data.get("enable"), True)
+
+        new_bal = Balancer(
+            tag=tag,
+            enable=enabled,
+            selector=json.dumps(selector),
+            strategy=strategy,
+        )
+        db.session.add(new_bal)
+        db.session.commit()
+        generate_config_file()
+        restart_xray_container()
+        return jsonify({"tag": new_bal.tag}), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/balancers/<tag>", methods=["PUT"])
+@token_required
+def update_balancer(tag):
+    try:
+        bal = Balancer.query.filter_by(tag=tag).first()
+        if not bal:
+            return jsonify({"error": "Not found"}), 404
+        if tag == "system_auto_balancer":
+            raise ValueError("Tag 'system_auto_balancer' is reserved")
+
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            raise ValueError("Invalid request payload")
+
+        if "selector" in data:
+            selector = _normalize_selector(data.get("selector"))
+        else:
+            selector = json.loads(bal.selector) if bal.selector else []
+        if not selector:
+            raise ValueError("selector cannot be empty")
+
+        known_outbounds = {outbound.tag for outbound in Outbound.query.all()}
+        missing_tags = [item for item in selector if item not in known_outbounds]
+        if missing_tags:
+            raise ValueError(f"Unknown outbound tags in selector: {', '.join(missing_tags)}")
+
+        if "strategy" in data:
+            strategy = str(data.get("strategy", "random")).strip() or "random"
+        else:
+            strategy = str(bal.strategy or "random").strip() or "random"
+        if strategy not in ALLOWED_BALANCER_STRATEGIES:
+            raise ValueError("Invalid strategy")
+
+        bal.selector = json.dumps(selector)
+        bal.strategy = strategy
+        if "enable" in data:
+            bal.enable = _parse_bool(data.get("enable"), bool(getattr(bal, "enable", True)))
+        db.session.commit()
+        generate_config_file()
+        restart_xray_container()
+        return jsonify({"status": "updated"}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/balancers/<tag>", methods=["DELETE"])
+@token_required
+def delete_balancer(tag):
+    try:
+        bal = Balancer.query.filter_by(tag=tag).first()
+        if not bal:
+            return jsonify({"error": "Not found"}), 404
+
+        clients = Client.query.filter_by(preferred_outbound=tag).all()
+        for client in clients:
+            client.preferred_outbound = None
+
+        db.session.delete(bal)
+        db.session.commit()
+        generate_config_file()
+        restart_xray_container()
+        return jsonify({"status": "deleted"}), 200
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500

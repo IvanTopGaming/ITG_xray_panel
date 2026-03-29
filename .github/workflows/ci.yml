@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Python lint ────────────────────────────────────────────────────────────
+  python-lint:
+    name: Python (ruff)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [backend, tg_bot]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint — ${{ matrix.service }}
+        run: ruff check ${{ matrix.service }}/
+
+      - name: Format check — ${{ matrix.service }}
+        run: ruff format --check ${{ matrix.service }}/
+
+  # ── Frontend lint + typecheck ──────────────────────────────────────────────
+  frontend-lint:
+    name: Frontend (eslint + tsc)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier check
+        run: npm run format:check
+
+  # ── Dockerfile lint ────────────────────────────────────────────────────────
+  dockerfile-lint:
+    name: Dockerfiles (hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          recursive: true
+          # DL3008/DL3013/DL3018 — apt/pip version pinning: not required for internal images
+          # DL3003 — cd in RUN: used in compound commands where WORKDIR isn't applicable
+          # DL3015 — --no-install-recommends: already applied where feasible
+          # SC2046 — word splitting in $(find ...): intentional for passing proto file list
+          ignore: DL3008,DL3013,DL3015,DL3018,DL3003,SC2046
+
+  # ── Frontend build smoke test ──────────────────────────────────────────────
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build

@@ -1,0 +1,106 @@
+name: Release (manual)
+
+# Triggered manually from the GitHub Actions UI.
+# Use for minor and major releases — bumps ALL services to the same new version.
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - minor
+          - major
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Bump ${{ inputs.bump_type }} → Build all → Push
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # ── Bump all services ────────────────────────────────────────────────
+      - name: Bump ${{ inputs.bump_type }} versions
+        run: |
+          python3 scripts/bump_version.py ${{ inputs.bump_type }} all
+          echo "--- versions.json after bump ---"
+          cat versions.json
+
+      # ── Log in to GHCR ───────────────────────────────────────────────────
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Build & push all services ─────────────────────────────────────────
+      - name: Build and push all images
+        run: |
+          XRAY_REF=$(python3 -c "import json; print(json.load(open('versions.json'))['xray_core_ref'])")
+
+          declare -A CONTEXTS=(
+            [backend]="./backend"
+            [frontend]="./frontend"
+            [caddy]="./caddy"
+            [bot]="./tg_bot"
+          )
+          declare -A IMAGES=(
+            [backend]="ghcr.io/ivantopgaming/panel-backend"
+            [frontend]="ghcr.io/ivantopgaming/panel-frontend"
+            [caddy]="ghcr.io/ivantopgaming/panel-caddy"
+            [bot]="ghcr.io/ivantopgaming/panel-bot"
+          )
+
+          for SERVICE in backend frontend caddy bot; do
+            VERSION=$(python3 -c "import json; print(json.load(open('versions.json'))['$SERVICE'])")
+            BUILD_ARGS=""
+            [ "$SERVICE" = "backend" ] && BUILD_ARGS="--build-arg XRAY_CORE_REF=$XRAY_REF"
+
+            echo "::group::Build $SERVICE v$VERSION"
+            docker buildx build $BUILD_ARGS \
+              --platform linux/amd64 \
+              --tag "${IMAGES[$SERVICE]}:v$VERSION" \
+              --tag "${IMAGES[$SERVICE]}:latest" \
+              --push \
+              --cache-from "type=gha,scope=$SERVICE" \
+              --cache-to   "type=gha,scope=$SERVICE,mode=max" \
+              "${CONTEXTS[$SERVICE]}"
+            echo "::endgroup::"
+          done
+
+      # ── Commit version bump + create git tag ─────────────────────────────
+      - name: Commit and tag
+        run: |
+          RELEASE_VER=$(python3 -c "import json; print(json.load(open('versions.json'))['backend'])")
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add versions.json .env.example
+          git commit -m "chore: release v$RELEASE_VER (${{ inputs.bump_type }}) [skip ci]"
+          git tag "v$RELEASE_VER"
+          git push
+          git push origin "v$RELEASE_VER"
+
+      # ── Create GitHub Release ─────────────────────────────────────────────
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_VER=$(python3 -c "import json; print(json.load(open('versions.json'))['backend'])")
+          gh release create "v$RELEASE_VER" \
+            --title "v$RELEASE_VER" \
+            --generate-notes \
+            --latest

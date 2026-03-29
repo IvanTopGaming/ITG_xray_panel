@@ -1,0 +1,7 @@
+aiogram>=3.0.0
+aiohttp
+python-dotenv
+qrcode
+pillow
+apscheduler
+PyYAML
