@@ -26,6 +26,7 @@ def user_keys_list_kb(records):
 def sub_actions_kb():
     buttons = [
         [InlineKeyboardButton(text="📱 Show QR Code", callback_data="qr_select_server")],
+        [InlineKeyboardButton(text="📊 My Stats", callback_data="user_stats")],
         [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="user_home")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)

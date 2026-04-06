@@ -44,17 +44,17 @@ def bump(version: str, kind: str) -> str:
         return f"{major}.{minor}.{patch + 1}"
 
 
-def update_env_example(data: dict) -> None:
+def update_env_example(data: dict, changed_services: list) -> None:
     content = ENV_EXAMPLE.read_text()
-    for svc, key in IMAGE_KEYS.items():
-        if svc in data:
-            image = f"{IMAGE_NAMES[svc]}:v{data[svc]}"
-            content = re.sub(
-                rf"^{re.escape(key)}=.*$",
-                f"{key}={image}",
-                content,
-                flags=re.MULTILINE,
-            )
+    for svc in changed_services:
+        key = IMAGE_KEYS[svc]
+        image = f"{IMAGE_NAMES[svc]}:v{data[svc]}"
+        content = re.sub(
+            rf"^{re.escape(key)}=.*$",
+            f"{key}={image}",
+            content,
+            flags=re.MULTILINE,
+        )
     ENV_EXAMPLE.write_text(content)
 
 
@@ -87,7 +87,7 @@ def main() -> None:
 
     if changed:
         VERSIONS_FILE.write_text(json.dumps(data, indent=2) + "\n")
-        update_env_example(data)
+        update_env_example(data, services)
         print("Updated versions.json and .env.example")
 
 

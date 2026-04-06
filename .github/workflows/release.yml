@@ -20,6 +20,7 @@ jobs:
   release:
     name: Detect → Bump → Build → Push
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
 
     steps:
       - uses: actions/checkout@v4
@@ -36,23 +37,30 @@ jobs:
           BEFORE="${{ github.event.before }}"
           SHA="${{ github.sha }}"
 
-          # Handle: first push, force push (before SHA not in repo), or normal push
-          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || \
-             ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "First push or force push — treating all services as changed"
-            SERVICES="backend frontend caddy bot"
-          else
+          # Determine changed files:
+          # - Normal push: diff BEFORE..SHA
+          # - Force push / history rewrite: BEFORE SHA is gone, diff HEAD~1..HEAD
+          # - First ever commit: no parent, treat all as changed
+          if [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && \
+             git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             FILES=$(git diff --name-only "$BEFORE" "$SHA")
-            echo "Changed files:"
-            echo "$FILES"
-
-            SERVICES=""
-            echo "$FILES" | grep -q "^backend/"  && SERVICES="$SERVICES backend"
-            echo "$FILES" | grep -q "^frontend/" && SERVICES="$SERVICES frontend"
-            echo "$FILES" | grep -q "^caddy/"    && SERVICES="$SERVICES caddy"
-            echo "$FILES" | grep -q "^tg_bot/"   && SERVICES="$SERVICES bot"
-            SERVICES=$(echo "$SERVICES" | xargs)
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+            echo "Force push detected — diffing HEAD~1..HEAD"
+            FILES=$(git diff --name-only HEAD~1 HEAD)
+          else
+            echo "First commit — treating all services as changed"
+            FILES="backend/ frontend/ caddy/ tg_bot/"
           fi
+
+          echo "Changed files:"
+          echo "$FILES"
+
+          SERVICES=""
+          echo "$FILES" | grep -q "^backend/"  && SERVICES="$SERVICES backend"
+          echo "$FILES" | grep -q "^frontend/" && SERVICES="$SERVICES frontend"
+          echo "$FILES" | grep -q "^caddy/"    && SERVICES="$SERVICES caddy"
+          echo "$FILES" | grep -q "^tg_bot/"   && SERVICES="$SERVICES bot"
+          SERVICES=$(echo "$SERVICES" | xargs)
 
           echo "Changed services: '$SERVICES'"
           echo "services=$SERVICES" >> "$GITHUB_OUTPUT"

@@ -45,6 +45,19 @@ class BotDB:
             """
             )
 
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL,
+                    email TEXT NOT NULL,
+                    notification_type TEXT NOT NULL,
+                    sent_date TEXT NOT NULL,
+                    UNIQUE(telegram_id, email, notification_type, sent_date)
+                )
+            """
+            )
+
             self._deduplicate_users(cursor)
             cursor.execute("DROP INDEX IF EXISTS idx_users_panel_email")
             cursor.execute("DROP INDEX IF EXISTS idx_users_uuid")
@@ -226,6 +239,40 @@ class BotDB:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM user_errors WHERE telegram_id = ?", (telegram_id,))
             conn.commit()
+
+    def was_notified(self, telegram_id, email, notification_type, sent_date):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM notification_log WHERE telegram_id=? AND email=? AND notification_type=? AND sent_date=?",
+                (telegram_id, email, notification_type, sent_date),
+            )
+            return cursor.fetchone() is not None
+
+    def record_notification(self, telegram_id, email, notification_type, sent_date):
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT OR IGNORE INTO notification_log (telegram_id, email, notification_type, sent_date) VALUES (?, ?, ?, ?)",
+                    (telegram_id, email, notification_type, sent_date),
+                )
+                conn.commit()
+        except Exception as e:
+            logging.error(f"DB Error record_notification: {e}")
+
+    def prune_notification_log(self, days_to_keep=14):
+        """Remove old notification entries to keep the table small."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM notification_log WHERE sent_date < date('now', ?)",
+                    (f"-{days_to_keep} days",),
+                )
+                conn.commit()
+        except Exception as e:
+            logging.error(f"DB Error prune_notification_log: {e}")
 
 
 db = BotDB()

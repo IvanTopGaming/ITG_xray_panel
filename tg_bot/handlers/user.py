@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import time
+import datetime
 from html import escape
 from aiogram import Router, F, types
 from aiogram.filters import Command
@@ -19,6 +21,35 @@ def h(value):
     return escape(str(value), quote=True)
 
 
+async def safe_edit(message: types.Message, text: str, reply_markup=None, parse_mode="HTML"):
+    """Edit or replace a message regardless of its current content type.
+
+    - Text message → edit in-place (no flicker).
+    - Photo message → delete + send new text (photo must be removed).
+    - Swallows "message is not modified" silently to avoid duplicate messages
+      when the user taps the same button twice.
+    - Falls back to delete+send only when the message truly can't be edited.
+    """
+    kwargs = {"reply_markup": reply_markup, "parse_mode": parse_mode}
+    if message.content_type == types.ContentType.PHOTO:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return await message.answer(text, **kwargs)
+    try:
+        await message.edit_text(text, **kwargs)
+        return message
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return message
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return await message.answer(text, **kwargs)
+
+
 def is_record_owner(record, user_id):
     if not record:
         return False
@@ -33,18 +64,11 @@ async def auto_expire_message(message: types.Message, state: FSMContext, expecte
         return
 
     try:
-        if message.content_type == types.ContentType.PHOTO:
-            await message.edit_caption(
-                caption="🔒 <b>Security Timeout</b>\n\nQR Code hidden.",
-                reply_markup=kb.back_to_main_kb(),
-                parse_mode="HTML",
-            )
-        else:
-            await message.edit_text(
-                "🔒 <b>Security Timeout</b>\n\nData hidden for security.",
-                reply_markup=kb.back_to_main_kb(),
-                parse_mode="HTML",
-            )
+        await safe_edit(
+            message,
+            "🔒 <b>Security Timeout</b>\n\nData hidden for security.",
+            reply_markup=kb.back_to_main_kb(),
+        )
     except Exception:
         logger.debug("Failed to auto-expire sensitive message", exc_info=True)
 
@@ -67,21 +91,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @router.callback_query(F.data == "user_home")
 async def user_home(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-
-    msg_kwargs = {
-        "text": "🛡️ Main Menu",
-        "reply_markup": kb.user_main_kb(),
-        "parse_mode": "HTML",
-    }
-
-    if callback.message.content_type == types.ContentType.PHOTO:
-        await callback.message.delete()
-        await callback.message.answer(**msg_kwargs)
-    else:
-        try:
-            await callback.message.edit_text(**msg_kwargs)
-        except TelegramBadRequest:
-            await callback.message.answer(**msg_kwargs)
+    await safe_edit(callback.message, "🛡️ Main Menu", reply_markup=kb.user_main_kb())
 
 
 @router.callback_query(F.data == "user_help")
@@ -94,7 +104,7 @@ async def user_help(callback: types.CallbackQuery, state: FSMContext):
         "3. Copy all keys.\n"
         "4. Import from Clipboard in the app."
     )
-    await callback.message.edit_text(text, reply_markup=kb.back_to_main_kb(), parse_mode="HTML")
+    await safe_edit(callback.message, text, reply_markup=kb.back_to_main_kb())
 
 
 @router.callback_query(F.data == "user_sub")
@@ -106,20 +116,11 @@ async def user_sub(callback: types.CallbackQuery, state: FSMContext):
 
     if len(users_records) > 1:
         await state.clear()
-
-        if callback.message.content_type == types.ContentType.PHOTO:
-            await callback.message.delete()
-            await callback.message.answer(
-                "🔑 <b>Select Key</b>\nYou have multiple keys available:",
-                reply_markup=kb.user_keys_list_kb(users_records),
-                parse_mode="HTML",
-            )
-        else:
-            await callback.message.edit_text(
-                "🔑 <b>Select Key</b>\nYou have multiple keys available:",
-                reply_markup=kb.user_keys_list_kb(users_records),
-                parse_mode="HTML",
-            )
+        await safe_edit(
+            callback.message,
+            "🔑 <b>Select Key</b>\nYou have multiple keys available:",
+            reply_markup=kb.user_keys_list_kb(users_records),
+        )
         return
 
     await show_key_details(callback, state, users_records[0])
@@ -152,25 +153,12 @@ async def show_key_details(callback: types.CallbackQuery, state: FSMContext, rec
     await state.set_state(UserStates.viewing_keys)
     await state.update_data(selected_key_db_id=db_id)
 
-    loading_text = f"🔍 <b>Fetching keys for {h(email)}...</b>\n<i>Connecting to servers...</i>"
-
-    msg = None
-    if callback.message.content_type == types.ContentType.PHOTO:
-        await callback.message.delete()
-        msg = await callback.message.answer(loading_text, parse_mode="HTML")
-    else:
-        try:
-            await callback.message.edit_text(loading_text, parse_mode="HTML")
-            msg = callback.message
-        except TelegramBadRequest:
-            msg = await callback.message.answer(loading_text, parse_mode="HTML")
-
-    tasks = []
-    for idx in range(len(panel_api.panels)):
-        tasks.append(panel_api.get_subscription_link_single(email, idx, inbound_tag=inbound_tag))
+    tasks = [
+        panel_api.get_subscription_link_single(email, idx, inbound_tag=inbound_tag)
+        for idx in range(len(panel_api.panels))
+    ]
 
     links = []
-
     for coro in asyncio.as_completed(tasks):
         try:
             res = await coro
@@ -179,6 +167,8 @@ async def show_key_details(callback: types.CallbackQuery, state: FSMContext, rec
             continue
         if res:
             links.extend(res)
+
+    msg = callback.message
 
     final_text = ""
     if links:
@@ -192,10 +182,7 @@ async def show_key_details(callback: types.CallbackQuery, state: FSMContext, rec
     else:
         final_text = f"❌ <b>No active keys found for {h(email)}.</b>\nContact admin."
 
-    try:
-        await msg.edit_text(final_text, reply_markup=kb.sub_actions_kb(), parse_mode="HTML")
-    except TelegramBadRequest:
-        pass
+    msg = await safe_edit(msg, final_text, reply_markup=kb.sub_actions_kb())
 
     if links:
         asyncio.create_task(auto_expire_message(msg, state, UserStates.viewing_keys))
@@ -222,11 +209,10 @@ async def back_to_keys(callback: types.CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "qr_select_server")
 async def qr_select_server(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(UserStates.viewing_qr)
-
-    await callback.message.edit_text(
+    await safe_edit(
+        callback.message,
         "🖥 <b>Select Server</b>\nChoose which key to display as QR:",
         reply_markup=kb.user_qr_server_kb(panel_api.panels),
-        parse_mode="HTML",
     )
 
 
@@ -277,6 +263,73 @@ async def qr_generate_for_server(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("❌ No active key found on this server.", show_alert=True)
 
 
+def _format_expiry(expiry_ts_ms):
+    """Return (display_str, days_left_float). days_left is None if permanent."""
+    if expiry_ts_ms <= 0:
+        return "♾️ Permanent", None
+    now_ms = int(time.time() * 1000)
+    diff_ms = expiry_ts_ms - now_ms
+    if diff_ms <= 0:
+        expiry_dt = datetime.datetime.fromtimestamp(expiry_ts_ms / 1000)
+        return f"❌ Expired ({expiry_dt.strftime('%Y-%m-%d')})", 0.0
+    days = diff_ms / (1000 * 60 * 60 * 24)
+    expiry_dt = datetime.datetime.fromtimestamp(expiry_ts_ms / 1000)
+    date_str = expiry_dt.strftime("%Y-%m-%d")
+    if days < 1:
+        hours = int(diff_ms / (1000 * 60 * 60))
+        return f"⚠️ {date_str} ({hours}h left)", days
+    elif days <= 3:
+        return f"🔴 {date_str} ({int(days)}d left)", days
+    elif days <= 7:
+        return f"🟡 {date_str} ({int(days)}d left)", days
+    else:
+        return f"🟢 {date_str} ({int(days)}d left)", days
+
+
+def _progress_bar(percent, length=12):
+    filled = min(length, int(length * percent / 100))
+    return "█" * filled + "░" * (length - filled)
+
+
+def _format_key_stats(email, inbound_tag, stats):
+    enable = stats["enable"]
+    key_total = stats["total"]
+    limit = stats["limit"]
+    expiry = stats["expiry"]
+    per_server = stats.get("per_server", [])
+
+    status = "🟢 Active" if enable else "🔴 Disabled"
+    tag_display = f" <code>[{h(inbound_tag)}]</code>" if inbound_tag and inbound_tag.lower() != "multi" else ""
+
+    lines = [f"🔑 <b>{h(email)}</b>{tag_display}  {status}"]
+
+    # Traffic block
+    if limit > 0:
+        percent = min(100.0, (key_total / limit) * 100)
+        remaining = max(0, limit - key_total)
+        bar = _progress_bar(percent)
+        lines.append(
+            f"  📦 <code>{bar}</code> {percent:.1f}%\n"
+            f"  Used:  <b>{format_bytes(key_total)}</b> / {format_bytes(limit)}\n"
+            f"  Left:  <b>{format_bytes(remaining)}</b>"
+        )
+    else:
+        lines.append(f"  📦 Used: <b>{format_bytes(key_total)}</b> / ∞")
+
+    # Expiry block
+    expiry_str, _ = _format_expiry(expiry)
+    lines.append(f"  📅 Expiry: {expiry_str}")
+
+    # Per-server breakdown (only if more than one server)
+    if len(per_server) > 1:
+        server_lines = []
+        for s in per_server:
+            server_lines.append(f"    • {h(s['name'])}: ↑{format_bytes(s['up'])} ↓{format_bytes(s['down'])}")
+        lines.append("  🖥 Per server:\n" + "\n".join(server_lines))
+
+    return "\n".join(lines)
+
+
 @router.callback_query(F.data == "user_stats")
 async def user_stats(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
@@ -284,60 +337,26 @@ async def user_stats(callback: types.CallbackQuery, state: FSMContext):
     if not users_records:
         return
 
-    msg = None
-    if callback.message.content_type == types.ContentType.PHOTO:
-        await callback.message.delete()
-        msg = await callback.message.answer("📊 <b>Fetching Statistics...</b>", parse_mode="HTML")
-    else:
-        await callback.message.edit_text(
-            "📊 <b>Fetching Statistics...</b>\n<i>Aggregating all keys...</i>",
-            parse_mode="HTML",
-        )
-        msg = callback.message
+    tasks = [panel_api.get_client_stats_aggregate(record[3], inbound_tag=record[4]) for record in users_records]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    msg = callback.message
 
-    total_up = 0
-    total_down = 0
+    key_blocks = []
+    grand_total = 0
 
-    report_text = ""
-
-    for record in users_records:
+    for record, result in zip(users_records, results):
         email = record[3]
         inbound_tag = record[4]
-        try:
-            stats = await panel_api.get_client_stats_aggregate(email, inbound_tag=inbound_tag)
-        except Exception as exc:
-            logger.warning("Failed to fetch stats for %s: %s", email, exc)
+        if isinstance(result, Exception) or result is None:
+            key_blocks.append(f"🔑 <b>{h(email)}</b> — ❌ unavailable")
             continue
+        grand_total += result["total"]
+        key_blocks.append(_format_key_stats(email, inbound_tag, result))
 
-        if stats:
-            key_up = stats["up"]
-            key_down = stats["down"]
-            key_total = stats["total"]
-            limit = stats["limit"]
-            enable = stats["enable"]
+    header = f"<b>📊 Statistics</b>\n👤 {h(callback.from_user.first_name)}"
+    if len(users_records) > 1:
+        header += f"\n📦 Total: <b>{format_bytes(grand_total)}</b>"
 
-            total_up += key_up
-            total_down += key_down
+    final_text = header + "\n\n" + "\n\n".join(key_blocks)
 
-            status_icon = "🟢" if enable else "🔴"
-            limit_str = format_bytes(limit) if limit > 0 else "∞"
-
-            report_text += (
-                f"🔑 <b>{h(email)}</b> ({h(inbound_tag)}) {status_icon}\n"
-                f"   📦 {format_bytes(key_total)} / {limit_str}\n"
-            )
-
-    grand_total = total_up + total_down
-
-    final_text = (
-        f"<b>📊 Global Usage Statistics</b>\n\n"
-        f"👤 <b>Account:</b> {h(callback.from_user.first_name)}\n"
-        f"📦 <b>Total Consumed:</b> <code>{format_bytes(grand_total)}</code>\n"
-        f"-------------------\n"
-        f"{report_text}"
-    )
-
-    try:
-        await msg.edit_text(final_text, reply_markup=kb.back_to_main_kb(), parse_mode="HTML")
-    except TelegramBadRequest:
-        pass
+    await safe_edit(msg, final_text, reply_markup=kb.back_to_main_kb())

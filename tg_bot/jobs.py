@@ -166,6 +166,9 @@ async def sync_users_across_panels(bot: Bot):
 
 
 async def check_and_notify_users(bot: Bot):
+    today = datetime.date.today().isoformat()
+    db.prune_notification_log()
+
     users = db.get_all_users()
     for user in users:
         tg_id = user[1]
@@ -173,32 +176,87 @@ async def check_and_notify_users(bot: Bot):
         inbound_tag = user[4]
         try:
             stats = await panel_api.get_client_stats_aggregate(email, inbound_tag=inbound_tag)
-            if not stats:
+            if not stats or not stats["enable"]:
                 continue
-            if not stats["enable"]:
-                continue
+
+            now_ms = int(time.time() * 1000)
+
+            # --- Expiry notifications ---
             if stats["expiry"] > 0:
-                now_ts = int(time.time() * 1000)
-                diff = stats["expiry"] - now_ts
-                days_left = diff / (1000 * 60 * 60 * 24)
-                if 0 < days_left <= 3:
-                    days_int = int(days_left) + 1
-                    await bot.send_message(
-                        tg_id,
-                        f"⏳ Subscription for <b>{email}</b> ends in <b>{days_int} days</b>.",
-                        parse_mode="HTML",
-                    )
+                diff_ms = stats["expiry"] - now_ms
+                days_left = diff_ms / (1000 * 60 * 60 * 24)
+
+                if 2 < days_left <= 3:
+                    notif_type = "expiry_3d"
+                    if not db.was_notified(tg_id, email, notif_type, today):
+                        await bot.send_message(
+                            tg_id,
+                            f"⏳ <b>Subscription Expiry Warning</b>\n\n"
+                            f"Key <b>{email}</b> expires in <b>3 days</b>.\n"
+                            f"Contact admin to renew.",
+                            parse_mode="HTML",
+                        )
+                        db.record_notification(tg_id, email, notif_type, today)
+
+                elif 0 < days_left <= 1:
+                    notif_type = "expiry_1d"
+                    if not db.was_notified(tg_id, email, notif_type, today):
+                        hours_left = int(diff_ms / (1000 * 60 * 60))
+                        await bot.send_message(
+                            tg_id,
+                            f"🚨 <b>Urgent: Subscription Expiring Soon</b>\n\n"
+                            f"Key <b>{email}</b> expires in <b>{hours_left} hours</b>!\n"
+                            f"Contact admin immediately to renew.",
+                            parse_mode="HTML",
+                        )
+                        db.record_notification(tg_id, email, notif_type, today)
+
+                elif 1 < days_left <= 2:
+                    notif_type = "expiry_2d"
+                    if not db.was_notified(tg_id, email, notif_type, today):
+                        await bot.send_message(
+                            tg_id,
+                            f"⚠️ <b>Subscription Expiry Warning</b>\n\n"
+                            f"Key <b>{email}</b> expires in <b>2 days</b>.\n"
+                            f"Contact admin to renew.",
+                            parse_mode="HTML",
+                        )
+                        db.record_notification(tg_id, email, notif_type, today)
+
+            # --- Traffic notifications ---
             if stats["limit"] > 0:
                 used = stats["total"]
                 limit = stats["limit"]
                 percent_used = (used / limit) * 100
-                if percent_used >= 90 and percent_used < 100:
-                    left = limit - used
-                    await bot.send_message(
-                        tg_id,
-                        f"⚠️ <b>Traffic Warning</b>\nUsed: {percent_used:.1f}%\nRemaining: {format_bytes(left)}",
-                        parse_mode="HTML",
-                    )
+                left = limit - used
+
+                if 80 <= percent_used < 90:
+                    notif_type = "traffic_80"
+                    if not db.was_notified(tg_id, email, notif_type, today):
+                        await bot.send_message(
+                            tg_id,
+                            f"📶 <b>Traffic Warning — 80% Used</b>\n\n"
+                            f"Key <b>{email}</b>\n"
+                            f"Used: <b>{format_bytes(used)}</b> of {format_bytes(limit)} ({percent_used:.1f}%)\n"
+                            f"Remaining: <b>{format_bytes(left)}</b>",
+                            parse_mode="HTML",
+                        )
+                        db.record_notification(tg_id, email, notif_type, today)
+
+                elif 90 <= percent_used < 100:
+                    notif_type = "traffic_90"
+                    if not db.was_notified(tg_id, email, notif_type, today):
+                        await bot.send_message(
+                            tg_id,
+                            f"🔴 <b>Traffic Critical — 90% Used</b>\n\n"
+                            f"Key <b>{email}</b>\n"
+                            f"Used: <b>{format_bytes(used)}</b> of {format_bytes(limit)} ({percent_used:.1f}%)\n"
+                            f"Remaining: <b>{format_bytes(left)}</b>\n\n"
+                            f"Contact admin to increase your limit.",
+                            parse_mode="HTML",
+                        )
+                        db.record_notification(tg_id, email, notif_type, today)
+
             await asyncio.sleep(0.1)
         except Exception as e:
             logger.error(f"Check error {email}: {e}")
