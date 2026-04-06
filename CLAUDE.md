@@ -26,26 +26,35 @@ cd backend
 pip install -r requirements.txt
 python run.py                  # Dev server on :5000
 python db_migration.py         # Run DB migrations
-```
 
-No Python linting tools are configured (no flake8, ruff, mypy, black).
+# Linting (ruff — same config as tg_bot)
+ruff check backend/
+ruff format backend/           # auto-fix formatting
+ruff format --check backend/   # CI mode — no changes, exit 1 if dirty
+```
 
 ### Frontend (React/Vite)
 ```bash
 cd frontend
 npm install
-npm run dev      # Dev server on :4200 (proxies /api → :5000)
-npm run build    # Production build — also runs tsc, so use this to typecheck
-npm run preview  # Preview production build
+npm run dev           # Dev server on :4200 (proxies /api → :5000)
+npm run build         # Production build + tsc typecheck
+npm run preview       # Preview production build
+npm run lint          # ESLint
+npm run format:check  # Prettier check (CI mode)
+npm run format        # Prettier auto-fix
 ```
-
-No ESLint or Prettier is configured. `npm run build` is the only way to catch TypeScript errors.
 
 ### Telegram Bot
 ```bash
 cd tg_bot
 pip install -r requirements.txt
 python main.py
+
+# Linting (ruff — E/F rules, line-length 120)
+ruff check tg_bot/
+ruff format tg_bot/           # auto-fix formatting
+ruff format --check tg_bot/   # CI mode — no changes, exit 1 if dirty
 ```
 
 ## Architecture
@@ -122,6 +131,21 @@ Key volumes: `shared_config:/etc/xray` (shared between `xray` and `backend`), `x
 **gevent + gRPC:** `grpc_gevent.init_gevent()` is called at app startup before any gRPC usage. The backend runs under gunicorn+gevent (single worker), so gRPC calls must be gevent-compatible (grpcio 1.59.0).
 
 **Frontend tab/slider style:** All horizontal tab bars use a consistent pill style: container `bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05]`, active item is an absolutely-positioned `motion.div` with `layoutId` and `bg-gradient-to-br from-primary/25 to-violet-600/20 rounded-xl border border-white/[0.1] shadow-[0_0_12px_rgba(208,188,255,0.12)]`, spring transition `stiffness: 500, damping: 35`. Do not use plain CSS active classes for tab bars.
+
+## CI Checks (run on every push)
+
+All checks must pass before code reaches `main`. Run locally before pushing:
+
+| Check | Command |
+|-------|---------|
+| Python lint + format | `ruff check backend/ tg_bot/` · `ruff format --check backend/ tg_bot/` |
+| TypeScript typecheck | `cd frontend && npx tsc --noEmit` |
+| ESLint | `cd frontend && npm run lint` |
+| Prettier | `cd frontend && npm run format:check` |
+| Frontend build | `cd frontend && npm run build` |
+| Dockerfile lint | hadolint (runs in CI only) |
+
+`ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails.
 
 ## Git Workflow
 
