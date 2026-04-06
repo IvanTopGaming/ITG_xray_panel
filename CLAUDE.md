@@ -123,6 +123,44 @@ Key volumes: `shared_config:/etc/xray` (shared between `xray` and `backend`), `x
 
 **Frontend tab/slider style:** All horizontal tab bars use a consistent pill style: container `bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05]`, active item is an absolutely-positioned `motion.div` with `layoutId` and `bg-gradient-to-br from-primary/25 to-violet-600/20 rounded-xl border border-white/[0.1] shadow-[0_0_12px_rgba(208,188,255,0.12)]`, spring transition `stiffness: 500, damping: 35`. Do not use plain CSS active classes for tab bars.
 
+## Git Workflow
+
+### Feature branches — always
+All work on service code (`backend/`, `frontend/`, `tg_bot/`, `caddy/`) goes in a feature branch, never directly on `main`.
+
+```bash
+git checkout -b feat/my-feature   # create branch
+# work, commit freely — history doesn't matter here
+git checkout main
+git merge --squash feat/my-feature
+git commit -m "feat(service): concise description"
+git push
+git branch -d feat/my-feature
+```
+
+`--squash` collapses all branch commits into one staged diff. Write one clean commit message, push once — CI runs once, one bump commit appears in `main`.
+
+**Committing directly to `main` is only acceptable for CI/config-only changes** (`.github/`, `scripts/`, `CLAUDE.md`, `docker-compose*.yml`) that don't touch service source files and therefore don't trigger a release.
+
+### CI/CD skip tags
+Two tags control the release pipeline:
+
+| Tag | Effect |
+|-----|--------|
+| `[skip ci]` | GitHub skips **all** workflows — use on auto-commits that must not re-trigger CI (e.g. the version bump commit itself) |
+| `[skip release]` | Only the release job is skipped, other workflows still run — use when you push to `main` directly but don't want a new image built (e.g. fixing a typo in docs, restoring `versions.json`) |
+
+Both tags are needed on the same commit only when you push non-triggering paths to `main` and want to be explicit. In practice `[skip ci]` alone is sufficient for most manual `main` commits.
+
+### How the release pipeline works
+1. Push to `main` with changes under `backend/`, `frontend/`, `caddy/`, or `tg_bot/`
+2. CI detects which service(s) changed via `git diff`
+3. Patch-bumps only those services in `versions.json` and `.env.example`
+4. Builds and pushes Docker images to GHCR
+5. Commits the version bump back to `main` with `[skip ci]`
+
+Force-pushing rewrites history — CI can't diff against the old SHA and falls back to diffing `HEAD~1..HEAD`. Avoid force-pushing `main`; use feature branches so it's never needed.
+
 ## Configuration
 
 Copy `.env.example` to `.env`. Key variables:
