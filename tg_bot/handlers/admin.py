@@ -23,7 +23,7 @@ from states import (
     BackupStates,
 )
 import keyboards as kb
-from utils import format_bytes
+from utils import bot_backup_filename, format_bytes, panel_backup_filename
 from jobs import sync_users_across_panels, send_backup
 import time
 import datetime
@@ -162,7 +162,7 @@ async def admin_backup_dl_bot(callback: types.CallbackQuery):
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
         await callback.answer("Sending file...")
         await callback.message.answer_document(
-            FSInputFile(db_path, filename=f"bot_backup_{date_str}.db"),
+            FSInputFile(db_path, filename=bot_backup_filename(date_str)),
             caption="🤖 Bot Database",
         )
     else:
@@ -199,7 +199,7 @@ async def admin_backup_dl_panel_process(callback: types.CallbackQuery, state: FS
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
         await callback.message.answer_document(
-            BufferedInputFile(content, filename=f"panel_{target_panel.name}_{date_str}.db"),
+            BufferedInputFile(content, filename=panel_backup_filename(target_panel, date_str)),
             caption=f"🎛 <b>{h(target_panel.name)}</b> Backup",
             parse_mode="HTML",
         )
@@ -1292,8 +1292,9 @@ async def create_user_final(message, state, expiry_ts, bot):
 
     success_list = report["success"]
     failed_list = report["failed"]
+    skipped_list = report.get("skipped", [])
 
-    if not success_list and not failed_list:
+    if not success_list and not failed_list and not skipped_list:
         await message.answer("❌ No servers configured.", reply_markup=kb.admin_main_kb())
         await state.clear()
         return
@@ -1347,6 +1348,10 @@ async def create_user_final(message, state, expiry_ts, bot):
         if status_text:
             status_text += "\n"
         status_text += "\n".join([f"❌ <b>{h(f['name'])}</b>: <i>{h(f['reason'])}</i>" for f in failed_list])
+    if skipped_list:
+        if status_text:
+            status_text += "\n"
+        status_text += "\n".join([f"⊘ <b>{h(s['name'])}</b>: <i>{h(s['reason'])}</i>" for s in skipped_list])
 
     header_icon = "✅" if success_list else "⚠️"
     final_msg = (

@@ -24,6 +24,8 @@ export interface Client {
   source_ips?: string[];
   inbound_tag: string;
   preferred_outbound?: string;
+  global_limit_bytes?: number;
+  allowed_node_groups?: string[];
 }
 
 export interface StreamSettings {
@@ -99,6 +101,27 @@ export interface Balancer {
   enable?: boolean;
   selector: string[];
   strategy: string;
+}
+
+export interface MasterInfo {
+  groups: string[];
+}
+
+export interface Node {
+  id: number;
+  name: string;
+  url: string;
+  username: string;
+  password?: string;
+  inbound_tag: string;
+  enable: boolean;
+  sync_users: boolean;
+  sync_inbound: boolean;
+  status: 'online' | 'offline' | 'unknown';
+  last_check: number;
+  last_error: string;
+  groups?: string[];
+  strict_mirror?: boolean;
 }
 
 export interface RoutingRule {

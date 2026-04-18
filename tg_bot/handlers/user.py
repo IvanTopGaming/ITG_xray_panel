@@ -153,20 +153,11 @@ async def show_key_details(callback: types.CallbackQuery, state: FSMContext, rec
     await state.set_state(UserStates.viewing_keys)
     await state.update_data(selected_key_db_id=db_id)
 
-    tasks = [
-        panel_api.get_subscription_link_single(email, idx, inbound_tag=inbound_tag)
-        for idx in range(len(panel_api.panels))
-    ]
-
-    links = []
-    for coro in asyncio.as_completed(tasks):
-        try:
-            res = await coro
-        except Exception as exc:
-            logger.warning("Failed to fetch subscription links: %s", exc)
-            continue
-        if res:
-            links.extend(res)
+    try:
+        links = await panel_api.get_dedup_subscription_links(email, inbound_tag=inbound_tag)
+    except Exception as exc:
+        logger.warning("Failed to fetch subscription links: %s", exc)
+        links = []
 
     msg = callback.message
 

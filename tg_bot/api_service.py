@@ -3,7 +3,10 @@ import logging
 import asyncio
 import base64
 import binascii
-from urllib.parse import quote
+import json
+import re
+import time
+from urllib.parse import quote, urlparse
 from config import SERVERS_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -23,15 +26,121 @@ def _operation_failed(result):
     return result is None or isinstance(result, Exception) or _is_error_response(result)
 
 
+_ENDPOINT_RE = re.compile(r"^(?P<scheme>vless|trojan|ss)://[^@\s]+@(?P<host>[^:/?#\s]+):(?P<port>\d+)", re.IGNORECASE)
+
+
+def _parse_link_endpoint(link):
+    """Extract (scheme, host, port) from a subscription URI.
+
+    Returns a lowercased 3-tuple or None if the link is not parseable.
+    VMess is handled separately because its endpoint is inside base64(JSON).
+    """
+    if not isinstance(link, str) or not link:
+        return None
+    stripped = link.strip()
+    if stripped.lower().startswith("vmess://"):
+        return _parse_vmess_endpoint(stripped)
+    m = _ENDPOINT_RE.match(stripped)
+    if not m:
+        return None
+    try:
+        port = int(m.group("port"))
+    except ValueError:
+        return None
+    return (m.group("scheme").lower(), m.group("host").lower(), port)
+
+
+def _parse_vmess_endpoint(link):
+    payload_b64 = link[len("vmess://") :].strip()
+    if not payload_b64:
+        return None
+    try:
+        raw = base64.b64decode(payload_b64, validate=False).decode("utf-8", errors="strict")
+        data = json.loads(raw)
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    host = data.get("add")
+    port_raw = data.get("port")
+    if not isinstance(host, str) or not host:
+        return None
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        return None
+    return ("vmess", host.lower(), port)
+
+
+def _looks_masked(value):
+    """Heuristic: detect placeholder passwords the panel returns when masking."""
+    if not isinstance(value, str) or not value:
+        return True
+    return set(value) <= {"•", "*", "X", "x", "·"}
+
+
+def _panel_hostname(panel):
+    """Return the lowercased hostname of a SinglePanel's base_url, or None."""
+    base = getattr(panel, "base_url", "") or ""
+    if not base:
+        return None
+    try:
+        parsed = urlparse(base)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").strip().lower()
+    return host or None
+
+
+def _dedup_pairs(pairs):
+    """Collapse (panel, link) pairs that share the same (scheme, host, port).
+
+    When multiple pairs share an endpoint, prefer the one whose panel's own
+    hostname equals the link's host ("direct"). Unparseable links are kept
+    as-is since we can't compare them.
+    """
+    kept_order = []
+    kept_by_key = {}
+    unparseable = []
+
+    for panel, link in pairs:
+        endpoint = _parse_link_endpoint(link)
+        if endpoint is None:
+            unparseable.append((panel, link))
+            continue
+
+        if endpoint not in kept_by_key:
+            kept_order.append(endpoint)
+            kept_by_key[endpoint] = (panel, link)
+            continue
+
+        existing_panel, _existing_link = kept_by_key[endpoint]
+        existing_is_direct = _panel_hostname(existing_panel) == endpoint[1]
+        current_is_direct = _panel_hostname(panel) == endpoint[1]
+        if current_is_direct and not existing_is_direct:
+            kept_by_key[endpoint] = (panel, link)
+
+    result = [kept_by_key[k] for k in kept_order]
+    result.extend(unparseable)
+    return result
+
+
 class SinglePanel:
-    def __init__(self, conf):
+    def __init__(self, conf, *, is_virtual=False, parent_master=None):
         self.name = conf["name"]
         self.base_url = conf["url"].rstrip("/")
         self.username = conf["user"]
         self.password = conf["password"]
         self.target_inbound = conf["inbound_tag"]
+        self.role = conf.get("role", "standalone")
+        self.is_virtual = is_virtual
+        self.parent_master = parent_master
         self.token = None
         self.session = None
+
+    @property
+    def is_master(self):
+        return self.role == "master"
 
     async def ensure_session(self):
         if self.session is None or self.session.closed:
@@ -119,8 +228,18 @@ class SinglePanel:
 
 
 class MultiPanelManager:
+    SHADOW_CACHE_TTL = 300  # seconds
+    VIRTUAL_PANELS_TTL = 300  # seconds
+
     def __init__(self):
-        self.panels = [SinglePanel(conf) for conf in SERVERS_CONFIG]
+        self._config_panels = [SinglePanel(conf) for conf in SERVERS_CONFIG]
+        self._virtual_panels = []
+        self.panels = list(self._config_panels)
+        self._shadow_cache = None
+        self._shadow_cache_expires = 0.0
+        self._shadow_cache_lock = asyncio.Lock()
+        self._virtual_expires = 0.0
+        self._virtual_lock = asyncio.Lock()
 
     @staticmethod
     def _normalize_inbound_tag(value):
@@ -137,6 +256,197 @@ class MultiPanelManager:
         tasks = [panel.close() for panel in self.panels]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _fetch_master_node_hosts(self, master_panel):
+        """Return the set of lowercased hostnames of a master's sync-enabled nodes."""
+        hosts = set()
+        try:
+            nodes = await master_panel.request("GET", "nodes")
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to fetch node list for shadow detection: %s",
+                master_panel.name,
+                exc,
+            )
+            return hosts
+
+        if not isinstance(nodes, list):
+            return hosts
+
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            if not n.get("enable", True):
+                continue
+            if not n.get("sync_users", False):
+                continue
+            url = n.get("url") or ""
+            if not url:
+                continue
+            try:
+                parsed = urlparse(url)
+            except ValueError:
+                continue
+            host = (parsed.hostname or "").strip().lower()
+            if host:
+                hosts.add(host)
+        return hosts
+
+    async def _resolve_shadow_map(self):
+        """Return mapping {shadowed_panel_name: master_panel_name}.
+
+        A panel is "shadowed" when its hostname matches one of a master panel's
+        sync-enabled node hostnames. Shadowed panels are skipped in write
+        operations because the master already fans the change out to them.
+        The value is the name of the master that owns that node.
+        Result is cached for SHADOW_CACHE_TTL seconds.
+        """
+        now = time.time()
+        if self._shadow_cache is not None and now < self._shadow_cache_expires:
+            return self._shadow_cache
+
+        async with self._shadow_cache_lock:
+            now = time.time()
+            if self._shadow_cache is not None and now < self._shadow_cache_expires:
+                return self._shadow_cache
+
+            master_panels = [p for p in self.panels if p.is_master]
+            if not master_panels:
+                self._shadow_cache = {}
+                self._shadow_cache_expires = now + self.SHADOW_CACHE_TTL
+                return self._shadow_cache
+
+            node_host_results = await asyncio.gather(
+                *[self._fetch_master_node_hosts(m) for m in master_panels],
+                return_exceptions=False,
+            )
+
+            shadowed = {}
+            for p in self.panels:
+                if p.is_master:
+                    continue
+                ph = _panel_hostname(p)
+                if not ph:
+                    continue
+                for master, hosts in zip(master_panels, node_host_results):
+                    if ph in hosts:
+                        shadowed[p.name] = master.name
+                        break
+
+            self._shadow_cache = shadowed
+            self._shadow_cache_expires = now + self.SHADOW_CACHE_TTL
+            return shadowed
+
+    def invalidate_shadow_cache(self):
+        self._shadow_cache = None
+        self._shadow_cache_expires = 0.0
+
+    async def writable_panels(self):
+        shadowed = await self._resolve_shadow_map()
+        return [p for p in self.panels if not p.is_virtual and p.name not in shadowed]
+
+    async def _fetch_master_nodes_full(self, master_panel):
+        """Return list of node dicts with unmasked credentials, or []."""
+        try:
+            nodes = await master_panel.request("GET", "nodes", params={"include_password": "1"})
+        except Exception as exc:
+            logger.warning("[%s] Failed to fetch nodes with credentials: %s", master_panel.name, exc)
+            return []
+        if not isinstance(nodes, list):
+            return []
+        return nodes
+
+    async def bootstrap_virtual_panels(self, *, force=False):
+        """Populate self._virtual_panels from each master's /api/nodes.
+
+        Each remote node that has `enable=True` becomes a virtual SinglePanel
+        using the node's own URL/credentials (fetched from the master with
+        `include_password=1`). Virtual panels let the bot read stats, inbounds,
+        and subscription links from every node, even if only the master is
+        listed in config.yaml. Writes are skipped on virtual panels because
+        the master fans out user CRUD to its nodes itself.
+
+        Virtual panels are rebuilt on startup and every VIRTUAL_PANELS_TTL
+        seconds. Nodes whose hostname already matches a config panel are
+        skipped to avoid duplicate entries.
+        """
+        now = time.time()
+        if not force and now < self._virtual_expires and self._virtual_panels:
+            return self._virtual_panels
+
+        async with self._virtual_lock:
+            now = time.time()
+            if not force and now < self._virtual_expires and self._virtual_panels:
+                return self._virtual_panels
+
+            master_panels = [p for p in self._config_panels if p.is_master]
+            if not master_panels:
+                await self._swap_virtual_panels([])
+                self._virtual_expires = now + self.VIRTUAL_PANELS_TTL
+                return self._virtual_panels
+
+            config_hosts = {h for h in (_panel_hostname(p) for p in self._config_panels) if h}
+
+            seen_hosts = set(config_hosts)
+            new_virtuals = []
+            for master in master_panels:
+                nodes = await self._fetch_master_nodes_full(master)
+                if nodes and all(_looks_masked(n.get("password")) for n in nodes if isinstance(n, dict)):
+                    logger.warning(
+                        "[%s] Master returned masked node passwords — "
+                        "backend likely predates include_password support. "
+                        "Virtual panels skipped; upgrade the panel to use this feature.",
+                        master.name,
+                    )
+                    continue
+                for n in nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    if not n.get("enable", True):
+                        continue
+                    url = str(n.get("url") or "").strip()
+                    user = str(n.get("username") or "").strip()
+                    password = str(n.get("password") or "")
+                    inbound_tag = str(n.get("inbound_tag") or "").strip()
+                    name = str(n.get("name") or "").strip()
+                    if not (url and user and password and name):
+                        continue
+                    if _looks_masked(password):
+                        continue
+                    try:
+                        host = (urlparse(url).hostname or "").strip().lower()
+                    except ValueError:
+                        continue
+                    if not host or host in seen_hosts:
+                        continue
+                    seen_hosts.add(host)
+
+                    virtual = SinglePanel(
+                        {
+                            "name": name,
+                            "url": url.rstrip("/"),
+                            "user": user,
+                            "password": password,
+                            "inbound_tag": inbound_tag,
+                            "role": "standalone",
+                        },
+                        is_virtual=True,
+                        parent_master=master.name,
+                    )
+                    new_virtuals.append(virtual)
+
+            await self._swap_virtual_panels(new_virtuals)
+            self._virtual_expires = now + self.VIRTUAL_PANELS_TTL
+            self.invalidate_shadow_cache()
+            return self._virtual_panels
+
+    async def _swap_virtual_panels(self, new_virtuals):
+        """Replace virtual panels, closing old sessions. Keep self.panels stable."""
+        old = self._virtual_panels
+        self._virtual_panels = new_virtuals
+        self.panels[:] = self._config_panels + self._virtual_panels
+        if old:
+            await asyncio.gather(*[p.close() for p in old], return_exceptions=True)
 
     async def get_system_stats_all(self):
         stats_list = []
@@ -163,7 +473,7 @@ class MultiPanelManager:
         return None
 
     async def add_client_all(self, email, limit_bytes=0, expiry_time=0, user_id=None, inbound_tag=None):
-        report = {"success": [], "failed": []}
+        report = {"success": [], "failed": [], "skipped": []}
 
         base_data = {
             "email": email,
@@ -173,8 +483,29 @@ class MultiPanelManager:
         if user_id:
             base_data["id"] = user_id
 
+        shadowed = await self._resolve_shadow_map()
         for p in self.panels:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
+            if p.is_virtual:
+                master_name = p.parent_master or "master"
+                report["skipped"].append(
+                    {
+                        "name": p.name,
+                        "reason": f"managed by {master_name}",
+                        "inbound_tag": target_inbound,
+                    }
+                )
+                continue
+            if p.name in shadowed:
+                report["skipped"].append(
+                    {
+                        "name": p.name,
+                        "reason": f"managed by {shadowed[p.name]}",
+                        "inbound_tag": target_inbound,
+                    }
+                )
+                continue
+
             res = await p.request(
                 "POST",
                 f"inbounds/{target_inbound}/users",
@@ -231,8 +562,9 @@ class MultiPanelManager:
         return {"success": False, "error": reason}
 
     async def update_client_all(self, email, updates, inbound_tag=None):
+        writable = await self.writable_panels()
         tasks = []
-        for p in self.panels:
+        for p in writable:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
             data = updates.copy()
             data["tag"] = target_inbound
@@ -245,8 +577,9 @@ class MultiPanelManager:
         return not failed
 
     async def delete_client_all(self, email, inbound_tag=None):
+        writable = await self.writable_panels()
         tasks = []
-        for p in self.panels:
+        for p in writable:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
             tasks.append(
                 p.request(
@@ -262,8 +595,9 @@ class MultiPanelManager:
         return not failed
 
     async def reset_traffic_all(self, email, inbound_tag=None):
+        writable = await self.writable_panels()
         tasks = []
-        for p in self.panels:
+        for p in writable:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
             tasks.append(
                 p.request(
@@ -367,6 +701,69 @@ class MultiPanelManager:
             "enable": enable,
             "per_server": per_server,
         }
+
+    async def _fetch_raw_subscription_pairs(self, email, inbound_tag=None):
+        """Fetch subscription links from every panel.
+
+        Returns a list of (SinglePanel, raw_link_string) pairs. The link string
+        is the original text from the panel's /sub response — remarks are NOT
+        rewritten here. Panels where the user does not exist are skipped silently.
+        """
+        pairs = []
+        for p in self.panels:
+            target_inbound = self._resolve_inbound_tag(p, inbound_tag)
+            inbounds = await p.request("GET", "inbounds")
+            inbounds_list = _extract_inbounds(inbounds)
+            if not inbounds_list:
+                continue
+
+            user_uuid = None
+            for ib in inbounds_list:
+                if ib.get("tag") != target_inbound:
+                    continue
+                for c in ib.get("settings", {}).get("clients", []) or []:
+                    if c.get("email") == email:
+                        user_uuid = c.get("id")
+                        break
+                if user_uuid:
+                    break
+
+            if not user_uuid:
+                continue
+
+            raw_sub = await p.request("GET", f"sub/{quote(str(user_uuid), safe='')}")
+            if not (raw_sub and isinstance(raw_sub, str)):
+                continue
+            try:
+                decoded = base64.b64decode(raw_sub).decode("utf-8")
+            except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+                logger.warning("[%s] Invalid subscription payload: %s", p.name, exc)
+                continue
+            for link in decoded.split("\n"):
+                link = link.strip()
+                if link:
+                    pairs.append((p, link))
+        return pairs
+
+    async def get_dedup_subscription_links(self, email, inbound_tag=None):
+        """Fetch subscription links across all panels, dedup by (scheme, host, port).
+
+        Dedup rule: when the same endpoint is returned by multiple panels, prefer
+        the panel whose own hostname equals the link's host (the "direct" source).
+        After dedup, each surviving link's remark is rewritten to
+        `{panel.name}-{original_remark}` to preserve the bot's existing naming.
+        """
+        pairs = await self._fetch_raw_subscription_pairs(email, inbound_tag=inbound_tag)
+        deduped = _dedup_pairs(pairs)
+
+        results = []
+        for panel, link in deduped:
+            if "#" in link:
+                base, remark = link.split("#", 1)
+                results.append(f"{base}#{panel.name}-{remark}")
+            else:
+                results.append(f"{link}#{panel.name}")
+        return results
 
     async def get_subscription_link_single(self, email, panel_idx, inbound_tag=None):
         if not (0 <= panel_idx < len(self.panels)):

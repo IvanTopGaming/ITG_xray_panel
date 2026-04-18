@@ -6,6 +6,7 @@ import {
   LogOut,
   Radar,
   BarChart3,
+  Server,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore, AuthState } from '@/stores/authStore';
@@ -19,6 +20,7 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
   const navItems = [
     { icon: LayoutDashboard, label: 'Panel', path: '/' },
     { icon: BarChart3, label: 'Stats', path: '/statistics' },
+    { icon: Server, label: 'Nodes', path: '/nodes' },
     { icon: RouteIcon, label: 'Routing', path: '/routing' },
     { icon: Settings, label: 'System', path: '/system' },
   ];

@@ -8,7 +8,7 @@ from aiogram.types import FSInputFile, BufferedInputFile
 from config import BACKUP_GROUP_ID
 from database import db
 from api_service import panel_api
-from utils import format_bytes
+from utils import bot_backup_filename, format_bytes, panel_backup_filename
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ async def send_backup(bot: Bot):
     if os.path.exists(db_path):
         for target_id in targets:
             try:
-                backup_file = FSInputFile(db_path, filename=f"bot_backup_{date_str}.db")
+                backup_file = FSInputFile(db_path, filename=bot_backup_filename(date_str))
                 await bot.send_document(
                     target_id,
                     backup_file,
@@ -40,10 +40,10 @@ async def send_backup(bot: Bot):
         try:
             content = await p.request("GET", "backup")
             if content and isinstance(content, bytes):
-                safe_name = p.name.replace(" ", "_")
+                fname = panel_backup_filename(p, date_str)
                 for target_id in targets:
                     try:
-                        input_file = BufferedInputFile(content, filename=f"panel_{safe_name}_{date_str}.db")
+                        input_file = BufferedInputFile(content, filename=fname)
                         await bot.send_document(
                             target_id,
                             input_file,
@@ -86,6 +86,8 @@ async def sync_users_across_panels(bot: Bot):
         except Exception as e:
             logger.error(f"Sync error on {panel.name}: {e}")
             panel_clients[panel.name] = {}
+
+    writable_panels = await panel_api.writable_panels()
 
     reference_clients = {}
     reference_clients_by_email = {}
@@ -132,7 +134,7 @@ async def sync_users_across_panels(bot: Bot):
 
         user_id = db_user_id or str(reference.get("id", "") or "").strip()
 
-        for panel in panel_api.panels:
+        for panel in writable_panels:
             if panel.name not in healthy_panels:
                 continue
             target_inbound = inbound_tag or panel.target_inbound

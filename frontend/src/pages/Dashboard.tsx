@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import { Inbound, SystemStats, Client, Outbound, Balancer } from '@/lib/types';
+import { Inbound, SystemStats, Client, Outbound, Balancer, Node, MasterInfo } from '@/lib/types';
 import { formatBytes, cn } from '@/lib/utils';
 import { generateLink, generateSubscriptionUrl } from '@/lib/protocols';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
 import { Input } from '@/components/ui/Input';
+import { TagInput } from '@/components/ui/TagInput';
 import { InboundForm } from '@/components/inbound/InboundForm';
 import { UserForm } from '@/components/inbound/UserForm';
 import {
@@ -27,6 +28,12 @@ import {
   Search,
   X,
   Link2,
+  Power,
+  PowerOff,
+  CheckSquare,
+  Square,
+  Minus,
+  Tag,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -203,6 +210,35 @@ export default function Dashboard() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const hasShownInboundsRef = useRef(false);
+  const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
+
+  const toggleUser = useCallback((tag: string, email: string) => {
+    const key = `${tag}\0${email}`;
+    setSelectedUsers((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedUsers(new Set()), []);
+
+  const selectAllInInbound = useCallback((tag: string, emails: string[]) => {
+    setSelectedUsers((prev) => {
+      const next = new Set(prev);
+      emails.forEach((e) => next.add(`${tag}\0${e}`));
+      return next;
+    });
+  }, []);
+
+  const deselectAllInInbound = useCallback((tag: string, emails: string[]) => {
+    setSelectedUsers((prev) => {
+      const next = new Set(prev);
+      emails.forEach((e) => next.delete(`${tag}\0${e}`));
+      return next;
+    });
+  }, []);
 
   const {
     data: inbounds,
@@ -492,11 +528,22 @@ export default function Dashboard() {
                 ease: [0.25, 0.46, 0.45, 0.94],
               }}
             >
-              <InboundCard inbound={ib} now={now} routeOptions={routeOptions} />
+              <InboundCard
+                inbound={ib}
+                now={now}
+                routeOptions={routeOptions}
+                selectedUsers={selectedUsers}
+                onToggleUser={toggleUser}
+                onSelectAll={selectAllInInbound}
+                onDeselectAll={deselectAllInInbound}
+              />
             </motion.div>
           ));
         })()}
       </div>
+
+      {/* Bulk Action Toolbar */}
+      <BulkToolbar selectedUsers={selectedUsers} clearSelection={clearSelection} />
 
       {/* FAB */}
       <motion.div
@@ -605,16 +652,248 @@ function StatsCard({
   );
 }
 
+// ─── BulkToolbar ────────────────────────────────────────────────────────────
+
+function BulkToolbar({
+  selectedUsers,
+  clearSelection,
+}: {
+  selectedUsers: Set<string>;
+  clearSelection: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [confirmBulkEnable, setConfirmBulkEnable] = useState(false);
+  const [confirmBulkDisable, setConfirmBulkDisable] = useState(false);
+  const [confirmBulkReset, setConfirmBulkReset] = useState(false);
+  const [groupsModal, setGroupsModal] = useState(false);
+  const [draftGroups, setDraftGroups] = useState<string[]>([]);
+
+  const { data: nodes = [] } = useQuery<Node[]>({
+    queryKey: ['nodes'],
+    queryFn: () => api.get('/nodes').then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const { data: master } = useQuery<MasterInfo>({
+    queryKey: ['nodes', 'master'],
+    queryFn: () => api.get('/nodes/master').then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const tagSuggestions = Array.from(
+    new Set([...nodes.flatMap((n) => n.groups || []), ...(master?.groups || [])])
+  ).sort();
+
+  const parseUsers = () =>
+    [...selectedUsers].map((k) => {
+      const idx = k.indexOf('\0');
+      return { tag: k.slice(0, idx), email: k.slice(idx + 1) };
+    });
+
+  const onSuccess = (msg: string) => {
+    queryClient.invalidateQueries({ queryKey: ['inbounds'] });
+    clearSelection();
+    toast.success(msg);
+  };
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: () => api.post('/users/bulk-delete', { users: parseUsers() }),
+    onSuccess: () => {
+      onSuccess(`${selectedUsers.size} user(s) deleted`);
+      setConfirmBulkDelete(false);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk delete failed'),
+  });
+
+  const bulkResetMutation = useMutation({
+    mutationFn: () => api.post('/users/reset-traffic', { users: parseUsers() }),
+    onSuccess: () => {
+      onSuccess(`Traffic reset for ${selectedUsers.size} user(s)`);
+      setConfirmBulkReset(false);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk reset failed'),
+  });
+
+  const bulkEnableMutation = useMutation({
+    mutationFn: (enable: boolean) =>
+      api.post('/users/bulk-enable', { users: parseUsers(), enable }),
+    onSuccess: (_data, enable) => {
+      onSuccess(`${selectedUsers.size} user(s) ${enable ? 'enabled' : 'disabled'}`);
+      setConfirmBulkEnable(false);
+      setConfirmBulkDisable(false);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk enable failed'),
+  });
+
+  const bulkGroupsMutation = useMutation({
+    mutationFn: (groups: string[]) =>
+      api.post('/users/bulk-groups', { users: parseUsers(), allowed_node_groups: groups }),
+    onSuccess: () => {
+      onSuccess(`Groups updated for ${selectedUsers.size} user(s)`);
+      setGroupsModal(false);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk groups update failed'),
+  });
+
+  return (
+    <>
+      <AnimatePresence>
+        {selectedUsers.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 40 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 40 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+            className="fixed bottom-6 left-0 right-0 md:pl-[96px] z-50 flex justify-center pointer-events-none"
+          >
+            <div className="pointer-events-auto flex items-center gap-2 px-4 py-2.5 bg-[#1a1722]/95 border border-white/10 backdrop-blur-xl rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
+              <span className="text-sm font-semibold text-white tabular-nums mr-1">
+                {selectedUsers.size} selected
+              </span>
+              <div className="w-px h-5 bg-white/10" />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setConfirmBulkEnable(true)}
+                className="text-emerald-400 hover:bg-emerald-500/10"
+              >
+                <Power size={13} className="mr-1" /> Enable
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setConfirmBulkDisable(true)}
+                className="text-orange-400 hover:bg-orange-500/10"
+              >
+                <PowerOff size={13} className="mr-1" /> Disable
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setConfirmBulkReset(true)}
+                className="text-yellow-400 hover:bg-yellow-500/10"
+              >
+                <RotateCcw size={13} className="mr-1" /> Reset
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setDraftGroups([]);
+                  setGroupsModal(true);
+                }}
+                className="text-cyan-400 hover:bg-cyan-500/10"
+              >
+                <Tag size={13} className="mr-1" /> Groups
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setConfirmBulkDelete(true)}
+                className="text-red-400 hover:bg-red-500/10"
+              >
+                <Trash2 size={13} className="mr-1" /> Delete
+              </Button>
+              <div className="w-px h-5 bg-white/10" />
+              <Button variant="ghost" size="sm" onClick={clearSelection}>
+                <X size={13} />
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <ConfirmationModal
+        isOpen={confirmBulkDelete}
+        onClose={() => setConfirmBulkDelete(false)}
+        onConfirm={() => bulkDeleteMutation.mutate()}
+        title="Delete Selected Users"
+        description={`Permanently delete ${selectedUsers.size} selected user(s)? This action cannot be undone.`}
+        isLoading={bulkDeleteMutation.isPending}
+      />
+
+      <ConfirmationModal
+        isOpen={confirmBulkEnable}
+        onClose={() => setConfirmBulkEnable(false)}
+        onConfirm={() => bulkEnableMutation.mutate(true)}
+        title="Enable Selected Users"
+        description={`Enable ${selectedUsers.size} selected user(s)? They will be able to connect again.`}
+        confirmText="Enable"
+        confirmVariant="primary"
+        isLoading={bulkEnableMutation.isPending}
+      />
+
+      <ConfirmationModal
+        isOpen={confirmBulkDisable}
+        onClose={() => setConfirmBulkDisable(false)}
+        onConfirm={() => bulkEnableMutation.mutate(false)}
+        title="Disable Selected Users"
+        description={`Disable ${selectedUsers.size} selected user(s)? Active connections will be dropped.`}
+        confirmText="Disable"
+        isLoading={bulkEnableMutation.isPending}
+      />
+
+      <ConfirmationModal
+        isOpen={confirmBulkReset}
+        onClose={() => setConfirmBulkReset(false)}
+        onConfirm={() => bulkResetMutation.mutate()}
+        title="Reset Selected Users"
+        description={`Reset traffic counters for ${selectedUsers.size} selected user(s)? Their up/down counters will be set to zero.`}
+        confirmText="Reset"
+        isLoading={bulkResetMutation.isPending}
+      />
+
+      <Modal
+        isOpen={groupsModal}
+        onClose={() => setGroupsModal(false)}
+        title="Set Node Groups"
+        maxWidth="max-w-sm"
+      >
+        <div className="space-y-4 pt-2">
+          <p className="text-sm text-gray-400">
+            Assign node groups to {selectedUsers.size} selected user(s). Leave empty for all nodes.
+          </p>
+          <TagInput
+            value={draftGroups}
+            onChange={setDraftGroups}
+            suggestions={tagSuggestions}
+            placeholder="Type a tag and press Enter (blank = all nodes)"
+            helperText="Users will only be provisioned on nodes carrying any of these tags"
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setGroupsModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => bulkGroupsMutation.mutate(draftGroups)}
+              isLoading={bulkGroupsMutation.isPending}
+            >
+              Apply Groups
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
 // ─── InboundCard ─────────────────────────────────────────────────────────────
 
 function InboundCard({
   inbound,
   now,
   routeOptions,
+  selectedUsers,
+  onToggleUser,
+  onSelectAll,
+  onDeselectAll,
 }: {
   inbound: Inbound;
   now: number;
   routeOptions: any[];
+  selectedUsers: Set<string>;
+  onToggleUser: (tag: string, email: string) => void;
+  onSelectAll: (tag: string, emails: string[]) => void;
+  onDeselectAll: (tag: string, emails: string[]) => void;
 }) {
   const [editModal, setEditModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -663,6 +942,26 @@ function InboundCard({
         className={`p-5 md:p-6 border-b border-white/[0.05] flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-gradient-to-r ${headerGlow} to-transparent`}
       >
         <div className="flex items-center gap-4 w-full lg:w-auto">
+          {supportsPanelUsers &&
+            inbound.settings.clients.length > 0 &&
+            (() => {
+              const emails = inbound.settings.clients.map((c) => c.email);
+              const keys = emails.map((e) => `${inbound.tag}\0${e}`);
+              const allSel = keys.every((k) => selectedUsers.has(k));
+              const someSel = keys.some((k) => selectedUsers.has(k));
+              const Icon = allSel ? CheckSquare : someSel ? Minus : Square;
+              return (
+                <button
+                  onClick={() =>
+                    allSel ? onDeselectAll(inbound.tag, emails) : onSelectAll(inbound.tag, emails)
+                  }
+                  className="shrink-0 text-gray-500 hover:text-primary transition-colors"
+                  title={allSel ? 'Deselect all' : 'Select all'}
+                >
+                  <Icon size={18} />
+                </button>
+              );
+            })()}
           <div className="h-12 w-12 shrink-0 rounded-2xl bg-gradient-to-br from-white/[0.07] to-white/[0.02] border border-white/[0.08] flex items-center justify-center shadow-inner">
             <Zap
               size={22}
@@ -741,6 +1040,8 @@ function InboundCard({
                       inbound={inbound}
                       now={now}
                       routeOptions={routeOptions}
+                      isSelected={selectedUsers.has(`${inbound.tag}\0${c.email}`)}
+                      onToggleSelect={() => onToggleUser(inbound.tag, c.email)}
                     />
                   ))}
                 </AnimatePresence>
@@ -824,11 +1125,15 @@ function UserRow({
   inbound,
   now,
   routeOptions,
+  isSelected,
+  onToggleSelect,
 }: {
   client: Client;
   inbound: Inbound;
   now: number;
   routeOptions: any[];
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }) {
   const [qr, setQr] = useState(false);
   const [edit, setEdit] = useState(false);
@@ -903,7 +1208,7 @@ function UserRow({
       animate="animate"
       exit="exit"
       className={cn(
-        'group relative flex flex-col xl:flex-row xl:items-center justify-between p-3.5 rounded-xl border transition-colors duration-200 overflow-hidden',
+        'group/row relative flex flex-col xl:flex-row xl:items-center justify-between p-3.5 rounded-xl border transition-colors duration-100 overflow-hidden',
         status === 'disabled'
           ? 'bg-rose-500/[0.04] border-rose-500/[0.08] opacity-70'
           : status === 'expired'
@@ -927,6 +1232,20 @@ function UserRow({
 
       {/* Left: avatar + info */}
       <div className="flex items-center gap-3 mb-3 xl:mb-0 min-w-0">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSelect();
+          }}
+          className={cn(
+            'shrink-0 overflow-hidden flex items-center justify-center transition-[width,opacity,margin] duration-200 ease-out',
+            isSelected
+              ? 'w-4 opacity-100 text-primary'
+              : 'w-0 -mr-3 opacity-0 text-gray-500 group-hover/row:w-4 group-hover/row:mr-0 group-hover/row:opacity-100'
+          )}
+        >
+          {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+        </button>
         <div className="relative shrink-0">
           <div
             className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shadow-inner"

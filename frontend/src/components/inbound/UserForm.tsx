@@ -1,10 +1,11 @@
-import { useForm, useWatch } from 'react-hook-form';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useForm, useWatch, Controller } from 'react-hook-form';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
-import { Inbound, Client } from '@/lib/types';
+import { TagInput } from '@/components/ui/TagInput';
+import { Inbound, Client, Node, MasterInfo } from '@/lib/types';
 import api from '@/lib/api';
 import { toast } from 'react-toastify';
 import { RefreshCw } from 'lucide-react';
@@ -28,10 +29,28 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       reset_day: client.reset_day,
       enable: client.enable,
       flow: client.flow || '',
+      global_limit_gb: client.global_limit_bytes ? client.global_limit_bytes / 1024 ** 3 : 0,
+      allowed_node_groups: client.allowed_node_groups || [],
     },
   });
 
   const flow = useWatch({ control, name: 'flow' });
+
+  const { data: nodes = [] } = useQuery<Node[]>({
+    queryKey: ['nodes'],
+    queryFn: () => api.get('/nodes').then((r) => r.data),
+    staleTime: 60_000,
+  });
+
+  const { data: master } = useQuery<MasterInfo>({
+    queryKey: ['nodes', 'master'],
+    queryFn: () => api.get('/nodes/master').then((r) => r.data),
+    staleTime: 60_000,
+  });
+
+  const tagSuggestions = Array.from(
+    new Set([...nodes.flatMap((n) => n.groups || []), ...(master?.groups || [])])
+  ).sort();
 
   const mutation = useMutation({
     mutationFn: (data: any) => api.put(`/inbounds/${inbound.tag}/users`, data),
@@ -77,6 +96,8 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       reset_day: Number(data.reset_day),
       enable: data.enable,
       flow: data.flow,
+      global_limit_bytes: Number(data.global_limit_gb) * 1024 ** 3,
+      allowed_node_groups: data.allowed_node_groups,
     });
   };
 
@@ -113,15 +134,38 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       )}
 
       <div className="grid grid-cols-2 gap-4">
-        <Input label="Data Limit (GB)" type="number" {...register('limit_gb')} />
+        <Input label="Per-Node Data Limit (GB)" type="number" {...register('limit_gb')} />
         <Input label="Expiry Date" type="date" {...register('expiry_date')} />
       </div>
 
-      <Input
-        label="Auto Reset Day (1-31)"
-        type="number"
-        {...register('reset_day')}
-        placeholder="0 to disable"
+      <div className="grid grid-cols-2 gap-4">
+        <Input
+          label="Global Data Limit (GB)"
+          type="number"
+          {...register('global_limit_gb')}
+          placeholder="0 = unlimited"
+        />
+        <Input
+          label="Auto Reset Day (1-31)"
+          type="number"
+          {...register('reset_day')}
+          placeholder="0 to disable"
+        />
+      </div>
+
+      <Controller
+        control={control}
+        name="allowed_node_groups"
+        render={({ field }) => (
+          <TagInput
+            label="Allowed Node Tags"
+            value={field.value || []}
+            onChange={field.onChange}
+            suggestions={tagSuggestions}
+            placeholder="Type a tag and press Enter (blank = all nodes)"
+            helperText="User will only be provisioned on nodes carrying any of these tags"
+          />
+        )}
       />
 
       <div className="pt-2">

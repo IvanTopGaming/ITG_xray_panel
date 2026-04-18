@@ -74,11 +74,13 @@ Key volumes: `shared_config:/etc/xray` (shared between `xray` and `backend`), `x
 
 ### Backend (`backend/`)
 - `app/__init__.py` — Flask app factory; registers all blueprints and extensions
-- `app/models.py` — SQLAlchemy models: `Admin`, `Inbound`, `Client`, `Outbound`, `RoutingProfile`, `Balancer`, `SystemSetting`, `TrafficSnapshot`, `DomainStat`
+- `app/models.py` — SQLAlchemy models: `Admin`, `Inbound`, `Client`, `Outbound`, `RoutingProfile`, `Balancer`, `SystemSetting`, `TrafficSnapshot`, `DomainStat`, `Node`, `NodeClientTraffic`
 - `app/extensions.py` — Shared Flask extensions (db, migrate, APScheduler, Flask-Limiter)
-- `app/api/` — REST API blueprints: `auth`, `inbound`, `outbound`, `routing`, `subscription`, `system`, `statistics`
+- `app/api/` — REST API blueprints: `auth`, `inbound`, `outbound`, `routing`, `subscription`, `system`, `statistics`, `nodes`
 - `app/services/xray.py` — Core service: generates Xray JSON config, communicates with Xray via gRPC (user add/remove, traffic stats, log tailing)
 - `app/services/stats.py` — Traffic statistics collection and enforcement (limits, expiry, snapshot saving, domain tracking)
+- `app/services/node_sync.py` — Multi-node management: HTTP client to remote nodes, user/inbound/traffic sync jobs, group filtering, aggregated subscription links
+- `app/services/sub_cache.py` — Redis-backed subscription response cache
 - `app/services/runtime_identity.py` — Generates user identities (UUIDs, keys) for protocols
 
 ### Frontend (`frontend/src/`)
@@ -94,7 +96,7 @@ Key volumes: `shared_config:/etc/xray` (shared between `xray` and `backend`), `x
 - `api_service.py` — HTTP client wrapping the panel's REST API
 - `handlers/` — Admin and user message handlers
 - `jobs.py` — Scheduled jobs (backups, expiry notifications)
-- Bot requires `/app/config.yaml` (not `.env`): `bot_token`, `admin_ids` (array), and `servers` array with `name`, `url`, `user`, `password`, `inbound_tag`. Missing required fields exits on startup.
+- Bot requires `/app/config.yaml` (not `.env`): `bot_token`, `admin_ids` (array), and `servers` array with `name`, `url`, `user`, `password`, `inbound_tag`, and optional `role` (`master` or `standalone`, default `standalone`). Missing required fields exits on startup. When a panel has `role: master`, the bot queries its `GET /api/nodes` and marks any other `servers[]` entry whose hostname matches a sync-enabled node as "shadowed" — shadowed entries are skipped during user write operations (add/update/delete/reset traffic) because the master already fans the change out. Multiple masters are supported. Shadow map is cached for 5 minutes in `MultiPanelManager._shadow_cache`.
 
 ## Key Concepts
 
@@ -104,9 +106,13 @@ Key volumes: `shared_config:/etc/xray` (shared between `xray` and `backend`), `x
 
 **Background scheduler jobs** (APScheduler, defined in `app/__init__.py`):
 - `sync_traffic` — every 10s: queries Xray gRPC for per-user stats; also upserts hourly `TrafficSnapshot` rows via raw SQL `ON CONFLICT DO UPDATE`
-- `check_limits` — every 60s: removes expired/over-limit users
+- `check_limits` — every 60s: removes expired/over-limit users (uses traffic aggregated across master + all nodes)
 - `parse_logs` — every 15s: parses Xray access logs; extracts destination hosts into `DomainStat` (skips bare IPs)
 - `cleanup_stats` — every 24h: deletes `DomainStat` rows older than 90 days
+- `node_health_check` — every 60s: pings each enabled node and updates its `status`/`last_error`
+- `node_traffic_poll` — every 60s: pulls per-user traffic counters from each node into `NodeClientTraffic` for global aggregation
+- `node_inbound_sync` — every 5m: pushes inbound configs from master to nodes that have `sync_inbound=True`
+- `node_user_sync` — every 1h: full reconcile of users to each node — adds missing, updates drifted, and (if `strict_mirror`) deletes extras
 
 **Backend error handling pattern:** All API handlers follow the same two-catch pattern. `ValueError` is the type for user-facing validation errors — it propagates as HTTP 400 with the message shown to the user. Bare `Exception` means an unexpected server fault and returns HTTP 500 with a generic message. Always raise `ValueError` (not `Exception`) for input validation failures in `_build_stream_settings` and other service-layer functions so the error reaches the user.
 
@@ -119,6 +125,8 @@ Key volumes: `shared_config:/etc/xray` (shared between `xray` and `backend`), `x
 **Auth:** JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.password_changed_at` — changing the admin password instantly invalidates all existing tokens and the frontend calls `logout()` on success. Tokens are persisted in `localStorage` via Zustand's `persist` middleware. A 401 response from any API call triggers automatic logout via the axios interceptor in `lib/api.ts`.
 
 **Custom Select component:** `components/ui/Select.tsx` renders a portal-based dropdown instead of a native `<select>`. It synthesizes a `React.ChangeEvent<HTMLSelectElement>` in its `onChange`. When used with react-hook-form, always spread `{...register('fieldName')}` so the `name` prop is passed — react-hook-form looks up the field by `event.target.name` and silently ignores the change if `name` is missing or empty.
+
+**Multi-node architecture:** This panel can act as a *master* that manages remote panel *nodes* (other instances of the same panel exposed over HTTP). `Node` rows store URL/credentials/inbound_tag plus per-node flags: `sync_users` (push user CRUD), `sync_inbound` (push inbound configs), `strict_mirror` (delete remote users not present on master), and a comma-separated `groups` list. `Client.node_groups` (also CSV) restricts which nodes a user is provisioned on — empty means "all nodes". Live user CRUD calls in `api/inbound.py` invoke `sync_user_create/update/delete` from `node_sync.py` to fan out immediately; the periodic `node_user_sync_job` is the safety net that reconciles drift. `NodeClientTraffic` stores the latest absolute up/down per (node, email); enforcement and statistics sum these with the master's local `Client.up`/`down`. Subscription links (`api/subscription.py`) call `get_aggregated_sub_links` / `get_remote_configs` to merge per-protocol entries from every node visible to the requesting client.
 
 **Default outbounds:** On startup, `direct` (freedom) and `block` (blackhole) outbounds are auto-created if missing. These are always re-enabled if disabled — do not delete them.
 
@@ -167,21 +175,19 @@ git branch -d feat/my-feature
 **Committing directly to `main` is only acceptable for CI/config-only changes** (`.github/`, `scripts/`, `CLAUDE.md`, `docker-compose*.yml`) that don't touch service source files and therefore don't trigger a release.
 
 ### CI/CD skip tags
-Two tags control the release pipeline:
-
 | Tag | Effect |
 |-----|--------|
-| `[skip ci]` | GitHub skips **all** workflows — use on auto-commits that must not re-trigger CI (e.g. the version bump commit itself) |
-| `[skip release]` | Only the release job is skipped, other workflows still run — use when you push to `main` directly but don't want a new image built (e.g. fixing a typo in docs, restoring `versions.json`) |
-
-Both tags are needed on the same commit only when you push non-triggering paths to `main` and want to be explicit. In practice `[skip ci]` alone is sufficient for most manual `main` commits.
+| `[skip ci]` | GitHub skips **all** workflows — use on commits that must not trigger any CI (lint, release, etc.) |
+| `[skip release]` | Release job is skipped even if `versions.json` was bumped — use when restoring `versions.json` or intentionally editing it without rebuilding |
 
 ### How the release pipeline works
-1. Push to `main` with changes under `backend/`, `frontend/`, `caddy/`, or `tg_bot/`
-2. CI detects which service(s) changed via `git diff`
-3. Patch-bumps only those services in `versions.json` and `.env.example`
-4. Builds and pushes Docker images to GHCR
-5. Commits the version bump back to `main` with `[skip ci]`
+The release is **driven entirely by `versions.json`**. You decide what to ship by editing the file yourself — nothing auto-bumps.
+
+1. On a feature branch or locally, bump the service(s) you want to release in `versions.json` (e.g. `"bot": "1.0.2"` → `"1.0.3"`).
+2. Also update the matching line in `.env.example` so deployers pin the new tag. `scripts/bump_version.py patch bot` does both at once; alternatively edit them by hand.
+3. Merge to `main`. The release workflow triggers only when `versions.json` changes on `main`.
+4. CI diffs the new `versions.json` against the previous commit, and builds/pushes **only the services whose version string changed**. If no service version changed (e.g. only `xray_core_ref` was edited), the workflow is a no-op. To force a new backend build after an Xray ref bump, also bump the `backend` version.
+5. CI does **not** commit anything back to `main`. There is no auto-bump commit.
 
 Force-pushing rewrites history — CI can't diff against the old SHA and falls back to diffing `HEAD~1..HEAD`. Avoid force-pushing `main`; use feature branches so it's never needed.
 

@@ -3,7 +3,7 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 4
+CURRENT_DB_VERSION = 7
 
 
 def _table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
@@ -133,6 +133,69 @@ def _ensure_stats_tables(cursor: sqlite3.Cursor) -> int:
     return created
 
 
+def _ensure_node_table(cursor: sqlite3.Cursor) -> int:
+    """Create the node table for multi-node management if it doesn't exist."""
+    if _table_exists(cursor, "node"):
+        changed = 0
+        # NOTE: sync_inbound defaults to 0 here so existing nodes preserve the previous
+        # "no inbound sync" behaviour. The SQLAlchemy model default is True, so any node
+        # created via the API after migration will be opted in by default.
+        for col, spec in [
+            ("sync_users", "BOOLEAN NOT NULL DEFAULT 1"),
+            ("sync_inbound", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("status", "VARCHAR(20) DEFAULT 'unknown'"),
+            ("last_check", "BIGINT DEFAULT 0"),
+            ("last_error", "TEXT DEFAULT ''"),
+            ("groups", "TEXT NOT NULL DEFAULT ''"),
+            ("strict_mirror", "BOOLEAN NOT NULL DEFAULT 0"),
+        ]:
+            if _add_column_if_missing(cursor, "node", col, spec):
+                changed += 1
+        return changed
+    cursor.execute(
+        """
+        CREATE TABLE node (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            name          TEXT    NOT NULL UNIQUE,
+            url           TEXT    NOT NULL,
+            username      TEXT    NOT NULL,
+            password      TEXT    NOT NULL,
+            inbound_tag   TEXT    NOT NULL,
+            enable        BOOLEAN NOT NULL DEFAULT 1,
+            sync_users    BOOLEAN NOT NULL DEFAULT 1,
+            sync_inbound  BOOLEAN NOT NULL DEFAULT 1,
+            status        VARCHAR(20) DEFAULT 'unknown',
+            last_check    BIGINT DEFAULT 0,
+            last_error    TEXT    DEFAULT '',
+            groups        TEXT    NOT NULL DEFAULT '',
+            strict_mirror BOOLEAN NOT NULL DEFAULT 0
+        )
+        """
+    )
+    return 1
+
+
+def _ensure_node_client_traffic_table(cursor: sqlite3.Cursor) -> int:
+    """Create the node_client_traffic table for per-node per-user aggregated traffic."""
+    if _table_exists(cursor, "node_client_traffic"):
+        return 0
+    cursor.execute(
+        """
+        CREATE TABLE node_client_traffic (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id     INTEGER NOT NULL,
+            email       TEXT    NOT NULL,
+            up          BIGINT  DEFAULT 0,
+            down        BIGINT  DEFAULT 0,
+            last_polled BIGINT  DEFAULT 0,
+            CONSTRAINT uq_nct UNIQUE (node_id, email)
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_nct_email ON node_client_traffic (email)")
+    return 1
+
+
 def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
     changed = 0
 
@@ -161,6 +224,8 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("client", "source_ips", "TEXT DEFAULT '[]'"),
         ("client", "flow", "VARCHAR(50)"),
         ("client", "preferred_outbound", "VARCHAR(50)"),
+        ("client", "global_limit_bytes", "BIGINT DEFAULT 0"),
+        ("client", "allowed_node_groups", "TEXT NOT NULL DEFAULT ''"),
     ]
 
     for table_name, column_name, spec in schema_patches:
@@ -288,6 +353,8 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         old_version = _get_db_version(cursor)
 
         stats_tables = _ensure_stats_tables(cursor)
+        node_table = _ensure_node_table(cursor)
+        node_client_traffic_table = _ensure_node_client_traffic_table(cursor)
         schema_changes = _ensure_schema_columns(cursor)
         removed_legacy_inbounds, normalized_streams = _cleanup_legacy_inbounds(cursor)
         fixed_rows = _apply_data_fixups(cursor)
@@ -301,6 +368,8 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "old_version": old_version,
             "new_version": CURRENT_DB_VERSION,
             "stats_tables_created": stats_tables,
+            "node_table_created": node_table,
+            "node_client_traffic_table_created": node_client_traffic_table,
             "schema_changes": schema_changes,
             "removed_legacy_inbounds": removed_legacy_inbounds,
             "normalized_streams": normalized_streams,
@@ -308,6 +377,8 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         }
         changed = (
             stats_tables > 0
+            or node_table > 0
+            or node_client_traffic_table > 0
             or schema_changes > 0
             or removed_legacy_inbounds > 0
             or normalized_streams > 0
@@ -316,11 +387,12 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         )
         if logger and changed:
             logger.warning(
-                "DB migration complete (v%s -> v%s): stats_tables=%s, schema=%s, "
+                "DB migration complete (v%s -> v%s): stats_tables=%s, node_table=%s, schema=%s, "
                 "removed_legacy_inbounds=%s, normalized_streams=%s, fixed_rows=%s",
                 old_version,
                 CURRENT_DB_VERSION,
                 stats_tables,
+                node_table,
                 schema_changes,
                 removed_legacy_inbounds,
                 normalized_streams,

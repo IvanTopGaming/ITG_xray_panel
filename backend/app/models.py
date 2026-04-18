@@ -63,6 +63,11 @@ class Client(db.Model):
     source_ips = db.Column(db.Text, default="[]")
     flow = db.Column(db.String(50), nullable=True)
     preferred_outbound = db.Column(db.String(50), nullable=True)
+    # Aggregate (sum across master + all nodes) traffic limit in bytes; 0 = unlimited.
+    global_limit_bytes = db.Column(db.BigInteger, default=0)
+    # Comma-separated list of node groups this user is allowed to see/use.
+    # Empty string = no filter (all groups).
+    allowed_node_groups = db.Column(db.Text, nullable=False, default="")
 
     def to_dict(self):
         ips = []
@@ -71,6 +76,7 @@ class Client(db.Model):
                 ips = json.loads(self.source_ips)
         except (TypeError, ValueError, json.JSONDecodeError):
             pass
+        groups = [g.strip() for g in (self.allowed_node_groups or "").split(",") if g.strip()]
         return {
             "id": self.id,
             "email": self.email,
@@ -86,6 +92,8 @@ class Client(db.Model):
             "source_ips": ips,
             "flow": self.flow or "",
             "preferred_outbound": self.preferred_outbound or "",
+            "global_limit_bytes": self.global_limit_bytes or 0,
+            "allowed_node_groups": groups,
         }
 
 
@@ -109,6 +117,69 @@ class TrafficSnapshot(db.Model):
         db.UniqueConstraint("entity_type", "entity_id", "inbound_tag", "bucket", name="uq_ts"),
         db.Index("ix_ts_bucket", "bucket"),
         db.Index("ix_ts_entity", "entity_type", "entity_id", "inbound_tag"),
+    )
+
+
+class Node(db.Model):
+    """Remote Xray panel node managed by this master panel."""
+
+    __tablename__ = "node"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    url = db.Column(db.String(255), nullable=False)
+    username = db.Column(db.String(50), nullable=False)
+    password = db.Column(db.String(255), nullable=False)
+    inbound_tag = db.Column(db.String(50), nullable=False)
+    enable = db.Column(db.Boolean, default=True, nullable=False)
+    sync_users = db.Column(db.Boolean, default=True, nullable=False)
+    # Model default True for new rows; the migration adds the column with SQL default 0 so
+    # existing nodes preserve the previous "no inbound sync" behaviour. See db_migration.py.
+    sync_inbound = db.Column(db.Boolean, default=True, nullable=False)
+    status = db.Column(db.String(20), default="unknown")
+    last_check = db.Column(db.BigInteger, default=0)
+    last_error = db.Column(db.Text, default="")
+    # Comma-separated tags ("free,eu") used for per-user node group filtering.
+    groups = db.Column(db.Text, nullable=False, default="")
+    # When true, the reconcile job deletes remote users that aren't on master.
+    strict_mirror = db.Column(db.Boolean, default=False, nullable=False)
+
+    def to_dict(self, mask_password=True):
+        groups = [g.strip() for g in (self.groups or "").split(",") if g.strip()]
+        return {
+            "id": self.id,
+            "name": self.name,
+            "url": self.url,
+            "username": self.username,
+            "password": "••••••••" if mask_password else self.password,
+            "inbound_tag": self.inbound_tag,
+            "enable": self.enable,
+            "sync_users": self.sync_users,
+            "sync_inbound": self.sync_inbound,
+            "status": self.status,
+            "last_check": self.last_check,
+            "last_error": self.last_error,
+            "groups": groups,
+            "strict_mirror": bool(self.strict_mirror),
+        }
+
+
+class NodeClientTraffic(db.Model):
+    """Per-user traffic counter sampled from each remote node.
+
+    Stores the latest absolute up/down values reported by the node so we can
+    aggregate across all nodes for global enforcement and statistics.
+    """
+
+    __tablename__ = "node_client_traffic"
+    id = db.Column(db.Integer, primary_key=True)
+    node_id = db.Column(db.Integer, nullable=False)
+    email = db.Column(db.String(100), nullable=False)
+    up = db.Column(db.BigInteger, default=0)
+    down = db.Column(db.BigInteger, default=0)
+    last_polled = db.Column(db.BigInteger, default=0)
+    __table_args__ = (
+        db.UniqueConstraint("node_id", "email", name="uq_nct"),
+        db.Index("ix_nct_email", "email"),
     )
 
 

@@ -65,6 +65,11 @@ def _validate_server_config(raw_servers):
             logging.error("servers[%s].url must be a valid http(s) URL", index)
             sys.exit(1)
 
+        role = str(item.get("role") or "standalone").strip().lower()
+        if role not in {"master", "standalone"}:
+            logging.error("servers[%s].role must be 'master' or 'standalone'", index)
+            sys.exit(1)
+
         normalized.append(
             {
                 "name": str(item["name"]).strip(),
@@ -72,6 +77,7 @@ def _validate_server_config(raw_servers):
                 "user": str(item["user"]).strip(),
                 "password": str(item["password"]),
                 "inbound_tag": str(item["inbound_tag"]).strip(),
+                "role": role,
             }
         )
 

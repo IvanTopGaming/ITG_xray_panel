@@ -17,6 +17,12 @@ from .extensions import db, migrate, scheduler, limiter
 from .models import Admin, Outbound
 from .services.xray import generate_config_file
 from .services.stats import sync_traffic_job, check_limits_job, parse_access_logs, cleanup_stats_job
+from .services.node_sync import (
+    node_health_check_job,
+    node_user_sync_job,
+    node_inbound_sync_job,
+    node_traffic_poll_job,
+)
 
 grpc_gevent.init_gevent()
 LOCAL_DEV_ORIGINS = [
@@ -156,10 +162,14 @@ def create_app():
     _ensure_scheduler_job("check_limits", check_limits_job, 60)
     _ensure_scheduler_job("parse_logs", parse_access_logs, 15)
     _ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)  # daily
+    _ensure_scheduler_job("node_health_check", node_health_check_job, 60)
+    _ensure_scheduler_job("node_user_sync", node_user_sync_job, 3600)
+    _ensure_scheduler_job("node_inbound_sync", node_inbound_sync_job, 300)
+    _ensure_scheduler_job("node_traffic_poll", node_traffic_poll_job, 60)
     if not scheduler.running:
         scheduler.start()
 
-    from .api import auth, inbound, outbound, routing, system, subscription, statistics
+    from .api import auth, inbound, outbound, routing, system, subscription, statistics, nodes
 
     app.register_blueprint(auth.bp, url_prefix="/api")
     app.register_blueprint(inbound.bp, url_prefix="/api")
@@ -168,6 +178,7 @@ def create_app():
     app.register_blueprint(system.bp, url_prefix="/api")
     app.register_blueprint(subscription.bp, url_prefix="/api")
     app.register_blueprint(statistics.bp, url_prefix="/api")
+    app.register_blueprint(nodes.bp, url_prefix="/api")
 
     @app.get("/healthz")
     def healthz():

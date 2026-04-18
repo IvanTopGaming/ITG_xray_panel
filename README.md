@@ -17,7 +17,9 @@ Manage inbound/outbound proxies, users, traffic limits, routing rules and real-t
 
 - **Multi-protocol** — VLESS, VMess, Trojan, Shadowsocks 2022, WireGuard, SOCKS5, HTTP
 - **User management** — traffic limits, expiry dates, enable/disable, per-user routing
-- **Traffic statistics** — hourly snapshots, charts, period filtering (1h → all-time), top sites
+- **Multi-node** — manage remote panel instances from one master: push inbounds and users, aggregate traffic across all nodes for global limits, group users to a subset of nodes, optional strict-mirror mode that deletes drift on the remote
+- **Aggregated subscriptions** — a single subscription URL returns merged entries from every node visible to the user (cached in Redis)
+- **Traffic statistics** — hourly snapshots, charts, period filtering (1h → all-time), top sites, per-node breakdown
 - **User status** — live online/offline/expired/over-limit/disabled indicators with filtering
 - **Routing** — outbound servers, balancers, per-user route overrides
 - **Subscription links** — v2ray URI and Clash YAML per user
@@ -82,7 +84,20 @@ servers:
     user: "admin"
     password: "strong-password"
     inbound_tag: "master"
+    role: "master"     # optional: master | standalone (default: standalone)
+  - name: "Germany Node"
+    url: "https://de.example.com/my-secret-path"
+    user: "admin"
+    password: "strong-password"
+    inbound_tag: "master"
+    # role omitted → standalone
 ```
+
+> **`role`**: Set `master` on panels that manage remote nodes under **Admin → Nodes**.
+> If a standalone entry's URL matches one of a master's sync-enabled nodes, the bot
+> detects the overlap and skips the standalone during user add / update / delete /
+> reset (the master fans out the change itself), avoiding "Email exists"-style
+> double-writes. Multiple `master` panels are supported.
 
 If you don't use the bot, comment out the `bot` service in `docker-compose.yml`.
 
@@ -139,8 +154,13 @@ Internet
    │
    ▼
  Flask  ─── REST API
-            APScheduler jobs (traffic sync every 10s, limit checks every 60s)
+            APScheduler jobs:
+              · traffic sync (10s)        · limit checks (60s)
+              · log parsing  (15s)        · stats cleanup (24h)
+              · node health  (60s)        · node traffic poll (60s)
+              · node inbound sync (5m)    · node user reconcile (1h)
             gRPC ──► Xray-core  (live user management, traffic counters)
+            HTTP ──► Remote panel nodes (multi-node fan-out)
 ```
 
 | Service | Role |
@@ -153,7 +173,18 @@ Internet
 | `socket-proxy` | Restricted Docker socket (containers only) |
 | `bot` | Telegram bot |
 
-**Database:** SQLite at `./db_data/`. Traffic snapshots stored hourly per user/inbound indefinitely. Domain stats pruned to 90 days.
+**Database:** SQLite at `./db_data/`. Traffic snapshots stored hourly per user/inbound indefinitely. Per-node user counters stored as latest absolute values for global aggregation. Domain stats pruned to 90 days.
+
+### Multi-node setup
+
+Run a second (or third, …) panel exactly the same way, then on the master panel open the **Nodes** page and add it with its URL, admin credentials, and the inbound tag that should receive synced users. Per node you can toggle:
+
+- **Sync users** — fan out user create / update / delete to the node in real time, with hourly reconcile
+- **Sync inbound** — push the inbound config from master to the node so identities stay in sync
+- **Strict mirror** — also delete users on the node that don't exist on master
+- **Groups** — comma-separated tags; users can be limited to a subset of nodes via their own group list (empty = all nodes)
+
+Subscription links served by the master automatically aggregate entries from every node visible to the requesting user.
 
 ---
 

@@ -28,9 +28,21 @@ async def main():
 
     scheduler.add_job(sync_users_across_panels, "interval", minutes=60, args=[bot])
 
+    scheduler.add_job(
+        panel_api.bootstrap_virtual_panels,
+        "interval",
+        minutes=5,
+        kwargs={"force": True},
+    )
+
     scheduler.start()
 
     try:
+        try:
+            await panel_api.bootstrap_virtual_panels(force=True)
+        except Exception as exc:
+            logging.warning("Initial virtual panels bootstrap failed: %s", exc)
+
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
