@@ -26,6 +26,22 @@ export interface Client {
   preferred_outbound?: string;
   global_limit_bytes?: number;
   allowed_node_groups?: string[];
+  device_limit?: number | null; // null = inherit from inbound
+  device_count?: number; // present on list endpoints (batch-injected)
+}
+
+export interface ClientDevice {
+  id: number;
+  device_os: string;
+  os_ver: string;
+  model: string;
+  first_seen: number;
+  last_seen: number;
+  // Admin-only — present on /api/clients/<id>/devices, absent on /api/sub/<id>/devices
+  hwid?: string;
+  user_agent?: string;
+  request_ip?: string;
+  hits?: number;
 }
 
 export interface StreamSettings {
@@ -76,6 +92,7 @@ export interface Inbound {
   down: number;
   routing_profile_id?: number;
   fallback_address?: string;
+  device_limit?: number; // 0 = unlimited (feature off)
 }
 
 export interface Outbound {

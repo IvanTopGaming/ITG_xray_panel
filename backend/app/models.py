@@ -45,6 +45,7 @@ class Inbound(db.Model):
     up = db.Column(db.BigInteger, default=0)
     down = db.Column(db.BigInteger, default=0)
     fallback_address = db.Column(db.String(100), nullable=True)
+    device_limit = db.Column(db.Integer, default=0, nullable=False)
     clients = db.relationship("Client", backref="inbound", lazy=True, cascade="all, delete-orphan")
 
 
@@ -68,6 +69,8 @@ class Client(db.Model):
     # Comma-separated list of node groups this user is allowed to see/use.
     # Empty string = no filter (all groups).
     allowed_node_groups = db.Column(db.Text, nullable=False, default="")
+    device_limit = db.Column(db.Integer, nullable=True)
+    devices = db.relationship("ClientDevice", backref="client", lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
         ips = []
@@ -94,6 +97,7 @@ class Client(db.Model):
             "preferred_outbound": self.preferred_outbound or "",
             "global_limit_bytes": self.global_limit_bytes or 0,
             "allowed_node_groups": groups,
+            "device_limit": self.device_limit,
         }
 
 
@@ -198,3 +202,43 @@ class DomainStat(db.Model):
         db.Index("ix_ds_date", "date"),
         db.Index("ix_ds_domain", "domain"),
     )
+
+
+class ClientDevice(db.Model):
+    """Track devices (HWIDs) for each client, including OS and hardware info."""
+
+    __tablename__ = "client_device"
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(
+        db.String(128),
+        db.ForeignKey("client.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    hwid = db.Column(db.String(128), nullable=False)
+    device_os = db.Column(db.String(32), default="")
+    os_ver = db.Column(db.String(32), default="")
+    model = db.Column(db.String(128), default="")
+    user_agent = db.Column(db.String(512), default="")
+    request_ip = db.Column(db.String(64), default="")
+    first_seen = db.Column(db.BigInteger, nullable=False)
+    last_seen = db.Column(db.BigInteger, nullable=False)
+    hits = db.Column(db.Integer, default=1)
+
+    __table_args__ = (db.UniqueConstraint("client_id", "hwid", name="uq_client_hwid"),)
+
+    def to_dict(self, *, include_admin_fields=False):
+        out = {
+            "id": self.id,
+            "device_os": self.device_os or "",
+            "os_ver": self.os_ver or "",
+            "model": self.model or "",
+            "first_seen": int(self.first_seen or 0),
+            "last_seen": int(self.last_seen or 0),
+        }
+        if include_admin_fields:
+            out["hwid"] = self.hwid
+            out["user_agent"] = self.user_agent or ""
+            out["request_ip"] = self.request_ip or ""
+            out["hits"] = int(self.hits or 0)
+        return out

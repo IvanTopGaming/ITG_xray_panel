@@ -26,7 +26,7 @@ export default defineConfig({
     port: 4200,
     proxy: {
       '/api': {
-        target: 'http://backend:5000',
+        target: process.env.VITE_BACKEND_URL || 'http://backend:5000',
         changeOrigin: true,
       }
     }

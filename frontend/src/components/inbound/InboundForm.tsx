@@ -89,6 +89,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
         security: ss?.security || 'none',
         routing_profile_id: inbound.routing_profile_id || '',
         fallback_address: inbound.fallback_address || '',
+        device_limit: inbound.device_limit ?? 0,
 
         realityDest: ss?.realitySettings?.dest || 'www.google.com:443',
         realitySNI: ss?.realitySettings?.serverNames?.[0] || 'www.google.com',
@@ -135,6 +136,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
       security: 'none',
       routing_profile_id: '',
       fallback_address: '',
+      device_limit: 0,
       realityDest: 'www.google.com:443',
       realitySNI: 'www.google.com',
       realityPrivateKey: '',
@@ -300,6 +302,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
       fallback_address: data.fallback_address,
       network: data.network,
       security: data.security,
+      device_limit: Math.max(0, Number(data.device_limit) || 0),
     };
 
     if (data.protocol === 'shadowsocks') {
@@ -425,6 +428,20 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
           {...register('fallback_address')}
           placeholder="Optional fallback address"
         />
+      </div>
+
+      <div className="grid grid-cols-1">
+        <Input
+          label="Device limit (HWID-based)"
+          type="number"
+          min={0}
+          {...register('device_limit', { valueAsNumber: true })}
+          placeholder="0"
+        />
+        <span className="text-xs text-gray-500 ml-1 mt-1">
+          0 = unlimited (feature off). Only HWID-aware clients (Happ, v2RayTun, Shadowrocket,
+          Karing) are limited.
+        </span>
       </div>
 
       {['vless', 'trojan'].includes(protocol) && security === 'reality' && isSecurityAvailable && (

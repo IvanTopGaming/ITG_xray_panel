@@ -4,7 +4,7 @@ import base64
 import secrets
 from flask import Blueprint, request, jsonify
 from app.extensions import db
-from app.models import Inbound, Client
+from app.models import Inbound, Client, ClientDevice
 from app.utils import token_required, normalize_tag, normalize_email, parse_int
 from app.services.xray import (
     generate_config_file,
@@ -64,6 +64,13 @@ def _parse_bool(value, default=False):
     return bool(value)
 
 
+def _parse_optional_int(value, field):
+    """Return None if value is None/'', otherwise parse_int with min_value=0."""
+    if value is None or value == "":
+        return None
+    return parse_int(value, field, min_value=0)
+
+
 def _normalize_client_id(value, protocol):
     client_id = str(value or "").strip()
     if not client_id:
@@ -113,7 +120,15 @@ def _extract_ss_method(stream_settings_raw):
 @bp.route("/inbounds", methods=["GET"])
 @token_required
 def get_inbounds():
+    from sqlalchemy import func
+
     inbounds = Inbound.query.all()
+
+    # Batch device-count per client to avoid N+1.
+    counts = dict(
+        db.session.query(ClientDevice.client_id, func.count(ClientDevice.id)).group_by(ClientDevice.client_id).all()
+    )
+
     result = []
     for ib in inbounds:
         stream = json.loads(ib.stream_settings)
@@ -130,7 +145,14 @@ def get_inbounds():
             derived_public = _derive_wg_pubkey(stream.get("wgSecretKey"))
             if derived_public:
                 stream["wgPublicKey"] = derived_public
-        clients_data = [c.to_dict() for c in ib.clients] if ib.protocol in PANEL_USER_PROTOCOLS else []
+        if ib.protocol in PANEL_USER_PROTOCOLS:
+            clients_data = []
+            for c in ib.clients:
+                d = c.to_dict()
+                d["device_count"] = int(counts.get(c.id, 0))
+                clients_data.append(d)
+        else:
+            clients_data = []
         result.append(
             {
                 "tag": ib.tag,
@@ -142,6 +164,7 @@ def get_inbounds():
                 "up": ib.up,
                 "down": ib.down,
                 "fallback_address": ib.fallback_address,
+                "device_limit": ib.device_limit,
             }
         )
     return jsonify(result)
@@ -169,6 +192,7 @@ def create_inbound():
             routing_profile_id = None
         elif routing_profile_id is not None:
             routing_profile_id = parse_int(routing_profile_id, "routing_profile_id", min_value=1)
+        device_limit = parse_int(data.get("device_limit", 0), "device_limit", min_value=0)
 
         new_ib = Inbound(
             tag=tag,
@@ -177,6 +201,7 @@ def create_inbound():
             stream_settings=json.dumps(stream),
             routing_profile_id=routing_profile_id,
             fallback_address=fallback_address,
+            device_limit=device_limit,
         )
         db.session.add(new_ib)
         db.session.commit()
@@ -222,6 +247,8 @@ def update_inbound(tag):
                 ib.routing_profile_id = None
             else:
                 ib.routing_profile_id = parse_int(data["routing_profile_id"], "routing_profile_id", min_value=1)
+        if "device_limit" in data:
+            ib.device_limit = parse_int(data["device_limit"], "device_limit", min_value=0)
 
         merged_stream_data = dict(data)
         current_stream = json.loads(ib.stream_settings or "{}")
@@ -460,6 +487,7 @@ def add_user(tag):
             flow=data.get("flow", "xtls-rprx-vision" if ib.protocol == "vless" else ""),
             global_limit_bytes=parse_int(data.get("global_limit_bytes", 0), "global_limit_bytes", min_value=0),
             allowed_node_groups=_normalize_node_groups(data.get("allowed_node_groups", "")),
+            device_limit=_parse_optional_int(data.get("device_limit", None), "device_limit"),
         )
         db.session.add(new_client)
         db.session.commit()
@@ -567,6 +595,8 @@ def update_user(tag):
         client.flow = flow
         client.global_limit_bytes = global_limit_bytes
         client.allowed_node_groups = allowed_groups
+        if "device_limit" in data:
+            client.device_limit = _parse_optional_int(data.get("device_limit"), "device_limit")
 
         db.session.commit()
 
@@ -874,3 +904,32 @@ def bulk_update_groups_route():
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/clients/<client_id>/devices", methods=["GET"])
+@token_required
+def admin_list_devices(client_id):
+    client = db.session.get(Client, client_id)
+    if not client:
+        return jsonify({"error": "Not found"}), 404
+    from app.services.device_tracking import list_devices
+
+    devices = list_devices(client_id)
+    return jsonify([d.to_dict(include_admin_fields=True) for d in devices])
+
+
+@bp.route("/clients/<client_id>/devices/<int:device_id>", methods=["DELETE"])
+@token_required
+def admin_revoke_device(client_id, device_id):
+    client = db.session.get(Client, client_id)
+    if not client:
+        return jsonify({"error": "Not found"}), 404
+    from app.services.device_tracking import revoke_device
+
+    if not revoke_device(client_id, device_id):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        sub_cache.invalidate_user(client_id)
+    except Exception:
+        pass
+    return ("", 204)

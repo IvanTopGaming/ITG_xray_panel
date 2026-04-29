@@ -6,7 +6,7 @@ import os
 import time
 from urllib.parse import quote, urlencode
 import yaml
-from flask import Blueprint, request, Response
+from flask import Blueprint, jsonify, request, Response
 from app.extensions import limiter, db
 from app.models import Client, Inbound, NodeClientTraffic, SystemSetting
 from app.services import sub_cache
@@ -39,6 +39,140 @@ def _master_visible_to_client(client):
 
 
 bp = Blueprint("subscription", __name__)
+
+WARN_REMARK = {
+    "unsupported": "⚠ Use Happ / v2RayTun / Shadowrocket — client unsupported",
+    "limit": "⚠ Device limit reached — open subscription page",
+}
+
+
+def _warn_v2ray(state: str) -> str:
+    remark = quote(WARN_REMARK[state], safe="")
+    link = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?encryption=none#{remark}"
+    return base64.b64encode(link.encode("utf-8")).decode("utf-8")
+
+
+def _warn_clash(state: str) -> str:
+    name = WARN_REMARK[state]
+    return yaml.safe_dump(
+        {
+            "proxies": [
+                {
+                    "name": name,
+                    "type": "vless",
+                    "server": "127.0.0.1",
+                    "port": 1,
+                    "uuid": "00000000-0000-0000-0000-000000000000",
+                    "network": "tcp",
+                }
+            ],
+            "proxy-groups": [{"name": "PROXY", "type": "select", "proxies": [name]}],
+            "rules": ["MATCH,PROXY"],
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+
+def _warn_singbox(state: str) -> str:
+    name = WARN_REMARK[state]
+    return json.dumps(
+        {
+            "outbounds": [
+                {
+                    "type": "vless",
+                    "tag": name,
+                    "server": "127.0.0.1",
+                    "server_port": 1,
+                    "uuid": "00000000-0000-0000-0000-000000000000",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def _warn_response(state: str, user_agent: str, extra_headers: dict) -> Response:
+    """Build the format-appropriate warn-config Response. Never cached."""
+    if any(x in user_agent for x in ["clash", "meta", "stash"]):
+        body = _warn_clash(state)
+        return Response(
+            body,
+            mimetype="text/yaml",
+            headers={
+                "Content-Disposition": 'attachment; filename="config.yaml"',
+                **_user_headers(),
+                **extra_headers,
+            },
+        )
+    if any(x in user_agent for x in ["sing-box", "nekobox"]):
+        body = _warn_singbox(state)
+        return Response(
+            body,
+            mimetype="application/json",
+            headers={
+                "Content-Disposition": 'attachment; filename="config.json"',
+                **_user_headers(),
+                **extra_headers,
+            },
+        )
+    body = _warn_v2ray(state)
+    return Response(
+        body,
+        mimetype="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="config.txt"',
+            **_user_headers(),
+            **extra_headers,
+        },
+    )
+
+
+def _config_filename(client, ext: str) -> str:
+    """Filename for Content-Disposition.
+
+    Personalised per client when available (extension dropped for cleaner
+    display in client UIs — Content-Type header conveys the actual format).
+    Warn-config (client=None) keeps the canonical extension so users can tell
+    it's a system-generated message, not their real config.
+    """
+    if client is None or not client.email:
+        return f"config.{ext}"
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in client.email)
+    return safe or "config"
+
+
+def _user_headers(client=None) -> dict:
+    """Build standard subscription headers.
+
+    With client: include subscription-userinfo (aggregate traffic + limit + expiry).
+    Without client (warn-config path): only Profile-Update-Interval.
+    Headers are recomputed every request — never cached.
+    """
+    setting = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
+    try:
+        interval = int(setting.value) if setting and setting.value else 24
+        if interval < 1:
+            interval = 24
+    except (ValueError, TypeError):
+        interval = 24
+
+    headers = {"Profile-Update-Interval": str(interval)}
+
+    if client is None:
+        return headers
+
+    node_rows = NodeClientTraffic.query.filter_by(email=client.email).all()
+    upload = int(client.up or 0) + sum(int(r.up or 0) for r in node_rows)
+    download = int(client.down or 0) + sum(int(r.down or 0) for r in node_rows)
+    total = int(client.global_limit_bytes or 0) or int(client.limit_bytes or 0)
+    expire_ms = int(client.expiry_time or 0)
+    expire_s = expire_ms // 1000 if expire_ms else 0
+
+    headers["subscription-userinfo"] = f"upload={upload}; download={download}; total={total}; expire={expire_s}"
+    if client.email:
+        headers["profile-title"] = client.email
+    return headers
 
 
 def _get_remote_links(client_email, panel_client=None):
@@ -327,6 +461,31 @@ def get_subscription(uuid_str):
             return "User not found", 404
         return Response(html, mimetype="text/html; charset=utf-8")
 
+    # Device tracking gate — runs before cache lookup.
+    client = db.session.get(Client, uuid_str)
+    if not client or not client.enable:
+        return "User not found", 404
+    inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
+    if not inbound:
+        return "User not found", 404
+
+    from app.services.device_tracking import device_gate
+
+    state, extra_headers = device_gate(
+        client,
+        inbound,
+        {
+            "x-hwid": request.headers.get("x-hwid", ""),
+            "x-device-os": request.headers.get("x-device-os", ""),
+            "x-ver-os": request.headers.get("x-ver-os", ""),
+            "x-device-model": request.headers.get("x-device-model", ""),
+            "user-agent": request.headers.get("User-Agent", ""),
+            "_request_ip": (request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()),
+        },
+    )
+    if state != "ok":
+        return _warn_response(state, user_agent, extra_headers)
+
     if any(x in user_agent for x in ["clash", "meta", "stash"]):
         cached = sub_cache.get("clash", uuid_str)
         if cached is not None:
@@ -334,8 +493,9 @@ def get_subscription(uuid_str):
                 cached,
                 mimetype="text/yaml",
                 headers={
-                    "Content-Disposition": 'attachment; filename="config.yaml"',
-                    "Profile-Update-Interval": "24",
+                    "Content-Disposition": f'attachment; filename="{_config_filename(client, "yaml")}"',
+                    **_user_headers(client),
+                    **extra_headers,
                 },
             )
         config = generate_clash_config(uuid_str)
@@ -346,8 +506,9 @@ def get_subscription(uuid_str):
             config,
             mimetype="text/yaml",
             headers={
-                "Content-Disposition": 'attachment; filename="config.yaml"',
-                "Profile-Update-Interval": "24",
+                "Content-Disposition": f'attachment; filename="{_config_filename(client, "yaml")}"',
+                **_user_headers(client),
+                **extra_headers,
             },
         )
 
@@ -358,8 +519,9 @@ def get_subscription(uuid_str):
                 cached,
                 mimetype="application/json",
                 headers={
-                    "Content-Disposition": 'attachment; filename="config.json"',
-                    "Profile-Update-Interval": "24",
+                    "Content-Disposition": f'attachment; filename="{_config_filename(client, "json")}"',
+                    **_user_headers(client),
+                    **extra_headers,
                 },
             )
         config = generate_singbox_config(uuid_str)
@@ -370,8 +532,9 @@ def get_subscription(uuid_str):
             config,
             mimetype="application/json",
             headers={
-                "Content-Disposition": 'attachment; filename="config.json"',
-                "Profile-Update-Interval": "24",
+                "Content-Disposition": f'attachment; filename="{_config_filename(client, "json")}"',
+                **_user_headers(client),
+                **extra_headers,
             },
         )
 
@@ -381,8 +544,9 @@ def get_subscription(uuid_str):
             cached,
             mimetype="text/plain; charset=utf-8",
             headers={
-                "Content-Disposition": 'attachment; filename="config.txt"',
-                "Profile-Update-Interval": "24",
+                "Content-Disposition": f'attachment; filename="{_config_filename(client, "txt")}"',
+                **_user_headers(client),
+                **extra_headers,
             },
         )
     links = get_subscription_content(uuid_str)
@@ -395,8 +559,9 @@ def get_subscription(uuid_str):
         encoded,
         mimetype="text/plain; charset=utf-8",
         headers={
-            "Content-Disposition": 'attachment; filename="config.txt"',
-            "Profile-Update-Interval": "24",
+            "Content-Disposition": f'attachment; filename="{_config_filename(client, "txt")}"',
+            **_user_headers(client),
+            **extra_headers,
         },
     )
 
@@ -847,10 +1012,17 @@ def render_subscription_page(uuid_str: str):
     per_node_limit = int(client.limit_bytes or 0)
     global_limit = int(client.global_limit_bytes or 0)
 
-    # Build the absolute subscription URL with the secret-path prefix from PANEL_BASE_URL.
+    # Build the absolute subscription URL.
+    # - PANEL_BASE_URL (if set) is treated as a fully-formed prefix (may include secret path).
+    # - Otherwise we reconstruct from request scheme/host and prepend PANEL_SECRET_PATH so
+    #   the link works through Caddy (which 404s anything outside /<secret>/...).
     panel_base = os.getenv("PANEL_BASE_URL", "").rstrip("/")
-    sub_path = f"/api/sub/{quote(uuid_str, safe='')}"
-    sub_url = f"{panel_base}{sub_path}" if panel_base else sub_path
+    secret_path = os.getenv("PANEL_SECRET_PATH", "").strip("/")
+    api_path = f"/api/sub/{quote(uuid_str, safe='')}"
+    if panel_base:
+        sub_url = f"{panel_base}{api_path}"
+    else:
+        sub_url = f"/{secret_path}{api_path}" if secret_path else api_path
     abs_sub_url = sub_url
     if not abs_sub_url.startswith("http"):
         scheme = request.headers.get("X-Forwarded-Proto", request.scheme or "https")
@@ -915,6 +1087,62 @@ def render_subscription_page(uuid_str: str):
             f'<span class="node-name">{_esc(n["name"])}</span>{groups_html}</li>'
         )
     nodes_html = "".join(nodes_html_parts) or "<li>No nodes</li>"
+
+    from app.services.device_tracking import effective_device_limit, list_devices
+
+    eff_limit = effective_device_limit(client, ib)
+    # Show devices whenever any are recorded, even when limit is unlimited.
+    devices = list_devices(client.id)
+
+    def _device_icon(os_str):
+        o = (os_str or "").lower()
+        if "ios" in o or "android" in o:
+            return "📱"
+        if "mac" in o:
+            return "💻"
+        if "windows" in o or "linux" in o:
+            return "🖥"
+        return "⚙"
+
+    devices_html_parts = []
+    for d in devices:
+        os_label = _esc(d.device_os or "Unknown")
+        model = f" · {_esc(d.model)}" if d.model else ""
+        os_ver = f"{_esc(d.os_ver)} · " if d.os_ver else ""
+        devices_html_parts.append(
+            f'<li class="device-row" data-id="{int(d.id)}">'
+            f'<span class="dev-ic">{_device_icon(d.device_os)}</span>'
+            f'<div class="dev-meta">'
+            f'<div class="dev-name">{os_label}{model}</div>'
+            f'<div class="dev-sub">{os_ver}'
+            f'added <span class="ts" data-ts="{int(d.first_seen)}"></span>'
+            f' · seen <span class="ts" data-ts="{int(d.last_seen)}"></span>'
+            f"</div></div>"
+            f'<button class="rev" onclick="revokeDevice({int(d.id)})">Revoke</button>'
+            f"</li>"
+        )
+
+    if devices_html_parts:
+        devices_inner = "".join(devices_html_parts)
+    elif eff_limit > 0:
+        devices_inner = (
+            '<li class="empty">No devices yet — add this subscription URL '
+            "in Happ / v2RayTun / Shadowrocket to register your first device.</li>"
+        )
+    else:
+        devices_inner = ""
+
+    if devices_inner:
+        counter = f"{len(devices)} / {eff_limit} connected" if eff_limit > 0 else f"{len(devices)} connected"
+        devices_card = (
+            '<div class="card">'
+            "<h2>Your devices</h2>"
+            f'<div class="dev-counter">{counter}</div>'
+            f'<ul class="devices">{devices_inner}</ul>'
+            "</div>"
+        )
+    else:
+        devices_card = ""
 
     enabled_badge = '<span class="pill ok">Active</span>' if client.enable else '<span class="pill err">Disabled</span>'
 
@@ -1006,6 +1234,69 @@ def render_subscription_page(uuid_str: str):
     border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity .25s;
   }}
   .toast.show {{ opacity: 1; }}
+  ul.devices {{ list-style: none; padding: 0; margin: 0; }}
+  ul.devices li {{
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.05);
+    transition: opacity .25s ease, transform .25s ease;
+  }}
+  ul.devices li:first-child {{ border-top: none; }}
+  ul.devices li.empty {{ color: var(--muted); font-size: 13px; padding: 12px 0; }}
+  .dev-ic {{ font-size: 22px; }}
+  .dev-meta {{ flex: 1; }}
+  .dev-name {{ font-weight: 500; font-size: 14px; }}
+  .dev-sub  {{ font-size: 12px; color: var(--muted); margin-top: 2px; }}
+  .dev-counter {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
+  button.rev {{
+    background: rgba(239,68,68,0.15); color: #f87171;
+    border: 1px solid rgba(239,68,68,0.3); padding: 6px 12px;
+    font-size: 12px; border-radius: 8px; cursor: pointer;
+  }}
+  button.rev:hover {{ background: rgba(239,68,68,0.25); }}
+  button.rev[disabled] {{ opacity: .5; cursor: not-allowed; }}
+  .device-row.removing {{ opacity: 0; transform: translateX(8px); }}
+  .modal {{
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    z-index: 1000;
+  }}
+  .modal.show {{ display: flex; }}
+  .modal-backdrop {{
+    position: absolute; inset: 0; background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+  }}
+  .modal-card {{
+    position: relative; max-width: 380px; width: calc(100% - 32px);
+    background: #1a1a26; border: 1px solid var(--border);
+    border-radius: 18px; padding: 24px 24px 20px;
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  }}
+  .modal-icon {{
+    width: 64px; height: 64px; border-radius: 50%;
+    background: rgba(239,68,68,0.1); color: #ef4444;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 16px;
+  }}
+  .modal-card h3 {{ margin: 0 0 8px; font-size: 17px; font-weight: 600; }}
+  .modal-card p {{
+    margin: 0 0 20px; color: rgba(229,231,235,0.85); font-size: 14px; line-height: 1.5;
+  }}
+  .modal-actions {{ display: flex; gap: 10px; width: 100%; }}
+  .btn-secondary, .btn-danger {{
+    flex: 1; padding: 10px 14px; font-size: 13px; font-weight: 600;
+    border-radius: 10px; cursor: pointer; border: 1px solid transparent;
+    transition: background .15s, opacity .15s;
+  }}
+  .btn-secondary {{
+    background: rgba(255,255,255,0.06); color: var(--text);
+    border-color: var(--border);
+  }}
+  .btn-secondary:hover {{ background: rgba(255,255,255,0.1); }}
+  .btn-danger {{
+    background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff;
+  }}
+  .btn-danger:hover {{ filter: brightness(1.1); }}
+  .btn-danger[disabled], .btn-secondary[disabled] {{ opacity: .55; cursor: not-allowed; }}
 </style>
 </head>
 <body>
@@ -1038,8 +1329,22 @@ def render_subscription_page(uuid_str: str):
       <h2>Servers</h2>
       <ul class="nodes">{nodes_html}</ul>
     </div>
+
+    {devices_card}
   </div>
   <div class="toast" id="toast">Copied to clipboard</div>
+  <div class="modal" id="revokeModal" aria-hidden="true">
+    <div class="modal-backdrop" onclick="closeRevokeModal()"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="revokeTitle">
+      <div class="modal-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+      <h3 id="revokeTitle">Revoke device</h3>
+      <p id="revokeBody">Revoke this device? It will need to re-register on the next subscription fetch.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeRevokeModal()">Cancel</button>
+        <button type="button" class="btn-danger" id="revokeConfirmBtn" onclick="confirmRevoke()">Revoke</button>
+      </div>
+    </div>
+  </div>
 <script>
 function showToast(msg) {{
   var t = document.getElementById('toast');
@@ -1058,6 +1363,104 @@ function copySub() {{
     document.body.removeChild(ta);
   }}
 }}
+function timeAgo(ms) {{
+  if (!ms) return 'never';
+  var diff = Date.now() - ms;
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+  if (diff < 30 * 86400000) return Math.floor(diff/86400000) + 'd ago';
+  return new Date(ms).toLocaleDateString();
+}}
+document.querySelectorAll('.ts').forEach(function(el){{
+  el.textContent = timeAgo(parseInt(el.dataset.ts, 10));
+}});
+var pendingRevokeId = null;
+function revokeDevice(id) {{
+  pendingRevokeId = id;
+  var row = document.querySelector('.device-row[data-id="' + id + '"]');
+  var label = 'this device';
+  if (row) {{
+    var name = row.querySelector('.dev-name');
+    if (name && name.textContent.trim()) label = name.textContent.trim();
+  }}
+  document.getElementById('revokeBody').textContent =
+    'Revoke "' + label + '"? It will need to re-register on the next subscription fetch.';
+  document.getElementById('revokeConfirmBtn').disabled = false;
+  document.getElementById('revokeConfirmBtn').textContent = 'Revoke';
+  document.getElementById('revokeModal').classList.add('show');
+}}
+function closeRevokeModal() {{
+  document.getElementById('revokeModal').classList.remove('show');
+  pendingRevokeId = null;
+}}
+function confirmRevoke() {{
+  if (pendingRevokeId == null) return;
+  var id = pendingRevokeId;
+  var row = document.querySelector('.device-row[data-id="' + id + '"]');
+  var rowBtn = row && row.querySelector('button.rev');
+  var modalBtn = document.getElementById('revokeConfirmBtn');
+  modalBtn.disabled = true; modalBtn.textContent = 'Revoking...';
+  if (rowBtn) {{ rowBtn.disabled = true; rowBtn.textContent = 'Revoking...'; }}
+  var url = window.location.pathname + '/devices/' + id;
+  fetch(url, {{ method: 'DELETE' }}).then(function(r){{
+    if (r.status === 204) {{
+      row.classList.add('removing');
+      setTimeout(function(){{
+        row.remove();
+        var rest = document.querySelectorAll('.device-row').length;
+        var counter = document.querySelector('.dev-counter');
+        if (counter) {{
+          var parts = counter.textContent.split('/');
+          counter.textContent = rest + (parts.length > 1 ? ' /' + parts[1] : ' connected');
+        }}
+      }}, 250);
+      closeRevokeModal();
+    }} else {{
+      showToast('Failed, try again');
+      modalBtn.disabled = false; modalBtn.textContent = 'Revoke';
+      if (rowBtn) {{ rowBtn.disabled = false; rowBtn.textContent = 'Revoke'; }}
+    }}
+  }}).catch(function(){{
+    showToast('Network error');
+    modalBtn.disabled = false; modalBtn.textContent = 'Revoke';
+    if (rowBtn) {{ rowBtn.disabled = false; rowBtn.textContent = 'Revoke'; }}
+  }});
+}}
+document.addEventListener('keydown', function(e) {{
+  if (e.key === 'Escape' && document.getElementById('revokeModal').classList.contains('show')) {{
+    closeRevokeModal();
+  }}
+}});
 </script>
 </body>
 </html>"""
+
+
+@bp.route("/sub/<path:uuid_str>/devices", methods=["GET"])
+@limiter.limit("60 per minute")
+def sub_list_devices(uuid_str):
+    client = db.session.get(Client, uuid_str)
+    if not client:
+        return jsonify({"error": "Not found"}), 404
+    from app.services.device_tracking import list_devices
+
+    devices = list_devices(uuid_str)
+    return jsonify([d.to_dict(include_admin_fields=False) for d in devices])
+
+
+@bp.route("/sub/<path:uuid_str>/devices/<int:device_id>", methods=["DELETE"])
+@limiter.limit("30 per minute")
+def sub_revoke_device(uuid_str, device_id):
+    client = db.session.get(Client, uuid_str)
+    if not client:
+        return jsonify({"error": "Not found"}), 404
+    from app.services.device_tracking import revoke_device
+
+    if not revoke_device(uuid_str, device_id):
+        return jsonify({"error": "Not found"}), 404
+    try:
+        sub_cache.invalidate_user(uuid_str)
+    except Exception:
+        pass
+    return ("", 204)

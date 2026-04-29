@@ -31,8 +31,14 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       flow: client.flow || '',
       global_limit_gb: client.global_limit_bytes ? client.global_limit_bytes / 1024 ** 3 : 0,
       allowed_node_groups: client.allowed_node_groups || [],
+      device_limit:
+        client.device_limit === null || client.device_limit === undefined
+          ? ''
+          : String(client.device_limit),
     },
   });
+
+  const inboundDeviceLimit = inbound.device_limit ?? 0;
 
   const flow = useWatch({ control, name: 'flow' });
 
@@ -98,6 +104,10 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       flow: data.flow,
       global_limit_bytes: Number(data.global_limit_gb) * 1024 ** 3,
       allowed_node_groups: data.allowed_node_groups,
+      device_limit:
+        data.device_limit === '' || data.device_limit === null || data.device_limit === undefined
+          ? null
+          : Number(data.device_limit),
     });
   };
 
@@ -151,6 +161,19 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
           {...register('reset_day')}
           placeholder="0 to disable"
         />
+      </div>
+
+      <div>
+        <Input
+          label="Device limit override"
+          type="number"
+          min={0}
+          {...register('device_limit')}
+          placeholder={`from inbound (${inboundDeviceLimit})`}
+        />
+        <p className="mt-1 text-xs text-gray-500">
+          Leave empty to inherit from inbound · 0 = unlimited for this user · N = hard cap
+        </p>
       </div>
 
       <Controller

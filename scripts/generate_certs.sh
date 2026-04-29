@@ -19,8 +19,6 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-docker compose down
-
 cd "$SHARED_DIR"
 python3 -m http.server 80 &
 SERVER_PID=$!
@@ -36,5 +34,7 @@ mkdir -p "$CERT_DIR"
 cp "/etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem" "$CERT_DIR/fullchain.pem"
 cp "/etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem"   "$CERT_DIR/key.pem"
 cp "/etc/letsencrypt/live/$PANEL_DOMAIN/cert.pem"      "$CERT_DIR/cert.pem"
+
+docker compose restart caddy
 
 kill "$SERVER_PID"

@@ -3,7 +3,7 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 7
+CURRENT_DB_VERSION = 8
 
 
 def _table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
@@ -196,6 +196,33 @@ def _ensure_node_client_traffic_table(cursor: sqlite3.Cursor) -> int:
     return 1
 
 
+def _ensure_client_device_table(cursor: sqlite3.Cursor) -> int:
+    """Create the client_device table for device tracking (Stage 1)."""
+    if _table_exists(cursor, "client_device"):
+        return 0
+    cursor.execute(
+        """
+        CREATE TABLE client_device (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id   VARCHAR(128) NOT NULL,
+            hwid        VARCHAR(128) NOT NULL,
+            device_os   VARCHAR(32)  DEFAULT '',
+            os_ver      VARCHAR(32)  DEFAULT '',
+            model       VARCHAR(128) DEFAULT '',
+            user_agent  VARCHAR(512) DEFAULT '',
+            request_ip  VARCHAR(64)  DEFAULT '',
+            first_seen  BIGINT       NOT NULL,
+            last_seen   BIGINT       NOT NULL,
+            hits        INTEGER      DEFAULT 1,
+            FOREIGN KEY (client_id) REFERENCES client(id) ON DELETE CASCADE
+        )
+        """
+    )
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_client_hwid ON client_device(client_id, hwid)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_client_device_client_id ON client_device(client_id)")
+    return 1
+
+
 def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
     changed = 0
 
@@ -226,6 +253,9 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("client", "preferred_outbound", "VARCHAR(50)"),
         ("client", "global_limit_bytes", "BIGINT DEFAULT 0"),
         ("client", "allowed_node_groups", "TEXT NOT NULL DEFAULT ''"),
+        # Device tracking — Stage 1
+        ("inbound", "device_limit", "INTEGER NOT NULL DEFAULT 0"),
+        ("client", "device_limit", "INTEGER"),
     ]
 
     for table_name, column_name, spec in schema_patches:
@@ -355,6 +385,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         stats_tables = _ensure_stats_tables(cursor)
         node_table = _ensure_node_table(cursor)
         node_client_traffic_table = _ensure_node_client_traffic_table(cursor)
+        client_device_table = _ensure_client_device_table(cursor)
         schema_changes = _ensure_schema_columns(cursor)
         removed_legacy_inbounds, normalized_streams = _cleanup_legacy_inbounds(cursor)
         fixed_rows = _apply_data_fixups(cursor)
@@ -370,6 +401,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "stats_tables_created": stats_tables,
             "node_table_created": node_table,
             "node_client_traffic_table_created": node_client_traffic_table,
+            "client_device_table_created": client_device_table,
             "schema_changes": schema_changes,
             "removed_legacy_inbounds": removed_legacy_inbounds,
             "normalized_streams": normalized_streams,
@@ -379,6 +411,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             stats_tables > 0
             or node_table > 0
             or node_client_traffic_table > 0
+            or client_device_table > 0
             or schema_changes > 0
             or removed_legacy_inbounds > 0
             or normalized_streams > 0

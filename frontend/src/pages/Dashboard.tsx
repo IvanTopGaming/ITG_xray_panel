@@ -1,9 +1,19 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import { Inbound, SystemStats, Client, Outbound, Balancer, Node, MasterInfo } from '@/lib/types';
+import {
+  Inbound,
+  SystemStats,
+  Client,
+  ClientDevice,
+  Outbound,
+  Balancer,
+  Node,
+  MasterInfo,
+} from '@/lib/types';
 import { formatBytes, cn } from '@/lib/utils';
 import { generateLink, generateSubscriptionUrl } from '@/lib/protocols';
+import { deviceIcon, timeAgo } from '@/lib/devices';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
@@ -34,6 +44,9 @@ import {
   Square,
   Minus,
   Tag,
+  ChevronDown,
+  Smartphone,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -174,23 +187,20 @@ function SkeletonCard() {
   );
 }
 
-// Animates height via ResizeObserver + MotionValue — no FLIP scaleY squish
+// Tracks inner content height exactly via ResizeObserver. The container is a
+// passive follower — any smoothness comes from animations inside the children
+// (e.g. AnimatePresence height transitions). This avoids the "border lags
+// behind content" effect of running a spring on top of an already-animating
+// child.
 function AnimatedHeight({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const heightValue = useMotionValue<number | string>('auto');
-  const initialized = useRef(false);
 
   useEffect(() => {
     if (!ref.current) return;
     const ro = new ResizeObserver(() => {
       if (!ref.current) return;
-      const h = ref.current.offsetHeight;
-      if (!initialized.current) {
-        heightValue.set(h);
-        initialized.current = true;
-      } else {
-        animate(heightValue, h, { type: 'spring', stiffness: 350, damping: 35 });
-      }
+      heightValue.set(ref.current.offsetHeight);
     });
     ro.observe(ref.current);
     return () => ro.disconnect();
@@ -1141,6 +1151,11 @@ function UserRow({
   const [confirmReset, setConfirmReset] = useState(false);
   const [routingModal, setRoutingModal] = useState(false);
   const [selectedRoute, setSelectedRoute] = useState(client.preferred_outbound || '');
+  const [devicesExpanded, setDevicesExpanded] = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState<ClientDevice | null>(null);
+  const [revokeLoading, setRevokeLoading] = useState(false);
+
+  const effectiveDeviceLimit = client.device_limit ?? inbound.device_limit ?? 0;
 
   useEffect(() => {
     setSelectedRoute(client.preferred_outbound || '');
@@ -1182,6 +1197,70 @@ function UserRow({
     },
   });
 
+  // Devices query — auto-refresh every 3s while expanded so the list stays in
+  // sync with the chip count (which is itself driven by the inbounds poll).
+  const devicesQueryKey = ['client-devices', client.id];
+  const devicesQuery = useQuery<ClientDevice[]>({
+    queryKey: devicesQueryKey,
+    queryFn: async () => {
+      const res = await api.get<ClientDevice[]>(`/clients/${client.id}/devices`);
+      return res.data;
+    },
+    enabled: devicesExpanded,
+    refetchInterval: devicesExpanded ? 3000 : false,
+    refetchOnWindowFocus: false,
+  });
+  const devices = devicesQuery.data ?? null;
+  const devicesLoading = devicesQuery.isFetching && !devicesQuery.data;
+  const devicesError = devicesQuery.error
+    ? (devicesQuery.error as any).response?.data?.error || 'Failed to load devices'
+    : null;
+
+  const toggleDevices = async () => {
+    if (devicesLoading) return;
+    if (devicesExpanded) {
+      setDevicesExpanded(false);
+      return;
+    }
+    // Pre-fetch BEFORE expanding so the spring animates straight to the final
+    // height instead of stuttering when the loading placeholder is replaced.
+    if (!devicesQuery.data) {
+      await queryClient.fetchQuery({
+        queryKey: devicesQueryKey,
+        queryFn: async () => {
+          const res = await api.get<ClientDevice[]>(`/clients/${client.id}/devices`);
+          return res.data;
+        },
+      });
+    }
+    setDevicesExpanded(true);
+  };
+
+  const onRevokeDevice = (d: ClientDevice) => {
+    setRevokeTarget(d);
+  };
+
+  const confirmRevokeDevice = async () => {
+    if (!revokeTarget) return;
+    setRevokeLoading(true);
+    try {
+      await api.delete(`/clients/${client.id}/devices/${revokeTarget.id}`);
+      // Optimistic local removal so the row disappears instantly; query will
+      // refetch on next tick and confirm.
+      queryClient.setQueryData<ClientDevice[]>(devicesQueryKey, (prev) =>
+        prev ? prev.filter((x) => x.id !== revokeTarget.id) : prev
+      );
+      queryClient.invalidateQueries({ queryKey: ['inbounds'] });
+      queryClient.invalidateQueries({ queryKey: devicesQueryKey });
+      toast.success('Device revoked');
+      setRevokeTarget(null);
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || 'Failed to revoke device');
+    } finally {
+      setRevokeLoading(false);
+    }
+  };
+
   const usagePercent = client.limit_bytes
     ? Math.min(100, ((client.up + client.down) / client.limit_bytes) * 100)
     : 0;
@@ -1208,7 +1287,7 @@ function UserRow({
       animate="animate"
       exit="exit"
       className={cn(
-        'group/row relative flex flex-col xl:flex-row xl:items-center justify-between p-3.5 rounded-xl border transition-colors duration-100 overflow-hidden',
+        'group/row relative flex flex-col p-3.5 rounded-xl border transition-colors duration-100 overflow-hidden',
         status === 'disabled'
           ? 'bg-rose-500/[0.04] border-rose-500/[0.08] opacity-70'
           : status === 'expired'
@@ -1230,173 +1309,266 @@ function UserRow({
         </div>
       )}
 
-      {/* Left: avatar + info */}
-      <div className="flex items-center gap-3 mb-3 xl:mb-0 min-w-0">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleSelect();
-          }}
-          className={cn(
-            'shrink-0 overflow-hidden flex items-center justify-center transition-[width,opacity,margin] duration-200 ease-out',
-            isSelected
-              ? 'w-4 opacity-100 text-primary'
-              : 'w-0 -mr-3 opacity-0 text-gray-500 group-hover/row:w-4 group-hover/row:mr-0 group-hover/row:opacity-100'
-          )}
-        >
-          {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
-        </button>
-        <div className="relative shrink-0">
-          <div
-            className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shadow-inner"
-            style={{
-              background: client.enable
-                ? `linear-gradient(135deg, hsl(${avatarHue},40%,30%), hsl(${avatarHue},30%,20%))`
-                : 'rgba(60,60,60,0.8)',
-              color: client.enable ? `hsl(${avatarHue},60%,80%)` : '#666',
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between">
+        {/* Left: avatar + info */}
+        <div className="flex items-center gap-3 mb-3 xl:mb-0 min-w-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect();
             }}
-          >
-            {client.email[0].toUpperCase()}
-          </div>
-          <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3">
-            {status === 'online' && (
-              <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-70" />
+            className={cn(
+              'shrink-0 overflow-hidden flex items-center justify-center transition-[width,opacity,margin] duration-200 ease-out',
+              isSelected
+                ? 'w-4 opacity-100 text-primary'
+                : 'w-0 -mr-3 opacity-0 text-gray-500 group-hover/row:w-4 group-hover/row:mr-0 group-hover/row:opacity-100'
             )}
-            <span
-              className={cn(
-                'absolute inset-0 rounded-full border-2 border-[#1a1722] transition-colors duration-300',
-                status === 'online'
-                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
-                  : status === 'offline'
-                    ? 'bg-zinc-600'
-                    : status === 'expired'
-                      ? 'bg-amber-400'
-                      : status === 'overlimit'
-                        ? 'bg-red-400'
-                        : 'bg-rose-600'
-              )}
-            />
-          </div>
-        </div>
-
-        <div className="min-w-0 overflow-hidden">
-          <div
-            className="text-sm font-semibold text-gray-200 truncate flex items-center gap-2"
-            title={client.email}
           >
-            {client.email}
-            {client.preferred_outbound && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-primary/15 text-primary uppercase border border-primary/20 font-bold tracking-wide">
-                {client.preferred_outbound}
-              </span>
-            )}
-          </div>
-          <div className="text-[10px] text-gray-500 font-mono mt-0.5">
-            {client.expiry_time
-              ? `Exp: ${new Date(client.expiry_time).toLocaleDateString()}`
-              : 'No expiry'}
-          </div>
-        </div>
-      </div>
-
-      {/* Right: traffic + actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full xl:w-auto">
-        <div className="flex items-center gap-2 text-[10px] font-mono px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/[0.05] w-fit">
-          <span className="flex items-center gap-1 text-green-400">
-            <ArrowUp size={9} /> {formatBytes(client.up)}
-          </span>
-          <span className="w-px h-3 bg-white/[0.1]" />
-          <span className="flex items-center gap-1 text-blue-400">
-            <ArrowDown size={9} /> {formatBytes(client.down)}
-          </span>
-          {client.limit_bytes > 0 && (
-            <span
-              className={cn(
-                'ml-0.5 font-semibold',
-                usagePercent >= 90
-                  ? 'text-red-400'
-                  : usagePercent >= 70
-                    ? 'text-amber-400'
-                    : 'text-gray-500'
-              )}
+            {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+          </button>
+          <div className="relative shrink-0">
+            <div
+              className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shadow-inner"
+              style={{
+                background: client.enable
+                  ? `linear-gradient(135deg, hsl(${avatarHue},40%,30%), hsl(${avatarHue},30%,20%))`
+                  : 'rgba(60,60,60,0.8)',
+                color: client.enable ? `hsl(${avatarHue},60%,80%)` : '#666',
+              }}
             >
-              / {formatBytes(client.limit_bytes)}
-            </span>
-          )}
+              {client.email[0].toUpperCase()}
+            </div>
+            <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3">
+              {status === 'online' && (
+                <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-70" />
+              )}
+              <span
+                className={cn(
+                  'absolute inset-0 rounded-full border-2 border-[#1a1722] transition-colors duration-300',
+                  status === 'online'
+                    ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                    : status === 'offline'
+                      ? 'bg-zinc-600'
+                      : status === 'expired'
+                        ? 'bg-amber-400'
+                        : status === 'overlimit'
+                          ? 'bg-red-400'
+                          : 'bg-rose-600'
+                )}
+              />
+            </div>
+          </div>
+
+          <div className="min-w-0 overflow-hidden">
+            <div
+              className="text-sm font-semibold text-gray-200 truncate flex items-center gap-2"
+              title={client.email}
+            >
+              {client.email}
+              {client.preferred_outbound && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] bg-primary/15 text-primary uppercase border border-primary/20 font-bold tracking-wide">
+                  {client.preferred_outbound}
+                </span>
+              )}
+            </div>
+            <div className="text-[10px] text-gray-500 font-mono mt-0.5">
+              {client.expiry_time
+                ? `Exp: ${new Date(client.expiry_time).toLocaleDateString()}`
+                : 'No expiry'}
+            </div>
+          </div>
         </div>
 
-        <div className="grid grid-cols-7 gap-1 sm:flex">
-          <Button
-            variant="secondary"
-            size="icon"
-            className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
-            onClick={() => setQr(true)}
-            title="QR Code"
-          >
-            <QrCode size={13} />
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon"
-            className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
-            onClick={() => {
-              navigator.clipboard.writeText(link);
-              toast.success('Link copied');
-            }}
-            title="Copy link"
-          >
-            <Copy size={13} />
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon"
-            className="h-8 w-full sm:w-8 text-cyan-400 hover:text-cyan-200 hover:bg-cyan-500/10"
-            onClick={() => {
-              navigator.clipboard.writeText(subscriptionUrl);
-              toast.success('Subscription URL copied');
-            }}
-            title="Copy sub URL"
-          >
-            <Link2 size={13} />
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon"
-            className="h-8 w-full sm:w-8 text-indigo-400 hover:text-indigo-200 hover:bg-indigo-500/10"
-            onClick={() => setRoutingModal(true)}
-            title="Route"
-          >
-            <Network size={13} />
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon"
-            className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
-            onClick={() => setEdit(true)}
-            title="Edit"
-          >
-            <Edit size={13} />
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon"
-            className="h-8 w-full sm:w-8 text-yellow-500/60 hover:text-yellow-400 hover:bg-yellow-500/10"
-            onClick={() => setConfirmReset(true)}
-            title="Reset traffic"
-          >
-            <RotateCcw size={13} />
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon"
-            className="h-8 w-full sm:w-8 text-red-500/60 hover:text-red-400 hover:bg-red-500/10"
-            onClick={() => setConfirmDel(true)}
-            title="Delete"
-          >
-            <Trash2 size={13} />
-          </Button>
+        {/* Right: traffic + actions */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full xl:w-auto">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 text-[10px] font-mono px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/[0.05] w-fit">
+              <span className="flex items-center gap-1 text-green-400">
+                <ArrowUp size={9} /> {formatBytes(client.up)}
+              </span>
+              <span className="w-px h-3 bg-white/[0.1]" />
+              <span className="flex items-center gap-1 text-blue-400">
+                <ArrowDown size={9} /> {formatBytes(client.down)}
+              </span>
+              {client.limit_bytes > 0 && (
+                <span
+                  className={cn(
+                    'ml-0.5 font-semibold',
+                    usagePercent >= 90
+                      ? 'text-red-400'
+                      : usagePercent >= 70
+                        ? 'text-amber-400'
+                        : 'text-gray-500'
+                  )}
+                >
+                  / {formatBytes(client.limit_bytes)}
+                </span>
+              )}
+            </div>
+            {(effectiveDeviceLimit > 0 || (client.device_count ?? 0) > 0) && (
+              <button
+                type="button"
+                onClick={toggleDevices}
+                title={devicesExpanded ? 'Hide devices' : 'Show devices'}
+                className={cn(
+                  'flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg border transition-colors',
+                  devicesExpanded
+                    ? 'bg-primary/15 text-primary border-primary/25'
+                    : 'bg-white/[0.06] text-white/70 border-white/[0.05] hover:bg-white/[0.09] hover:text-white'
+                )}
+              >
+                <Smartphone size={11} />
+                <span className="font-mono">
+                  {client.device_count ?? 0}
+                  {effectiveDeviceLimit > 0 ? ` / ${effectiveDeviceLimit}` : ''}
+                </span>
+                {devicesLoading ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <ChevronDown
+                    size={12}
+                    className={cn(
+                      'transition-transform duration-200',
+                      devicesExpanded && 'rotate-180'
+                    )}
+                  />
+                )}
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-7 gap-1 sm:flex">
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
+              onClick={() => setQr(true)}
+              title="QR Code"
+            >
+              <QrCode size={13} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
+              onClick={() => {
+                navigator.clipboard.writeText(link);
+                toast.success('Link copied');
+              }}
+              title="Copy link"
+            >
+              <Copy size={13} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-full sm:w-8 text-cyan-400 hover:text-cyan-200 hover:bg-cyan-500/10"
+              onClick={() => {
+                navigator.clipboard.writeText(subscriptionUrl);
+                toast.success('Subscription URL copied');
+              }}
+              title="Copy sub URL"
+            >
+              <Link2 size={13} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-full sm:w-8 text-indigo-400 hover:text-indigo-200 hover:bg-indigo-500/10"
+              onClick={() => setRoutingModal(true)}
+              title="Route"
+            >
+              <Network size={13} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
+              onClick={() => setEdit(true)}
+              title="Edit"
+            >
+              <Edit size={13} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-full sm:w-8 text-yellow-500/60 hover:text-yellow-400 hover:bg-yellow-500/10"
+              onClick={() => setConfirmReset(true)}
+              title="Reset traffic"
+            >
+              <RotateCcw size={13} />
+            </Button>
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-full sm:w-8 text-red-500/60 hover:text-red-400 hover:bg-red-500/10"
+              onClick={() => setConfirmDel(true)}
+              title="Delete"
+            >
+              <Trash2 size={13} />
+            </Button>
+          </div>
         </div>
       </div>
+
+      <AnimatePresence initial={false}>
+        {devicesExpanded && (effectiveDeviceLimit > 0 || (client.device_count ?? 0) > 0) && (
+          <motion.div
+            key="devices"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ type: 'spring', stiffness: 350, damping: 35 }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div className="mt-3 pt-3 border-t border-white/[0.05] space-y-1.5">
+              {devicesLoading && (
+                <div className="text-xs text-gray-500 italic px-1">Loading devices…</div>
+              )}
+              {devicesError && <div className="text-xs text-red-400 px-1">{devicesError}</div>}
+              {!devicesLoading && !devicesError && devices && devices.length === 0 && (
+                <div className="text-xs text-gray-500 italic px-1">No devices registered yet.</div>
+              )}
+              {!devicesLoading &&
+                devices &&
+                devices.map((d) => (
+                  <div
+                    key={d.id}
+                    className="flex items-start gap-3 p-2.5 rounded-lg bg-black/20 border border-white/[0.05]"
+                  >
+                    <span className="text-base leading-none mt-0.5" aria-hidden>
+                      {deviceIcon(d.device_os)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold text-gray-200 truncate">
+                        {d.device_os || 'unknown'}
+                        {d.model && <span className="text-gray-400 font-normal"> · {d.model}</span>}
+                      </div>
+                      <div className="text-[10px] text-gray-500 font-mono mt-0.5 truncate">
+                        {d.os_ver && <span>{d.os_ver}</span>}
+                        {d.user_agent && <span> · UA: {d.user_agent}</span>}
+                        {d.request_ip && <span> · IP: {d.request_ip}</span>}
+                      </div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">
+                        first {timeAgo(d.first_seen)} · last {timeAgo(d.last_seen)}
+                        {typeof d.hits === 'number' && <span> · {d.hits} hits</span>}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      onClick={() => onRevokeDevice(d)}
+                      className="shrink-0 self-center"
+                    >
+                      Revoke
+                    </Button>
+                  </div>
+                ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <Modal isOpen={qr} onClose={() => setQr(false)} title="Connection QR">
         <div className="flex flex-col items-center">
@@ -1457,6 +1629,19 @@ function UserRow({
         title="Reset Traffic"
         description={`This will reset all uploaded and downloaded traffic counters for "${client.email}" back to zero. The user's connection and settings will not be affected.`}
         isLoading={resetMutation.isPending}
+      />
+      <ConfirmationModal
+        isOpen={revokeTarget !== null}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={confirmRevokeDevice}
+        title="Revoke device"
+        description={
+          revokeTarget
+            ? `Revoke ${revokeTarget.device_os || 'device'}${revokeTarget.model ? ` (${revokeTarget.model})` : ''}? It will need to re-register on the next subscription fetch.`
+            : ''
+        }
+        confirmText="Revoke"
+        isLoading={revokeLoading}
       />
     </motion.div>
   );
