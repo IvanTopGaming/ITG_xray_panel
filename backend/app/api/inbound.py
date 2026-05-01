@@ -2,6 +2,7 @@ import json
 import uuid
 import base64
 import secrets
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import Inbound, Client, ClientDevice
@@ -900,6 +901,162 @@ def bulk_update_groups_route():
             db.session.commit()
 
         return jsonify({"status": "ok", "count": count}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/users/bulk-adjust-days", methods=["POST"])
+@token_required
+def bulk_adjust_days_route():
+    try:
+        data = request.get_json(silent=True) or {}
+        users = data.get("users")
+        if not isinstance(users, list) or not users:
+            raise ValueError("users array required")
+        days = parse_int(data.get("days"), "days", min_value=1)
+        mode = str(data.get("mode") or "add").strip().lower()
+        if mode not in ("add", "subtract"):
+            raise ValueError("mode must be 'add' or 'subtract'")
+
+        normalized = []
+        for user in users:
+            if not isinstance(user, dict):
+                raise ValueError("each user must be an object")
+            normalized.append(
+                {
+                    "tag": normalize_tag(user.get("tag")),
+                    "email": normalize_email(user.get("email")),
+                }
+            )
+
+        now_ms = int(datetime.now().timestamp() * 1000)
+        delta_ms = days * 86_400_000
+        updated_clients = []
+        skipped = 0
+
+        for u in normalized:
+            client = Client.query.filter_by(inbound_tag=u["tag"], email=u["email"]).first()
+            if not client or client.expiry_time == 0:
+                skipped += 1
+                continue
+            base = max(now_ms, client.expiry_time)
+            if mode == "add":
+                client.expiry_time = base + delta_ms
+            else:
+                client.expiry_time = base - delta_ms
+            updated_clients.append(client)
+
+        if updated_clients:
+            db.session.commit()
+
+            for client in updated_clients:
+                try:
+                    from app.services.node_sync import sync_user_update
+
+                    sync_user_update(
+                        client.email,
+                        {
+                            "old_email": client.email,
+                            "new_email": client.email,
+                            "new_id": client.id,
+                            "limit_bytes": client.limit_bytes,
+                            "expiry_time": client.expiry_time,
+                            "enable": client.enable,
+                            "reset_day": client.reset_day,
+                            "flow": client.flow or "",
+                        },
+                    )
+                except Exception:
+                    pass
+                try:
+                    sub_cache.invalidate_user(client.id)
+                except Exception:
+                    pass
+
+            generate_config_file()
+
+        return jsonify({"status": "ok", "updated": len(updated_clients), "skipped": skipped}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/users/bulk-adjust-traffic", methods=["POST"])
+@token_required
+def bulk_adjust_traffic_route():
+    try:
+        data = request.get_json(silent=True) or {}
+        users = data.get("users")
+        if not isinstance(users, list) or not users:
+            raise ValueError("users array required")
+        gb = parse_int(data.get("gb"), "gb", min_value=1)
+        mode = str(data.get("mode") or "add").strip().lower()
+        if mode not in ("add", "subtract"):
+            raise ValueError("mode must be 'add' or 'subtract'")
+
+        normalized = []
+        for user in users:
+            if not isinstance(user, dict):
+                raise ValueError("each user must be an object")
+            normalized.append(
+                {
+                    "tag": normalize_tag(user.get("tag")),
+                    "email": normalize_email(user.get("email")),
+                }
+            )
+
+        delta_bytes = gb * (1024**3)
+        updated_clients = []
+        skipped = 0
+
+        for u in normalized:
+            client = Client.query.filter_by(inbound_tag=u["tag"], email=u["email"]).first()
+            if not client or client.limit_bytes == 0:
+                skipped += 1
+                continue
+            if mode == "add":
+                client.limit_bytes = client.limit_bytes + delta_bytes
+            else:
+                new_limit = client.limit_bytes - delta_bytes
+                if new_limit <= 0:
+                    skipped += 1
+                    continue
+                client.limit_bytes = new_limit
+            updated_clients.append(client)
+
+        if updated_clients:
+            db.session.commit()
+
+            for client in updated_clients:
+                try:
+                    from app.services.node_sync import sync_user_update
+
+                    sync_user_update(
+                        client.email,
+                        {
+                            "old_email": client.email,
+                            "new_email": client.email,
+                            "new_id": client.id,
+                            "limit_bytes": client.limit_bytes,
+                            "expiry_time": client.expiry_time,
+                            "enable": client.enable,
+                            "reset_day": client.reset_day,
+                            "flow": client.flow or "",
+                        },
+                    )
+                except Exception:
+                    pass
+                try:
+                    sub_cache.invalidate_user(client.id)
+                except Exception:
+                    pass
+
+            generate_config_file()
+
+        return jsonify({"status": "ok", "updated": len(updated_clients), "skipped": skipped}), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:

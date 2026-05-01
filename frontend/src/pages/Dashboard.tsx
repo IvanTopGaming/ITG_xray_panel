@@ -47,6 +47,8 @@ import {
   ChevronDown,
   Smartphone,
   Loader2,
+  Calendar,
+  HardDrive,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -664,6 +666,8 @@ function StatsCard({
 
 // ─── BulkToolbar ────────────────────────────────────────────────────────────
 
+type AdjustMode = 'add' | 'subtract';
+
 function BulkToolbar({
   selectedUsers,
   clearSelection,
@@ -678,6 +682,12 @@ function BulkToolbar({
   const [confirmBulkReset, setConfirmBulkReset] = useState(false);
   const [groupsModal, setGroupsModal] = useState(false);
   const [draftGroups, setDraftGroups] = useState<string[]>([]);
+  const [daysModal, setDaysModal] = useState(false);
+  const [trafficModal, setTrafficModal] = useState(false);
+  const [draftDays, setDraftDays] = useState(30);
+  const [draftDaysMode, setDraftDaysMode] = useState<AdjustMode>('add');
+  const [draftGB, setDraftGB] = useState(10);
+  const [draftTrafficMode, setDraftTrafficMode] = useState<AdjustMode>('add');
 
   const { data: nodes = [] } = useQuery<Node[]>({
     queryKey: ['nodes'],
@@ -744,6 +754,36 @@ function BulkToolbar({
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk groups update failed'),
   });
 
+  const bulkAdjustDaysMutation = useMutation({
+    mutationFn: ({ days, mode }: { days: number; mode: AdjustMode }) =>
+      api.post('/users/bulk-adjust-days', { users: parseUsers(), days, mode }),
+    onSuccess: ({ data }, vars) => {
+      const verb = vars.mode === 'add' ? 'Extended' : 'Shortened';
+      const msg =
+        data.skipped > 0
+          ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
+          : `${verb} ${data.updated} user(s)`;
+      onSuccess(msg);
+      setDaysModal(false);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk adjust days failed'),
+  });
+
+  const bulkAdjustTrafficMutation = useMutation({
+    mutationFn: ({ gb, mode }: { gb: number; mode: AdjustMode }) =>
+      api.post('/users/bulk-adjust-traffic', { users: parseUsers(), gb, mode }),
+    onSuccess: ({ data }, vars) => {
+      const verb = vars.mode === 'add' ? 'Added traffic to' : 'Reduced traffic for';
+      const msg =
+        data.skipped > 0
+          ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
+          : `${verb} ${data.updated} user(s)`;
+      onSuccess(msg);
+      setTrafficModal(false);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk adjust traffic failed'),
+  });
+
   return (
     <>
       <AnimatePresence>
@@ -783,6 +823,30 @@ function BulkToolbar({
                 className="text-yellow-400 hover:bg-yellow-500/10"
               >
                 <RotateCcw size={13} className="mr-1" /> Reset
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setDraftDays(30);
+                  setDraftDaysMode('add');
+                  setDaysModal(true);
+                }}
+                className="text-violet-400 hover:bg-violet-500/10"
+              >
+                <Calendar size={13} className="mr-1" /> Days
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setDraftGB(10);
+                  setDraftTrafficMode('add');
+                  setTrafficModal(true);
+                }}
+                className="text-blue-400 hover:bg-blue-500/10"
+              >
+                <HardDrive size={13} className="mr-1" /> Traffic
               </Button>
               <Button
                 variant="secondary"
@@ -878,6 +942,109 @@ function BulkToolbar({
               isLoading={bulkGroupsMutation.isPending}
             >
               Apply Groups
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal isOpen={daysModal} onClose={() => setDaysModal(false)} title="Adjust Days">
+        <div className="space-y-4 pt-2">
+          <p className="text-sm text-gray-400">
+            Add or subtract days from the expiry of {selectedUsers.size} selected user(s). Lifetime
+            users (no expiry) will be skipped.
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant={draftDaysMode === 'add' ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => setDraftDaysMode('add')}
+            >
+              Add
+            </Button>
+            <Button
+              variant={draftDaysMode === 'subtract' ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => setDraftDaysMode('subtract')}
+              className={
+                draftDaysMode === 'subtract'
+                  ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
+                  : ''
+              }
+            >
+              Subtract
+            </Button>
+          </div>
+          <Input
+            type="number"
+            min={1}
+            step={1}
+            value={draftDays}
+            onChange={(e) => setDraftDays(Math.max(1, parseInt(e.target.value || '1', 10) || 1))}
+            placeholder="Days"
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setDaysModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() =>
+                bulkAdjustDaysMutation.mutate({ days: draftDays, mode: draftDaysMode })
+              }
+              isLoading={bulkAdjustDaysMutation.isPending}
+              className={draftDaysMode === 'subtract' ? 'bg-amber-500 hover:bg-amber-600' : ''}
+            >
+              {draftDaysMode === 'add' ? 'Add Days' : 'Subtract Days'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal isOpen={trafficModal} onClose={() => setTrafficModal(false)} title="Adjust Traffic">
+        <div className="space-y-4 pt-2">
+          <p className="text-sm text-gray-400">
+            Add or subtract GB from the traffic limit of {selectedUsers.size} selected user(s).
+            Unlimited users will be skipped. When subtracting, users whose new limit would drop to
+            zero or below are skipped.
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant={draftTrafficMode === 'add' ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => setDraftTrafficMode('add')}
+            >
+              Add
+            </Button>
+            <Button
+              variant={draftTrafficMode === 'subtract' ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => setDraftTrafficMode('subtract')}
+              className={
+                draftTrafficMode === 'subtract'
+                  ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
+                  : ''
+              }
+            >
+              Subtract
+            </Button>
+          </div>
+          <Input
+            type="number"
+            min={1}
+            step={1}
+            value={draftGB}
+            onChange={(e) => setDraftGB(Math.max(1, parseInt(e.target.value || '1', 10) || 1))}
+            placeholder="GB"
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setTrafficModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() =>
+                bulkAdjustTrafficMutation.mutate({ gb: draftGB, mode: draftTrafficMode })
+              }
+              isLoading={bulkAdjustTrafficMutation.isPending}
+              className={draftTrafficMode === 'subtract' ? 'bg-amber-500 hover:bg-amber-600' : ''}
+            >
+              {draftTrafficMode === 'add' ? 'Add Traffic' : 'Reduce Traffic'}
             </Button>
           </div>
         </div>
