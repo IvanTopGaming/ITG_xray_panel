@@ -26,6 +26,7 @@ cd "$OLDPWD"
 
 certbot certonly --webroot --webroot-path "$SHARED_DIR" \
     --renew-by-default \
+    --register-unsafely-without-email \
     --text --agree-tos \
     --work-dir "$WORK_DIR" \
     -d "$PANEL_DOMAIN"

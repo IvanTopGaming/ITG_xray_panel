@@ -49,6 +49,25 @@ def _normalize_selector(raw_selector):
     return selector
 
 
+def _validate_fallback_tag(value, selector_tags):
+    """Returns normalized fallback_tag or None. Raises ValueError on invalid input.
+
+    selector_tags must be a list/set of the balancer's selector entries (already
+    normalized). Empty / None / blank input returns None — fallback is optional.
+    """
+    if value in [None, ""]:
+        return None
+    tag = str(value).strip()
+    if not tag:
+        return None
+    known = {ob.tag for ob in Outbound.query.all()}
+    if tag not in known:
+        raise ValueError(f"Unknown outbound tag for fallback: {tag}")
+    if tag in set(selector_tags):
+        raise ValueError(f"Fallback outbound '{tag}' must not be in selector")
+    return tag
+
+
 def _normalize_port(value):
     try:
         port = int(value)
@@ -279,13 +298,21 @@ def delete_outbound(tag):
             return jsonify({"error": "Not found"}), 404
 
         balancers = Balancer.query.all()
-        dependent_balancers = []
+        dependent_selectors = []
+        dependent_fallbacks = []
         for balancer in balancers:
             selector = json.loads(balancer.selector) if balancer.selector else []
             if tag in selector:
-                dependent_balancers.append(balancer.tag)
-        if dependent_balancers:
-            raise ValueError("Outbound is used by balancers: " + ", ".join(dependent_balancers))
+                dependent_selectors.append(balancer.tag)
+            if balancer.fallback_tag == tag:
+                dependent_fallbacks.append(balancer.tag)
+        errors = []
+        if dependent_selectors:
+            errors.append("used by balancers (selector): " + ", ".join(dependent_selectors))
+        if dependent_fallbacks:
+            errors.append("used by balancers (fallback): " + ", ".join(dependent_fallbacks))
+        if errors:
+            raise ValueError("Outbound is " + "; ".join(errors))
 
         clients = Client.query.filter_by(preferred_outbound=tag).all()
         for client in clients:
@@ -313,6 +340,7 @@ def get_balancers():
                 "enable": bool(getattr(b, "enable", True)),
                 "selector": json.loads(b.selector),
                 "strategy": b.strategy,
+                "fallback_tag": b.fallback_tag,
             }
             for b in balancers
         ]
@@ -341,12 +369,14 @@ def create_balancer():
         if strategy not in ALLOWED_BALANCER_STRATEGIES:
             raise ValueError("Invalid strategy")
         enabled = _parse_bool(data.get("enable"), True)
+        fallback_tag = _validate_fallback_tag(data.get("fallback_tag"), selector)
 
         new_bal = Balancer(
             tag=tag,
             enable=enabled,
             selector=json.dumps(selector),
             strategy=strategy,
+            fallback_tag=fallback_tag,
         )
         db.session.add(new_bal)
         db.session.commit()
@@ -394,6 +424,8 @@ def update_balancer(tag):
 
         bal.selector = json.dumps(selector)
         bal.strategy = strategy
+        if "fallback_tag" in data:
+            bal.fallback_tag = _validate_fallback_tag(data.get("fallback_tag"), selector)
         if "enable" in data:
             bal.enable = _parse_bool(data.get("enable"), bool(getattr(bal, "enable", True)))
         db.session.commit()

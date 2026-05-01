@@ -1438,6 +1438,22 @@ function BalancersView() {
                     ))}
                   </div>
                 </div>
+                {b.fallback_tag && (
+                  <div className="space-y-2 mb-4">
+                    <div className="text-xs uppercase font-bold text-gray-500">Fallback</div>
+                    <span
+                      className={`px-2 py-1 rounded text-xs font-mono border ${
+                        b.fallback_tag === 'direct'
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                          : b.fallback_tag === 'block'
+                            ? 'bg-red-500/10 text-red-400 border-red-500/30'
+                            : 'bg-white/[0.06] text-gray-300 border-white/10'
+                      }`}
+                    >
+                      {b.fallback_tag}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-end gap-2 flex-wrap">
                   <Button variant="secondary" size="sm" onClick={() => openEdit(b)}>
                     <Settings2 size={14} className="mr-1" /> Edit
@@ -1512,11 +1528,13 @@ function BalancerEditor({
   const [tag, setTag] = useState(balancer?.tag || '');
   const [strategy, setStrategy] = useState(balancer?.strategy || 'random');
   const [selected, setSelected] = useState<string[]>(balancer?.selector || []);
+  const [fallbackTag, setFallbackTag] = useState<string>(balancer?.fallback_tag || '');
 
   useEffect(() => {
     setTag(balancer?.tag || '');
     setStrategy(balancer?.strategy || 'random');
     setSelected(balancer?.selector || []);
+    setFallbackTag(balancer?.fallback_tag || '');
   }, [balancer]);
 
   const queryClient = useQueryClient();
@@ -1542,11 +1560,15 @@ function BalancerEditor({
   const handleSave = () => {
     if (!isEdit && !tag) return toast.error('Tag required');
     if (selected.length < 1) return toast.error('Select at least one outbound');
+    if (fallbackTag && selected.includes(fallbackTag)) {
+      return toast.error('Fallback cannot be one of the selected outbounds');
+    }
+    const fallbackPayload = fallbackTag || null;
     if (isEdit) {
-      mutation.mutate({ selector: selected, strategy });
+      mutation.mutate({ selector: selected, strategy, fallback_tag: fallbackPayload });
       return;
     }
-    mutation.mutate({ tag, selector: selected, strategy });
+    mutation.mutate({ tag, selector: selected, strategy, fallback_tag: fallbackPayload });
   };
 
   const selectedHealth = selected
@@ -1614,6 +1636,25 @@ function BalancerEditor({
               </div>
             ))}
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-xs uppercase font-bold text-gray-500">Fallback Outbound</label>
+        <Select
+          value={fallbackTag}
+          onChange={(e) => setFallbackTag(e.target.value)}
+          options={[
+            { value: '', label: '— None —' },
+            ...outbounds.map((o) => ({ value: o.tag, label: o.tag })),
+          ]}
+        />
+        {fallbackTag && selected.includes(fallbackTag) && (
+          <p className="text-xs text-red-400">Fallback cannot be one of the selected outbounds.</p>
+        )}
+        <p className="text-xs text-gray-500">
+          Outbound used when all selector nodes are unreachable. Use <code>direct</code> to bypass
+          proxy, <code>block</code> to drop traffic.
+        </p>
       </div>
 
       <div className="flex justify-end">

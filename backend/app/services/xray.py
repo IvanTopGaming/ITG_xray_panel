@@ -847,13 +847,15 @@ def generate_config_file():
                 if not normalized_selector:
                     continue
                 balancer_tags.add(bal.tag)
-                balancers_json.append(
-                    {
-                        "tag": bal.tag,
-                        "selector": normalized_selector,
-                        "strategy": {"type": bal.strategy},
-                    }
-                )
+                bal_obj = {
+                    "tag": bal.tag,
+                    "selector": normalized_selector,
+                    "strategy": {"type": bal.strategy},
+                }
+                fallback_tag = (bal.fallback_tag or "").strip()
+                if fallback_tag and fallback_tag in known_outbound_tags:
+                    bal_obj["fallbackTag"] = fallback_tag
+                balancers_json.append(bal_obj)
 
             routing_rules = [{"inboundTag": ["api"], "outboundTag": "api", "type": "field"}]
 

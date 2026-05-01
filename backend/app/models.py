@@ -33,6 +33,7 @@ class Balancer(db.Model):
     enable = db.Column(db.Boolean, nullable=False, default=True)
     selector = db.Column(db.Text, nullable=False, default="[]")
     strategy = db.Column(db.String(20), default="random")
+    fallback_tag = db.Column(db.String(50), nullable=True)
 
 
 class Inbound(db.Model):

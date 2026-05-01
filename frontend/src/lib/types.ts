@@ -118,6 +118,7 @@ export interface Balancer {
   enable?: boolean;
   selector: string[];
   strategy: string;
+  fallback_tag?: string | null;
 }
 
 export interface MasterInfo {

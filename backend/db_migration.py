@@ -3,7 +3,7 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 8
+CURRENT_DB_VERSION = 9
 
 
 def _table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
@@ -256,6 +256,8 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         # Device tracking — Stage 1
         ("inbound", "device_limit", "INTEGER NOT NULL DEFAULT 0"),
         ("client", "device_limit", "INTEGER"),
+        # Balancer fallback outbound
+        ("balancer", "fallback_tag", "VARCHAR(50)"),
     ]
 
     for table_name, column_name, spec in schema_patches:

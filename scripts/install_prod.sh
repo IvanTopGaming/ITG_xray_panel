@@ -3,10 +3,15 @@
 set -e
 
 REPO_URL="https://raw.githubusercontent.com/IvanTopGaming/ITG_xray_panel/main"
+PROJECT_DIR="ITG_xray_panel"
 GREEN='\033[0;32m'
 NC='\033[0m'
 
 echo -e "${GREEN}Starting ITG Xray Panel project initialization...${NC}"
+echo -n "Preparing project directory $PROJECT_DIR ... "
+mkdir -p "$PROJECT_DIR"
+cd "$PROJECT_DIR"
+echo -e "${GREEN}OK${NC}"
 
 download_file() {
     local remote_path=$1
