@@ -1,11 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import { RoutingProfile, RoutingRule, Outbound, Balancer, OutboundHealth } from '@/lib/types';
+import {
+  RoutingProfile,
+  RoutingRule,
+  Outbound,
+  Balancer,
+  OutboundHealth,
+  Inbound,
+} from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
+import { TagInput } from '@/components/ui/TagInput';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
 import {
   Plus,
@@ -20,195 +28,16 @@ import {
   ArrowDown,
   Play,
   Pause,
+  ChevronDown,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 
-type RouteTestInput = {
-  domain: string;
-  ip: string;
-  port: string;
-  network: string;
-  protocol: string;
-  source: string;
-  user: string;
-  inboundTag: string;
-};
-
-type RouteTestResult = {
-  matched: boolean;
-  index: number;
-  target: string;
-  comment: string;
-};
-
-const DEFAULT_ROUTE_TEST_INPUT: RouteTestInput = {
-  domain: '',
-  ip: '',
-  port: '',
-  network: '',
-  protocol: '',
-  source: '',
-  user: '',
-  inboundTag: '',
-};
-
-const csvList = (value: string): string[] =>
+const csvToList = (value?: string): string[] =>
   String(value || '')
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
-
-const normalizeText = (value: string): string =>
-  String(value || '')
-    .trim()
-    .toLowerCase();
-
-const matchPort = (inputPort: string, rulePort: string): boolean => {
-  const port = Number(inputPort);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-
-  for (const token of csvList(rulePort)) {
-    if (/^\d+$/.test(token) && Number(token) === port) return true;
-    const [start, end] = token.split('-').map((item) => Number(item.trim()));
-    if (
-      Number.isInteger(start) &&
-      Number.isInteger(end) &&
-      start > 0 &&
-      end <= 65535 &&
-      start <= end &&
-      port >= start &&
-      port <= end
-    ) {
-      return true;
-    }
-  }
-  return false;
-};
-
-const matchSimpleStringList = (value: string, list: string[]): boolean => {
-  const input = normalizeText(value);
-  if (!input) return false;
-  return list.some((item) => normalizeText(item) === input);
-};
-
-const isIPv4 = (value: string): boolean => {
-  const parts = String(value || '')
-    .trim()
-    .split('.');
-  if (parts.length !== 4) return false;
-  return parts.every((part) => {
-    if (!/^\d+$/.test(part)) return false;
-    const n = Number(part);
-    return n >= 0 && n <= 255;
-  });
-};
-
-const ipToInt = (ip: string): number => {
-  const [a, b, c, d] = ip.split('.').map(Number);
-  return (((a << 24) >>> 0) + (b << 16) + (c << 8) + d) >>> 0;
-};
-
-const matchIPv4Cidr = (ip: string, cidr: string): boolean => {
-  const [base, bitsRaw] = cidr.split('/');
-  const bits = Number(bitsRaw);
-  if (!isIPv4(ip) || !isIPv4(base) || !Number.isInteger(bits) || bits < 0 || bits > 32) {
-    return false;
-  }
-  if (bits === 0) return true;
-  const mask = (0xffffffff << (32 - bits)) >>> 0;
-  return (ipToInt(ip) & mask) === (ipToInt(base) & mask);
-};
-
-const matchIpToken = (value: string, token: string): boolean => {
-  const input = String(value || '').trim();
-  const pattern = String(token || '')
-    .trim()
-    .toLowerCase();
-  if (!input || !pattern || pattern.startsWith('geoip:')) return false;
-  if (pattern.includes('/')) return matchIPv4Cidr(input, pattern);
-  return normalizeText(input) === normalizeText(pattern);
-};
-
-const matchDomainToken = (value: string, token: string): boolean => {
-  const domain = normalizeText(value);
-  const pattern = normalizeText(token);
-  if (!domain || !pattern || pattern.startsWith('geosite:')) return false;
-  if (pattern.startsWith('full:')) return domain === pattern.slice(5);
-  if (pattern.startsWith('domain:')) {
-    const root = pattern.slice(7);
-    return domain === root || domain.endsWith(`.${root}`);
-  }
-  if (pattern.startsWith('keyword:')) return domain.includes(pattern.slice(8));
-  return domain === pattern || domain.endsWith(`.${pattern}`);
-};
-
-const ruleMatchesInput = (rule: RoutingRule, input: RouteTestInput): boolean => {
-  if (rule.enabled === false) return false;
-
-  if ((rule.domain || []).length > 0) {
-    if (
-      !input.domain ||
-      !(rule.domain || []).some((token) => matchDomainToken(input.domain, token))
-    ) {
-      return false;
-    }
-  }
-
-  if ((rule.ip || []).length > 0) {
-    if (!input.ip || !(rule.ip || []).some((token) => matchIpToken(input.ip, token))) {
-      return false;
-    }
-  }
-
-  if (rule.port && (!input.port || !matchPort(input.port, rule.port))) return false;
-
-  if (rule.network) {
-    const networks = csvList(rule.network);
-    if (networks.length > 0 && !matchSimpleStringList(input.network, networks)) return false;
-  }
-
-  if (
-    (rule.protocol || []).length > 0 &&
-    !matchSimpleStringList(input.protocol, rule.protocol || [])
-  ) {
-    return false;
-  }
-
-  if ((rule.source || []).length > 0) {
-    if (!input.source || !(rule.source || []).some((token) => matchIpToken(input.source, token))) {
-      return false;
-    }
-  }
-
-  if ((rule.user || []).length > 0 && !matchSimpleStringList(input.user, rule.user || [])) {
-    return false;
-  }
-
-  if (
-    (rule.inboundTag || []).length > 0 &&
-    !matchSimpleStringList(input.inboundTag, rule.inboundTag || [])
-  ) {
-    return false;
-  }
-
-  return true;
-};
-
-const runRouteTest = (rules: RoutingRule[], input: RouteTestInput): RouteTestResult => {
-  for (let i = 0; i < rules.length; i += 1) {
-    const rule = rules[i];
-    if (ruleMatchesInput(rule, input)) {
-      return {
-        matched: true,
-        index: i,
-        target: String(rule.outboundTag || rule.balancerTag || 'direct'),
-        comment: String(rule.comment || ''),
-      };
-    }
-  }
-  return { matched: false, index: -1, target: '', comment: '' };
-};
 
 const healthClass = (status: OutboundHealth['status']) => {
   if (status === 'up') return 'border-green-500/30 bg-green-500/10 text-green-400';
@@ -454,16 +283,36 @@ function ProfileEditor({
   const [rules, setRules] = useState<RoutingRule[]>(
     (profile?.rules || []).map((rule) => ({ ...rule, enabled: rule.enabled !== false }))
   );
-  const [testInput, setTestInput] = useState<RouteTestInput>(DEFAULT_ROUTE_TEST_INPUT);
-  const [testResult, setTestResult] = useState<RouteTestResult | null>(null);
+  const [expandedRules, setExpandedRules] = useState<Set<number>>(new Set());
   const queryClient = useQueryClient();
+
+  const { data: inbounds } = useQuery({
+    queryKey: ['inbounds'],
+    queryFn: async () => (await api.get<Inbound[]>('/inbounds')).data,
+  });
+
+  const inboundTagSuggestions = useMemo(
+    () => Array.from(new Set((inbounds || []).map((i) => i.tag))).sort(),
+    [inbounds]
+  );
+
+  const userEmailSuggestions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (inbounds || []).flatMap((i) =>
+            (i.settings?.clients || []).map((c) => c.email).filter(Boolean)
+          )
+        )
+      ).sort(),
+    [inbounds]
+  );
 
   useEffect(() => {
     setName(profile?.name || '');
     setProfileEnabled(profile?.enable !== false);
     setRules((profile?.rules || []).map((rule) => ({ ...rule, enabled: rule.enabled !== false })));
-    setTestInput(DEFAULT_ROUTE_TEST_INPUT);
-    setTestResult(null);
+    setExpandedRules(new Set());
   }, [profile]);
 
   const mutation = useMutation({
@@ -487,12 +336,6 @@ function ProfileEditor({
 
   const updateRule = (index: number, field: keyof RoutingRule, value: any) => {
     const newRules = [...rules];
-    if (['domain', 'ip', 'source', 'protocol', 'user', 'inboundTag'].includes(field)) {
-      value = value
-        .split(',')
-        .map((s: string) => s.trim())
-        .filter(Boolean);
-    }
     (newRules[index] as any)[field] = value;
     if (field === 'outboundTag') {
       delete (newRules[index] as any).balancerTag;
@@ -508,8 +351,21 @@ function ProfileEditor({
     setRules(next);
   };
 
+  const toggleExpanded = (index: number) => {
+    const next = new Set(expandedRules);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
+    setExpandedRules(next);
+  };
+
   const removeRule = (index: number) => {
     setRules(rules.filter((_, i) => i !== index));
+    const next = new Set<number>();
+    expandedRules.forEach((idx) => {
+      if (idx < index) next.add(idx);
+      else if (idx > index) next.add(idx - 1);
+    });
+    setExpandedRules(next);
   };
 
   const moveRule = (index: number, direction: 'up' | 'down') => {
@@ -520,6 +376,14 @@ function ProfileEditor({
     const [item] = next.splice(index, 1);
     next.splice(targetIndex, 0, item);
     setRules(next);
+
+    const nextSet = new Set<number>();
+    expandedRules.forEach((idx) => {
+      if (idx === index) nextSet.add(targetIndex);
+      else if (idx === targetIndex) nextSet.add(index);
+      else nextSet.add(idx);
+    });
+    setExpandedRules(nextSet);
   };
 
   const handleSave = () => {
@@ -531,18 +395,19 @@ function ProfileEditor({
     });
   };
 
-  const handleRunTest = () => {
-    setTestResult(runRouteTest(rules, testInput));
+  const ruleSummary = (rule: RoutingRule): string => {
+    if (rule.comment?.trim()) return rule.comment;
+    const parts: string[] = [];
+    if (rule.domain?.length) parts.push(`${rule.domain.length} domain`);
+    if (rule.ip?.length) parts.push(`${rule.ip.length} ip`);
+    if (rule.source?.length) parts.push(`${rule.source.length} src`);
+    if (rule.port) parts.push(`port ${rule.port}`);
+    if (rule.network) parts.push(rule.network);
+    if (rule.protocol?.length) parts.push(rule.protocol.join('/'));
+    if (rule.user?.length) parts.push(`${rule.user.length} user`);
+    if (rule.inboundTag?.length) parts.push(`inbound ${rule.inboundTag.join(',')}`);
+    return parts.length ? parts.join(' · ') : 'Match all';
   };
-
-  const hasGeoPatterns = rules.some((rule) =>
-    [...(rule.domain || []), ...(rule.ip || []), ...(rule.source || [])].some((token) => {
-      const normalized = String(token || '')
-        .trim()
-        .toLowerCase();
-      return normalized.startsWith('geoip:') || normalized.startsWith('geosite:');
-    })
-  );
 
   return (
     <div className="space-y-6">
@@ -567,263 +432,228 @@ function ProfileEditor({
         <div className="flex justify-between items-center">
           <div>
             <h4 className="text-sm font-bold uppercase text-gray-400">Rules</h4>
-            <p className="text-[11px] text-gray-500 mt-0.5">Top rule has highest priority.</p>
-          </div>
-          <Button size="sm" variant="secondary" onClick={addRule}>
-            Add Rule
-          </Button>
-        </div>
-        <div className="max-h-[60vh] overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-          {rules.map((rule, i) => (
-            <div
-              key={i}
-              className={`bg-white/5 p-4 pt-10 rounded-xl border border-white/5 grid grid-cols-12 gap-4 items-start relative group ${rule.enabled === false ? 'opacity-60' : ''}`}
-            >
-              <div className="absolute top-2 left-3 flex items-center gap-2">
-                <span className="text-xs font-mono text-gray-500">#{i + 1}</span>
-                <span
-                  className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${rule.enabled === false ? 'bg-gray-500/20 text-gray-400' : 'bg-green-500/10 text-green-400'}`}
-                >
-                  {rule.enabled === false ? 'OFF' : 'ON'}
-                </span>
-              </div>
-              <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                <Button
-                  variant="icon"
-                  size="icon"
-                  className="hover:bg-white/10"
-                  onClick={() => toggleRuleEnabled(i)}
-                  title={rule.enabled === false ? 'Enable rule' : 'Disable rule'}
-                >
-                  {rule.enabled === false ? <Play size={14} /> : <Pause size={14} />}
-                </Button>
-                <Button
-                  variant="icon"
-                  size="icon"
-                  className="hover:bg-white/10"
-                  disabled={i === 0}
-                  onClick={() => moveRule(i, 'up')}
-                  title="Move up"
-                >
-                  <ArrowUp size={14} />
-                </Button>
-                <Button
-                  variant="icon"
-                  size="icon"
-                  className="hover:bg-white/10"
-                  disabled={i === rules.length - 1}
-                  onClick={() => moveRule(i, 'down')}
-                  title="Move down"
-                >
-                  <ArrowDown size={14} />
-                </Button>
-                <Button
-                  variant="icon"
-                  size="icon"
-                  className="text-error hover:bg-white/10"
-                  onClick={() => removeRule(i)}
-                  title="Delete rule"
-                >
-                  <Trash2 size={16} />
-                </Button>
-              </div>
-
-              <div className="col-span-12">
-                <Input
-                  label="Rule Name / Comment"
-                  value={rule.comment || ''}
-                  onChange={(e) => updateRule(i, 'comment', e.target.value)}
-                  className="bg-black/20"
-                  placeholder="Optional note (e.g. Block social media)"
-                />
-              </div>
-
-              <div className="col-span-12 md:col-span-3 space-y-2">
-                <label className="text-[10px] uppercase text-gray-500 font-bold block mb-1">
-                  Domains
-                </label>
-                <textarea
-                  className="w-full bg-black/20 text-xs rounded border border-white/10 p-2 h-24 font-mono resize-none"
-                  value={rule.domain?.join(', ') || ''}
-                  onChange={(e) => updateRule(i, 'domain', e.target.value)}
-                  placeholder="geosite:google, domain:com"
-                />
-              </div>
-
-              <div className="col-span-12 md:col-span-3 space-y-2">
-                <label className="text-[10px] uppercase text-gray-500 font-bold block mb-1">
-                  IPs
-                </label>
-                <textarea
-                  className="w-full bg-black/20 text-xs rounded border border-white/10 p-2 h-24 font-mono resize-none"
-                  value={rule.ip?.join(', ') || ''}
-                  onChange={(e) => updateRule(i, 'ip', e.target.value)}
-                  placeholder="geoip:cn, 8.8.8.8"
-                />
-              </div>
-
-              <div className="col-span-12 md:col-span-3 space-y-2">
-                <label className="text-[10px] uppercase text-gray-500 font-bold block mb-1">
-                  Attributes
-                </label>
-                <div className="space-y-2">
-                  <Input
-                    label="Port"
-                    value={rule.port || ''}
-                    onChange={(e) => updateRule(i, 'port', e.target.value)}
-                    className="h-7 text-xs bg-black/20"
-                    placeholder="80,443"
-                  />
-                  <Input
-                    label="Network"
-                    value={rule.network || ''}
-                    onChange={(e) => updateRule(i, 'network', e.target.value)}
-                    className="h-7 text-xs bg-black/20"
-                    placeholder="tcp,udp"
-                  />
-                  <Input
-                    label="Protocol"
-                    value={rule.protocol?.join(',') || ''}
-                    onChange={(e) => updateRule(i, 'protocol', e.target.value)}
-                    className="h-7 text-xs bg-black/20"
-                    placeholder="http,tls"
-                  />
-                </div>
-              </div>
-
-              <div className="col-span-12 md:col-span-3 space-y-2">
-                <label className="text-[10px] uppercase text-gray-500 font-bold block mb-1">
-                  Source & Target
-                </label>
-                <div className="space-y-2">
-                  <Input
-                    label="Source IP"
-                    value={rule.source?.join(',') || ''}
-                    onChange={(e) => updateRule(i, 'source', e.target.value)}
-                    className="h-7 text-xs bg-black/20"
-                    placeholder="10.0.0.1"
-                  />
-                  <Input
-                    label="Inbound Tag"
-                    value={rule.inboundTag?.join(',') || ''}
-                    onChange={(e) => updateRule(i, 'inboundTag', e.target.value)}
-                    className="h-7 text-xs bg-black/20"
-                    placeholder="inbound tag"
-                  />
-                  <Input
-                    label="User Email"
-                    value={rule.user?.join(',') || ''}
-                    onChange={(e) => updateRule(i, 'user', e.target.value)}
-                    className="h-7 text-xs bg-black/20"
-                    placeholder="email1, email2"
-                  />
-
-                  <div>
-                    <label className="text-[10px] uppercase text-primary font-bold block mb-1 mt-1">
-                      Target Outbound
-                    </label>
-                    <select
-                      className="w-full bg-primary/10 text-xs rounded h-8 border border-primary/20 px-2 text-primary font-bold focus:outline-none"
-                      value={rule.outboundTag || rule.balancerTag || 'direct'}
-                      onChange={(e) => updateRule(i, 'outboundTag', e.target.value)}
-                    >
-                      {outboundOptions.map((opt) => (
-                        <option key={opt} value={opt} className="bg-[#1e1b24]">
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="bg-white/5 border border-white/5 rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h4 className="text-sm font-bold uppercase text-gray-300">Route Tester</h4>
             <p className="text-[11px] text-gray-500 mt-0.5">
-              Tests current rule order in editor (first match wins).
+              Top rule has highest priority. Click a rule to expand.
             </p>
           </div>
-          <Button size="sm" variant="secondary" onClick={handleRunTest}>
-            Test Route
-          </Button>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          <Input
-            label="Domain"
-            value={testInput.domain}
-            onChange={(e) => setTestInput({ ...testInput, domain: e.target.value })}
-            placeholder="www.example.com"
-          />
-          <Input
-            label="IP"
-            value={testInput.ip}
-            onChange={(e) => setTestInput({ ...testInput, ip: e.target.value })}
-            placeholder="8.8.8.8"
-          />
-          <Input
-            label="Port"
-            value={testInput.port}
-            onChange={(e) => setTestInput({ ...testInput, port: e.target.value })}
-            placeholder="443"
-          />
-          <Input
-            label="Network"
-            value={testInput.network}
-            onChange={(e) => setTestInput({ ...testInput, network: e.target.value })}
-            placeholder="tcp/udp"
-          />
-          <Input
-            label="Protocol"
-            value={testInput.protocol}
-            onChange={(e) => setTestInput({ ...testInput, protocol: e.target.value })}
-            placeholder="http,tls"
-          />
-          <Input
-            label="Source IP"
-            value={testInput.source}
-            onChange={(e) => setTestInput({ ...testInput, source: e.target.value })}
-            placeholder="10.0.0.10"
-          />
-          <Input
-            label="User"
-            value={testInput.user}
-            onChange={(e) => setTestInput({ ...testInput, user: e.target.value })}
-            placeholder="user@example.com"
-          />
-          <Input
-            label="Inbound Tag"
-            value={testInput.inboundTag}
-            onChange={(e) => setTestInput({ ...testInput, inboundTag: e.target.value })}
-            placeholder="inbound tag"
-          />
-        </div>
-        {hasGeoPatterns && (
-          <p className="text-xs text-amber-400/90">
-            Note: `geoip:` and `geosite:` are not evaluated by local tester.
-          </p>
-        )}
-        {testResult && (
-          <div
-            className={`rounded-lg border p-3 text-sm ${testResult.matched ? 'border-green-500/30 bg-green-500/10 text-green-300' : 'border-gray-500/20 bg-black/20 text-gray-300'}`}
-          >
-            {testResult.matched ? (
-              <>
-                Match: rule #{testResult.index + 1}
-                {' -> '}
-                <span className="font-bold">{testResult.target}</span>
-                {testResult.comment ? ` (${testResult.comment})` : ''}
-              </>
-            ) : (
-              <>No matching rule. Fallback routing will be used.</>
+          <div className="flex gap-2">
+            {rules.length > 0 && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() =>
+                  setExpandedRules(
+                    expandedRules.size === rules.length
+                      ? new Set()
+                      : new Set(rules.map((_, i) => i))
+                  )
+                }
+              >
+                {expandedRules.size === rules.length ? 'Collapse all' : 'Expand all'}
+              </Button>
             )}
+            <Button size="sm" variant="secondary" onClick={addRule}>
+              Add Rule
+            </Button>
           </div>
-        )}
+        </div>
+        <div className="space-y-2">
+          {rules.map((rule, i) => {
+            const isExpanded = expandedRules.has(i);
+            const target = rule.outboundTag || rule.balancerTag || 'direct';
+            const targetIsBlock = target === 'block';
+            return (
+              <div
+                key={i}
+                className={`bg-white/5 rounded-xl border border-white/5 transition-colors ${rule.enabled === false ? 'opacity-60' : ''}`}
+              >
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleExpanded(i)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      toggleExpanded(i);
+                    }
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-white/[0.03] rounded-xl transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                >
+                  <motion.span
+                    animate={{ rotate: isExpanded ? 0 : -90 }}
+                    transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+                    className="text-gray-500 shrink-0 inline-flex"
+                  >
+                    <ChevronDown size={14} />
+                  </motion.span>
+                  <span className="text-xs font-mono text-gray-500 shrink-0">#{i + 1}</span>
+                  <span
+                    className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded shrink-0 ${rule.enabled === false ? 'bg-gray-500/20 text-gray-400' : 'bg-green-500/10 text-green-400'}`}
+                  >
+                    {rule.enabled === false ? 'OFF' : 'ON'}
+                  </span>
+                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
+                    {ruleSummary(rule)}
+                  </span>
+                  <span
+                    className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded shrink-0 ${targetIsBlock ? 'bg-red-500/10 text-red-400' : 'bg-primary/10 text-primary'}`}
+                  >
+                    {target}
+                  </span>
+                  <div className="flex gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      variant="icon"
+                      size="icon"
+                      className="hover:bg-white/10 h-7 w-7"
+                      onClick={() => toggleRuleEnabled(i)}
+                      title={rule.enabled === false ? 'Enable rule' : 'Disable rule'}
+                    >
+                      {rule.enabled === false ? <Play size={12} /> : <Pause size={12} />}
+                    </Button>
+                    <Button
+                      variant="icon"
+                      size="icon"
+                      className="hover:bg-white/10 h-7 w-7"
+                      disabled={i === 0}
+                      onClick={() => moveRule(i, 'up')}
+                      title="Move up"
+                    >
+                      <ArrowUp size={12} />
+                    </Button>
+                    <Button
+                      variant="icon"
+                      size="icon"
+                      className="hover:bg-white/10 h-7 w-7"
+                      disabled={i === rules.length - 1}
+                      onClick={() => moveRule(i, 'down')}
+                      title="Move down"
+                    >
+                      <ArrowDown size={12} />
+                    </Button>
+                    <Button
+                      variant="icon"
+                      size="icon"
+                      className="text-error hover:bg-white/10 h-7 w-7"
+                      onClick={() => removeRule(i)}
+                      title="Delete rule"
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                </div>
+
+                <AnimatePresence initial={false}>
+                  {isExpanded && (
+                    <motion.div
+                      key="content"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{
+                        height: { duration: 0.22, ease: [0.4, 0, 0.2, 1] },
+                        opacity: { duration: 0.18, ease: 'easeOut' },
+                      }}
+                      style={{ overflow: 'hidden' }}
+                    >
+                      <div className="px-4 pb-4 pt-1 grid grid-cols-12 gap-4 items-start border-t border-white/[0.04]">
+                        <div className="col-span-12">
+                          <Input
+                            label="Rule Name / Comment"
+                            value={rule.comment || ''}
+                            onChange={(e) => updateRule(i, 'comment', e.target.value)}
+                            className="bg-black/20"
+                            placeholder="Optional note (e.g. Block social media)"
+                          />
+                        </div>
+
+                        <div className="col-span-12 md:col-span-6 space-y-3">
+                          <TagInput
+                            label="Domains"
+                            value={rule.domain || []}
+                            onChange={(tags) => updateRule(i, 'domain', tags)}
+                            placeholder="geosite:google, domain:example.com"
+                            helperText="Press Enter or comma to add. Paste comma/newline-separated lists."
+                            pattern={null}
+                            maxLength={200}
+                          />
+                          <TagInput
+                            label="IPs"
+                            value={rule.ip || []}
+                            onChange={(tags) => updateRule(i, 'ip', tags)}
+                            placeholder="geoip:cn, 8.8.8.8, 192.168.0.0/24"
+                            pattern={null}
+                            maxLength={120}
+                          />
+                          <TagInput
+                            label="Source IP"
+                            value={rule.source || []}
+                            onChange={(tags) => updateRule(i, 'source', tags)}
+                            placeholder="10.0.0.1, 192.168.0.0/24"
+                            pattern={null}
+                            maxLength={120}
+                          />
+                        </div>
+
+                        <div className="col-span-12 md:col-span-6 space-y-3">
+                          <div className="grid grid-cols-2 gap-3">
+                            <TagInput
+                              label="Port"
+                              value={csvToList(rule.port)}
+                              onChange={(tags) => updateRule(i, 'port', tags.join(','))}
+                              placeholder="80, 443, 1000-2000"
+                              pattern={null}
+                              maxLength={40}
+                            />
+                            <TagInput
+                              label="Network"
+                              value={csvToList(rule.network)}
+                              onChange={(tags) => updateRule(i, 'network', tags.join(','))}
+                              placeholder="tcp, udp"
+                              pattern={null}
+                              maxLength={20}
+                            />
+                          </div>
+                          <TagInput
+                            label="Protocol"
+                            value={rule.protocol || []}
+                            onChange={(tags) => updateRule(i, 'protocol', tags)}
+                            placeholder="http, tls, bittorrent"
+                            pattern={null}
+                            maxLength={40}
+                          />
+                          <TagInput
+                            label="Inbound Tag"
+                            value={rule.inboundTag || []}
+                            onChange={(tags) => updateRule(i, 'inboundTag', tags)}
+                            suggestions={inboundTagSuggestions}
+                            placeholder="Type or pick an inbound tag"
+                            pattern={null}
+                            maxLength={80}
+                          />
+                          <TagInput
+                            label="User Email"
+                            value={rule.user || []}
+                            onChange={(tags) => updateRule(i, 'user', tags)}
+                            suggestions={userEmailSuggestions}
+                            placeholder="Type or pick a user email"
+                            pattern={null}
+                            maxLength={120}
+                          />
+                          <Select
+                            label="Target Outbound"
+                            value={rule.outboundTag || rule.balancerTag || 'direct'}
+                            onChange={(e) => updateRule(i, 'outboundTag', e.target.value)}
+                            options={outboundOptions.map((opt) => ({ value: opt, label: opt }))}
+                          />
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div className="flex justify-end">

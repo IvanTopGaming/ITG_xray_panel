@@ -12,6 +12,8 @@ interface TagInputProps {
   placeholder?: string;
   helperText?: string;
   maxLength?: number;
+  pattern?: RegExp | null;
+  patternError?: string;
 }
 
 const TAG_RE = /^[A-Za-z0-9_-]+$/;
@@ -45,6 +47,8 @@ export function TagInput({
   placeholder = 'Add tag…',
   helperText,
   maxLength = 30,
+  pattern = TAG_RE,
+  patternError,
 }: TagInputProps) {
   const [draft, setDraft] = useState('');
   const [focused, setFocused] = useState(false);
@@ -99,8 +103,8 @@ export function TagInput({
       setError(`Tag must be ≤ ${maxLength} chars`);
       return;
     }
-    if (!TAG_RE.test(tag)) {
-      setError("Use only letters, digits, '-', '_'");
+    if (pattern && !pattern.test(tag)) {
+      setError(patternError || "Use only letters, digits, '-', '_'");
       return;
     }
     if (value.includes(tag)) {
@@ -172,8 +176,16 @@ export function TagInput({
             ref={inputRef}
             value={draft}
             onChange={(e) => {
-              setDraft(e.target.value);
+              const v = e.target.value;
               setError(null);
+              if (/[,\n\t]/.test(v)) {
+                const parts = v.split(/[,\n\t]+/);
+                const last = parts.pop() ?? '';
+                parts.forEach((p) => addTag(p));
+                setDraft(last);
+              } else {
+                setDraft(v);
+              }
             }}
             onKeyDown={onKeyDown}
             onFocus={() => setFocused(true)}
