@@ -22,7 +22,7 @@ from app.models import (
     SystemSetting,
 )
 from app.extensions import db
-from app.services.runtime_identity import build_runtime_email
+from app.services.runtime_identity import build_runtime_email, parse_runtime_email
 
 CONFIG_PATH = "/etc/xray/config.json"
 LOCK_PATH = "/etc/xray/config.lock"
@@ -1091,6 +1091,24 @@ def generate_config_file():
                                 for k, v in rule.items()
                                 if k in ALLOWED_ROUTING_RULE_KEYS and v not in [None, "", []]
                             }
+                            if "user" in new_rule:
+                                raw_users = (
+                                    new_rule["user"] if isinstance(new_rule["user"], list) else [new_rule["user"]]
+                                )
+                                encoded_users = []
+                                for raw_user in raw_users:
+                                    user_str = str(raw_user).strip()
+                                    if not user_str:
+                                        continue
+                                    existing_inbound, _ = parse_runtime_email(user_str)
+                                    if existing_inbound:
+                                        encoded_users.append(user_str)
+                                    else:
+                                        encoded_users.append(build_runtime_email(ib.tag, user_str))
+                                if encoded_users:
+                                    new_rule["user"] = encoded_users
+                                else:
+                                    del new_rule["user"]
                             if "inboundTag" in new_rule and not isinstance(new_rule["inboundTag"], list):
                                 new_rule["inboundTag"] = [str(new_rule["inboundTag"])]
                             if "inboundTag" not in new_rule or not new_rule["inboundTag"]:
