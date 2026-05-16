@@ -1071,6 +1071,12 @@ def generate_config_file():
                         "wgMTU",
                     ]:
                         stream_settings_for_xray.pop(extra_key, None)
+                    if ib.port == 443:
+                        sockopt = dict(stream_settings_for_xray.get("sockopt") or {})
+                        sockopt["acceptProxyProtocol"] = True
+                        sockopt.setdefault("tcpKeepAliveInterval", -1)
+                        sockopt.setdefault("tcpFastOpen", True)
+                        stream_settings_for_xray["sockopt"] = sockopt
                     conf["streamSettings"] = stream_settings_for_xray
                 inbounds_json.append(conf)
 

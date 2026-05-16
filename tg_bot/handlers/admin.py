@@ -194,7 +194,7 @@ async def admin_backup_dl_panel_process(callback: types.CallbackQuery, state: FS
 
     await callback.answer(f"Downloading from {target_panel.name}...", show_alert=False)
 
-    content = await target_panel.request("GET", "backup")
+    content = await target_panel.request("GET", "backup", timeout=300)
     if content and isinstance(content, bytes):
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
 

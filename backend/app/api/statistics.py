@@ -1,3 +1,5 @@
+import json
+
 from flask import Blueprint, jsonify, request
 from sqlalchemy import func, literal_column
 from datetime import datetime
@@ -31,22 +33,66 @@ def _since_bucket(period: str):
     return bucket, date_str
 
 
-def _granularity_seconds(period: str) -> int:
-    """Bucket size in seconds for aggregating chart points."""
-    if period == "1h":
+def _resolve_range(args):
+    """Return (since_bucket, since_date, until_bucket, until_date).
+
+    If both 'from' and 'to' are present in the query they take precedence over
+    'period' and define an [inclusive, exclusive) hourly-aligned window.
+    Otherwise we fall through to the legacy 'period' preset and leave until_*
+    None (open-ended — interpreted as "up to now" by the caller).
+
+    Raises ValueError on malformed input.
+    """
+    raw_from = args.get("from")
+    raw_to = args.get("to")
+    if raw_from is not None or raw_to is not None:
+        if raw_from is None or raw_to is None:
+            raise ValueError("both 'from' and 'to' are required for a custom range")
+        try:
+            f_ts = int(raw_from)
+            t_ts = int(raw_to)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("'from' and 'to' must be unix-seconds integers") from exc
+        if t_ts <= f_ts:
+            raise ValueError("'to' must be greater than 'from'")
+        since_bucket = (f_ts // 3600) * 3600
+        until_bucket = (t_ts // 3600) * 3600
+        if until_bucket == since_bucket:
+            until_bucket += 3600
+        since_date = datetime.fromtimestamp(since_bucket).date().isoformat()
+        until_date = datetime.fromtimestamp(until_bucket).date().isoformat()
+        return since_bucket, since_date, until_bucket, until_date
+    period = args.get("period", "7d")
+    since_bucket, since_date = _since_bucket(period)
+    return since_bucket, since_date, None, None
+
+
+def _granularity_for_duration(secs: int) -> int:
+    """Bucket size in seconds for aggregating chart points, given a window duration."""
+    if secs <= 3_600:
         return 600  # 10-minute buckets → 6 points per hour
-    if period in ("6h", "24h"):
-        return 3600  # hourly
-    if period in ("7d", "30d", "90d"):
-        return 86400  # daily
-    return 86400 * 7  # weekly for 365d / all
+    if secs <= 86_400:
+        return 3_600  # hourly
+    if secs <= 90 * 86_400:
+        return 86_400  # daily
+    return 7 * 86_400  # weekly
+
+
+def _granularity_seconds(period: str) -> int:
+    """Legacy preset-based granularity, retained for the no-custom-range path."""
+    secs = _PERIOD_SECONDS.get(period)
+    if secs is None:
+        return 7 * 86_400  # 'all' → weekly
+    return _granularity_for_duration(secs)
 
 
 @bp.get("/stats/overview")
 @token_required
 def get_overview():
-    period = request.args.get("period", "7d")
-    since_bucket, since_date = _since_bucket(period)
+    try:
+        since_bucket, since_date, until_bucket, until_date = _resolve_range(request.args)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     clients = Client.query.all()
     inbounds = Inbound.query.all()
@@ -80,6 +126,8 @@ def get_overview():
     ).filter(TrafficSnapshot.entity_type == "user")
     if since_bucket is not None:
         user_snaps_q = user_snaps_q.filter(TrafficSnapshot.bucket >= since_bucket)
+    if until_bucket is not None:
+        user_snaps_q = user_snaps_q.filter(TrafficSnapshot.bucket < until_bucket)
     user_snaps = user_snaps_q.group_by(TrafficSnapshot.entity_id, TrafficSnapshot.inbound_tag).all()
 
     period_up = sum(r.up for r in user_snaps)
@@ -112,6 +160,8 @@ def get_overview():
     ).filter(TrafficSnapshot.entity_type == "inbound")
     if since_bucket is not None:
         ib_snaps_q = ib_snaps_q.filter(TrafficSnapshot.bucket >= since_bucket)
+    if until_bucket is not None:
+        ib_snaps_q = ib_snaps_q.filter(TrafficSnapshot.bucket < until_bucket)
     ib_snaps = ib_snaps_q.group_by(TrafficSnapshot.entity_id).all()
 
     top_inbounds = sorted(
@@ -136,6 +186,8 @@ def get_overview():
     )
     if since_date is not None:
         domain_q = domain_q.filter(DomainStat.date >= since_date)
+    if until_date is not None:
+        domain_q = domain_q.filter(DomainStat.date <= until_date)
     domain_q = domain_q.group_by(DomainStat.domain).order_by(func.sum(DomainStat.hit_count).desc()).limit(10)
     top_domains = [{"domain": r.domain, "hit_count": r.hits} for r in domain_q.all()]
 
@@ -178,8 +230,14 @@ def get_traffic():
     entity_id = request.args.get("entity_id", "")
     inbound_tag = request.args.get("inbound_tag", "")
 
-    since_bucket, _ = _since_bucket(period)
-    gran = _granularity_seconds(period)
+    try:
+        since_bucket, _, until_bucket, _ = _resolve_range(request.args)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if until_bucket is not None and since_bucket is not None:
+        gran = _granularity_for_duration(until_bucket - since_bucket)
+    else:
+        gran = _granularity_seconds(period)
 
     bucket_expr = literal_column(f"(bucket / {gran}) * {gran}")
 
@@ -206,6 +264,8 @@ def get_traffic():
 
     if since_bucket is not None:
         q = q.filter(TrafficSnapshot.bucket >= since_bucket)
+    if until_bucket is not None:
+        q = q.filter(TrafficSnapshot.bucket < until_bucket)
 
     rows = q.group_by(bucket_expr).order_by(bucket_expr).all()
 
@@ -221,11 +281,13 @@ def get_traffic():
 @token_required
 def get_domains():
     """Top domains with optional filters."""
-    period = request.args.get("period", "7d")
     limit = min(int(request.args.get("limit", 50)), 200)
     email_filter = request.args.get("email", "")
     tag_filter = request.args.get("inbound_tag", "")
-    _, since_date = _since_bucket(period)
+    try:
+        _, since_date, _, until_date = _resolve_range(request.args)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     q = db.session.query(
         DomainStat.domain,
@@ -233,6 +295,8 @@ def get_domains():
     )
     if since_date:
         q = q.filter(DomainStat.date >= since_date)
+    if until_date:
+        q = q.filter(DomainStat.date <= until_date)
     if email_filter:
         q = q.filter(DomainStat.client_email == email_filter)
     if tag_filter:
@@ -260,11 +324,13 @@ def get_domains():
 def get_domain_users():
     """Per-user breakdown for a specific domain."""
     domain = request.args.get("domain", "").strip()
-    period = request.args.get("period", "7d")
     if not domain:
         return jsonify({"error": "domain is required"}), 400
 
-    _, since_date = _since_bucket(period)
+    try:
+        _, since_date, _, until_date = _resolve_range(request.args)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     q = db.session.query(
         DomainStat.client_email,
@@ -274,6 +340,8 @@ def get_domain_users():
 
     if since_date:
         q = q.filter(DomainStat.date >= since_date)
+    if until_date:
+        q = q.filter(DomainStat.date <= until_date)
 
     rows = (
         q.group_by(DomainStat.client_email, DomainStat.inbound_tag)
@@ -302,8 +370,10 @@ def get_domain_users():
 @token_required
 def get_users_ranking():
     """Users ranked by traffic in the selected period."""
-    period = request.args.get("period", "7d")
-    since_bucket, _ = _since_bucket(period)
+    try:
+        since_bucket, _, until_bucket, _ = _resolve_range(request.args)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     rows = db.session.query(
         TrafficSnapshot.entity_id.label("email"),
@@ -314,6 +384,8 @@ def get_users_ranking():
 
     if since_bucket is not None:
         rows = rows.filter(TrafficSnapshot.bucket >= since_bucket)
+    if until_bucket is not None:
+        rows = rows.filter(TrafficSnapshot.bucket < until_bucket)
 
     rows = (
         rows.group_by(TrafficSnapshot.entity_id, TrafficSnapshot.inbound_tag)
@@ -327,6 +399,10 @@ def get_users_ranking():
     result = []
     for r in rows:
         c = client_map.get((r.email, r.inbound_tag))
+        try:
+            ips = json.loads(c.source_ips) if (c and c.source_ips) else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            ips = []
         result.append(
             {
                 "email": r.email,
@@ -337,6 +413,7 @@ def get_users_ranking():
                 "enable": c.enable if c else True,
                 "last_seen": c.last_seen if c else 0,
                 "limit_bytes": c.limit_bytes if c else 0,
+                "source_ips": ips,
             }
         )
 
@@ -387,9 +464,15 @@ def get_node_overview(node_id):
     if not node:
         return jsonify({"error": "Node not found"}), 404
 
-    period = request.args.get("period", "7d")
+    raw_from = request.args.get("from")
+    raw_to = request.args.get("to")
     client = NodeClient(node)
-    body, status = client.request("GET", f"stats/overview?period={period}")
+    if raw_from is not None and raw_to is not None:
+        qs = f"from={raw_from}&to={raw_to}"
+    else:
+        period = request.args.get("period", "7d")
+        qs = f"period={period}"
+    body, status = client.request("GET", f"stats/overview?{qs}")
     if status == 0:
         return jsonify({"error": body.get("error", "Node unreachable")}), 503
     return jsonify(body), status

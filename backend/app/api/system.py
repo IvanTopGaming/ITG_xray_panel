@@ -7,7 +7,7 @@ import shutil
 import threading
 import time
 import json
-from flask import Blueprint, request, jsonify, send_file, Response, stream_with_context
+from flask import Blueprint, after_this_request, jsonify, request, send_file, Response, stream_with_context
 from app.utils import token_required
 from app.extensions import limiter, db
 from app.models import Client, SystemSetting
@@ -243,7 +243,6 @@ def get_config():
 @token_required
 @limiter.limit("30 per minute")
 def backup():
-    import io
     import tempfile
 
     db_path = _db_path()
@@ -251,26 +250,33 @@ def backup():
         return jsonify({"error": "DB not found"}), 404
     db.session.commit()
     # Use SQLite Backup API to create a consistent snapshot.
-    # send_file(db_path) only reads panel.db and silently misses any
-    # committed data that is still in the WAL file (panel.db-wal).
-    # backup() goes through the SQLite engine and captures the full
-    # logical database regardless of WAL state.
+    # send_file(db_path) would silently miss any committed data still
+    # in the WAL file (panel.db-wal); backup() goes through the SQLite
+    # engine and captures the full logical database regardless of WAL state.
+    # The snapshot is streamed from disk (not buffered in RAM) and deleted
+    # via after_this_request once Flask is done sending the response.
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".db", dir=os.path.dirname(db_path))
     os.close(tmp_fd)
     try:
-        with sqlite3.connect(db_path) as src, sqlite3.connect(tmp_path) as dst:
+        with sqlite3.connect(db_path, timeout=10.0) as src, sqlite3.connect(tmp_path) as dst:
             src.backup(dst)
-        with open(tmp_path, "rb") as f:
-            data = f.read()
-    finally:
+    except Exception:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
-    buf = io.BytesIO(data)
-    buf.seek(0)
+        raise
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return response
+
     return send_file(
-        buf,
+        tmp_path,
         as_attachment=True,
         download_name=f"backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.db",
         mimetype="application/octet-stream",

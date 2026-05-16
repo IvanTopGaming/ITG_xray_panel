@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { formatBytes, cn } from '@/lib/utils';
@@ -11,6 +11,7 @@ import {
   ArrowUp,
   ArrowDown,
   BarChart3,
+  Calendar,
   Layers,
   Search,
   RefreshCw,
@@ -25,7 +26,33 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type Period = '1h' | '6h' | '24h' | '7d' | '30d' | '90d' | '365d' | 'all';
+type Period = '1h' | '6h' | '24h' | '7d' | '30d' | '90d' | '365d' | 'all' | 'custom';
+type CustomRange = { from: number; to: number };
+
+function periodQuery(period: Period, custom: CustomRange | null): string {
+  if (period === 'custom' && custom) return `from=${custom.from}&to=${custom.to}`;
+  return `period=${period}`;
+}
+
+function fmtRange(c: CustomRange): string {
+  const f = new Date(c.from * 1000);
+  const t = new Date(c.to * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const part = (d: Date) => `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:00`;
+  return `${part(f)} → ${part(t)}`;
+}
+
+function toLocalDateTimeInput(ts: number): string {
+  const d = new Date(ts * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:00`;
+}
+
+function fromLocalDateTimeInput(s: string): number {
+  const d = new Date(s);
+  d.setMinutes(0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
 type StatsTab = 'overview' | 'users' | 'inbounds' | 'sites' | 'nodes';
 
 interface OverviewData {
@@ -67,6 +94,7 @@ interface UserRankEntry {
   enable: boolean;
   last_seen: number;
   limit_bytes: number;
+  source_ips?: string[];
 }
 
 interface NodeSummary {
@@ -439,6 +467,129 @@ function PeriodSelector({ value, onChange }: { value: Period; onChange: (p: Peri
   );
 }
 
+// ─── Custom-range button + popover ────────────────────────────────────────────
+
+function CalendarRangeButton({
+  active,
+  range,
+  open,
+  onOpenChange,
+  onApply,
+  onClear,
+}: {
+  active: boolean;
+  range: CustomRange | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onApply: (from: number, to: number) => void;
+  onClear: () => void;
+}) {
+  const nowHour = Math.floor(Date.now() / 1000 / 3600) * 3600;
+  const [fromStr, setFromStr] = useState(toLocalDateTimeInput(range?.from ?? nowHour - 24 * 3600));
+  const [toStr, setToStr] = useState(toLocalDateTimeInput(range?.to ?? nowHour));
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      const now = Math.floor(Date.now() / 1000 / 3600) * 3600;
+      setFromStr(toLocalDateTimeInput(range?.from ?? now - 24 * 3600));
+      setToStr(toLocalDateTimeInput(range?.to ?? now));
+      setErr(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const apply = () => {
+    const f = fromLocalDateTimeInput(fromStr);
+    const t = fromLocalDateTimeInput(toStr);
+    if (!(f < t)) {
+      setErr('"To" must be after "From"');
+      return;
+    }
+    onApply(f, t);
+    onOpenChange(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => onOpenChange(!open)}
+        className={cn(
+          'flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-xl whitespace-nowrap border transition-colors',
+          active
+            ? 'bg-gradient-to-br from-primary/25 to-violet-600/20 border-white/[0.1] text-white shadow-[0_0_12px_rgba(208,188,255,0.12)]'
+            : 'bg-white/[0.04] border-white/[0.05] text-gray-400 hover:text-white'
+        )}
+      >
+        <Calendar size={14} />
+        <span>{active && range ? fmtRange(range) : 'Custom'}</span>
+        {active && (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClear();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation();
+                onClear();
+              }
+            }}
+            className="ml-1 hover:text-red-400"
+          >
+            ✕
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => onOpenChange(false)} />
+          <div className="absolute right-0 top-full mt-2 z-50 w-72 p-4 rounded-2xl border border-white/[0.08] bg-zinc-900/95 backdrop-blur shadow-2xl space-y-3">
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-wider text-gray-500">From</label>
+              <input
+                type="datetime-local"
+                value={fromStr}
+                onChange={(e) => setFromStr(e.target.value)}
+                step={3600}
+                className="w-full px-3 py-2 text-sm rounded-lg bg-white/[0.04] border border-white/[0.06] text-white"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase tracking-wider text-gray-500">To</label>
+              <input
+                type="datetime-local"
+                value={toStr}
+                onChange={(e) => setToStr(e.target.value)}
+                step={3600}
+                className="w-full px-3 py-2 text-sm rounded-lg bg-white/[0.04] border border-white/[0.06] text-white"
+              />
+            </div>
+            {err && <p className="text-xs text-red-400">{err}</p>}
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => onOpenChange(false)}
+                className="flex-1 px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-lg bg-white/[0.04] border border-white/[0.05] text-gray-300 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={apply}
+                className="flex-1 px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-lg bg-gradient-to-br from-primary/30 to-violet-600/25 border border-white/[0.1] text-white"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Tab bar ─────────────────────────────────────────────────────────────────
 
 const TABS: { id: StatsTab; label: string; icon: React.ElementType }[] = [
@@ -504,6 +655,9 @@ function MiniBar({ value, max, color = 'violet' }: { value: number; max: number;
 
 export default function Statistics() {
   const [period, setPeriod] = useState<Period>('7d');
+  const [customRange, setCustomRange] = useState<CustomRange | null>(null);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const rangeLabel = period === 'custom' && customRange ? fmtRange(customRange) : period;
   const [tab, setTab] = useState<StatsTab>('overview');
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('total');
@@ -521,24 +675,26 @@ export default function Statistics() {
     isLoading: overviewLoading,
     refetch: refetchOverview,
   } = useQuery<OverviewData>({
-    queryKey: ['stats-overview', period],
-    queryFn: async () => (await api.get(`/stats/overview?period=${period}`)).data,
+    queryKey: ['stats-overview', period, customRange],
+    queryFn: async () =>
+      (await api.get(`/stats/overview?${periodQuery(period, customRange)}`)).data,
     refetchInterval: 30_000,
   });
 
   const { data: trafficAll } = useQuery<TrafficData>({
-    queryKey: ['stats-traffic-all', period],
-    queryFn: async () => (await api.get(`/stats/traffic?period=${period}&entity_type=all`)).data,
+    queryKey: ['stats-traffic-all', period, customRange],
+    queryFn: async () =>
+      (await api.get(`/stats/traffic?${periodQuery(period, customRange)}&entity_type=all`)).data,
     enabled: tab === 'overview',
     refetchInterval: 30_000,
   });
 
   const { data: trafficUser } = useQuery<TrafficData>({
-    queryKey: ['stats-traffic-user', period, selectedUserForChart],
+    queryKey: ['stats-traffic-user', period, customRange, selectedUserForChart],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/traffic?period=${period}&entity_type=user` +
+          `/stats/traffic?${periodQuery(period, customRange)}&entity_type=user` +
             `&entity_id=${encodeURIComponent(selectedUserForChart!.email)}` +
             `&inbound_tag=${encodeURIComponent(selectedUserForChart!.inbound_tag)}`
         )
@@ -548,11 +704,11 @@ export default function Statistics() {
   });
 
   const { data: trafficInbound } = useQuery<TrafficData>({
-    queryKey: ['stats-traffic-inbound', period, selectedInboundForChart],
+    queryKey: ['stats-traffic-inbound', period, customRange, selectedInboundForChart],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/traffic?period=${period}&entity_type=inbound&entity_id=${encodeURIComponent(selectedInboundForChart!)}`
+          `/stats/traffic?${periodQuery(period, customRange)}&entity_type=inbound&entity_id=${encodeURIComponent(selectedInboundForChart!)}`
         )
       ).data,
     enabled: !!selectedInboundForChart && tab === 'inbounds',
@@ -560,11 +716,11 @@ export default function Statistics() {
   });
 
   const { data: domainsData, isLoading: domainsLoading } = useQuery({
-    queryKey: ['stats-domains', period, domainTagFilter],
+    queryKey: ['stats-domains', period, customRange, domainTagFilter],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/domains?period=${period}&limit=100` +
+          `/stats/domains?${periodQuery(period, customRange)}&limit=100` +
             (domainTagFilter ? `&inbound_tag=${encodeURIComponent(domainTagFilter)}` : '')
         )
       ).data as { domains: DomainEntry[] },
@@ -573,11 +729,11 @@ export default function Statistics() {
   });
 
   const { data: domainUsersData, isLoading: domainUsersLoading } = useQuery({
-    queryKey: ['stats-domain-users', expandedDomain, period],
+    queryKey: ['stats-domain-users', expandedDomain, period, customRange],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/domain-users?domain=${encodeURIComponent(expandedDomain!)}&period=${period}`
+          `/stats/domain-users?domain=${encodeURIComponent(expandedDomain!)}&${periodQuery(period, customRange)}`
         )
       ).data as {
         domain: string;
@@ -587,9 +743,11 @@ export default function Statistics() {
   });
 
   const { data: usersData, isLoading: usersLoading } = useQuery({
-    queryKey: ['stats-users', period],
+    queryKey: ['stats-users', period, customRange],
     queryFn: async () =>
-      (await api.get(`/stats/users-ranking?period=${period}`)).data as { users: UserRankEntry[] },
+      (await api.get(`/stats/users-ranking?${periodQuery(period, customRange)}`)).data as {
+        users: UserRankEntry[];
+      },
     enabled: tab === 'users',
     refetchInterval: 30_000,
   });
@@ -609,19 +767,23 @@ export default function Statistics() {
     isLoading: nodeOverviewLoading,
     isError: nodeOverviewError,
   } = useQuery<OverviewData>({
-    queryKey: ['stats-node-overview', selectedNodeId, period],
+    queryKey: ['stats-node-overview', selectedNodeId, period, customRange],
     queryFn: async () =>
-      (await api.get(`/stats/nodes/${selectedNodeId}/overview?period=${period}`)).data,
+      (await api.get(`/stats/nodes/${selectedNodeId}/overview?${periodQuery(period, customRange)}`))
+        .data,
     enabled: !!selectedNodeId && tab === 'nodes',
     refetchInterval: 30_000,
     retry: false,
   });
 
   const { data: nodeTraffic } = useQuery<TrafficData>({
-    queryKey: ['stats-node-traffic', selectedNodeId, period],
+    queryKey: ['stats-node-traffic', selectedNodeId, period, customRange],
     queryFn: async () =>
-      (await api.get(`/stats/nodes/${selectedNodeId}/traffic?period=${period}&entity_type=all`))
-        .data,
+      (
+        await api.get(
+          `/stats/nodes/${selectedNodeId}/traffic?${periodQuery(period, customRange)}&entity_type=all`
+        )
+      ).data,
     enabled: !!selectedNodeId && tab === 'nodes',
     refetchInterval: 30_000,
     retry: false,
@@ -694,7 +856,29 @@ export default function Statistics() {
           <p className="text-sm text-gray-500 mt-0.5">Traffic analytics and usage insights</p>
         </div>
         <div className="flex items-center gap-3">
-          <PeriodSelector value={period} onChange={setPeriod} />
+          <div className="flex items-center gap-2">
+            <PeriodSelector
+              value={period}
+              onChange={(p) => {
+                setPeriod(p);
+                setCustomRange(null);
+              }}
+            />
+            <CalendarRangeButton
+              active={period === 'custom'}
+              range={customRange}
+              open={calendarOpen}
+              onOpenChange={setCalendarOpen}
+              onApply={(from, to) => {
+                setCustomRange({ from, to });
+                setPeriod('custom');
+              }}
+              onClear={() => {
+                setCustomRange(null);
+                setPeriod('7d');
+              }}
+            />
+          </div>
           <button
             onClick={() => refetchOverview()}
             className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
@@ -743,14 +927,14 @@ export default function Statistics() {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <StatCard
                 icon={TrendingUp}
-                label={`Upload (${period})`}
+                label={`Upload (${rangeLabel})`}
                 value={formatBytes(overview?.period_up ?? 0)}
                 sub={`All time: ${formatBytes(overview?.total_up_alltime ?? 0)}`}
                 color="violet"
               />
               <StatCard
                 icon={TrendingDown}
-                label={`Download (${period})`}
+                label={`Download (${rangeLabel})`}
                 value={formatBytes(overview?.period_down ?? 0)}
                 sub={`All time: ${formatBytes(overview?.total_down_alltime ?? 0)}`}
                 color="blue"
@@ -919,6 +1103,45 @@ export default function Statistics() {
                     </button>
                   </div>
                   <AreaChart points={trafficUser?.points ?? []} height={160} />
+                  {(() => {
+                    const u = sortedUsers.find(
+                      (x) =>
+                        x.email === selectedUserForChart.email &&
+                        x.inbound_tag === selectedUserForChart.inbound_tag
+                    );
+                    const ips = u?.source_ips ?? [];
+                    if (!ips.length) return null;
+                    return (
+                      <div className="mt-4 pt-4 border-t border-white/5">
+                        <div className="flex items-baseline gap-2 mb-2">
+                          <span className="text-[10px] uppercase tracking-wider text-gray-500">
+                            Recent IPs ({ips.length})
+                          </span>
+                          {u?.last_seen ? (
+                            <span className="text-[10px] text-gray-600">
+                              · last seen {fmtDate(u.last_seen)}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5">
+                          {ips.map((ip, i) => (
+                            <span
+                              key={`${ip}-${i}`}
+                              className={cn(
+                                'px-2.5 py-1.5 rounded-lg font-mono text-[11px] truncate border',
+                                i === 0
+                                  ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-200'
+                                  : 'bg-primary/10 border-primary/20 text-violet-200'
+                              )}
+                              title={ip}
+                            >
+                              {ip}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1548,13 +1771,13 @@ export default function Statistics() {
                       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                         <StatCard
                           icon={TrendingUp}
-                          label={`Upload (${period})`}
+                          label={`Upload (${rangeLabel})`}
                           value={formatBytes(nodeOverview?.period_up ?? 0)}
                           color="violet"
                         />
                         <StatCard
                           icon={TrendingDown}
-                          label={`Download (${period})`}
+                          label={`Download (${rangeLabel})`}
                           value={formatBytes(nodeOverview?.period_down ?? 0)}
                           color="blue"
                         />

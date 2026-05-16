@@ -38,7 +38,7 @@ async def send_backup(bot: Bot):
 
     for p in panel_api.panels:
         try:
-            content = await p.request("GET", "backup")
+            content = await p.request("GET", "backup", timeout=300)
             if content and isinstance(content, bytes):
                 fname = panel_backup_filename(p, date_str)
                 for target_id in targets:

@@ -1,11 +1,29 @@
 import os
+import sqlite3
+
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_apscheduler import APScheduler
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 db = SQLAlchemy()
+
+
+@event.listens_for(Engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _):
+    if not isinstance(dbapi_conn, sqlite3.Connection):
+        return
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA temp_store=MEMORY")
+    cur.close()
+
+
 migrate = Migrate()
 scheduler = APScheduler()
 limiter = Limiter(

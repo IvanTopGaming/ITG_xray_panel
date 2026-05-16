@@ -170,13 +170,14 @@ class SinglePanel:
             logger.error(f"[{self.name}] Login error: {e}")
             return False
 
-    async def request(self, method, endpoint, json_data=None, params=None, data=None):
+    async def request(self, method, endpoint, json_data=None, params=None, data=None, timeout=None):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                return await self._execute_request(method, endpoint, json_data, params, data)
+                return await self._execute_request(method, endpoint, json_data, params, data, timeout)
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.warning(f"[{self.name}] Request {endpoint} failed (Attempt {attempt + 1}/{max_retries}): {e}")
+                err = str(e) or type(e).__name__
+                logger.warning(f"[{self.name}] Request {endpoint} failed (Attempt {attempt + 1}/{max_retries}): {err}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
                 else:
@@ -185,7 +186,7 @@ class SinglePanel:
                 logger.error(f"[{self.name}] Unexpected error {endpoint}: {e}")
                 return None
 
-    async def _execute_request(self, method, endpoint, json_data, params, data):
+    async def _execute_request(self, method, endpoint, json_data, params, data, timeout=None):
         await self.ensure_session()
         if not self.token:
             if not await self.login():
@@ -193,8 +194,11 @@ class SinglePanel:
 
         headers = {"Authorization": f"Bearer {self.token}"}
         url = f"{self.base_url}/api/{endpoint}"
+        req_timeout = aiohttp.ClientTimeout(total=timeout) if timeout else None
 
-        async with self.session.request(method, url, json=json_data, params=params, data=data, headers=headers) as resp:
+        async with self.session.request(
+            method, url, json=json_data, params=params, data=data, headers=headers, timeout=req_timeout
+        ) as resp:
             if resp.status == 401:
                 if await self.login():
                     headers = {"Authorization": f"Bearer {self.token}"}
@@ -205,6 +209,7 @@ class SinglePanel:
                         params=params,
                         data=data,
                         headers=headers,
+                        timeout=req_timeout,
                     ) as resp2:
                         return await self._process_response(resp2)
                 return {"error": "Auth Failed"}
@@ -849,7 +854,7 @@ class MultiPanelManager:
     async def download_backup_first(self):
         if not self.panels:
             return None
-        return await self.panels[0].request("GET", "backup")
+        return await self.panels[0].request("GET", "backup", timeout=300)
 
     async def restore_backup(self, file_bytes, panel_idx):
         if not (0 <= panel_idx < len(self.panels)):
