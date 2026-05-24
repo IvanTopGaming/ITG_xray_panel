@@ -19,14 +19,17 @@ def _master_groups():
     return {g.strip() for g in raw.split(",") if g.strip()}
 
 
-def _master_visible_to_client(client):
+def _master_visible_to_client(client, ib=None):
     """Whether the master inbound should be exposed in this user's subscription.
 
     Same rule as remote nodes:
+    - inbound has master_disabled=True → never (it doesn't run on master)
     - user with no allowed_node_groups → no filter, master always visible
     - user with allowed_node_groups + master has no tags → master is "common", visible
     - user with allowed_node_groups + master has tags → must overlap
     """
+    if ib is not None and getattr(ib, "master_disabled", False):
+        return False
     if client is None:
         return True
     allowed = {g.strip() for g in (client.allowed_node_groups or "").split(",") if g.strip()}
@@ -624,7 +627,7 @@ def get_subscription_content(uuid_str):
             f"vless://{quote(str(client.id), safe='')}@{host}:{ib.port}?"
             f"{urlencode(query)}#{quote(ib.label or ib.tag, safe='')}"
         )
-        local = [link] if _master_visible_to_client(client) else []
+        local = [link] if _master_visible_to_client(client, ib) else []
         return local + _get_remote_links(client.email, panel_client=client)
 
     elif ib.protocol == "vmess":
@@ -650,7 +653,7 @@ def get_subscription_content(uuid_str):
                 v_conf["sni"] = tls_sni
         local = (
             [f"vmess://{base64.b64encode(json.dumps(v_conf).encode()).decode()}"]
-            if _master_visible_to_client(client)
+            if _master_visible_to_client(client, ib)
             else []
         )
         return local + _get_remote_links(client.email, panel_client=client)
@@ -693,7 +696,7 @@ def get_subscription_content(uuid_str):
             [
                 f"trojan://{quote(str(client.id), safe='')}@{host}:{ib.port}?{urlencode(query)}#{quote(ib.label or ib.tag, safe='')}"
             ]
-            if _master_visible_to_client(client)
+            if _master_visible_to_client(client, ib)
             else []
         )
         return local + _get_remote_links(client.email, panel_client=client)
@@ -709,7 +712,7 @@ def get_subscription_content(uuid_str):
         b64_user = base64.b64encode(user_part.encode()).decode()
         local_links = (
             [f"ss://{b64_user}@{host}:{ib.port}#{quote(ib.label or ib.tag, safe='')}"]
-            if _master_visible_to_client(client)
+            if _master_visible_to_client(client, ib)
             else []
         )
         return local_links + _get_remote_links(client.email, panel_client=client)
@@ -815,7 +818,7 @@ def generate_clash_config(uuid_str):
 
     _apply_clash_transport(proxy_node, stream)
 
-    if _master_visible_to_client(client):
+    if _master_visible_to_client(client, ib):
         all_proxies = [proxy_node]
         all_proxy_names = [proxy_node["name"]]
     else:
@@ -952,7 +955,7 @@ def generate_singbox_config(uuid_str):
 
     _apply_singbox_transport(outbound, stream)
 
-    all_outbounds = [outbound] if _master_visible_to_client(client) else []
+    all_outbounds = [outbound] if _master_visible_to_client(client, ib) else []
 
     remote_outbounds = _get_remote_singbox_outbounds(client.email, panel_client=client)
     all_outbounds.extend(remote_outbounds)
@@ -1039,7 +1042,7 @@ def render_subscription_page(uuid_str: str):
     allowed = {g.strip() for g in (client.allowed_node_groups or "").split(",") if g.strip()}
     master_groups_set = _master_groups()
     node_items = []
-    if _master_visible_to_client(client):
+    if _master_visible_to_client(client, ib):
         node_items.append(
             {
                 "name": "Master",

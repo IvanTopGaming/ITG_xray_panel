@@ -95,6 +95,7 @@ export interface Inbound {
   routing_profile_id?: number;
   fallback_address?: string;
   device_limit?: number; // 0 = unlimited (feature off)
+  master_disabled?: boolean; // true → served only on nodes, master Xray skips
 }
 
 export interface Outbound {

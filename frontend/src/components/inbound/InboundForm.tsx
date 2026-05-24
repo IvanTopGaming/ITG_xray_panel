@@ -91,6 +91,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
         routing_profile_id: inbound.routing_profile_id || '',
         fallback_address: inbound.fallback_address || '',
         device_limit: inbound.device_limit ?? 0,
+        master_disabled: inbound.master_disabled ?? false,
 
         realityDest: ss?.realitySettings?.dest || 'www.google.com:443',
         realitySNI: ss?.realitySettings?.serverNames?.[0] || 'www.google.com',
@@ -139,6 +140,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
       routing_profile_id: '',
       fallback_address: '',
       device_limit: 0,
+      master_disabled: false,
       realityDest: 'www.google.com:443',
       realitySNI: 'www.google.com',
       realityPrivateKey: '',
@@ -306,6 +308,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
       network: data.network,
       security: data.security,
       device_limit: Math.max(0, Number(data.device_limit) || 0),
+      master_disabled: !!data.master_disabled,
     };
 
     if (data.protocol === 'shadowsocks') {
@@ -452,6 +455,23 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
           0 = unlimited (feature off). Only HWID-aware clients (Happ, v2RayTun, Shadowrocket,
           Karing) are limited.
         </span>
+      </div>
+
+      <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            {...register('master_disabled')}
+            className="mt-0.5 h-4 w-4 rounded border-white/20 bg-transparent accent-primary"
+          />
+          <span className="flex flex-col">
+            <span className="text-sm font-medium">Run on nodes only</span>
+            <span className="text-xs text-gray-500 mt-0.5">
+              Master Xray skips this inbound — only synced nodes serve it. Use for tariffs that
+              should route exclusively through a specific node.
+            </span>
+          </span>
+        </label>
       </div>
 
       {['vless', 'trojan'].includes(protocol) && security === 'reality' && isSecurityAvailable && (

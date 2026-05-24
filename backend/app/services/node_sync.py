@@ -197,6 +197,8 @@ def _inbound_payload(ib):
 
     Excludes routing_profile_id and clients on purpose: routing is master-side, and
     users are propagated by the existing sync_user_* hooks / reconciler.
+    Also intentionally omits master_disabled — that flag is master-side only;
+    the node should always run the inbound when it receives a sync push.
     """
     try:
         stored_stream = json.loads(ib.stream_settings or "{}")

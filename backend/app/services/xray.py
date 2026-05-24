@@ -885,6 +885,8 @@ def generate_config_file():
                 routing_rules.append(rule)
 
             for ib in inbounds_db:
+                if getattr(ib, "master_disabled", False):
+                    continue  # served on nodes only — master Xray skips it
                 stream_settings = json.loads(ib.stream_settings)
                 requested_network = str(stream_settings.get("network", "tcp") or "tcp").strip().lower()
                 stream_settings["network"] = normalize_stream_network(requested_network)

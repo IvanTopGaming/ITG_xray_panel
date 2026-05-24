@@ -167,6 +167,7 @@ def get_inbounds():
                 "fallback_address": ib.fallback_address,
                 "device_limit": ib.device_limit,
                 "label": ib.label,
+                "master_disabled": ib.master_disabled,
             }
         )
     return jsonify(result)
@@ -196,6 +197,7 @@ def create_inbound():
             routing_profile_id = parse_int(routing_profile_id, "routing_profile_id", min_value=1)
         device_limit = parse_int(data.get("device_limit", 0), "device_limit", min_value=0)
         label = (data.get("label") or "").strip() or None
+        master_disabled = bool(data.get("master_disabled", False))
 
         new_ib = Inbound(
             tag=tag,
@@ -206,6 +208,7 @@ def create_inbound():
             fallback_address=fallback_address,
             device_limit=device_limit,
             label=label,
+            master_disabled=master_disabled,
         )
         db.session.add(new_ib)
         db.session.commit()
@@ -256,6 +259,8 @@ def update_inbound(tag):
         if "label" in data:
             label_value = (data["label"] or "").strip() or None
             ib.label = label_value
+        if "master_disabled" in data:
+            ib.master_disabled = bool(data["master_disabled"])
 
         merged_stream_data = dict(data)
         current_stream = json.loads(ib.stream_settings or "{}")

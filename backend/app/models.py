@@ -48,6 +48,9 @@ class Inbound(db.Model):
     fallback_address = db.Column(db.String(100), nullable=True)
     device_limit = db.Column(db.Integer, default=0, nullable=False)
     label = db.Column(db.String(60), nullable=True)
+    # Stays in master.db (for provisioning + node sync), but master Xray
+    # skips it. Used for tariffs that route exclusively through a node.
+    master_disabled = db.Column(db.Boolean, default=False, nullable=False, server_default="0")
     clients = db.relationship("Client", backref="inbound", lazy=True, cascade="all, delete-orphan")
 
 

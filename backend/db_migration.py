@@ -3,7 +3,7 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 13
+CURRENT_DB_VERSION = 14
 CURRENT_BOT_TEXTS_VERSION = 15
 
 
@@ -535,6 +535,8 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         # Payment Telegram message coords — for edit-in-place webhook callbacks
         ("payment", "chat_id", "BIGINT"),
         ("payment", "message_id", "INTEGER"),
+        # Inbound that's served only on nodes, never on master Xray.
+        ("inbound", "master_disabled", "BOOLEAN NOT NULL DEFAULT 0"),
     ]
 
     for table_name, column_name, spec in schema_patches:

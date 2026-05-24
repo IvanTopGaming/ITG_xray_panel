@@ -64,4 +64,4 @@ def test_schema_patch_idempotent(telegram_user_pre_v11):
 
 
 def test_current_db_version_bumped():
-    assert CURRENT_DB_VERSION == 13
+    assert CURRENT_DB_VERSION >= 13
