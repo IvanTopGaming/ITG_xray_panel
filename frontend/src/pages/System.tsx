@@ -17,23 +17,31 @@ import {
   FileJson,
   Copy,
   Check,
+  Info,
+  Heart,
+  Github,
+  Radar,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
+import { formatDateForPicker, formatTime } from '@/lib/datetime';
 import { Modal } from '@/components/ui/Modal';
 import { useLogStore } from '@/stores/logStore';
 import { useAuthStore } from '@/stores/authStore';
 
 const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_RESTORE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
-type SettingsTab = 'security' | 'core' | 'maintenance';
+type SettingsTab = 'security' | 'core' | 'maintenance' | 'about';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'security', label: 'Security' },
   { id: 'core', label: 'Core' },
   { id: 'maintenance', label: 'Maintenance' },
+  { id: 'about', label: 'About' },
 ];
+
+const GITHUB_URL = 'https://github.com/IvanTopGaming/ITG_xray_panel';
 
 export default function System() {
   const { logs, isStreaming, toggleStream } = useLogStore();
@@ -166,7 +174,7 @@ export default function System() {
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `backup-${new Date().toISOString().slice(0, 10)}.db`);
+      link.setAttribute('download', `backup-${formatDateForPicker(Date.now())}.db`);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -284,9 +292,7 @@ export default function System() {
           <div className="flex-1 overflow-y-auto p-4 space-y-1 font-mono text-xs custom-scrollbar bg-[#0a0a0a]">
             {filteredLogs.map((entry, i) => (
               <div key={i} className="break-all leading-relaxed">
-                <span className="text-gray-600 mr-3 select-none">
-                  [{new Date(entry.ts).toLocaleTimeString()}]
-                </span>
+                <span className="text-gray-600 mr-3 select-none">[{formatTime(entry.ts)}]</span>
                 <span
                   className={
                     entry.text.toLowerCase().includes('error')
@@ -497,6 +503,62 @@ export default function System() {
                 </div>
               </SettingsCard>
             )}
+
+            {activeTab === 'about' && (
+              <SettingsCard title="About" icon={<Info size={18} className="text-primary" />}>
+                <div className="flex flex-col items-center text-center gap-5 py-2">
+                  <motion.div
+                    whileHover={{ rotate: 180, scale: 1.08 }}
+                    transition={{ duration: 0.5 }}
+                    className="p-3 bg-primary/10 rounded-2xl text-primary"
+                  >
+                    <Radar size={32} />
+                  </motion.div>
+
+                  <div>
+                    <div className="text-lg font-bold text-gray-100 tracking-tight">
+                      ITG Xray Panel
+                    </div>
+                    <div className="mt-1 text-xs font-mono text-gray-500">
+                      v{__APP_VERSIONS__.frontend}
+                    </div>
+                  </div>
+
+                  <div className="w-full grid grid-cols-2 gap-2 text-[11px] font-mono">
+                    <VersionPill label="backend" value={__APP_VERSIONS__.backend} />
+                    <VersionPill label="frontend" value={__APP_VERSIONS__.frontend} />
+                    <VersionPill label="bot" value={__APP_VERSIONS__.bot} />
+                    <VersionPill label="xray" value={__APP_VERSIONS__.xray_core_ref} />
+                  </div>
+
+                  <div className="text-sm text-gray-400">
+                    Developed by <span className="text-gray-200 font-semibold">ITG</span>
+                  </div>
+
+                  <div className="inline-flex items-center gap-1.5 text-xs text-gray-500">
+                    Made with
+                    <motion.span
+                      animate={{ scale: [1, 1.18, 1] }}
+                      transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+                      className="inline-flex"
+                    >
+                      <Heart size={13} className="text-error fill-error" />
+                    </motion.span>
+                    from ITG
+                  </div>
+
+                  <a
+                    href={GITHUB_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full inline-flex items-center justify-center gap-2 h-11 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-sm font-semibold text-gray-200 transition-colors"
+                  >
+                    <Github size={16} />
+                    View on GitHub
+                  </a>
+                </div>
+              </SettingsCard>
+            )}
           </motion.div>
         </AnimatePresence>
 
@@ -583,6 +645,15 @@ function SettingsCard({
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+function VersionPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2 px-3 py-2 bg-black/20 rounded-lg border border-white/5">
+      <span className="text-gray-500 uppercase tracking-wider">{label}</span>
+      <span className="text-gray-200 truncate">{value}</span>
     </div>
   );
 }

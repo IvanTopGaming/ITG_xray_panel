@@ -4,10 +4,10 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import re
 import time
 from urllib.parse import quote, urlparse
-from config import SERVERS_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -129,13 +129,11 @@ class SinglePanel:
     def __init__(self, conf, *, is_virtual=False, parent_master=None):
         self.name = conf["name"]
         self.base_url = conf["url"].rstrip("/")
-        self.username = conf["user"]
-        self.password = conf["password"]
+        self.token = conf["token"]
         self.target_inbound = conf["inbound_tag"]
         self.role = conf.get("role", "standalone")
         self.is_virtual = is_virtual
         self.parent_master = parent_master
-        self.token = None
         self.session = None
 
     @property
@@ -151,23 +149,21 @@ class SinglePanel:
         if self.session is not None and not self.session.closed:
             await self.session.close()
         self.session = None
-        self.token = None
 
-    async def login(self):
+    async def health_check(self):
+        """Quick auth-checked ping; returns True if panel accepts our token."""
         await self.ensure_session()
+        if not self.token:
+            return False
+        headers = {"Authorization": f"Bearer {self.token}"}
         try:
-            async with self.session.post(
-                f"{self.base_url}/api/login",
-                json={"username": self.username, "password": self.password},
+            async with self.session.get(
+                f"{self.base_url}/api/stats/system",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    self.token = data.get("token")
-                    return True
-                logger.warning(f"[{self.name}] Login failed: {resp.status}")
-                return False
-        except Exception as e:
-            logger.error(f"[{self.name}] Login error: {e}")
+                return resp.status == 200
+        except Exception:
             return False
 
     async def request(self, method, endpoint, json_data=None, params=None, data=None, timeout=None):
@@ -189,8 +185,7 @@ class SinglePanel:
     async def _execute_request(self, method, endpoint, json_data, params, data, timeout=None):
         await self.ensure_session()
         if not self.token:
-            if not await self.login():
-                return {"error": "Auth Failed"}
+            return {"error": "Auth Failed"}
 
         headers = {"Authorization": f"Bearer {self.token}"}
         url = f"{self.base_url}/api/{endpoint}"
@@ -200,18 +195,7 @@ class SinglePanel:
             method, url, json=json_data, params=params, data=data, headers=headers, timeout=req_timeout
         ) as resp:
             if resp.status == 401:
-                if await self.login():
-                    headers = {"Authorization": f"Bearer {self.token}"}
-                    async with self.session.request(
-                        method,
-                        url,
-                        json=json_data,
-                        params=params,
-                        data=data,
-                        headers=headers,
-                        timeout=req_timeout,
-                    ) as resp2:
-                        return await self._process_response(resp2)
+                logger.warning(f"[{self.name}] bot_service_token rejected by panel")
                 return {"error": "Auth Failed"}
             return await self._process_response(resp)
 
@@ -234,17 +218,16 @@ class SinglePanel:
 
 class MultiPanelManager:
     SHADOW_CACHE_TTL = 300  # seconds
-    VIRTUAL_PANELS_TTL = 300  # seconds
 
     def __init__(self):
-        self._config_panels = [SinglePanel(conf) for conf in SERVERS_CONFIG]
-        self._virtual_panels = []
-        self.panels = list(self._config_panels)
+        # Single-master topology: panels[] always has zero or one entry,
+        # rebuilt from runtime_config (panel admin user/password + the
+        # backend URL the bot is configured to talk to). Filled in on
+        # first reload_from_runtime() call.
+        self.panels: list[SinglePanel] = []
         self._shadow_cache = None
         self._shadow_cache_expires = 0.0
         self._shadow_cache_lock = asyncio.Lock()
-        self._virtual_expires = 0.0
-        self._virtual_lock = asyncio.Lock()
 
     @staticmethod
     def _normalize_inbound_tag(value):
@@ -361,95 +344,27 @@ class MultiPanelManager:
             return []
         return nodes
 
-    async def bootstrap_virtual_panels(self, *, force=False):
-        """Populate self._virtual_panels from each master's /api/nodes.
-
-        Each remote node that has `enable=True` becomes a virtual SinglePanel
-        using the node's own URL/credentials (fetched from the master with
-        `include_password=1`). Virtual panels let the bot read stats, inbounds,
-        and subscription links from every node, even if only the master is
-        listed in config.yaml. Writes are skipped on virtual panels because
-        the master fans out user CRUD to its nodes itself.
-
-        Virtual panels are rebuilt on startup and every VIRTUAL_PANELS_TTL
-        seconds. Nodes whose hostname already matches a config panel are
-        skipped to avoid duplicate entries.
-        """
-        now = time.time()
-        if not force and now < self._virtual_expires and self._virtual_panels:
-            return self._virtual_panels
-
-        async with self._virtual_lock:
-            now = time.time()
-            if not force and now < self._virtual_expires and self._virtual_panels:
-                return self._virtual_panels
-
-            master_panels = [p for p in self._config_panels if p.is_master]
-            if not master_panels:
-                await self._swap_virtual_panels([])
-                self._virtual_expires = now + self.VIRTUAL_PANELS_TTL
-                return self._virtual_panels
-
-            config_hosts = {h for h in (_panel_hostname(p) for p in self._config_panels) if h}
-
-            seen_hosts = set(config_hosts)
-            new_virtuals = []
-            for master in master_panels:
-                nodes = await self._fetch_master_nodes_full(master)
-                if nodes and all(_looks_masked(n.get("password")) for n in nodes if isinstance(n, dict)):
-                    logger.warning(
-                        "[%s] Master returned masked node passwords — "
-                        "backend likely predates include_password support. "
-                        "Virtual panels skipped; upgrade the panel to use this feature.",
-                        master.name,
-                    )
-                    continue
-                for n in nodes:
-                    if not isinstance(n, dict):
-                        continue
-                    if not n.get("enable", True):
-                        continue
-                    url = str(n.get("url") or "").strip()
-                    user = str(n.get("username") or "").strip()
-                    password = str(n.get("password") or "")
-                    inbound_tag = str(n.get("inbound_tag") or "").strip()
-                    name = str(n.get("name") or "").strip()
-                    if not (url and user and password and name):
-                        continue
-                    if _looks_masked(password):
-                        continue
-                    try:
-                        host = (urlparse(url).hostname or "").strip().lower()
-                    except ValueError:
-                        continue
-                    if not host or host in seen_hosts:
-                        continue
-                    seen_hosts.add(host)
-
-                    virtual = SinglePanel(
-                        {
-                            "name": name,
-                            "url": url.rstrip("/"),
-                            "user": user,
-                            "password": password,
-                            "inbound_tag": inbound_tag,
-                            "role": "standalone",
-                        },
-                        is_virtual=True,
-                        parent_master=master.name,
-                    )
-                    new_virtuals.append(virtual)
-
-            await self._swap_virtual_panels(new_virtuals)
-            self._virtual_expires = now + self.VIRTUAL_PANELS_TTL
-            self.invalidate_shadow_cache()
-            return self._virtual_panels
-
-    async def _swap_virtual_panels(self, new_virtuals):
-        """Replace virtual panels, closing old sessions. Keep self.panels stable."""
-        old = self._virtual_panels
-        self._virtual_panels = new_virtuals
-        self.panels[:] = self._config_panels + self._virtual_panels
+    async def reload_from_runtime(self):
+        """Rebuild the single master panel from env (BACKEND_API_URL + BOT_SERVICE_TOKEN)."""
+        new_panels: list[SinglePanel] = []
+        backend_url = os.environ.get("BACKEND_API_URL", "").rstrip("/")
+        token = os.environ.get("BOT_SERVICE_TOKEN", "")
+        if backend_url and token:
+            # strip trailing /api so SinglePanel can re-add it
+            base = backend_url[:-4] if backend_url.endswith("/api") else backend_url
+            new_panels.append(
+                SinglePanel(
+                    {
+                        "name": "master",
+                        "url": base,
+                        "token": token,
+                        "inbound_tag": "",
+                        "role": "master",
+                    }
+                )
+            )
+        old = self.panels
+        self.panels = new_panels
         if old:
             await asyncio.gather(*[p.close() for p in old], return_exceptions=True)
 
@@ -755,19 +670,14 @@ class MultiPanelManager:
 
         Dedup rule: when the same endpoint is returned by multiple panels, prefer
         the panel whose own hostname equals the link's host (the "direct" source).
-        After dedup, each surviving link's remark is rewritten to
-        `{panel.name}-{original_remark}` to preserve the bot's existing naming.
+        Each link's remark (text after `#`) is whatever the source panel emitted —
+        backend subscription endpoint now uses Inbound.label (admin-editable
+        Display Label) instead of the raw email.
         """
         pairs = await self._fetch_raw_subscription_pairs(email, inbound_tag=inbound_tag)
         deduped = _dedup_pairs(pairs)
 
-        results = []
-        for panel, link in deduped:
-            if "#" in link:
-                base, remark = link.split("#", 1)
-                results.append(f"{base}#{panel.name}-{remark}")
-            else:
-                results.append(f"{link}#{panel.name}")
+        results = [link for _, link in deduped]
         return results
 
     async def get_subscription_link_single(self, email, panel_idx, inbound_tag=None):

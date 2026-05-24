@@ -3,7 +3,8 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 9
+CURRENT_DB_VERSION = 13
+CURRENT_BOT_TEXTS_VERSION = 15
 
 
 def _table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
@@ -223,6 +224,275 @@ def _ensure_client_device_table(cursor: sqlite3.Cursor) -> int:
     return 1
 
 
+def _ensure_billing_tables(cursor: sqlite3.Cursor) -> int:
+    """Create billing-related tables if they don't exist (v10 migration).
+
+    Returns the number of tables newly created.
+    """
+    statements = [
+        (
+            "tariff",
+            """
+            CREATE TABLE IF NOT EXISTS tariff (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR(120) NOT NULL,
+                price_rub INTEGER NOT NULL,
+                period_days INTEGER NOT NULL,
+                visibility VARCHAR(16) NOT NULL DEFAULT 'public',
+                is_trial BOOLEAN NOT NULL DEFAULT 0,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ),
+        (
+            "tariff_item",
+            """
+            CREATE TABLE IF NOT EXISTS tariff_item (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tariff_id INTEGER NOT NULL REFERENCES tariff(id) ON DELETE CASCADE,
+                inbound_tag VARCHAR(120) NOT NULL,
+                label VARCHAR(60),
+                traffic_gb INTEGER NOT NULL,
+                allowed_node_groups VARCHAR(255) NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+        ),
+        (
+            "user_tariff_access",
+            """
+            CREATE TABLE IF NOT EXISTS user_tariff_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id BIGINT NOT NULL,
+                tariff_id INTEGER NOT NULL REFERENCES tariff(id) ON DELETE CASCADE,
+                billing VARCHAR(8) NOT NULL,
+                next_renewal_at DATETIME,
+                note VARCHAR(255),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_user_tariff UNIQUE (telegram_id, tariff_id)
+            )
+            """,
+        ),
+        (
+            "payment",
+            """
+            CREATE TABLE IF NOT EXISTS payment (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                yookassa_id VARCHAR(64) NOT NULL UNIQUE,
+                telegram_id BIGINT NOT NULL,
+                tariff_id INTEGER NOT NULL REFERENCES tariff(id),
+                tariff_snapshot TEXT NOT NULL,
+                amount_rub INTEGER NOT NULL,
+                status VARCHAR(16) NOT NULL,
+                confirmation_url TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                paid_at DATETIME
+            )
+            """,
+        ),
+        (
+            "bot_text",
+            """
+            CREATE TABLE IF NOT EXISTS bot_text (
+                key VARCHAR(120) NOT NULL,
+                lang VARCHAR(8) NOT NULL,
+                text TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (key, lang)
+            )
+            """,
+        ),
+        (
+            "bot_event",
+            """
+            CREATE TABLE IF NOT EXISTS bot_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type VARCHAR(32) NOT NULL,
+                telegram_id BIGINT,
+                payload TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                delivered_at DATETIME
+            )
+            """,
+        ),
+        (
+            "telegram_user",
+            """
+            CREATE TABLE IF NOT EXISTS telegram_user (
+                telegram_id BIGINT PRIMARY KEY,
+                username VARCHAR(64),
+                language VARCHAR(8) NOT NULL DEFAULT 'ru',
+                trial_used_at DATETIME,
+                blocked BOOLEAN NOT NULL DEFAULT 0,
+                first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                note VARCHAR(255)
+            )
+            """,
+        ),
+        (
+            "notification_log",
+            """
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id BIGINT NOT NULL,
+                client_id VARCHAR(128) NOT NULL REFERENCES client(id) ON DELETE CASCADE,
+                kind VARCHAR(32) NOT NULL,
+                sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ),
+    ]
+
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS ix_tariff_visibility ON tariff(visibility)",
+        "CREATE INDEX IF NOT EXISTS ix_tariff_item_tariff ON tariff_item(tariff_id)",
+        "CREATE INDEX IF NOT EXISTS ix_uta_telegram ON user_tariff_access(telegram_id)",
+        "CREATE INDEX IF NOT EXISTS ix_uta_renewal ON user_tariff_access(next_renewal_at)",
+        "CREATE INDEX IF NOT EXISTS ix_payment_telegram ON payment(telegram_id)",
+        "CREATE INDEX IF NOT EXISTS ix_payment_created ON payment(created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_bot_event_telegram ON bot_event(telegram_id)",
+        "CREATE INDEX IF NOT EXISTS ix_bot_event_created ON bot_event(created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notif_dedup ON notification_log(telegram_id, client_id, kind, sent_at)",
+    ]
+
+    created = 0
+    for table_name, sql in statements:
+        if not _table_exists(cursor, table_name):
+            cursor.execute(sql)
+            created += 1
+    for idx_sql in indexes:
+        cursor.execute(idx_sql)
+    return created
+
+
+def _alter_client_billing_columns(cursor: sqlite3.Cursor) -> int:
+    """Add telegram_id and tariff_id columns to client table (v10 migration).
+
+    Returns the number of columns added. No-op if the `client` table doesn't
+    exist yet (it's created by SQLAlchemy `db.create_all()` on first startup;
+    migrate runs after, but defensive guards make this safe to call standalone).
+
+    Note: tariff_id is added as bare INTEGER without a REFERENCES clause.
+    SQLite cannot retroactively add a foreign-key constraint via ALTER TABLE,
+    so the FK declared on Client.tariff_id in models.py is only enforced for
+    fresh installs (created via SQLAlchemy create_all). For upgraded prod DBs
+    the column has no FK constraint. SQLite's `PRAGMA foreign_keys` is OFF by
+    default in this codebase anyway, so the practical impact is nil — but
+    don't try to "fix" this by adding REFERENCES here, it isn't possible.
+    """
+    if not _table_exists(cursor, "client"):
+        return 0
+    added = 0
+    if _add_column_if_missing(cursor, "client", "telegram_id", "BIGINT"):
+        added += 1
+    if _add_column_if_missing(cursor, "client", "tariff_id", "INTEGER"):
+        added += 1
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_client_telegram ON client(telegram_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_client_tariff ON client(tariff_id)")
+    return added
+
+
+def _seed_bot_texts(
+    cursor: sqlite3.Cursor,
+    defaults_path: Optional[str] = None,
+    *,
+    force: bool = False,
+) -> int:
+    """Insert default bot text strings from YAML.
+
+    Default (force=False): only inserts missing (key, lang) rows; preserves
+    any admin-edited row.
+
+    With force=True: upserts every (key, lang) pair from YAML, overwriting
+    existing rows. Used once on a `CURRENT_BOT_TEXTS_VERSION` bump to push
+    a new polished default set across the deployment.
+
+    Returns the number of (key, lang) rows inserted or updated.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return 0
+
+    if defaults_path is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        defaults_path = os.path.join(here, "app", "data", "bot_texts_defaults.yaml")
+
+    if not os.path.exists(defaults_path):
+        return 0
+
+    with open(defaults_path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+
+    if not data or not isinstance(data, dict):
+        return 0
+
+    touched = 0
+    for key, langs in data.items():
+        if not isinstance(langs, dict):
+            continue
+        for lang, text in langs.items():
+            if force:
+                cursor.execute(
+                    """
+                    INSERT INTO bot_text (key, lang, text)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key, lang) DO UPDATE SET
+                        text = excluded.text,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (key, lang, str(text)),
+                )
+                touched += 1
+            else:
+                cursor.execute(
+                    "SELECT 1 FROM bot_text WHERE key=? AND lang=?",
+                    (key, lang),
+                )
+                if cursor.fetchone() is not None:
+                    continue
+                cursor.execute(
+                    "INSERT INTO bot_text (key, lang, text) VALUES (?, ?, ?)",
+                    (key, lang, str(text)),
+                )
+                touched += 1
+    return touched
+
+
+def _maybe_force_reseed_bot_texts(cursor: sqlite3.Cursor) -> bool:
+    """One-shot force-reseed when the stored bot-texts version is below
+    CURRENT_BOT_TEXTS_VERSION. Returns True if a force-reseed actually ran.
+    """
+    # Read current stored version (default 1 — pre-existing installs).
+    if not _table_exists(cursor, "system_setting"):
+        return False
+    cursor.execute("SELECT value FROM system_setting WHERE key='bot_texts_seeded_version'")
+    row = cursor.fetchone()
+    try:
+        stored = int(row[0]) if row else 1
+    except (TypeError, ValueError):
+        stored = 1
+
+    if stored >= CURRENT_BOT_TEXTS_VERSION:
+        return False
+
+    _seed_bot_texts(cursor, force=True)
+
+    cursor.execute(
+        """
+        INSERT INTO system_setting (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        ("bot_texts_seeded_version", str(CURRENT_BOT_TEXTS_VERSION)),
+    )
+    return True
+
+
 def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
     changed = 0
 
@@ -258,6 +528,13 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("client", "device_limit", "INTEGER"),
         # Balancer fallback outbound
         ("balancer", "fallback_tag", "VARCHAR(50)"),
+        # Language picker — explicit user choice on first /start
+        ("telegram_user", "language_chosen", "BOOLEAN NOT NULL DEFAULT 0"),
+        # Inbound display label — admin-friendly name shown in bot UI
+        ("inbound", "label", "VARCHAR(60)"),
+        # Payment Telegram message coords — for edit-in-place webhook callbacks
+        ("payment", "chat_id", "BIGINT"),
+        ("payment", "message_id", "INTEGER"),
     ]
 
     for table_name, column_name, spec in schema_patches:
@@ -388,6 +665,10 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         node_table = _ensure_node_table(cursor)
         node_client_traffic_table = _ensure_node_client_traffic_table(cursor)
         client_device_table = _ensure_client_device_table(cursor)
+        billing_tables = _ensure_billing_tables(cursor)
+        client_billing_columns = _alter_client_billing_columns(cursor)
+        bot_texts_seeded = _seed_bot_texts(cursor)
+        bot_texts_force_reseeded = _maybe_force_reseed_bot_texts(cursor)
         schema_changes = _ensure_schema_columns(cursor)
         removed_legacy_inbounds, normalized_streams = _cleanup_legacy_inbounds(cursor)
         fixed_rows = _apply_data_fixups(cursor)
@@ -404,6 +685,10 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "node_table_created": node_table,
             "node_client_traffic_table_created": node_client_traffic_table,
             "client_device_table_created": client_device_table,
+            "billing_tables_created": billing_tables,
+            "client_billing_columns_added": client_billing_columns,
+            "bot_texts_seeded": bot_texts_seeded,
+            "bot_texts_force_reseeded": bot_texts_force_reseeded,
             "schema_changes": schema_changes,
             "removed_legacy_inbounds": removed_legacy_inbounds,
             "normalized_streams": normalized_streams,
@@ -414,6 +699,10 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             or node_table > 0
             or node_client_traffic_table > 0
             or client_device_table > 0
+            or billing_tables > 0
+            or client_billing_columns > 0
+            or bot_texts_seeded > 0
+            or bot_texts_force_reseeded
             or schema_changes > 0
             or removed_legacy_inbounds > 0
             or normalized_streams > 0

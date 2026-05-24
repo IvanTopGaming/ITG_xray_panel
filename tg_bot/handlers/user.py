@@ -3,12 +3,16 @@ import logging
 import time
 import datetime
 from html import escape
+from zoneinfo import ZoneInfo
 from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
-from database import db
+import httpx
 from api_service import panel_api
+from backend_client import BackendClient
+from i18n import I18n
+from runtime_config import runtime_config
 from utils import generate_qr, format_bytes
 from states import UserStates
 import keyboards as kb
@@ -53,88 +57,368 @@ async def safe_edit(message: types.Message, text: str, reply_markup=None, parse_
 def is_record_owner(record, user_id):
     if not record:
         return False
-    return int(record[1]) == int(user_id)
+    return int(record.get("telegram_id") or 0) == int(user_id)
 
 
-async def auto_expire_message(message: types.Message, state: FSMContext, expected_state: str, delay: int = 60):
+async def auto_expire_keys_message(
+    message: types.Message,
+    state: FSMContext,
+    *,
+    i18n: I18n,
+    lang: str,
+    client_id: str,
+    delay: int = 60,
+):
+    """Self-destruct timer for the keys-display message.
+
+    After `delay` seconds, replaces the keys with a localized "session
+    expired" placeholder, but only if the user is still on the same
+    viewing_keys screen for the same client. If the user has navigated
+    away, opened a different key, or the message has been removed/
+    replaced by something else (e.g. a payment-success notification),
+    the timer becomes a silent no-op — we never post a fresh
+    "session expired" bubble into the chat.
+    """
     await asyncio.sleep(delay)
 
-    current_state = await state.get_state()
-    if current_state != expected_state:
+    if await state.get_state() != UserStates.viewing_keys:
+        return
+    data = await state.get_data()
+    if data.get("selected_key_client_id") != client_id:
         return
 
     try:
-        await safe_edit(
-            message,
-            "🔒 <b>Security Timeout</b>\n\nData hidden for security.",
-            reply_markup=kb.back_to_main_kb(),
+        text = await i18n.t("security.timeout", lang)
+        back = await i18n.t("common.back_to_main", lang)
+        show_again = await i18n.t("keys.actions.show_again", lang)
+        await message.edit_text(
+            text,
+            reply_markup=kb.expired_keys_kb(
+                show_again_label=show_again,
+                back_label=back,
+                client_id=client_id,
+            ),
+            parse_mode="HTML",
         )
+    except TelegramBadRequest as exc:
+        # Most common: "message to edit not found" — the keys bubble was
+        # already deleted (payment notification, manual delete, etc.).
+        # Also "message is not modified" — idempotent no-op. Both fine.
+        logger.debug("auto_expire_keys_message: %s", exc)
     except Exception:
-        logger.debug("Failed to auto-expire sensitive message", exc_info=True)
+        logger.debug("auto_expire_keys_message: unexpected error", exc_info=True)
+
+
+async def _render_welcome(
+    message: types.Message,
+    *,
+    telegram_id: int,
+    user_name: str = "",
+    lang: str,
+    i18n: I18n,
+    backend: BackendClient,
+    edit: bool = False,
+) -> None:
+    """Render the post-/start welcome (trial offer / main menu / bare title).
+
+    `telegram_id` passed explicitly — callback callers have `message.from_user`
+    pointing at the bot, not the human. `edit=True` edits in place via safe_edit.
+    """
+    title = await i18n.t("welcome.title", lang, user_name=h(user_name))
+    body = await i18n.t("welcome.body", lang)
+    header = f"{title}\n\n{body}"
+
+    user_state = None
+    try:
+        user_state = await backend.get_user_state(telegram_id)
+    except Exception as exc:
+        logger.warning("get_user_state failed for %s: %s", telegram_id, exc)
+
+    legacy_users = list((user_state or {}).get("clients") or [])
+    has_clients = bool(legacy_users) or bool((user_state or {}).get("clients"))
+
+    if has_clients:
+        subs = await i18n.t("menu.subscription", lang)
+        tariffs = await i18n.t("menu.tariffs", lang)
+        stats = await i18n.t("menu.stats", lang)
+        help_label = await i18n.t("menu.help", lang)
+        markup = kb.user_main_kb(
+            subs_label=subs,
+            tariffs_label=tariffs,
+            stats_label=stats,
+            help_label=help_label,
+        )
+        if edit:
+            await safe_edit(message, header, reply_markup=markup)
+        else:
+            await message.answer(header, reply_markup=markup, parse_mode="HTML")
+        return
+
+    if user_state is None:
+        if edit:
+            await safe_edit(message, header)
+        else:
+            await message.answer(header, parse_mode="HTML")
+        return
+
+    if user_state.get("trial_available"):
+        trial = await i18n.t("trial.button.activate", lang, days=1)
+        tariffs = await i18n.t("menu.tariffs", lang)
+        help_label = await i18n.t("menu.help", lang)
+        markup = kb.no_clients_menu_kb(
+            trial_label=trial,
+            tariffs_label=tariffs,
+            help_label=help_label,
+        )
+        if edit:
+            await safe_edit(message, header, reply_markup=markup)
+        else:
+            await message.answer(header, reply_markup=markup, parse_mode="HTML")
+        return
+
+    tariffs = await i18n.t("menu.tariffs", lang)
+    help_label = await i18n.t("menu.help", lang)
+    markup = kb.no_clients_menu_kb(
+        trial_label=None,
+        tariffs_label=tariffs,
+        help_label=help_label,
+    )
+    if edit:
+        await safe_edit(message, header, reply_markup=markup)
+    else:
+        await message.answer(header, reply_markup=markup, parse_mode="HTML")
+
+
+async def _render_first_touch(
+    message: types.Message,
+    *,
+    telegram_id: int,
+    user_name: str,
+    lang: str,
+    i18n: I18n,
+    backend: BackendClient,
+    edit: bool = False,
+) -> None:
+    """First-touch onboarding screen after a fresh language pick.
+
+    Shows a warm greeting with two buttons (activate trial / skip) when the
+    user has no clients and the trial is still available. Otherwise falls
+    back to `_render_welcome` so existing-state users get the regular menu.
+    """
+    user_state = None
+    try:
+        user_state = await backend.get_user_state(telegram_id)
+    except Exception as exc:
+        logger.warning("get_user_state failed for %s: %s", telegram_id, exc)
+
+    has_clients = bool((user_state or {}).get("clients"))
+    trial_available = bool((user_state or {}).get("trial_available"))
+
+    if not user_state or has_clients or not trial_available:
+        await _render_welcome(
+            message,
+            telegram_id=telegram_id,
+            user_name=user_name,
+            lang=lang,
+            i18n=i18n,
+            backend=backend,
+            edit=edit,
+        )
+        return
+
+    title = await i18n.t("onboarding.title", lang, user_name=h(user_name))
+    activate = await i18n.t("trial.button.activate", lang, days=1)
+    skip = await i18n.t("trial.button.skip", lang)
+    markup = kb.first_touch_kb(activate_label=activate, skip_label=skip)
+    if edit:
+        await safe_edit(message, title, reply_markup=markup)
+    else:
+        await message.answer(title, reply_markup=markup, parse_mode="HTML")
 
 
 @router.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
+async def cmd_start(
+    message: types.Message,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    language_chosen: bool,
+    backend: BackendClient,
+):
     await state.clear()
-    users = db.get_users_by_tg_id(message.from_user.id)
 
-    if users:
+    if not language_chosen:
+        title = await i18n.t("lang_picker.title", "ru")
+        en_label = await i18n.t("lang_picker.button.en", "ru")
+        ru_label = await i18n.t("lang_picker.button.ru", "ru")
         await message.answer(
-            f"👋 Welcome back, <b>{h(message.from_user.first_name)}</b>!",
-            reply_markup=kb.user_main_kb(),
-            parse_mode="HTML",
+            title,
+            reply_markup=kb.language_picker_kb(en_label, ru_label),
         )
-    else:
-        await message.answer("⛔️ <b>Access Denied</b>\nContact admin.", parse_mode="HTML")
+        return
+
+    user_name = message.from_user.first_name or message.from_user.username or ("друг" if lang == "ru" else "friend")
+    await _render_welcome(
+        message,
+        telegram_id=message.from_user.id,
+        user_name=user_name,
+        lang=lang,
+        i18n=i18n,
+        backend=backend,
+    )
+
+
+@router.callback_query(F.data.startswith("set_lang:"))
+async def cb_set_language(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    backend: BackendClient,
+):
+    new_lang = callback.data.split(":", 1)[1]
+    if new_lang not in ("ru", "en"):
+        await callback.answer("Unknown language", show_alert=True)
+        return
+
+    try:
+        await backend.set_language(callback.from_user.id, new_lang)
+    except Exception as exc:
+        logger.warning("set_language failed for %s: %s", callback.from_user.id, exc)
+        await callback.answer("Не удалось сохранить выбор. Попробуйте ещё раз.", show_alert=True)
+        return
+
+    await callback.answer()
+    await state.clear()
+    user_name = (
+        callback.from_user.first_name or callback.from_user.username or ("друг" if new_lang == "ru" else "friend")
+    )
+    await _render_first_touch(
+        callback.message,
+        telegram_id=callback.from_user.id,
+        user_name=user_name,
+        lang=new_lang,
+        i18n=i18n,
+        backend=backend,
+        edit=True,
+    )
 
 
 @router.callback_query(F.data == "user_home")
-async def user_home(callback: types.CallbackQuery, state: FSMContext):
+async def user_home(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
     await state.clear()
-    await safe_edit(callback.message, "🛡️ Main Menu", reply_markup=kb.user_main_kb())
+    user_name = callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
+    await _render_welcome(
+        callback.message,
+        telegram_id=callback.from_user.id,
+        user_name=user_name,
+        lang=lang,
+        i18n=i18n,
+        backend=backend,
+        edit=True,
+    )
 
 
 @router.callback_query(F.data == "user_help")
-async def user_help(callback: types.CallbackQuery, state: FSMContext):
+async def user_help(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+):
     await state.clear()
-    text = (
-        "<b>📚 Setup Guide</b>\n\n"
-        "1. Install <b>Happ</b> (Android) or <b>V2Box</b> (iOS).\n"
-        "2. Click 'My Subscription'.\n"
-        "3. Copy all keys.\n"
-        "4. Import from Clipboard in the app."
-    )
-    await safe_edit(callback.message, text, reply_markup=kb.back_to_main_kb())
+    body = await i18n.t("help.body", lang)
+    back = await i18n.t("common.back_to_main", lang)
+    await safe_edit(callback.message, body, reply_markup=kb.back_to_main_kb(back_label=back))
 
 
 @router.callback_query(F.data == "user_sub")
-async def user_sub(callback: types.CallbackQuery, state: FSMContext):
-    users_records = db.get_users_by_tg_id(callback.from_user.id)
+async def user_sub(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
+        users_records = list((state_data or {}).get("clients") or [])
+    except Exception as exc:
+        logger.warning("get_user_state failed: %s", exc)
+        users_records = []
     if not users_records:
-        await callback.answer("User not found", show_alert=True)
+        msg = await i18n.t("home.no_subscription", lang)
+        await callback.answer(msg, show_alert=True)
+        # User saw the "My subscription" button but actually has no clients
+        # (admin revoked, or natural expiry+cleanup since the menu was sent).
+        # Re-render the welcome in place — it picks the no-clients keyboard
+        # automatically, so the stale subscription button disappears.
+        try:
+            user_name = (
+                callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
+            )
+            await _render_welcome(
+                callback.message,
+                telegram_id=callback.from_user.id,
+                user_name=user_name,
+                lang=lang,
+                i18n=i18n,
+                backend=backend,
+                edit=True,
+            )
+        except Exception as exc:
+            logger.debug("user_sub: re-render welcome skipped: %s", exc)
         return
 
     if len(users_records) > 1:
         await state.clear()
+        title = await i18n.t("keys.picker.title", lang)
+        entry = await i18n.t("keys.list.entry", lang)
+        back = await i18n.t("common.back_to_main", lang)
         await safe_edit(
             callback.message,
-            "🔑 <b>Select Key</b>\nYou have multiple keys available:",
-            reply_markup=kb.user_keys_list_kb(users_records),
+            title,
+            reply_markup=kb.user_keys_list_kb(
+                users_records,
+                entry_template=entry,
+                back_label=back,
+            ),
         )
         return
 
-    await show_key_details(callback, state, users_records[0])
+    await show_key_details(callback, state, users_records[0], i18n=i18n, lang=lang)
 
 
 @router.callback_query(F.data.startswith("show_key_"))
-async def user_key_selected(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        db_id = int(callback.data.split("_")[2])
-    except (ValueError, IndexError):
+async def user_key_selected(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
+    client_id = callback.data.removeprefix("show_key_")
+    if not client_id:
         await callback.answer("Error")
         return
 
-    record = db.get_user_by_db_id(db_id)
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
+    except Exception as exc:
+        logger.warning("get_user_state failed: %s", exc)
+        await callback.answer("Service temporarily unavailable.", show_alert=True)
+        return
+
+    clients = (state_data or {}).get("clients", [])
+    record = next(
+        (c for c in clients if c.get("id") == client_id),
+        None,
+    )
     if not record:
         await callback.answer("Key not found")
         return
@@ -142,16 +426,24 @@ async def user_key_selected(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Access denied", show_alert=True)
         return
 
-    await show_key_details(callback, state, record)
+    await show_key_details(callback, state, record, i18n=i18n, lang=lang, has_other_keys=len(clients) > 1)
 
 
-async def show_key_details(callback: types.CallbackQuery, state: FSMContext, record):
-    db_id = record[0]
-    email = record[3]
-    inbound_tag = record[4]
+async def show_key_details(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    record,
+    *,
+    i18n: I18n,
+    lang: str,
+    has_other_keys: bool = False,
+):
+    client_id = record["id"]
+    email = record["email"]
+    inbound_tag = record["inbound_tag"]
 
     await state.set_state(UserStates.viewing_keys)
-    await state.update_data(selected_key_db_id=db_id)
+    await state.update_data(selected_key_client_id=client_id)
 
     try:
         links = await panel_api.get_dedup_subscription_links(email, inbound_tag=inbound_tag)
@@ -161,54 +453,159 @@ async def show_key_details(callback: types.CallbackQuery, state: FSMContext, rec
 
     msg = callback.message
 
-    final_text = ""
     if links:
         links_text = "\n\n".join([f"<code>{h(link)}</code>" for link in links])
-        final_text = (
-            f"<b>🔑 Access Keys: {h(email)}</b>\n"
-            "<i>Click to copy:</i>\n\n"
-            f"{links_text}\n\n"
-            "⚠️ <i>Self-destructs in 60s.</i>"
-        )
+        display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
+        header = await i18n.t("keys.details.header", lang, email=h(display))
+        self_destruct = await i18n.t("keys.details.self_destruct", lang)
+        final_text = f"{header}\n\n{links_text}\n\n{self_destruct}"
     else:
-        final_text = f"❌ <b>No active keys found for {h(email)}.</b>\nContact admin."
+        display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
+        final_text = await i18n.t("keys.details.none", lang, email=h(display))
 
-    msg = await safe_edit(msg, final_text, reply_markup=kb.sub_actions_kb())
+    qr_label = await i18n.t("sub.actions.show_qr", lang)
+    stats_label = await i18n.t("sub.actions.show_stats", lang)
+    if has_other_keys:
+        back = await i18n.t("common.back_to_keys", lang)
+        back_callback = "back_to_keys_picker"
+    else:
+        back = await i18n.t("common.back_to_main", lang)
+        back_callback = "user_home"
+
+    renew_tariff_id = record.get("tariff_id")
+    renew_label = None
+    if renew_tariff_id:
+        renew_label = await i18n.t("notification.button.renew", lang)
+
+    msg = await safe_edit(
+        msg,
+        final_text,
+        reply_markup=kb.sub_actions_kb(
+            qr_label=qr_label,
+            stats_label=stats_label,
+            back_label=back,
+            back_callback=back_callback,
+            renew_label=renew_label,
+            renew_tariff_id=renew_tariff_id,
+        ),
+    )
 
     if links:
-        asyncio.create_task(auto_expire_message(msg, state, UserStates.viewing_keys))
+        asyncio.create_task(
+            auto_expire_keys_message(
+                msg,
+                state,
+                i18n=i18n,
+                lang=lang,
+                client_id=client_id,
+            )
+        )
 
 
 @router.callback_query(F.data == "back_to_keys")
-async def back_to_keys(callback: types.CallbackQuery, state: FSMContext):
+async def back_to_keys(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
     """Go back to the keys view by re-fetching — used from QR screen."""
     data = await state.get_data()
-    db_id = data.get("selected_key_db_id")
+    client_id = data.get("selected_key_client_id")
 
-    if not db_id:
-        await user_home(callback, state)
+    if not client_id:
+        await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
         return
 
-    record = db.get_user_by_db_id(db_id)
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
+    except Exception as exc:
+        logger.warning("get_user_state failed: %s", exc)
+        await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
+        return
+
+    clients = (state_data or {}).get("clients", [])
+    record = next(
+        (c for c in clients if c.get("id") == client_id),
+        None,
+    )
     if not record or not is_record_owner(record, callback.from_user.id):
-        await user_home(callback, state)
+        await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
         return
 
-    await show_key_details(callback, state, record)
+    await show_key_details(callback, state, record, i18n=i18n, lang=lang, has_other_keys=len(clients) > 1)
+
+
+@router.callback_query(F.data == "back_to_keys_picker")
+async def back_to_keys_picker(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
+    """Return from key details to the keys picker (when user has multiple keys)."""
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
+        users_records = list((state_data or {}).get("clients") or [])
+    except Exception as exc:
+        logger.warning("get_user_state failed: %s", exc)
+        await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
+        return
+
+    if len(users_records) <= 1:
+        if users_records:
+            await show_key_details(callback, state, users_records[0], i18n=i18n, lang=lang)
+        else:
+            await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
+        return
+
+    await state.clear()
+    title = await i18n.t("keys.picker.title", lang)
+    entry = await i18n.t("keys.list.entry", lang)
+    back = await i18n.t("common.back_to_main", lang)
+    await safe_edit(
+        callback.message,
+        title,
+        reply_markup=kb.user_keys_list_kb(
+            users_records,
+            entry_template=entry,
+            back_label=back,
+        ),
+    )
 
 
 @router.callback_query(F.data == "qr_select_server")
-async def qr_select_server(callback: types.CallbackQuery, state: FSMContext):
+async def qr_select_server(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+):
     await state.set_state(UserStates.viewing_qr)
+    title = await i18n.t("qr.select_title", lang)
+    server_template = await i18n.t("qr.server_label", lang)
+    back = await i18n.t("common.back_to_keys", lang)
     await safe_edit(
         callback.message,
-        "🖥 <b>Select Server</b>\nChoose which key to display as QR:",
-        reply_markup=kb.user_qr_server_kb(panel_api.panels),
+        title,
+        reply_markup=kb.user_qr_server_kb(
+            panel_api.panels,
+            server_template=server_template,
+            back_label=back,
+        ),
     )
 
 
 @router.callback_query(UserStates.viewing_qr, F.data.startswith("qr_gen_"))
-async def qr_generate_for_server(callback: types.CallbackQuery, state: FSMContext):
+async def qr_generate_for_server(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    backend: BackendClient,
+    i18n: I18n,
+    lang: str,
+):
     try:
         idx = int(callback.data.split("_")[2])
     except (ValueError, IndexError):
@@ -216,14 +613,24 @@ async def qr_generate_for_server(callback: types.CallbackQuery, state: FSMContex
         return
 
     data = await state.get_data()
-    db_id = data.get("selected_key_db_id")
+    client_id = data.get("selected_key_client_id")
 
-    if not db_id:
+    if not client_id:
         await callback.answer("Session expired, please select key again.")
-        await user_sub(callback, state)
+        await user_sub(callback, state, i18n, lang, backend)
         return
 
-    record = db.get_user_by_db_id(db_id)
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
+    except Exception as exc:
+        logger.warning("get_user_state failed: %s", exc)
+        await callback.answer("Service temporarily unavailable.", show_alert=True)
+        return
+
+    record = next(
+        (c for c in (state_data or {}).get("clients", []) if c.get("id") == client_id),
+        None,
+    )
     if not record:
         await callback.answer("Key not found")
         return
@@ -231,8 +638,8 @@ async def qr_generate_for_server(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("Access denied", show_alert=True)
         return
 
-    email = record[3]
-    inbound_tag = record[4]
+    email = record["email"]
+    inbound_tag = record["inbound_tag"]
     raw_links = await panel_api.get_subscription_link_single(email, idx, inbound_tag=inbound_tag)
     link = raw_links[0] if raw_links else None
 
@@ -241,40 +648,54 @@ async def qr_generate_for_server(callback: types.CallbackQuery, state: FSMContex
             link = link.split("#")[0] + f"#{panel_api.panels[idx].name}"
 
         qr_file = generate_qr(link)
+        back = await i18n.t("common.back_to_keys", lang)
 
         await callback.message.delete()
-        msg = await callback.message.answer_photo(
+        await callback.message.answer_photo(
             qr_file,
-            caption=f"📱 <b>{h(panel_api.panels[idx].name)} QR</b>\n\n⚠️ <i>Valid for 60 seconds.</i>",
-            reply_markup=kb.qr_back_kb(),
+            caption=f"📱 <b>{h(panel_api.panels[idx].name)} QR</b>",
+            reply_markup=kb.qr_back_kb(back_label=back),
             parse_mode="HTML",
         )
-        asyncio.create_task(auto_expire_message(msg, state, UserStates.viewing_qr))
     else:
         await callback.answer("❌ No active key found on this server.", show_alert=True)
 
 
-def _format_expiry(expiry_ts_ms):
-    """Return (display_str, days_left_float). days_left is None if permanent."""
+async def _format_expiry(expiry_ts_ms, *, i18n: I18n, lang: str) -> str:
+    """Render a localized "expiry" string with a colored indicator emoji."""
     if expiry_ts_ms <= 0:
-        return "♾️ Permanent", None
+        return await i18n.t("stats.expiry.permanent", lang)
+
     now_ms = int(time.time() * 1000)
     diff_ms = expiry_ts_ms - now_ms
-    if diff_ms <= 0:
-        expiry_dt = datetime.datetime.fromtimestamp(expiry_ts_ms / 1000)
-        return f"❌ Expired ({expiry_dt.strftime('%Y-%m-%d')})", 0.0
-    days = diff_ms / (1000 * 60 * 60 * 24)
-    expiry_dt = datetime.datetime.fromtimestamp(expiry_ts_ms / 1000)
+    try:
+        tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
+    except Exception:
+        tz = ZoneInfo("UTC")
+    expiry_dt = datetime.datetime.fromtimestamp(expiry_ts_ms / 1000, tz=tz)
     date_str = expiry_dt.strftime("%Y-%m-%d")
+
+    if diff_ms <= 0:
+        return await i18n.t("stats.expiry.expired", lang, date=date_str)
+
+    days = diff_ms / (1000 * 60 * 60 * 24)
     if days < 1:
         hours = int(diff_ms / (1000 * 60 * 60))
-        return f"⚠️ {date_str} ({hours}h left)", days
-    elif days <= 3:
-        return f"🔴 {date_str} ({int(days)}d left)", days
+        return await i18n.t("stats.expiry.hours_left", lang, date=date_str, hours=hours)
+
+    if days <= 3:
+        indicator = "🔴"
     elif days <= 7:
-        return f"🟡 {date_str} ({int(days)}d left)", days
+        indicator = "🟡"
     else:
-        return f"🟢 {date_str} ({int(days)}d left)", days
+        indicator = "🟢"
+    return await i18n.t(
+        "stats.expiry.days_left",
+        lang,
+        indicator=indicator,
+        date=date_str,
+        days=int(days),
+    )
 
 
 def _progress_bar(percent, length=12):
@@ -282,53 +703,76 @@ def _progress_bar(percent, length=12):
     return "█" * filled + "░" * (length - filled)
 
 
-def _format_key_stats(email, inbound_tag, stats):
+async def _format_key_stats(
+    email,
+    inbound_tag,
+    inbound_label,
+    stats,
+    *,
+    i18n: I18n,
+    lang: str,
+) -> str:
     enable = stats["enable"]
     key_total = stats["total"]
     limit = stats["limit"]
     expiry = stats["expiry"]
     per_server = stats.get("per_server", [])
 
-    status = "🟢 Active" if enable else "🔴 Disabled"
-    tag_display = f" <code>[{h(inbound_tag)}]</code>" if inbound_tag and inbound_tag.lower() != "multi" else ""
+    status_key = "stats.key.status_active" if enable else "stats.key.status_disabled"
+    status = await i18n.t(status_key, lang)
+    display = inbound_label or inbound_tag
 
-    lines = [f"🔑 <b>{h(email)}</b>{tag_display}  {status}"]
+    lines = [f"🔑 <b>{h(display)}</b>  {status}"]
 
-    # Traffic block
     if limit > 0:
         percent = min(100.0, (key_total / limit) * 100)
         remaining = max(0, limit - key_total)
         bar = _progress_bar(percent)
+        used_label = await i18n.t("stats.key.used_label", lang)
+        left_label = await i18n.t("stats.key.left_label", lang)
         lines.append(
             f"  📦 <code>{bar}</code> {percent:.1f}%\n"
-            f"  Used:  <b>{format_bytes(key_total)}</b> / {format_bytes(limit)}\n"
-            f"  Left:  <b>{format_bytes(remaining)}</b>"
+            f"  {used_label}  <b>{format_bytes(key_total)}</b> / {format_bytes(limit)}\n"
+            f"  {left_label}  <b>{format_bytes(remaining)}</b>"
         )
     else:
-        lines.append(f"  📦 Used: <b>{format_bytes(key_total)}</b> / ∞")
+        lines.append(await i18n.t("stats.key.unlimited", lang, used=format_bytes(key_total)))
 
-    # Expiry block
-    expiry_str, _ = _format_expiry(expiry)
-    lines.append(f"  📅 Expiry: {expiry_str}")
+    expiry_str = await _format_expiry(expiry, i18n=i18n, lang=lang)
+    lines.append(await i18n.t("stats.key.expiry_label", lang, expiry=expiry_str))
 
-    # Per-server breakdown (only if more than one server)
     if len(per_server) > 1:
+        per_server_header = await i18n.t("stats.key.per_server", lang)
         server_lines = []
         for s in per_server:
             server_lines.append(f"    • {h(s['name'])}: ↑{format_bytes(s['up'])} ↓{format_bytes(s['down'])}")
-        lines.append("  🖥 Per server:\n" + "\n".join(server_lines))
+        lines.append(f"  {per_server_header}\n" + "\n".join(server_lines))
 
     return "\n".join(lines)
 
 
 @router.callback_query(F.data == "user_stats")
-async def user_stats(callback: types.CallbackQuery, state: FSMContext):
+async def user_stats(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
     await state.clear()
-    users_records = db.get_users_by_tg_id(callback.from_user.id)
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
+        users_records = list((state_data or {}).get("clients") or [])
+    except Exception as exc:
+        logger.warning("get_user_state failed: %s", exc)
+        users_records = []
     if not users_records:
         return
 
-    tasks = [panel_api.get_client_stats_aggregate(record[3], inbound_tag=record[4]) for record in users_records]
+    tasks = [
+        panel_api.get_client_stats_aggregate(record["email"], inbound_tag=record["inbound_tag"])
+        for record in users_records
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     msg = callback.message
 
@@ -336,18 +780,113 @@ async def user_stats(callback: types.CallbackQuery, state: FSMContext):
     grand_total = 0
 
     for record, result in zip(users_records, results):
-        email = record[3]
-        inbound_tag = record[4]
+        email = record["email"]
+        inbound_tag = record["inbound_tag"]
+        inbound_label = record.get("inbound_label") or inbound_tag
         if isinstance(result, Exception) or result is None:
-            key_blocks.append(f"🔑 <b>{h(email)}</b> — ❌ unavailable")
+            key_blocks.append(await i18n.t("stats.key.unavailable", lang, email=h(inbound_label)))
             continue
         grand_total += result["total"]
-        key_blocks.append(_format_key_stats(email, inbound_tag, result))
+        key_blocks.append(
+            await _format_key_stats(
+                email,
+                inbound_tag,
+                inbound_label,
+                result,
+                i18n=i18n,
+                lang=lang,
+            )
+        )
 
-    header = f"<b>📊 Statistics</b>\n👤 {h(callback.from_user.first_name)}"
+    header_line = await i18n.t("stats.header", lang)
+    user_line = await i18n.t(
+        "stats.user_line",
+        lang,
+        user_name=h(callback.from_user.first_name or ""),
+    )
+    header = f"{header_line}\n{user_line}"
     if len(users_records) > 1:
-        header += f"\n📦 Total: <b>{format_bytes(grand_total)}</b>"
+        header += "\n" + await i18n.t(
+            "stats.grand_total",
+            lang,
+            total=format_bytes(grand_total),
+        )
 
     final_text = header + "\n\n" + "\n\n".join(key_blocks)
 
-    await safe_edit(msg, final_text, reply_markup=kb.back_to_main_kb())
+    back = await i18n.t("common.back_to_main", lang)
+    refresh = await i18n.t("stats.actions.refresh", lang)
+    await safe_edit(
+        msg,
+        final_text,
+        reply_markup=kb.user_stats_kb(refresh_label=refresh, back_label=back),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "trial:skip")
+async def cb_trial_skip(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
+    """User dismissed the first-touch trial offer. Re-render the regular
+    no-clients menu in place; the trial button stays available there."""
+    await callback.answer()
+    await state.clear()
+    user_name = callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
+    await _render_welcome(
+        callback.message,
+        telegram_id=callback.from_user.id,
+        user_name=user_name,
+        lang=lang,
+        i18n=i18n,
+        backend=backend,
+        edit=True,
+    )
+
+
+@router.callback_query(F.data == "trial:activate")
+async def cb_trial_activate(
+    callback: types.CallbackQuery,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
+    try:
+        result = await backend.activate_trial(callback.from_user.id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 409:
+            already = await i18n.t("trial.already_used", lang)
+            try:
+                await callback.message.edit_text(already)
+            except Exception:
+                await callback.message.answer(already)
+        else:
+            logger.warning("activate_trial returned %s", exc.response.status_code)
+            await callback.answer("Error, try again later", show_alert=True)
+        await callback.answer()
+        return
+    except Exception as exc:
+        logger.error("activate_trial unexpected error: %s", exc)
+        await callback.answer("Error, try again later", show_alert=True)
+        return
+
+    expires_ms = result.get("expires_at_ms", 0)
+    try:
+        _tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
+    except Exception:
+        _tz = ZoneInfo("UTC")
+    expires_str = datetime.datetime.fromtimestamp(expires_ms / 1000, tz=_tz).strftime("%d.%m.%Y %H:%M")
+    success = await i18n.t("trial.success", lang, expires_at=expires_str)
+    subs_label = await i18n.t("menu.subscription", lang)
+    back_label = await i18n.t("common.back_to_main", lang)
+    markup = kb.trial_success_kb(subs_label=subs_label, back_label=back_label)
+    try:
+        await callback.message.edit_text(success, reply_markup=markup)
+    except Exception:
+        # If editing fails (e.g., message older than 48h), send a new one
+        await callback.message.answer(success, reply_markup=markup)
+    await callback.answer()

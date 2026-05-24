@@ -157,9 +157,16 @@ services:
     image: ${BOT_IMAGE:?BOT_IMAGE is required}
     container_name: panel-bot
     restart: always
+    environment:
+      - BACKEND_API_URL=${BACKEND_API_URL:-http://backend:5000/api}
+      - BOT_SERVICE_TOKEN=${BOT_SERVICE_TOKEN:-}
+      - BOT_LOG_LEVEL=${BOT_LOG_LEVEL:-INFO}
+      - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
     volumes:
       - ./bot_data:/app/db
-      - ./bot_config.yaml:/app/config.yaml
     depends_on:
       backend:
         condition: service_healthy

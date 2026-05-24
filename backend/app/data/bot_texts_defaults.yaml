@@ -1,0 +1,306 @@
+# Brand / welcome
+welcome.title:
+  ru: "🛡️ Добро пожаловать, <b>{user_name}</b>!"
+  en: "🛡️ Welcome, <b>{user_name}</b>!"
+welcome.body:
+  ru: "⚡ Выбери, что хочешь сделать:"
+  en: "⚡ Pick what you'd like to do:"
+
+# Home screen
+home.title:
+  ru: "👋 Привет, {user_name}!"
+  en: "👋 Hey, {user_name}!"
+home.subscription_active:
+  ru: "🔓 Подписка активна до <b>{expires_at}</b>\n⏳ Осталось: {days_remaining} дн."
+  en: "🔓 Active until <b>{expires_at}</b>\n⏳ Left: {days_remaining} day(s)"
+home.no_subscription:
+  ru: "ℹ️ У тебя ещё нет активной подписки.\n💎 Загляни в «Тарифы», чтобы выбрать подходящий план."
+  en: "ℹ️ You don't have a subscription yet.\n💎 Open «Tariffs» to pick a plan."
+home.menu_header:
+  ru: "👇 Главное меню"
+  en: "👇 Main menu"
+
+# Main menu buttons
+menu.subscription:
+  ru: "🔐 Моя подписка"
+  en: "🔐 My subscription"
+menu.tariffs:
+  ru: "💎 Тарифы"
+  en: "💎 Tariffs"
+menu.stats:
+  ru: "📊 Статистика"
+  en: "📊 Stats"
+menu.help:
+  ru: "📖 Помощь"
+  en: "📖 Help"
+menu.keys:
+  ru: "🔑 Мои ключи"
+  en: "🔑 My keys"
+menu.settings:
+  ru: "⚙️ Настройки"
+  en: "⚙️ Settings"
+
+# Common buttons
+common.back:
+  ru: "◀ Назад"
+  en: "◀ Back"
+common.back_to_main:
+  ru: "🏠 В главное меню"
+  en: "🏠 Back to main"
+common.back_to_keys:
+  ru: "🔑 К ключам"
+  en: "🔑 Back to keys"
+common.cancel:
+  ru: "❌ Отмена"
+  en: "❌ Cancel"
+
+# Keys / subscription views
+sub.actions.show_qr:
+  ru: "📱 Показать QR-код"
+  en: "📱 Show QR code"
+sub.actions.show_stats:
+  ru: "📊 Моя статистика"
+  en: "📊 My stats"
+keys.picker.title:
+  ru: "🔑 <b>Выбери ключ</b>\nУ тебя несколько активных ключей:"
+  en: "🔑 <b>Select a key</b>\nYou have multiple keys available:"
+keys.list.entry:
+  ru: "🔑 {name}"
+  en: "🔑 {name}"
+keys.details.header:
+  ru: "🔑 <b>Твои ключи доступа ({email})</b>\n\n<i>Нажми на ключ, чтобы скопировать его:</i>"
+  en: "🔑 <b>Your access keys ({email})</b>\n\n<i>Tap on a key to copy it:</i>"
+keys.details.self_destruct:
+  ru: "⚠️ <i>Внимание: сообщение удалится через 60 секунд.</i>"
+  en: "⚠️ <i>Note: this message self-destructs in 60s.</i>"
+keys.details.none:
+  ru: "❌ <b>Нет активных ключей для {email}.</b>\nПожалуйста, напиши администратору."
+  en: "❌ <b>No active keys found for {email}.</b>\nPlease contact the admin."
+security.timeout:
+  ru: "🔒 <b>Защитный тайм-аут</b>\n\nДанные скрыты в целях безопасности."
+  en: "🔒 <b>Security timeout</b>\n\nData hidden for security purposes."
+keys.actions.show_again:
+  ru: "🔄 Показать ключи снова"
+  en: "🔄 Show keys again"
+
+# QR
+qr.select_title:
+  ru: "🖥️ <b>Выбор сервера</b>\nКакой ключ показать в виде QR-кода:"
+  en: "🖥️ <b>Select server</b>\nChoose which key to display as a QR code:"
+qr.server_label:
+  ru: "🖥️ {name}"
+  en: "🖥️ {name}"
+
+# Tariffs / catalog
+tariff.button.buy:
+  ru: "💳 Купить ({price} ₽)"
+  en: "💳 Buy ({price} ₽)"
+tariff.button.renew:
+  ru: "💎 Продлить ({price} ₽)"
+  en: "💎 Renew ({price} ₽)"
+notification.button.renew:
+  ru: "💎 Продлить подписку"
+  en: "💎 Renew subscription"
+tariff.unlimited_label:
+  ru: "♾️ Безлимит"
+  en: "♾️ Unlimited"
+catalog.tariff_card.header:
+  ru: "<b>💎 {name}</b>\n💰 {price} ₽ / ⏳ {days} дн."
+  en: "<b>💎 {name}</b>\n💰 {price} ₽ / ⏳ {days} days"
+catalog.tariff_card.item:
+  ru: "  • {display}: {amount}"
+  en: "  • {display}: {amount}"
+catalog.tariff_card.item.unlimited_amount:
+  ru: "♾️ безлимит"
+  en: "♾️ unlimited"
+catalog.tariff_card.item.gb_amount:
+  ru: "{gb} ГБ"
+  en: "{gb} GB"
+catalog.button.buy_inline:
+  ru: "💳 Купить — {name} ({price} ₽)"
+  en: "💳 Buy — {name} ({price} ₽)"
+catalog.button.active_marker:
+  ru: "✅ [Активен]"
+  en: "✅ [Active]"
+catalog.empty:
+  ru: "ℹ️ Сейчас нет доступных тарифов. Загляни немного позже."
+  en: "ℹ️ No tariffs available right now. Please check back later."
+catalog.pay_prompt:
+  ru: "💳 К оплате: <b>{amount} ₽</b>\n\n⚡ Доступ откроется автоматически в течение пары минут после успешной оплаты."
+  en: "💳 To pay: <b>{amount} ₽</b>\n\n⚡ Your access will be activated automatically within a few minutes after payment."
+catalog.payment_cancelled.message:
+  ru: "❌ Платёж был отменён."
+  en: "❌ Payment was cancelled."
+catalog.tariff_not_available:
+  ru: "⚠️ Этот тариф больше недоступен. Свяжись с поддержкой или выбери другой вариант в «Тарифах»."
+  en: "⚠️ This plan is no longer available. Contact support or pick another one in «Tariffs»."
+
+# Checkout
+checkout.message:
+  ru: "💎 Выбранный тариф: <b>«{tariff_name}»</b> ({price} ₽)\n\n⚡ Оплати сейчас, и доступ откроется автоматически."
+  en: "💎 Selected plan: <b>«{tariff_name}»</b> ({price} ₽)\n\n⚡ Pay now and access will activate automatically."
+checkout.button.pay:
+  ru: "💳 Оплатить {price} ₽"
+  en: "💳 Pay {price} ₽"
+checkout.button.cancel:
+  ru: "❌ Отмена"
+  en: "❌ Cancel"
+checkout.success:
+  ru: "🎉 <b>Оплата успешно прошла!</b>\nТвой доступ открыт до {expires_at}."
+  en: "🎉 <b>Payment successful!</b>\nYour access is open until {expires_at}."
+checkout.cancelled:
+  ru: "ℹ️ Платёж отменён. Ты всегда можешь вернуться к оплате в меню «Тарифы»."
+  en: "ℹ️ Payment cancelled. You can return to payment anytime in the «Tariffs» menu."
+
+# Trial
+trial.button.activate:
+  ru: "🎁 Активировать пробный период ({days} дн.)"
+  en: "🎁 Activate free trial ({days} days)"
+trial.success:
+  ru: "🎉 <b>Готово!</b>\nБесплатный доступ активирован и работает до {expires_at}."
+  en: "🎉 <b>All set!</b>\nFree access activated until {expires_at}."
+trial.already_used:
+  ru: "ℹ️ Ты уже использовал свой пробный период. Выбери тариф, чтобы продолжить пользоваться сервисом."
+  en: "ℹ️ You've already used your free trial. Please pick a plan to continue."
+
+# Notifications
+notification.expiry_3d:
+  ru: "⏳ <b>Внимание!</b>\nДо конца подписки осталось всего 3 дня. Продли её заранее, чтобы всегда оставаться на связи."
+  en: "⏳ <b>Heads up!</b>\nYour subscription expires in 3 days. Renew now to stay connected."
+notification.expiry_1d:
+  ru: "⚠️ <b>Подписка истекает!</b>\nДоступ закончится уже завтра. Самое время продлить."
+  en: "⚠️ <b>Subscription expiring!</b>\nYour access ends tomorrow. It's time to renew."
+notification.expiry_1h:
+  ru: "⚠️ <b>Подписка истекает через час!</b>\nУспей продлить, чтобы не потерять доступ к сети."
+  en: "⚠️ <b>Subscription expires in 1 hour!</b>\nRenew now to avoid losing connection."
+notification.expired:
+  ru: "⛔ <b>Подписка закончилась.</b>\nДоступ временно приостановлен. Продли подписку, чтобы снова быть онлайн."
+  en: "⛔ <b>Subscription ended.</b>\nAccess is paused. Renew your subscription to get back online."
+notification.traffic_80:
+  ru: "📊 <b>Использовано 80% трафика</b>\nОсталось {remaining} из {limit}. Самое время задуматься о продлении."
+  en: "📊 <b>80% of your traffic used</b>\n{remaining} left out of {limit}. Time to think about renewing."
+notification.traffic_95:
+  ru: "⚠️ <b>Трафик почти закончился</b>\nИспользовано {used} из {limit} — осталось всего {remaining}. Продли тариф, чтобы доступ не отключился."
+  en: "⚠️ <b>Traffic almost gone</b>\nUsed {used} of {limit} — only {remaining} left. Renew your plan to keep your access."
+notification.traffic_exhausted:
+  ru: "⛔ <b>Трафик исчерпан</b>\nИспользовано {used} из {limit}. Доступ временно приостановлен — продли подписку, чтобы снова быть онлайн."
+  en: "⛔ <b>Traffic exhausted</b>\nUsed {used} of {limit}. Access is paused — renew your subscription to get back online."
+notification.payment_succeeded:
+  ru: "🎉 <b>Оплата прошла успешно!</b>\nДоступ открыт до {expires}."
+  en: "🎉 <b>Payment successful!</b>\nAccess is active until {expires}."
+notification.payment_cancelled:
+  ru: "ℹ️ Платёж отменён. Ждём тебя в разделе «Тарифы»!"
+  en: "ℹ️ Payment cancelled. See you in the «Tariffs» section!"
+notification.payment_failed:
+  ru: "⚠️ <b>Ошибка платежа!</b>\nНе получилось провести оплату. Попробуй ещё раз."
+  en: "⚠️ <b>Payment error!</b>\nWe couldn't process your payment. Please try again."
+notification.access_renewed:
+  ru: "🔓 <b>Доступ продлён!</b>\nСпасибо, что остаёшься с нами."
+  en: "🔓 <b>Access renewed!</b>\nThanks for staying with us."
+notification.access_paused:
+  ru: "ℹ️ Автоматическое продление тарифа <b>{tariff_name}</b> остановлено. Текущий доступ работает до его истечения. Свяжись с поддержкой для продления вручную."
+  en: "ℹ️ Auto-renewal of <b>{tariff_name}</b> has been paused. Your current access stays active until expiry. Contact support to renew manually."
+notification.access_granted:
+  ru: "🎁 Администратор выдал тебе <b>пожизненный доступ</b> к <b>{tariff_name}</b>!\nПодписка активна до {expires} и продлевается автоматически.\n👇 Жми «Моя подписка», чтобы получить ключи."
+  en: "🎁 Admin granted you <b>lifetime access</b> to <b>{tariff_name}</b>!\nSubscription active until {expires} and renews automatically.\n👇 Tap «My subscription» to get your keys."
+notification.access_granted_once:
+  ru: "🎁 Администратор подарил тебе доступ к <b>{tariff_name}</b> до {expires}!\n👇 Жми «Моя подписка», чтобы забрать ключи."
+  en: "🎁 Admin gifted you access to <b>{tariff_name}</b> until {expires}!\n👇 Tap «My subscription» to get your keys."
+notification.access_offered:
+  ru: "🎁 Администратор открыл для тебя персональный доступ к тарифу <b>{tariff_name}</b>.\nЗайди в «Тарифы», чтобы подключиться."
+  en: "🎁 Admin granted you personal access to <b>{tariff_name}</b>.\nOpen «Tariffs» to subscribe."
+
+# Help
+help.body:
+  ru: "ℹ️ <b>Как подключиться?</b>\n\n1️⃣ Установи <b>Happ</b> (Android) или <b>V2Box</b> (iOS).\n2️⃣ Перейди в раздел «🔐 Моя подписка».\n3️⃣ Скопируй все ключи.\n4️⃣ Импортируй их из буфера обмена в приложении.\n\n💬 Если что-то не получается — смело пиши в поддержку!"
+  en: "ℹ️ <b>How to connect?</b>\n\n1️⃣ Install <b>Happ</b> (Android) or <b>V2Box</b> (iOS).\n2️⃣ Go to '🔐 My subscription'.\n3️⃣ Copy all keys.\n4️⃣ Import them from clipboard in the app.\n\n💬 If you face any issues — feel free to contact support!"
+
+# Settings
+settings.language:
+  ru: "🌐 Изменить язык"
+  en: "🌐 Change Language"
+settings.language_changed:
+  ru: "✅ <b>Готово!</b>\nЯзык интерфейса успешно обновлён."
+  en: "✅ <b>Done!</b>\nInterface language successfully updated."
+
+# Errors
+errors.tariff_not_available:
+  ru: "⚠️ Тариф недоступен\n\nСейчас этот тариф выбрать нельзя. Посмотри другие в разделе «Тарифы»."
+  en: "⚠️ Plan unavailable\n\nThis plan is not available right now. Check other options in «Tariffs»."
+errors.payment_failed:
+  ru: "⚠️ Платёж отклонён\n\nПроизошла ошибка при оплате. Попробуй ещё раз или используй другой способ."
+  en: "⚠️ Payment failed\n\nAn error occurred during payment. Please try again or use another method."
+errors.access_denied:
+  ru: "⛔ Доступ запрещён\n\nЕсли ты считаешь, что это ошибка — напиши администратору."
+  en: "⛔ Access denied\n\nIf you believe this is an error, please reach out to the admin."
+errors.checkout_unavailable:
+  ru: "⚠️ Оплата временно недоступна\n\nЧто-то пошло не так. Пожалуйста, попробуй позже."
+  en: "⚠️ Checkout unavailable\n\nSomething went wrong. Please try again later."
+
+# Language picker (always Russian — first-touch only)
+lang_picker.title:
+  ru: "👋 Привет! Выбери язык, на котором тебе удобнее общаться."
+lang_picker.button.en:
+  ru: "🇬🇧 English"
+lang_picker.button.ru:
+  ru: "🇷🇺 Русский"
+
+# Onboarding (first-touch after language pick)
+onboarding.title:
+  ru: "🛡️ Добро пожаловать, <b>{user_name}</b>!\n\n🎁 Рады видеть тебя! Тебе доступна пробная подписка на <b>24 часа</b>, чтобы оценить сервис."
+  en: "🛡️ Welcome, <b>{user_name}</b>!\n\n🎁 Glad to see you! You have a <b>24-hour</b> trial available to test the service."
+
+trial.button.skip:
+  ru: "❌ Пропустить"
+  en: "❌ Skip"
+
+# Stats page (📊 Statistics)
+stats.header:
+  ru: "📊 <b>Твоя статистика</b>"
+  en: "📊 <b>Your statistics</b>"
+stats.user_line:
+  ru: "👤 Пользователь: <b>{user_name}</b>"
+  en: "👤 User: <b>{user_name}</b>"
+stats.grand_total:
+  ru: "📦 Всего трафика: <b>{total}</b>"
+  en: "📦 Total traffic: <b>{total}</b>"
+stats.actions.refresh:
+  ru: "🔄 Обновить"
+  en: "🔄 Refresh"
+stats.key.unavailable:
+  ru: "🔑 <b>{email}</b> — ❌ недоступно"
+  en: "🔑 <b>{email}</b> — ❌ unavailable"
+stats.key.status_active:
+  ru: "🟢 Активен"
+  en: "🟢 Active"
+stats.key.status_disabled:
+  ru: "🔴 Отключён"
+  en: "🔴 Disabled"
+stats.key.used_label:
+  ru: "Использовано:"
+  en: "Used:"
+stats.key.left_label:
+  ru: "Осталось:"
+  en: "Left:"
+stats.key.unlimited:
+  ru: "📦 Трафик: <b>{used}</b> / ∞ (безлимит)"
+  en: "📦 Traffic: <b>{used}</b> / ∞ (unlimited)"
+stats.key.expiry_label:
+  ru: "📅 Истекает: <b>{expiry}</b>"
+  en: "📅 Expiry: <b>{expiry}</b>"
+stats.key.per_server:
+  ru: "🖥 Трафик по серверам:"
+  en: "🖥 Traffic per server:"
+stats.expiry.permanent:
+  ru: "♾️ Бессрочно"
+  en: "♾️ Permanent"
+stats.expiry.expired:
+  ru: "❌ Истёк ({date})"
+  en: "❌ Expired ({date})"
+stats.expiry.hours_left:
+  ru: "⚠️ {date} (осталось {hours} ч)"
+  en: "⚠️ {date} ({hours}h left)"
+stats.expiry.days_left:
+  ru: "{indicator} {date} (осталось {days} дн.)"
+  en: "{indicator} {date} ({days}d left)"
+

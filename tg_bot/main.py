@@ -1,55 +1,112 @@
+"""Bot entry point — bootstraps runtime config from the panel, then long-polls."""
+
 import asyncio
 import logging
-import os
+
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from config import BOT_TOKEN
+
+import config  # noqa: F401 — module import validates required ENV
 from api_service import panel_api
-from handlers import user, admin
-from jobs import send_backup, check_and_notify_users, sync_users_across_panels
+from backend_client import BackendClient
+from bot_events_consumer import run_consumer
+from handlers import admin, catalog, user
+from i18n import I18n
+from middleware import LangMiddleware
+from runtime_config import runtime_config
 
 
-async def main():
-    log_level = str(os.getenv("BOT_LOG_LEVEL", "INFO")).upper()
-    logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
+logger = logging.getLogger(__name__)
 
-    bot = Bot(token=BOT_TOKEN)
+
+def _build_bot() -> Bot:
+    session = None
+    if runtime_config.telegram_proxy_url:
+        logger.info("bot: routing Telegram via HTTP proxy %s", runtime_config.telegram_proxy_url)
+        session = AiohttpSession(proxy=runtime_config.telegram_proxy_url)
+    return Bot(
+        token=runtime_config.bot_token,
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+
+async def main() -> None:
+    logging.basicConfig(level=getattr(logging, config.BOT_LOG_LEVEL, logging.INFO))
+
+    await runtime_config.bootstrap()
+    await panel_api.reload_from_runtime()
+
+    bot = _build_bot()
     dp = Dispatcher(storage=MemoryStorage())
+
+    backend = BackendClient()
+    i18n = I18n(backend)
+
+    middleware = LangMiddleware(backend, i18n)
+    dp.message.middleware(middleware)
+    dp.callback_query.middleware(middleware)
 
     dp.include_router(admin.router)
     dp.include_router(user.router)
+    dp.include_router(catalog.router)
 
-    scheduler = AsyncIOScheduler()
+    # Holder so on_runtime_change can swap the Bot under the consumer's feet.
+    state: dict[str, object] = {"bot": bot}
 
-    scheduler.add_job(send_backup, "cron", hour=0, minute=0, args=[bot])
+    async def on_runtime_change(session_changed: bool) -> None:
+        try:
+            await panel_api.reload_from_runtime()
+        except Exception as exc:
+            logger.exception("runtime-change: panel_api reload failed: %s", exc)
+        if not session_changed:
+            return
 
-    scheduler.add_job(check_and_notify_users, "cron", hour=12, minute=0, args=[bot])
+        logger.info("runtime-change: rebuilding aiogram session")
+        old_bot = state["bot"]
+        try:
+            await dp.stop_polling()
+        except Exception as exc:
+            logger.warning("runtime-change: stop_polling: %s", exc)
+        try:
+            await old_bot.session.close()  # type: ignore[union-attr]
+        except Exception as exc:
+            logger.warning("runtime-change: close old session: %s", exc)
 
-    scheduler.add_job(sync_users_across_panels, "interval", minutes=60, args=[bot])
+        new_bot = _build_bot()
+        state["bot"] = new_bot
+        try:
+            await new_bot.delete_webhook(drop_pending_updates=True)
+        except Exception as exc:
+            logger.warning("runtime-change: delete_webhook: %s", exc)
+        asyncio.create_task(dp.start_polling(new_bot))
 
-    scheduler.add_job(
-        panel_api.bootstrap_virtual_panels,
-        "interval",
-        minutes=5,
-        kwargs={"force": True},
-    )
-
-    scheduler.start()
+    runtime_config.set_change_listener(on_runtime_change)
+    refresh_task = asyncio.create_task(runtime_config.refresh_loop())
+    # Accessor, not the Bot itself — hot-swap replaces state["bot"] under us.
+    consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware))
 
     try:
-        try:
-            await panel_api.bootstrap_virtual_panels(force=True)
-        except Exception as exc:
-            logging.warning("Initial virtual panels bootstrap failed: %s", exc)
-
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
-        if scheduler.running:
-            scheduler.shutdown(wait=False)
+        refresh_task.cancel()
+        consumer_task.cancel()
+        for t in (refresh_task, consumer_task):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        await backend.close()
         await panel_api.close()
-        await bot.session.close()
+        await runtime_config.close()
+        try:
+            await state["bot"].session.close()  # type: ignore[union-attr]
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

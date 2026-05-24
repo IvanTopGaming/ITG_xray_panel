@@ -1,0 +1,102 @@
+welcome.title:
+  description: "Heading shown on /start before the user has a subscription"
+  variables: []
+welcome.body:
+  description: "Subtitle on /start; appears under welcome.title"
+  variables: []
+
+home.title:
+  description: "Greeting on /start when user already has an active subscription"
+  variables: [user_name]
+home.subscription_active:
+  description: "Subtitle on home screen with expiry info"
+  variables: [expires_at, days_remaining]
+home.no_subscription:
+  description: "Subtitle on home screen when user has no active subscription"
+  variables: []
+
+menu.keys:
+  description: "Main menu button: opens the user's keys list"
+  variables: []
+menu.tariffs:
+  description: "Main menu button: opens the tariff catalog"
+  variables: []
+menu.stats:
+  description: "Main menu button: opens traffic stats"
+  variables: []
+menu.settings:
+  description: "Main menu button: opens settings (language, etc.)"
+  variables: []
+menu.help:
+  description: "Main menu button: opens help text"
+  variables: []
+
+tariff.button.buy:
+  description: "Tariff card action button when user has no active subscription"
+  variables: [price]
+tariff.button.renew:
+  description: "Tariff card action button when user already has a subscription"
+  variables: [price]
+tariff.unlimited_label:
+  description: "Inline label shown for items with traffic_gb=0 (no traffic cap)"
+  variables: []
+
+checkout.message:
+  description: "Body text shown after the user picks a tariff and starts checkout"
+  variables: [price, tariff_name]
+checkout.button.pay:
+  description: "Inline button label that links to the YooKassa payment page"
+  variables: [price]
+checkout.button.cancel:
+  description: "Cancel button on the checkout screen"
+  variables: []
+checkout.success:
+  description: "Confirmation pushed to the user once the payment webhook fires"
+  variables: [expires_at]
+checkout.cancelled:
+  description: "Message after the user cancels a pending payment"
+  variables: []
+
+trial.button.activate:
+  description: "Onboarding button on /start that starts a free trial"
+  variables: [days]
+trial.success:
+  description: "Confirmation after trial activation"
+  variables: [expires_at]
+trial.already_used:
+  description: "Shown if the user clicks Activate Trial after redeeming once"
+  variables: []
+
+notification.expiry_3d:
+  description: "Auto-sent 3 days before subscription expires"
+  variables: []
+notification.expiry_1d:
+  description: "Auto-sent 1 day before subscription expires"
+  variables: []
+notification.expiry_1h:
+  description: "Auto-sent 1 hour before subscription expires"
+  variables: []
+notification.expired:
+  description: "Auto-sent the moment a subscription expires"
+  variables: []
+
+help.body:
+  description: "Body of /help; shown when user clicks Help in the main menu"
+  variables: []
+
+settings.language:
+  description: "Settings entry to change interface language"
+  variables: []
+settings.language_changed:
+  description: "Toast shown after language switch"
+  variables: []
+
+errors.tariff_not_available:
+  description: "Shown when the user tries to open a private/archived tariff they don't have access to"
+  variables: []
+errors.payment_failed:
+  description: "Shown when a YooKassa payment cannot be created or the user clicks Buy on a disabled tariff"
+  variables: []
+errors.access_denied:
+  description: "Shown when a non-admin user attempts an admin-only action"
+  variables: []

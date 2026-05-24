@@ -47,6 +47,7 @@ class Inbound(db.Model):
     down = db.Column(db.BigInteger, default=0)
     fallback_address = db.Column(db.String(100), nullable=True)
     device_limit = db.Column(db.Integer, default=0, nullable=False)
+    label = db.Column(db.String(60), nullable=True)
     clients = db.relationship("Client", backref="inbound", lazy=True, cascade="all, delete-orphan")
 
 
@@ -71,6 +72,13 @@ class Client(db.Model):
     # Empty string = no filter (all groups).
     allowed_node_groups = db.Column(db.Text, nullable=False, default="")
     device_limit = db.Column(db.Integer, nullable=True)
+    telegram_id = db.Column(db.BigInteger, nullable=True, index=True)
+    tariff_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tariff.id"),
+        nullable=True,
+        index=True,
+    )
     devices = db.relationship("ClientDevice", backref="client", lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
@@ -85,6 +93,7 @@ class Client(db.Model):
             "id": self.id,
             "email": self.email,
             "inbound_tag": self.inbound_tag,
+            "inbound_label": (self.inbound.label if self.inbound else None) or self.inbound_tag,
             "limit_bytes": self.limit_bytes,
             "expiry_time": self.expiry_time,
             "up": self.up,
@@ -99,6 +108,8 @@ class Client(db.Model):
             "global_limit_bytes": self.global_limit_bytes or 0,
             "allowed_node_groups": groups,
             "device_limit": self.device_limit,
+            "telegram_id": self.telegram_id,
+            "tariff_id": self.tariff_id,
         }
 
 
@@ -243,3 +254,166 @@ class ClientDevice(db.Model):
             out["request_ip"] = self.request_ip or ""
             out["hits"] = int(self.hits or 0)
         return out
+
+
+# ─── Billing: tariffs ────────────────────────────────────────────────────
+
+
+class Tariff(db.Model):
+    __tablename__ = "tariff"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    price_rub = db.Column(db.Integer, nullable=False)
+    period_days = db.Column(db.Integer, nullable=False)
+    visibility = db.Column(db.String(16), nullable=False, default="public")
+    # 'public' | 'private' | 'archived'
+    is_trial = db.Column(db.Boolean, nullable=False, default=False)
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    updated_at = db.Column(
+        db.DateTime,
+        default=db.func.current_timestamp(),
+        onupdate=db.func.current_timestamp(),
+    )
+
+    items = db.relationship(
+        "TariffItem",
+        backref="tariff",
+        cascade="all, delete-orphan",
+        order_by="TariffItem.sort_order",
+    )
+
+    __table_args__ = (db.Index("ix_tariff_visibility", "visibility"),)
+
+
+class TariffItem(db.Model):
+    __tablename__ = "tariff_item"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tariff_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tariff.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    inbound_tag = db.Column(db.String(120), nullable=False)
+    label = db.Column(db.String(60), nullable=True)
+    traffic_gb = db.Column(db.Integer, nullable=False)  # 0 = unlimited
+    allowed_node_groups = db.Column(db.String(255), nullable=False, default="")
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    __table_args__ = (db.Index("ix_tariff_item_tariff", "tariff_id"),)
+
+
+class UserTariffAccess(db.Model):
+    __tablename__ = "user_tariff_access"
+
+    id = db.Column(db.Integer, primary_key=True)
+    telegram_id = db.Column(db.BigInteger, nullable=False)
+    tariff_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tariff.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    billing = db.Column(db.String(8), nullable=False)  # 'free' | 'paid'
+    next_renewal_at = db.Column(db.DateTime, nullable=True)
+    note = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+    __table_args__ = (
+        db.UniqueConstraint("telegram_id", "tariff_id", name="uq_user_tariff"),
+        db.Index("ix_uta_telegram", "telegram_id"),
+        db.Index("ix_uta_renewal", "next_renewal_at"),
+    )
+
+
+class Payment(db.Model):
+    __tablename__ = "payment"
+
+    id = db.Column(db.Integer, primary_key=True)
+    yookassa_id = db.Column(db.String(64), unique=True, nullable=False)
+    telegram_id = db.Column(db.BigInteger, nullable=False, index=True)
+    tariff_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tariff.id"),  # default RESTRICT — preserves history
+        nullable=False,
+    )
+    tariff_snapshot = db.Column(db.JSON, nullable=False)
+    amount_rub = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(16), nullable=False)
+    # 'pending' | 'succeeded' | 'cancelled' | 'failed'
+    confirmation_url = db.Column(db.Text, nullable=True)
+    metadata_json = db.Column("metadata", db.JSON, nullable=False, default=dict, server_default="{}")
+    created_at = db.Column(
+        db.DateTime,
+        default=db.func.current_timestamp(),
+        index=True,
+    )
+    paid_at = db.Column(db.DateTime, nullable=True)
+    chat_id = db.Column(db.BigInteger, nullable=True)
+    message_id = db.Column(db.Integer, nullable=True)
+
+
+class BotText(db.Model):
+    __tablename__ = "bot_text"
+
+    key = db.Column(db.String(120), primary_key=True)
+    lang = db.Column(db.String(8), primary_key=True)
+    text = db.Column(db.Text, nullable=False)
+    updated_at = db.Column(
+        db.DateTime,
+        default=db.func.current_timestamp(),
+        onupdate=db.func.current_timestamp(),
+    )
+
+
+class BotEvent(db.Model):
+    __tablename__ = "bot_event"
+
+    id = db.Column(db.Integer, primary_key=True)
+    type = db.Column(db.String(32), nullable=False)
+    telegram_id = db.Column(db.BigInteger, nullable=True, index=True)
+    # nullable telegram_id = broadcast event (e.g., 'texts_changed')
+    payload = db.Column(db.JSON, nullable=False)
+    created_at = db.Column(
+        db.DateTime,
+        default=db.func.current_timestamp(),
+        index=True,
+    )
+    delivered_at = db.Column(db.DateTime, nullable=True)
+
+
+class TelegramUser(db.Model):
+    __tablename__ = "telegram_user"
+
+    telegram_id = db.Column(db.BigInteger, primary_key=True)
+    username = db.Column(db.String(64), nullable=True)
+    language = db.Column(db.String(8), nullable=False, default="ru")
+    trial_used_at = db.Column(db.DateTime, nullable=True)
+    blocked = db.Column(db.Boolean, nullable=False, default=False)
+    language_chosen = db.Column(db.Boolean, nullable=False, default=False)
+    first_seen_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    last_seen_at = db.Column(
+        db.DateTime,
+        default=db.func.current_timestamp(),
+        onupdate=db.func.current_timestamp(),
+    )
+    note = db.Column(db.String(255), nullable=True)
+
+
+class NotificationLog(db.Model):
+    __tablename__ = "notification_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    telegram_id = db.Column(db.BigInteger, nullable=False, index=True)
+    client_id = db.Column(
+        db.String(128),
+        db.ForeignKey("client.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind = db.Column(db.String(32), nullable=False)
+    # 'expiry_3d' | 'expiry_1d' | 'expiry_1h' | 'expired'
+    sent_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+    __table_args__ = (db.Index("ix_notif_dedup", "telegram_id", "client_id", "kind", "sent_at"),)

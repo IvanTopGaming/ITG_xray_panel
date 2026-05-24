@@ -6,6 +6,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+# `project` is a buildx named context (passed via --build-context), not a FROM alias.
+COPY --from=project versions.json ./versions.json
 
 RUN npm run build
 

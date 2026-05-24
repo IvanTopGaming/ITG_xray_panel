@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/Switch';
 import { TagInput } from '@/components/ui/TagInput';
 import { Inbound, Client, Node, MasterInfo } from '@/lib/types';
 import api from '@/lib/api';
+import { epochMsForDateAtNoon, formatDateForPicker } from '@/lib/datetime';
 import { toast } from 'react-toastify';
 import { RefreshCw } from 'lucide-react';
 
@@ -23,9 +24,7 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       email: client.email,
       id: client.id,
       limit_gb: client.limit_bytes ? client.limit_bytes / 1024 ** 3 : 0,
-      expiry_date: client.expiry_time
-        ? new Date(client.expiry_time).toISOString().split('T')[0]
-        : '',
+      expiry_date: client.expiry_time ? formatDateForPicker(client.expiry_time) : '',
       reset_day: client.reset_day,
       enable: client.enable,
       flow: client.flow || '',
@@ -98,7 +97,7 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       new_email: data.email,
       new_id: data.id,
       limit_bytes: Number(data.limit_gb) * 1024 ** 3,
-      expiry_time: data.expiry_date ? new Date(data.expiry_date).getTime() : 0,
+      expiry_time: data.expiry_date ? epochMsForDateAtNoon(data.expiry_date) : 0,
       reset_day: Number(data.reset_day),
       enable: data.enable,
       flow: data.flow,

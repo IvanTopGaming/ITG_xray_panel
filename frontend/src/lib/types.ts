@@ -28,6 +28,7 @@ export interface Client {
   allowed_node_groups?: string[];
   device_limit?: number | null; // null = inherit from inbound
   device_count?: number; // present on list endpoints (batch-injected)
+  tariff_id?: number | null; // set when client was provisioned via a tariff
 }
 
 export interface ClientDevice {
@@ -82,6 +83,7 @@ export interface StreamSettings {
 
 export interface Inbound {
   tag: string;
+  label?: string | null;
   port: number;
   protocol: string;
   streamSettings: StreamSettings;
@@ -163,4 +165,160 @@ export interface RoutingProfile {
   name: string;
   enable?: boolean;
   rules: RoutingRule[];
+}
+
+// Bot billing — phase 1 (tariffs CRUD)
+export type TariffVisibility = 'public' | 'private' | 'archived';
+
+export interface TariffItem {
+  id?: number; // optional for new (unsaved) items
+  inbound_tag: string;
+  label: string;
+  traffic_gb: number; // 0 = unlimited
+  allowed_node_groups: string; // CSV
+  sort_order: number;
+}
+
+export interface Tariff {
+  id: number;
+  name: string;
+  price_rub: number;
+  period_days: number;
+  visibility: TariffVisibility;
+  is_trial: boolean;
+  enabled: boolean;
+  sort_order: number;
+  created_at: string | null;
+  updated_at: string | null;
+  items: TariffItem[];
+}
+
+// Payload type for create/update — id is server-assigned, timestamps server-computed
+export type TariffWritePayload = Omit<Tariff, 'id' | 'created_at' | 'updated_at' | 'items'> & {
+  items: Omit<TariffItem, 'id'>[];
+};
+
+export interface TariffStats {
+  active_subs: number;
+  revenue_30d: number;
+  last_sale_at: string | null;
+}
+
+export type TariffStatsMap = Record<number, TariffStats>;
+
+// Bot billing — phase 2 (i18n)
+export interface BotTextRow {
+  key: string;
+  lang: 'ru' | 'en';
+  text: string;
+  updated_at: string | null;
+}
+
+export interface BotTextKeyMeta {
+  key: string;
+  description: string;
+  variables: string[];
+  default_ru: string;
+  default_en: string;
+}
+
+// Bot billing — phase 3 (users + grants)
+export type GrantBilling = 'paid' | 'gift' | 'free';
+
+export interface BotUser {
+  telegram_id: number;
+  username: string | null;
+  language: string;
+  blocked: boolean;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  trial_used_at: string | null;
+  clients_count: number;
+  grants_count: number;
+}
+
+export interface UserTariffGrant {
+  id: number;
+  telegram_id: number;
+  tariff_id: number;
+  billing: GrantBilling;
+  next_renewal_at: string | null;
+  note: string | null;
+}
+
+export interface BotUserPayment {
+  id: number;
+  yookassa_id: string;
+  amount_rub: number;
+  status: 'pending' | 'succeeded' | 'cancelled' | 'failed';
+  tariff_id: number;
+  created_at: string | null;
+  paid_at: string | null;
+}
+
+export interface BotUserDetail extends BotUser {
+  clients: Client[];
+  grants: UserTariffGrant[];
+  payments: BotUserPayment[];
+}
+
+export interface GrantRow {
+  id: number;
+  telegram_id: number;
+  username: string | null;
+  tariff_id: number;
+  tariff_name: string;
+  billing: GrantBilling;
+  next_renewal_at: string | null;
+  note: string | null;
+}
+
+// Bot billing — phase 4 (payments + settings)
+export type PaymentStatus = 'pending' | 'succeeded' | 'cancelled' | 'failed';
+
+export interface Payment {
+  id: number;
+  yookassa_id: string;
+  telegram_id: number;
+  tariff_id: number;
+  tariff_name: string;
+  amount_rub: number;
+  status: PaymentStatus;
+  confirmation_url: string | null;
+  created_at: string;
+  paid_at: string | null;
+}
+
+export interface PaymentListResponse {
+  items: Payment[];
+  total: number;
+  stats: {
+    month_count: number;
+    month_amount_rub: number;
+  };
+}
+
+export interface BotSettings {
+  yookassa_shop_id: string;
+  yookassa_return_url: string;
+  yookassa_secret_key: string;
+  bot_token: string;
+  bot_service_token: string;
+  has_yookassa_secret: boolean;
+  has_bot_service_token: boolean;
+  has_bot_token: boolean;
+  admin_ids: number[];
+  telegram_proxy_url: string;
+  display_timezone: string;
+  bot_config_version: number;
+}
+
+export interface BotSettingsUpdate {
+  yookassa_shop_id?: string;
+  yookassa_secret_key?: string;
+  yookassa_return_url?: string;
+  bot_token?: string;
+  admin_ids?: number[];
+  telegram_proxy_url?: string;
+  display_timezone?: string;
 }

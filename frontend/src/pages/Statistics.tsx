@@ -3,6 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { formatBytes, cn } from '@/lib/utils';
 import {
+  formatWith,
+  formatDateTimeForLocalInput,
+  epochSecFromLocalDateTimeInput,
+} from '@/lib/datetime';
+import {
   TrendingUp,
   TrendingDown,
   Users,
@@ -35,23 +40,23 @@ function periodQuery(period: Period, custom: CustomRange | null): string {
 }
 
 function fmtRange(c: CustomRange): string {
-  const f = new Date(c.from * 1000);
-  const t = new Date(c.to * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const part = (d: Date) => `${pad(d.getDate())}.${pad(d.getMonth() + 1)} ${pad(d.getHours())}:00`;
-  return `${part(f)} → ${part(t)}`;
+  const part = (epochSec: number) =>
+    formatWith(epochSec * 1000, {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  return `${part(c.from)} → ${part(c.to)}`;
 }
 
 function toLocalDateTimeInput(ts: number): string {
-  const d = new Date(ts * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:00`;
+  return formatDateTimeForLocalInput(ts * 1000);
 }
 
 function fromLocalDateTimeInput(s: string): number {
-  const d = new Date(s);
-  d.setMinutes(0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
+  return epochSecFromLocalDateTimeInput(s);
 }
 type StatsTab = 'overview' | 'users' | 'inbounds' | 'sites' | 'nodes';
 
@@ -186,10 +191,9 @@ function AreaChart({
 
   const range = points.length > 1 ? points[points.length - 1].ts - points[0].ts : 0;
   const fmtTime = (ts: number) => {
-    const d = new Date(ts * 1000);
-    if (range < 86400 * 2) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (range < 86400 * 30) return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    if (range < 86400 * 2)
+      return formatWith(ts * 1000, { hour: '2-digit', minute: '2-digit', hour12: false });
+    return formatWith(ts * 1000, { month: 'short', day: 'numeric' });
   };
 
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -340,11 +344,12 @@ function AreaChart({
             className="absolute top-2 right-2 bg-[#1a1625]/95 border border-white/10 rounded-xl px-3 py-2 text-xs pointer-events-none shadow-xl"
           >
             <div className="text-gray-400 mb-1.5">
-              {new Date(hovered.ts * 1000).toLocaleString([], {
+              {formatWith(hovered.ts * 1000, {
                 month: 'short',
                 day: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
+                hour12: false,
               })}
             </div>
             <div className="flex gap-3">
@@ -838,12 +843,12 @@ export default function Statistics() {
 
   const fmtDate = (ts: number) => {
     if (!ts) return '—';
-    const d = new Date(ts);
-    return d.toLocaleDateString([], {
+    return formatWith(ts, {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
+      hour12: false,
     });
   };
 

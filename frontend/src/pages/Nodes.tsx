@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { TagInput } from '@/components/ui/TagInput';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
+import { formatDateTime } from '@/lib/datetime';
 import {
   Plus,
   Trash2,
@@ -61,7 +62,7 @@ function formatLastCheck(ts: number): string {
   const diff = Date.now() - ts;
   if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  return new Date(ts).toLocaleString();
+  return formatDateTime(ts);
 }
 
 export default function Nodes() {

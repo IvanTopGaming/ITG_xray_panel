@@ -5,6 +5,25 @@ Run inside the backend container:
     docker-compose exec backend python /app/scripts/seed_demo.py
 
 Idempotent: tagged demo rows are wiped and re-created on every run.
+
+Coverage:
+    - Every user-facing protocol (VLESS, VMess, Trojan, Shadowsocks)
+      paired with multiple stream/security combos (Reality+Vision, gRPC,
+      XHTTP, WebSocket, HTTPUpgrade, SplitHTTP, plain TCP+TLS, ss-2022).
+    - Admin-only inbounds (SOCKS, HTTP) for bot/internal flows.
+    - Friendly per-inbound `label`s (country flag + protocol) so the
+      dashboard and bot subscription links show "🇩🇪 Frankfurt — VLESS
+      Reality (Vision)" instead of raw tags.
+    - 5 outbounds (3 region pops, 1 socks upstream, 1 WireGuard-WARP-like).
+    - 2 balancers (random + leastPing strategies).
+    - 5 routing profiles (ru-direct, streaming-balanced, ads-block,
+      gaming-low-latency, work-vpn).
+    - 6 nodes with varied states (online / offline / disabled /
+      degraded / strict-mirror) across 3 group labels.
+    - 32 demo clients with constraint diversity (limits, expiry,
+      device limits, group filters, disabled rows, etc.).
+    - 90 days of hourly traffic snapshots and 30 days of domain stats
+      synthesised from per-user archetype profiles.
 """
 
 from __future__ import annotations
@@ -35,17 +54,22 @@ from app.models import (  # noqa: E402
 DEMO_PREFIX = "demo-"
 DEMO_NODE_PREFIX = "demo-node-"
 
-random.seed(20260516)
+random.seed(20260522)
 
 
 # ─── Inbound catalog ─────────────────────────────────────────────────────────
+# Each entry: tag, port, protocol, stream_settings, routing_profile_name (or
+# None), label (display name shown to users), device_limit, fallback_address.
 INBOUNDS = [
-    # tag, port, protocol, stream_settings dict, routing_profile_name (or None)
-    (
-        f"{DEMO_PREFIX}vless-reality",
-        443,
-        "vless",
-        {
+    {
+        "tag": f"{DEMO_PREFIX}vless-reality-vision",
+        "port": 443,
+        "protocol": "vless",
+        "label": "🇩🇪 Frankfurt — VLESS Reality (Vision)",
+        "routing": f"{DEMO_PREFIX}ru-direct",
+        "device_limit": 5,
+        "fallback": None,
+        "stream": {
             "network": "tcp",
             "security": "reality",
             "realitySettings": {
@@ -57,95 +81,259 @@ INBOUNDS = [
                 "fingerprint": "chrome",
             },
         },
-        f"{DEMO_PREFIX}ru-direct",  # this inbound routes Russian traffic direct
-    ),
-    (
-        f"{DEMO_PREFIX}vmess-ws",
-        10086,
-        "vmess",
-        {
-            "network": "ws",
-            "security": "none",
-            "wsSettings": {"path": "/vmess", "headers": {"Host": "cdn.example.com"}},
+    },
+    {
+        "tag": f"{DEMO_PREFIX}vless-grpc",
+        "port": 8443,
+        "protocol": "vless",
+        "label": "🇳🇱 Amsterdam — VLESS gRPC TLS",
+        "routing": f"{DEMO_PREFIX}streaming-balanced",
+        "device_limit": 3,
+        "fallback": None,
+        "stream": {
+            "network": "grpc",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "ams.example.com",
+                "alpn": ["h2"],
+                "_utlsFingerprint": "chrome",
+            },
+            "grpcSettings": {
+                "serviceName": "vless-grpc",
+                "multiMode": True,
+            },
         },
-        f"{DEMO_PREFIX}streaming-balanced",
-    ),
-    (
-        f"{DEMO_PREFIX}trojan-tls",
-        8443,
-        "trojan",
-        {
+    },
+    {
+        "tag": f"{DEMO_PREFIX}vless-xhttp",
+        "port": 8444,
+        "protocol": "vless",
+        "label": "🇬🇧 London — VLESS XHTTP TLS",
+        "routing": f"{DEMO_PREFIX}streaming-balanced",
+        "device_limit": 0,
+        "fallback": None,
+        "stream": {
+            "network": "xhttp",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "lon.example.com",
+                "alpn": ["h2", "http/1.1"],
+            },
+            "xhttpSettings": {
+                "path": "/xhttp",
+                "host": "lon.example.com",
+                "mode": "auto",
+            },
+        },
+    },
+    {
+        "tag": f"{DEMO_PREFIX}vmess-ws",
+        "port": 8081,
+        "protocol": "vmess",
+        "label": "🇺🇸 New York — VMess WebSocket TLS (CDN)",
+        "routing": f"{DEMO_PREFIX}streaming-balanced",
+        "device_limit": 0,
+        "fallback": None,
+        "stream": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "cdn.example.com",
+                "alpn": ["http/1.1"],
+            },
+            "wsSettings": {
+                "path": "/vmess",
+                "headers": {"Host": "cdn.example.com"},
+            },
+        },
+    },
+    {
+        "tag": f"{DEMO_PREFIX}vmess-httpupgrade",
+        "port": 8082,
+        "protocol": "vmess",
+        "label": "🇫🇮 Helsinki — VMess HTTPUpgrade",
+        "routing": f"{DEMO_PREFIX}work-vpn",
+        "device_limit": 2,
+        "fallback": None,
+        "stream": {
+            "network": "httpupgrade",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "hel.example.com",
+                "alpn": ["http/1.1"],
+            },
+            "httpUpgradeSettings": {
+                "path": "/vmess-hu",
+                "host": "hel.example.com",
+            },
+        },
+    },
+    {
+        "tag": f"{DEMO_PREFIX}trojan-tls",
+        "port": 8447,
+        "protocol": "trojan",
+        "label": "🇫🇷 Paris — Trojan TLS",
+        "routing": f"{DEMO_PREFIX}ads-block",
+        "device_limit": 0,
+        "fallback": None,
+        "stream": {
             "network": "tcp",
             "security": "tls",
-            "tlsSettings": {"serverName": "trojan.example.com"},
+            "tlsSettings": {
+                "serverName": "par.example.com",
+                "alpn": ["http/1.1"],
+            },
         },
-        f"{DEMO_PREFIX}ads-block",
-    ),
-    (
-        f"{DEMO_PREFIX}ss-2022",
-        2086,
-        "shadowsocks",
-        {
+    },
+    {
+        "tag": f"{DEMO_PREFIX}trojan-splithttp",
+        "port": 8448,
+        "protocol": "trojan",
+        "label": "🇨🇭 Zurich — Trojan SplitHTTP TLS",
+        "routing": f"{DEMO_PREFIX}gaming-low-latency",
+        "device_limit": 1,
+        "fallback": None,
+        "stream": {
+            "network": "splithttp",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "zur.example.com",
+                "alpn": ["h2"],
+            },
+            "splithttpSettings": {
+                "path": "/split",
+                "host": "zur.example.com",
+            },
+        },
+    },
+    {
+        "tag": f"{DEMO_PREFIX}ss-2022-aes",
+        "port": 2086,
+        "protocol": "shadowsocks",
+        "label": "🇸🇬 Singapore — Shadowsocks 2022 (AES-128)",
+        "routing": None,
+        "device_limit": 0,
+        "fallback": None,
+        "stream": {
             "network": "tcp",
             "security": "none",
             "ssMethod": "2022-blake3-aes-128-gcm",
-            "ssPassword": "demo16BytesPad==",
+            "ssPassword": "HH8QWOxZOy8vctWMHJyVFA==",
             "ssNetwork": "tcp",
         },
-        None,
-    ),
-    (
-        f"{DEMO_PREFIX}socks-bot",
-        1080,
-        "socks",
-        {"network": "tcp", "security": "none", "authUser": "bot", "authPass": "demo"},
-        None,
-    ),
-    (
-        f"{DEMO_PREFIX}http-bot",
-        8118,
-        "http",
-        {"network": "tcp", "security": "none", "authUser": "bot", "authPass": "demo"},
-        None,
-    ),
+    },
+    {
+        "tag": f"{DEMO_PREFIX}ss-2022-chacha",
+        "port": 2087,
+        "protocol": "shadowsocks",
+        "label": "🇯🇵 Tokyo — Shadowsocks 2022 (ChaCha20)",
+        "routing": None,
+        "device_limit": 0,
+        "fallback": None,
+        "stream": {
+            "network": "tcp,udp",
+            "security": "none",
+            "ssMethod": "2022-blake3-chacha20-poly1305",
+            "ssPassword": "Lk1nbZQ95K6Apg5JaY3qLAQR0bdrXdwJgUdcb1g0RzM=",
+            "ssNetwork": "tcp,udp",
+        },
+    },
+    {
+        "tag": f"{DEMO_PREFIX}socks-bot",
+        "port": 1080,
+        "protocol": "socks",
+        "label": "🛠️ Internal SOCKS (bot/admin)",
+        "routing": None,
+        "device_limit": 0,
+        "fallback": None,
+        "stream": {
+            "network": "tcp",
+            "security": "none",
+            "authUser": "bot",
+            "authPass": "demo",
+        },
+    },
+    {
+        "tag": f"{DEMO_PREFIX}http-bot",
+        "port": 8118,
+        "protocol": "http",
+        "label": "🛠️ Internal HTTP (bot/admin)",
+        "routing": None,
+        "device_limit": 0,
+        "fallback": None,
+        "stream": {
+            "network": "tcp",
+            "security": "none",
+            "authUser": "bot",
+            "authPass": "demo",
+        },
+    },
 ]
 
 
 # ─── Outbound catalog ────────────────────────────────────────────────────────
 OUTBOUNDS = [
-    # tag, protocol, settings, stream_settings
-    (
-        f"{DEMO_PREFIX}proxy-eu",
-        "vless",
-        {
+    {
+        "tag": f"{DEMO_PREFIX}proxy-eu",
+        "protocol": "vless",
+        "settings": {
             "vnext": [
                 {
                     "address": "eu.upstream.example.com",
                     "port": 443,
-                    "users": [{"id": "11111111-2222-3333-4444-555555555555", "encryption": "none"}],
+                    "users": [
+                        {
+                            "id": "11111111-2222-3333-4444-555555555555",
+                            "encryption": "none",
+                        }
+                    ],
                 }
             ]
         },
-        {"network": "tcp", "security": "tls"},
-    ),
-    (
-        f"{DEMO_PREFIX}proxy-us",
-        "vless",
-        {
+        "stream": {"network": "tcp", "security": "tls"},
+    },
+    {
+        "tag": f"{DEMO_PREFIX}proxy-us",
+        "protocol": "vless",
+        "settings": {
             "vnext": [
                 {
                     "address": "us.upstream.example.com",
                     "port": 443,
-                    "users": [{"id": "66666666-7777-8888-9999-aaaaaaaaaaaa", "encryption": "none"}],
+                    "users": [
+                        {
+                            "id": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+                            "encryption": "none",
+                        }
+                    ],
                 }
             ]
         },
-        {"network": "tcp", "security": "tls"},
-    ),
-    (
-        f"{DEMO_PREFIX}socks-upstream",
-        "socks",
-        {
+        "stream": {"network": "tcp", "security": "tls"},
+    },
+    {
+        "tag": f"{DEMO_PREFIX}proxy-asia",
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": "sg.upstream.example.com",
+                    "port": 443,
+                    "users": [
+                        {
+                            "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                            "encryption": "none",
+                        }
+                    ],
+                }
+            ]
+        },
+        "stream": {"network": "tcp", "security": "tls"},
+    },
+    {
+        "tag": f"{DEMO_PREFIX}socks-upstream",
+        "protocol": "socks",
+        "settings": {
             "servers": [
                 {
                     "address": "socks.upstream.example.com",
@@ -154,46 +342,104 @@ OUTBOUNDS = [
                 }
             ]
         },
-        {"network": "tcp", "security": "none"},
-    ),
+        "stream": {"network": "tcp", "security": "none"},
+    },
+    {
+        "tag": f"{DEMO_PREFIX}warp",
+        "protocol": "wireguard",
+        "settings": {
+            "secretKey": "wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "address": ["172.16.0.2/32"],
+            "peers": [
+                {
+                    "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+                    "endpoint": "engage.cloudflareclient.com:2408",
+                    "allowedIPs": ["0.0.0.0/0", "::/0"],
+                }
+            ],
+            "mtu": 1280,
+        },
+        "stream": {"network": "tcp", "security": "none"},
+    },
 ]
 
-# ─── Balancer ────────────────────────────────────────────────────────────────
+
+# ─── Balancers ───────────────────────────────────────────────────────────────
 BALANCERS = [
-    # tag, selector (list of outbound tags), strategy, fallback_tag
-    (
-        f"{DEMO_PREFIX}eu-us-balancer",
-        [f"{DEMO_PREFIX}proxy-eu", f"{DEMO_PREFIX}proxy-us"],
-        "random",
-        f"{DEMO_PREFIX}proxy-eu",
-    ),
+    {
+        "tag": f"{DEMO_PREFIX}eu-us-balancer",
+        "selector": [f"{DEMO_PREFIX}proxy-eu", f"{DEMO_PREFIX}proxy-us"],
+        "strategy": "random",
+        "fallback": f"{DEMO_PREFIX}proxy-eu",
+    },
+    {
+        "tag": f"{DEMO_PREFIX}multi-region-leastping",
+        "selector": [
+            f"{DEMO_PREFIX}proxy-eu",
+            f"{DEMO_PREFIX}proxy-us",
+            f"{DEMO_PREFIX}proxy-asia",
+        ],
+        "strategy": "leastPing",
+        "fallback": f"{DEMO_PREFIX}proxy-eu",
+    },
 ]
+
 
 # ─── Routing profiles ────────────────────────────────────────────────────────
 ROUTING_PROFILES = [
-    # name, rules (list of dicts)
-    (
-        f"{DEMO_PREFIX}ru-direct",
-        [
+    {
+        "name": f"{DEMO_PREFIX}ru-direct",
+        "rules": [
             {
                 "type": "field",
                 "enabled": True,
-                "comment": "Route .ru domains direct",
+                "comment": "Route .ru and gov domains direct",
                 "domain": ["geosite:category-gov-ru", "regexp:.*\\.ru$"],
                 "outboundTag": "direct",
             },
             {
                 "type": "field",
                 "enabled": True,
-                "comment": "Default → eu-us balancer",
+                "comment": "Default → EU-US balancer",
                 "network": "tcp,udp",
                 "outboundTag": f"{DEMO_PREFIX}eu-us-balancer",
             },
         ],
-    ),
-    (
-        f"{DEMO_PREFIX}ads-block",
-        [
+    },
+    {
+        "name": f"{DEMO_PREFIX}streaming-balanced",
+        "rules": [
+            {
+                "type": "field",
+                "enabled": True,
+                "comment": "Streaming → US",
+                "domain": [
+                    "netflix.com",
+                    "googlevideo.com",
+                    "youtube.com",
+                    "twitch.tv",
+                ],
+                "outboundTag": f"{DEMO_PREFIX}proxy-us",
+            },
+            {
+                "type": "field",
+                "enabled": True,
+                "comment": "RU sites → direct",
+                "domain": ["regexp:.*\\.ru$", "yandex.ru", "vk.com", "kinopoisk.ru"],
+                "outboundTag": "direct",
+            },
+            {
+                "type": "field",
+                "enabled": True,
+                "comment": "Default → multi-region least-ping",
+                "network": "tcp,udp",
+                "outboundTag": f"{DEMO_PREFIX}multi-region-leastping",
+            },
+        ],
+    },
+    {
+        "name": f"{DEMO_PREFIX}ads-block",
+        "rules": [
             {
                 "type": "field",
                 "enabled": True,
@@ -208,7 +454,7 @@ ROUTING_PROFILES = [
             {
                 "type": "field",
                 "enabled": True,
-                "comment": "Block ad IP ranges",
+                "comment": "Block private IP ranges",
                 "ip": ["geoip:private", "127.0.0.0/8"],
                 "outboundTag": "block",
             },
@@ -220,88 +466,128 @@ ROUTING_PROFILES = [
                 "outboundTag": f"{DEMO_PREFIX}proxy-eu",
             },
         ],
-    ),
-    (
-        f"{DEMO_PREFIX}streaming-balanced",
-        [
+    },
+    {
+        "name": f"{DEMO_PREFIX}gaming-low-latency",
+        "rules": [
             {
                 "type": "field",
                 "enabled": True,
-                "comment": "Streaming → US",
-                "domain": ["netflix.com", "googlevideo.com", "youtube.com"],
+                "comment": "Gaming traffic → least-ping balancer",
+                "domain": [
+                    "steamcommunity.com",
+                    "steampowered.com",
+                    "battle.net",
+                    "ea.com",
+                    "playstation.com",
+                    "xboxlive.com",
+                ],
+                "outboundTag": f"{DEMO_PREFIX}multi-region-leastping",
+            },
+            {
+                "type": "field",
+                "enabled": True,
+                "comment": "Voice chat → US",
+                "domain": ["discord.com", "discordapp.com"],
                 "outboundTag": f"{DEMO_PREFIX}proxy-us",
             },
             {
                 "type": "field",
                 "enabled": True,
-                "comment": "Russia direct",
-                "domain": ["regexp:.*\\.ru$", "yandex.ru", "vk.com"],
+                "comment": "Default → direct",
+                "network": "tcp,udp",
+                "outboundTag": "direct",
+            },
+        ],
+    },
+    {
+        "name": f"{DEMO_PREFIX}work-vpn",
+        "rules": [
+            {
+                "type": "field",
+                "enabled": True,
+                "comment": "Corp ranges → direct (no proxy needed)",
+                "ip": ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"],
                 "outboundTag": "direct",
             },
             {
                 "type": "field",
                 "enabled": True,
-                "comment": "Default → balancer",
+                "comment": "Corp SaaS → WARP for stability",
+                "domain": [
+                    "atlassian.com",
+                    "slack.com",
+                    "github.com",
+                    "notion.so",
+                    "1password.com",
+                ],
+                "outboundTag": f"{DEMO_PREFIX}warp",
+            },
+            {
+                "type": "field",
+                "enabled": True,
+                "comment": "Default → EU proxy",
                 "network": "tcp,udp",
-                "outboundTag": f"{DEMO_PREFIX}eu-us-balancer",
+                "outboundTag": f"{DEMO_PREFIX}proxy-eu",
             },
         ],
-    ),
+    },
 ]
 
 
 # ─── User catalog with rich variation ────────────────────────────────────────
-# Each user gets its own random profile (peak, schedule, online_chance, bursts).
-# email, inbound_tag, archetype
-USER_ARCHETYPES = [
-    # archetype controls the *shape* of activity, not the volume.
-    # 'night-owl': active 22:00–06:00
-    # 'day-worker': active 09:00–18:00, weekdays only
-    # 'evening': peak 18:00–24:00 every day
-    # 'all-day': uniform 08:00–24:00
-    # 'weekend-warrior': active mostly Sat/Sun, big bursts
-    # 'sporadic': low online_chance, occasional bursts
-    # 'idle': barely connects
-    "evening",
-    "night-owl",
-    "day-worker",
-    "all-day",
-    "weekend-warrior",
-    "sporadic",
-    "idle",
-]
+# archetype controls the *shape* of activity, not the volume.
+# 'night-owl': active 22:00–06:00
+# 'day-worker': active 09:00–18:00, weekdays only
+# 'evening': peak 18:00–24:00 every day
+# 'all-day': uniform 08:00–24:00
+# 'weekend-warrior': active mostly Sat/Sun, big bursts
+# 'sporadic': low online_chance, occasional bursts
+# 'idle': barely connects
 
+# Distribute users across the new inbound catalog so every UI surface
+# has live data. Order is heuristic — busy inbounds first.
 USER_EMAILS = [
-    ("alice", f"{DEMO_PREFIX}vless-reality"),
-    ("bob", f"{DEMO_PREFIX}vless-reality"),
-    ("carol", f"{DEMO_PREFIX}vless-reality"),
-    ("dave", f"{DEMO_PREFIX}vless-reality"),
-    ("eve", f"{DEMO_PREFIX}vless-reality"),
-    ("frank", f"{DEMO_PREFIX}vless-reality"),
-    ("grace", f"{DEMO_PREFIX}vless-reality"),
-    ("hank", f"{DEMO_PREFIX}vless-reality"),
-    ("iris", f"{DEMO_PREFIX}vless-reality"),
-    ("jack", f"{DEMO_PREFIX}vless-reality"),
-    ("kate", f"{DEMO_PREFIX}vless-reality"),
-    ("leo", f"{DEMO_PREFIX}vless-reality"),
+    # VLESS Reality Vision — flagship inbound, most users
+    ("alice", f"{DEMO_PREFIX}vless-reality-vision"),
+    ("bob", f"{DEMO_PREFIX}vless-reality-vision"),
+    ("carol", f"{DEMO_PREFIX}vless-reality-vision"),
+    ("dave", f"{DEMO_PREFIX}vless-reality-vision"),
+    ("eve", f"{DEMO_PREFIX}vless-reality-vision"),
+    ("frank", f"{DEMO_PREFIX}vless-reality-vision"),
+    ("grace", f"{DEMO_PREFIX}vless-reality-vision"),
+    ("hank", f"{DEMO_PREFIX}vless-reality-vision"),
+    # VLESS gRPC — fewer, but still meaningful
+    ("iris", f"{DEMO_PREFIX}vless-grpc"),
+    ("jack", f"{DEMO_PREFIX}vless-grpc"),
+    ("kate", f"{DEMO_PREFIX}vless-grpc"),
+    # VLESS XHTTP
+    ("leo", f"{DEMO_PREFIX}vless-xhttp"),
+    ("luna", f"{DEMO_PREFIX}vless-xhttp"),
+    # VMess WS
     ("heidi", f"{DEMO_PREFIX}vmess-ws"),
     ("ivan", f"{DEMO_PREFIX}vmess-ws"),
     ("judy", f"{DEMO_PREFIX}vmess-ws"),
     ("kevin", f"{DEMO_PREFIX}vmess-ws"),
-    ("luna", f"{DEMO_PREFIX}vmess-ws"),
-    ("mallory", f"{DEMO_PREFIX}trojan-tls"),
-    ("niaj", f"{DEMO_PREFIX}trojan-tls"),
+    # VMess HTTPUpgrade
+    ("mallory", f"{DEMO_PREFIX}vmess-httpupgrade"),
+    ("niaj", f"{DEMO_PREFIX}vmess-httpupgrade"),
+    # Trojan TLS
     ("olivia", f"{DEMO_PREFIX}trojan-tls"),
     ("peggy", f"{DEMO_PREFIX}trojan-tls"),
     ("ron", f"{DEMO_PREFIX}trojan-tls"),
-    ("quinn", f"{DEMO_PREFIX}ss-2022"),
-    ("ruth", f"{DEMO_PREFIX}ss-2022"),
-    ("steve", f"{DEMO_PREFIX}ss-2022"),
-    ("trent", f"{DEMO_PREFIX}ss-2022"),
-    ("uma", f"{DEMO_PREFIX}ss-2022"),
-    ("victor", f"{DEMO_PREFIX}ss-2022"),
-    ("wendy", f"{DEMO_PREFIX}ss-2022"),
-    ("xavier", f"{DEMO_PREFIX}vless-reality"),
+    # Trojan SplitHTTP
+    ("quinn", f"{DEMO_PREFIX}trojan-splithttp"),
+    ("ruth", f"{DEMO_PREFIX}trojan-splithttp"),
+    # Shadowsocks 2022 AES
+    ("steve", f"{DEMO_PREFIX}ss-2022-aes"),
+    ("trent", f"{DEMO_PREFIX}ss-2022-aes"),
+    ("uma", f"{DEMO_PREFIX}ss-2022-aes"),
+    # Shadowsocks 2022 ChaCha20
+    ("victor", f"{DEMO_PREFIX}ss-2022-chacha"),
+    ("wendy", f"{DEMO_PREFIX}ss-2022-chacha"),
+    # Extras spread across the rest
+    ("xavier", f"{DEMO_PREFIX}vless-reality-vision"),
     ("yara", f"{DEMO_PREFIX}vmess-ws"),
     ("zoe", f"{DEMO_PREFIX}trojan-tls"),
 ]
@@ -349,7 +635,9 @@ def build_user_profiles():
                 "sporadic": random.uniform(0.10, 0.35),
                 "idle": random.uniform(0.02, 0.10),
             }[archetype],
-            "burst_chance": random.uniform(0.005, 0.04),  # per-hour chance of 5–15x spike
+            "burst_chance": random.uniform(
+                0.005, 0.04
+            ),  # per-hour chance of 5–15x spike
             "asymmetry": random.uniform(0.10, 0.35),  # upload share of total
             "preferred_pool": random.choice(["ru", "ru", "ru", "eu", "asia"]),  # 60% RU
         }
@@ -407,19 +695,50 @@ def hourly_bytes(profile: dict, hour: int, weekday: int) -> tuple[int, int] | No
 
 # ─── IP & domain pools ───────────────────────────────────────────────────────
 DEMO_IP_POOLS = {
-    "ru": ["87.117.190.{}", "95.31.4.{}", "178.140.6.{}", "5.182.99.{}", "213.87.12.{}", "188.123.231.{}"],
+    "ru": [
+        "87.117.190.{}",
+        "95.31.4.{}",
+        "178.140.6.{}",
+        "5.182.99.{}",
+        "213.87.12.{}",
+        "188.123.231.{}",
+    ],
     "eu": ["88.99.1.{}", "94.130.45.{}", "159.69.7.{}", "144.76.12.{}", "85.10.200.{}"],
     "us": ["198.51.100.{}", "203.0.113.{}", "192.0.2.{}"],
     "asia": ["210.142.92.{}", "139.99.45.{}", "103.244.50.{}"],
 }
 
 DEMO_DOMAINS = [
-    "google.com", "youtube.com", "googlevideo.com", "instagram.com", "facebook.com",
-    "telegram.org", "github.com", "twitter.com", "x.com", "tiktok.com",
-    "cloudflare.com", "amazon.com", "netflix.com", "openai.com", "anthropic.com",
-    "discord.com", "spotify.com", "reddit.com", "wikipedia.org", "stackoverflow.com",
-    "linkedin.com", "pinterest.com", "duckduckgo.com", "vk.com", "yandex.ru", "ya.ru",
-    "habr.com", "lenta.ru", "rbc.ru", "kinopoisk.ru",
+    "google.com",
+    "youtube.com",
+    "googlevideo.com",
+    "instagram.com",
+    "facebook.com",
+    "telegram.org",
+    "github.com",
+    "twitter.com",
+    "x.com",
+    "tiktok.com",
+    "cloudflare.com",
+    "amazon.com",
+    "netflix.com",
+    "openai.com",
+    "anthropic.com",
+    "discord.com",
+    "spotify.com",
+    "reddit.com",
+    "wikipedia.org",
+    "stackoverflow.com",
+    "linkedin.com",
+    "pinterest.com",
+    "duckduckgo.com",
+    "vk.com",
+    "yandex.ru",
+    "ya.ru",
+    "habr.com",
+    "lenta.ru",
+    "rbc.ru",
+    "kinopoisk.ru",
 ]
 
 
@@ -452,7 +771,7 @@ def pick_ips(profile: dict) -> list[str]:
 # ─── Limit/expiry/state diversity ────────────────────────────────────────────
 
 
-def assign_constraints(name: str, profile: dict) -> dict:
+def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
     """Generate a mix of limit/expiry/state for each user."""
     now_ms = int(datetime.now().timestamp() * 1000)
     day_ms = 86_400_000
@@ -521,8 +840,13 @@ def assign_constraints(name: str, profile: dict) -> dict:
     else:
         last_seen = now_ms - random.randint(5, 24 * 60) * 60_000
 
-    # flow only for vless
-    flow = "xtls-rprx-vision" if random.random() < 0.5 else None
+    # flow only for vless reality-vision inbounds (XTLS Vision is a TCP-only feature)
+    flow = None
+    if (
+        inbound_meta["protocol"] == "vless"
+        and inbound_meta["stream"].get("security") == "reality"
+    ):
+        flow = "xtls-rprx-vision" if random.random() < 0.7 else None
 
     return {
         "limit_bytes": limit_bytes,
@@ -541,65 +865,79 @@ def assign_constraints(name: str, profile: dict) -> dict:
 
 
 def wipe_existing_demo():
+    """Wipe any row whose identifying tag/name starts with DEMO_PREFIX.
+
+    Prefix-based (rather than enumerating current INBOUNDS/etc.) so that
+    stale rows from a previous seed catalog — e.g. renamed inbound tags —
+    get cleaned up too, instead of lingering and tripping UNIQUE
+    constraints on the next insert.
+    """
     print("→ Wiping existing demo rows...")
-    demo_inbound_tags = [t for (t, _, _, _, _) in INBOUNDS]
-    demo_outbound_tags = [t for (t, _, _, _) in OUTBOUNDS]
-    demo_balancer_tags = [t for (t, _, _, _) in BALANCERS]
-    demo_profile_names = [n for (n, _) in ROUTING_PROFILES]
+    pattern = f"{DEMO_PREFIX}%"
     demo_emails = [f"{n}@vpn" for (n, _) in USER_EMAILS]
 
-    DomainStat.query.filter(DomainStat.inbound_tag.in_(demo_inbound_tags)).delete(synchronize_session=False)
+    DomainStat.query.filter(DomainStat.inbound_tag.like(pattern)).delete(
+        synchronize_session=False
+    )
     TrafficSnapshot.query.filter(
-        (TrafficSnapshot.inbound_tag.in_(demo_inbound_tags))
+        TrafficSnapshot.inbound_tag.like(pattern)
         | (
             (TrafficSnapshot.entity_type == "inbound")
-            & (TrafficSnapshot.entity_id.in_(demo_inbound_tags))
+            & (TrafficSnapshot.entity_id.like(pattern))
         )
     ).delete(synchronize_session=False)
-    NodeClientTraffic.query.filter(NodeClientTraffic.email.in_(demo_emails)).delete(synchronize_session=False)
-    Client.query.filter(Client.inbound_tag.in_(demo_inbound_tags)).delete(synchronize_session=False)
-    Inbound.query.filter(Inbound.tag.in_(demo_inbound_tags)).delete(synchronize_session=False)
-    Balancer.query.filter(Balancer.tag.in_(demo_balancer_tags)).delete(synchronize_session=False)
-    Outbound.query.filter(Outbound.tag.in_(demo_outbound_tags)).delete(synchronize_session=False)
-    RoutingProfile.query.filter(RoutingProfile.name.in_(demo_profile_names)).delete(synchronize_session=False)
-    Node.query.filter(Node.name.like(f"{DEMO_NODE_PREFIX}%")).delete(synchronize_session=False)
+    NodeClientTraffic.query.filter(NodeClientTraffic.email.in_(demo_emails)).delete(
+        synchronize_session=False
+    )
+    Client.query.filter(Client.inbound_tag.like(pattern)).delete(
+        synchronize_session=False
+    )
+    Inbound.query.filter(Inbound.tag.like(pattern)).delete(synchronize_session=False)
+    Balancer.query.filter(Balancer.tag.like(pattern)).delete(synchronize_session=False)
+    Outbound.query.filter(Outbound.tag.like(pattern)).delete(synchronize_session=False)
+    RoutingProfile.query.filter(RoutingProfile.name.like(pattern)).delete(
+        synchronize_session=False
+    )
+    Node.query.filter(Node.name.like(f"{DEMO_NODE_PREFIX}%")).delete(
+        synchronize_session=False
+    )
     db.session.commit()
 
 
 def create_outbounds_balancers_routing():
     print("→ Creating outbounds...")
-    for tag, protocol, settings, stream in OUTBOUNDS:
+    for ob in OUTBOUNDS:
         db.session.add(
             Outbound(
-                tag=tag,
-                protocol=protocol,
+                tag=ob["tag"],
+                protocol=ob["protocol"],
                 enable=True,
-                settings=json.dumps(settings),
-                stream_settings=json.dumps(stream),
+                settings=json.dumps(ob["settings"]),
+                stream_settings=json.dumps(ob["stream"]),
                 mux="{}",
             )
         )
     db.session.commit()
 
     print("→ Creating balancer(s)...")
-    for tag, selector, strategy, fallback in BALANCERS:
+    for b in BALANCERS:
         db.session.add(
             Balancer(
-                tag=tag,
+                tag=b["tag"],
                 enable=True,
-                selector=json.dumps(selector),
-                strategy=strategy,
-                fallback_tag=fallback,
+                selector=json.dumps(b["selector"]),
+                strategy=b["strategy"],
+                fallback_tag=b["fallback"],
             )
         )
     db.session.commit()
 
     print("→ Creating routing profiles...")
-    for name, rules in ROUTING_PROFILES:
+    for p in ROUTING_PROFILES:
         db.session.add(
             RoutingProfile(
-                name=name,
-                rules=json.dumps(rules),
+                name=p["name"],
+                rules=json.dumps(p["rules"]),
                 enable=True,
             )
         )
@@ -609,26 +947,37 @@ def create_outbounds_balancers_routing():
 def create_inbounds():
     print("→ Creating inbounds...")
     profile_map = {p.name: p.id for p in RoutingProfile.query.all()}
-    for tag, port, protocol, stream, profile_name in INBOUNDS:
-        ib = Inbound(
-            tag=tag,
-            port=port,
-            protocol=protocol,
-            stream_settings=json.dumps(stream),
-            routing_profile_id=profile_map.get(profile_name) if profile_name else None,
-            up=0,
-            down=0,
+    for ib in INBOUNDS:
+        db.session.add(
+            Inbound(
+                tag=ib["tag"],
+                port=ib["port"],
+                protocol=ib["protocol"],
+                stream_settings=json.dumps(ib["stream"]),
+                routing_profile_id=profile_map.get(ib["routing"])
+                if ib["routing"]
+                else None,
+                label=ib["label"],
+                device_limit=ib["device_limit"],
+                fallback_address=ib["fallback"],
+                up=0,
+                down=0,
+            )
         )
-        db.session.add(ib)
     db.session.commit()
+
+
+def _inbound_meta_by_tag() -> dict[str, dict]:
+    return {ib["tag"]: ib for ib in INBOUNDS}
 
 
 def create_clients(user_profiles) -> dict[tuple[str, str], Client]:
     print("→ Creating clients with diverse constraints...")
+    meta = _inbound_meta_by_tag()
     by_key: dict[tuple[str, str], Client] = {}
     for (name, tag), profile in user_profiles.items():
         email = name  # already 'name@vpn'
-        constraints = assign_constraints(email, profile)
+        constraints = assign_constraints(email, profile, meta[tag])
         ips = pick_ips(profile)
         c = Client(
             id=str(uuid.uuid4()),
@@ -654,12 +1003,14 @@ def create_clients(user_profiles) -> dict[tuple[str, str], Client]:
 
 
 def create_traffic_snapshots(user_profiles, clients_by_key):
-    print("→ Generating 90 days of hourly traffic snapshots (per-user unique patterns)...")
+    print(
+        "→ Generating 90 days of hourly traffic snapshots (per-user unique patterns)..."
+    )
     now = datetime.now().replace(minute=0, second=0, microsecond=0)
     start = now - timedelta(days=90)
 
     user_totals = {k: [0, 0] for k in clients_by_key}
-    inbound_totals = {tag: [0, 0] for (tag, _, _, _, _) in INBOUNDS}
+    inbound_totals = {ib["tag"]: [0, 0] for ib in INBOUNDS}
 
     rows_user = []
     rows_inbound = []
@@ -668,8 +1019,8 @@ def create_traffic_snapshots(user_profiles, clients_by_key):
         bucket_ts = int(cur.timestamp())
         weekday = cur.weekday()
         hour = cur.hour
-        per_inbound_up = {tag: 0 for (tag, _, _, _, _) in INBOUNDS}
-        per_inbound_down = {tag: 0 for (tag, _, _, _, _) in INBOUNDS}
+        per_inbound_up = {ib["tag"]: 0 for ib in INBOUNDS}
+        per_inbound_down = {ib["tag"]: 0 for ib in INBOUNDS}
 
         for (email, tag), profile in user_profiles.items():
             result = hourly_bytes(profile, hour, weekday)
@@ -707,7 +1058,9 @@ def create_traffic_snapshots(user_profiles, clients_by_key):
                 inbound_totals[tag][1] += per_inbound_down[tag]
         cur += timedelta(hours=1)
 
-    print(f"   {len(rows_user)} user-rows, {len(rows_inbound)} inbound-rows — bulk insert...")
+    print(
+        f"   {len(rows_user)} user-rows, {len(rows_inbound)} inbound-rows — bulk insert..."
+    )
     if rows_user:
         db.session.bulk_insert_mappings(TrafficSnapshot, rows_user)
     if rows_inbound:
@@ -761,29 +1114,63 @@ def create_domain_stats(user_profiles):
 def create_nodes(user_profiles):
     print("→ Creating demo nodes...")
     now_ms = int(datetime.now().timestamp() * 1000)
+    # name, status, last_error, enable, groups, sync_inbound, strict_mirror
     nodes = [
-        # name, status, last_error, enable, groups
-        (f"{DEMO_NODE_PREFIX}eu-fra", "online", "", True, "eu"),
-        (f"{DEMO_NODE_PREFIX}us-nyc", "offline", "connection refused", True, "us"),
-        (f"{DEMO_NODE_PREFIX}asia-sgp", "online", "", True, "asia"),
-        (f"{DEMO_NODE_PREFIX}eu-ams", "online", "", False, "eu"),  # disabled, still listed
+        (f"{DEMO_NODE_PREFIX}eu-fra", "online", "", True, "eu", True, False),
+        (
+            f"{DEMO_NODE_PREFIX}us-nyc",
+            "offline",
+            "connection refused",
+            True,
+            "us",
+            False,
+            False,
+        ),
+        (f"{DEMO_NODE_PREFIX}asia-sgp", "online", "", True, "asia", True, False),
+        (
+            f"{DEMO_NODE_PREFIX}eu-ams",
+            "online",
+            "",
+            False,
+            "eu",
+            False,
+            False,
+        ),  # disabled, still listed
+        (
+            f"{DEMO_NODE_PREFIX}asia-tyo",
+            "online",
+            "",
+            True,
+            "asia",
+            True,
+            True,
+        ),  # strict mirror
+        (
+            f"{DEMO_NODE_PREFIX}us-lax",
+            "degraded",
+            "high latency (300ms)",
+            True,
+            "us",
+            False,
+            False,
+        ),
     ]
     created = []
-    for name, status, err, enable, groups in nodes:
+    for name, status, err, enable, groups, sync_inbound, strict_mirror in nodes:
         n = Node(
             name=name,
             url=f"https://{name}.example.com",
             username="admin",
             password="demo",
-            inbound_tag=f"{DEMO_PREFIX}vless-reality",
+            inbound_tag=f"{DEMO_PREFIX}vless-reality-vision",
             enable=enable,
             sync_users=True,
-            sync_inbound=False,
+            sync_inbound=sync_inbound,
+            strict_mirror=strict_mirror,
             status=status,
             last_check=now_ms,
             last_error=err,
             groups=groups,
-            strict_mirror=False,
         )
         db.session.add(n)
         created.append(n)
@@ -797,7 +1184,9 @@ def create_nodes(user_profiles):
             # Only users whose allowed_node_groups matches this node's group
             c = Client.query.filter_by(email=email, inbound_tag=tag).first()
             if c and c.allowed_node_groups:
-                groups = [g.strip() for g in c.allowed_node_groups.split(",") if g.strip()]
+                groups = [
+                    g.strip() for g in c.allowed_node_groups.split(",") if g.strip()
+                ]
                 if n.groups not in groups:
                     continue
             # 30% of remaining users skip this node
@@ -849,7 +1238,11 @@ def main():
         # Constraint diversity breakdown
         clients = Client.query.filter(Client.inbound_tag.like(f"{DEMO_PREFIX}%")).all()
         disabled = sum(1 for c in clients if not c.enable)
-        expired = sum(1 for c in clients if c.expiry_time and c.expiry_time < int(datetime.now().timestamp() * 1000))
+        expired = sum(
+            1
+            for c in clients
+            if c.expiry_time and c.expiry_time < int(datetime.now().timestamp() * 1000)
+        )
         with_limit = sum(1 for c in clients if c.limit_bytes > 0)
         with_global = sum(1 for c in clients if c.global_limit_bytes > 0)
         with_group_filter = sum(1 for c in clients if c.allowed_node_groups)
@@ -863,6 +1256,12 @@ def main():
         print(f"    node group restricted:  {with_group_filter}/{len(clients)}")
         print(f"    device limit set:       {with_device_lim}/{len(clients)}")
         print(f"    empty source_ips:       {no_ips}/{len(clients)}")
+
+        # Per-inbound client count breakdown
+        print("\n  Per-inbound client count:")
+        for ib in INBOUNDS:
+            n = sum(1 for c in clients if c.inbound_tag == ib["tag"])
+            print(f"    {ib['label']:<55} → {n}")
 
 
 if __name__ == "__main__":

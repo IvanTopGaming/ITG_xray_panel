@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Hide the native spin buttons on number inputs — we keep keyboard arrows. */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
 @layer base {
   body {
     @apply antialiased overflow-hidden;
@@ -92,4 +102,59 @@
   background: linear-gradient(to right, #d0bcff, #7c3aed) !important;
   height: 2px !important;
   border-radius: 0 0 16px 16px !important;
+}
+
+/* -----------------------------------------------------------------------
+ * Mobile performance overrides (<md, 767px).
+ *
+ * Budget Androids (Redmi 10C / Adreno 610 etc.) choke on backdrop-filter
+ * and heavy filter:blur layers — the GPU often falls back to CPU
+ * rasterization and the whole UI starts dropping frames. The desktop
+ * "glass" look isn't worth the lag here.
+ *
+ * - kill backdrop-filter everywhere; the underlying bg utilities (with
+ *   alpha) already give a solid-enough look on the dark theme
+ * - neutralize decorative blur-2xl / blur-3xl blobs (the absolutely-
+ *   positioned glow accents); they're pure decoration and cost a full
+ *   compositor pass every frame
+ * - shorten any CSS transition/animation so taps feel instant
+ * - respect prefers-reduced-motion the same way
+ * -------------------------------------------------------------------- */
+@media (max-width: 767px), (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  /* Decorative absolutely-positioned blur blobs.
+     Tailwind .blur-2xl / .blur-3xl emit `filter: blur(...)`. Use word-
+     boundary match (~=) so we don't accidentally hit backdrop-blur-2xl,
+     which contains the same substring but is a totally different effect
+     applied to the element below. */
+  [class~='blur-2xl'],
+  [class~='blur-3xl'] {
+    filter: none !important;
+    opacity: 0 !important;
+  }
+
+  /* Cap transitions / animations — most of our motion is decorative. */
+  *,
+  *::before,
+  *::after {
+    transition-duration: 120ms !important;
+    animation-duration: 120ms !important;
+  }
+}
+
+/* The .glass-toast above uses inline backdrop-filter via !important; the
+   * selector above would lose to its specificity-tied !important. Re-kill
+   * here so toasts don't stay glassy on mobile. */
+@media (max-width: 767px) {
+  .glass-toast {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: rgba(30, 27, 36, 0.98) !important;
+  }
 }

@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta
 import json
 from sqlalchemy import text
-from app.models import Inbound, Client, DomainStat, NodeClientTraffic
+from app.models import Inbound, Client, DomainStat, NodeClientTraffic, NotificationLog
 from app.extensions import db, scheduler
 from app.proxyman.command import command_pb2, command_pb2_grpc
 from app.stats.command import (
@@ -288,6 +288,14 @@ def check_limits_and_reset():
                 c.down = 0
                 c.last_reset_time = now_ts
                 config_changed = True
+                # Clear stale traffic notifications so the next cycle re-fires
+                # 80% / 95% / exhausted warnings. Time-based expiry kinds are
+                # intentionally untouched — they belong to the lifecycle of
+                # this Client.id, not its billing cycle.
+                NotificationLog.query.filter(
+                    NotificationLog.client_id == c.id,
+                    NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
+                ).delete(synchronize_session=False)
                 try:
                     channel = get_channel()
                     stub = stats_command_pb2_grpc.StatsServiceStub(channel)

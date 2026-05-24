@@ -4,6 +4,7 @@ import { Menu } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { useAuthStore, AuthState } from '@/stores/authStore';
 import { AnimatedBackground } from './AnimatedBackground';
+import { DisplayConfigLoader } from '@/components/DisplayConfigLoader';
 import { motion, AnimatePresence } from 'framer-motion';
 // AnimatePresence kept for header title transition
 
@@ -76,6 +77,7 @@ export function Layout() {
 
         <div className="flex-1 overflow-y-auto px-4 md:px-10 pb-10 custom-scrollbar">
           <div className="max-w-7xl mx-auto w-full pt-6">
+            <DisplayConfigLoader />
             <Outlet />
           </div>
         </div>

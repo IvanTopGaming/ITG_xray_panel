@@ -108,7 +108,10 @@ services:
       - control-net
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      additional_contexts:
+        project: ./
     container_name: panel-frontend
     restart: always
     healthcheck:
@@ -160,14 +163,22 @@ services:
     build: ./tg_bot
     container_name: panel-bot
     restart: always
-    volumes:
-      - ./bot_data:/app/db
-      - ./bot_config.yaml:/app/config.yaml
+    environment:
+      - BACKEND_API_URL=${BACKEND_API_URL:-http://backend:5000/api}
+      - BOT_SERVICE_TOKEN=${BOT_SERVICE_TOKEN:-}
+      - BOT_LOG_LEVEL=${BOT_LOG_LEVEL:-INFO}
+      - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
     depends_on:
       backend:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - panel-net
+      - control-net
 
 networks:
   panel-net:

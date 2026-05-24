@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install ruff
         run: pip install ruff
@@ -72,7 +72,8 @@ jobs:
           # DL3003 — cd in RUN: used in compound commands where WORKDIR isn't applicable
           # DL3015 — --no-install-recommends: already applied where feasible
           # SC2046 — word splitting in $(find ...): intentional for passing proto file list
-          ignore: DL3008,DL3013,DL3015,DL3018,DL3003,SC2046
+          # DL3022 — `COPY --from=project` is a buildx named context, not a stage alias
+          ignore: DL3008,DL3013,DL3015,DL3018,DL3003,SC2046,DL3022
 
   # ── Frontend build smoke test ──────────────────────────────────────────────
   frontend-build:
@@ -95,3 +96,37 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # ── Backend tests ──────────────────────────────────────────────────────────
+  backend-tests:
+    name: Backend pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      SECRET_KEY: test
+      PANEL_DOMAIN: localhost
+      PANEL_ADMIN_USER: admin
+      PANEL_ADMIN_PASSWORD: admin
+      PROXY_DOMAIN: localhost
+      PANEL_SECRET_PATH: /test
+      RATELIMIT_STORAGE_URI: memory://
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: pytest tests/ -q

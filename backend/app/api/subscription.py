@@ -622,7 +622,7 @@ def get_subscription_content(uuid_str):
             query["flow"] = flow
         link = (
             f"vless://{quote(str(client.id), safe='')}@{host}:{ib.port}?"
-            f"{urlencode(query)}#{quote(client.email, safe='')}"
+            f"{urlencode(query)}#{quote(ib.label or ib.tag, safe='')}"
         )
         local = [link] if _master_visible_to_client(client) else []
         return local + _get_remote_links(client.email, panel_client=client)
@@ -630,7 +630,7 @@ def get_subscription_content(uuid_str):
     elif ib.protocol == "vmess":
         v_conf = {
             "v": "2",
-            "ps": client.email,
+            "ps": ib.label or ib.tag,
             "add": host,
             "port": ib.port,
             "id": client.id,
@@ -691,7 +691,7 @@ def get_subscription_content(uuid_str):
                 query["fp"] = tls_fp
         local = (
             [
-                f"trojan://{quote(str(client.id), safe='')}@{host}:{ib.port}?{urlencode(query)}#{quote(client.email, safe='')}"
+                f"trojan://{quote(str(client.id), safe='')}@{host}:{ib.port}?{urlencode(query)}#{quote(ib.label or ib.tag, safe='')}"
             ]
             if _master_visible_to_client(client)
             else []
@@ -708,7 +708,7 @@ def get_subscription_content(uuid_str):
         user_part = f"{method}:{server_pass}:{user_pass}" if _is_ss2022_method(method) else f"{method}:{user_pass}"
         b64_user = base64.b64encode(user_part.encode()).decode()
         local_links = (
-            [f"ss://{b64_user}@{host}:{ib.port}#{quote(client.email, safe='')}"]
+            [f"ss://{b64_user}@{host}:{ib.port}#{quote(ib.label or ib.tag, safe='')}"]
             if _master_visible_to_client(client)
             else []
         )

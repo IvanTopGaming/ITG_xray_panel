@@ -1,9 +1,9 @@
 flask
 flask-cors
 docker
-grpcio==1.59.0
-grpcio-tools==1.59.0
-protobuf==4.24.4
+grpcio==1.66.2
+grpcio-tools==1.66.2
+protobuf==5.28.3
 psutil
 pyjwt
 gunicorn
@@ -17,3 +17,4 @@ filelock
 requests
 pyyaml
 cryptography
+yookassa>=3.0,<4.0

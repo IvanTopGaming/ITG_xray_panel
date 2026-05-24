@@ -1,27 +1,30 @@
+# Runtime data (mounted at runtime, never committed)
 db_data/
 bot_data/
+caddy_data/
+caddy_config/
 certs/
 
+# Secrets / env
 .env
 .env.*
 !.env.example
-bot_config.yaml
-!bot_config.example.yaml
 !.gitkeep
 
+# Local compose overrides
 docker-compose.override.yml
 
+# Python — single venv at repo root for backend + tg_bot
+.venv/
 .audit-venv/
 .ruff_cache/
-backend/.ruff_cache/
 .pytest_cache/
 .mypy_cache/
 **/__pycache__/
 *.py[cod]
 
-node_modules/
+# Node — only frontend/ has its own modules
 frontend/node_modules/
-dist/
 frontend/dist/
 out-tsc/
 bazel-out/
@@ -29,6 +32,9 @@ coverage/
 tmp/
 npm-debug.log
 yarn-error.log
+
+# Brainstorming / visual-companion artefacts
+.superpowers/
 
 *.db
 *.sqlite
@@ -52,3 +58,4 @@ testem.log
 *.sublime-workspace
 .DS_Store
 Thumbs.db
+.claude/

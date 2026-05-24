@@ -1,7 +1,9 @@
 aiogram>=3.0.0
 aiohttp
+aiohttp-socks
 python-dotenv
 qrcode
 pillow
 apscheduler
-PyYAML
+httpx==0.27.2
+redis>=4.2

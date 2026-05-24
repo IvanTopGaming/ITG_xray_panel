@@ -12,6 +12,7 @@ import {
   MasterInfo,
 } from '@/lib/types';
 import { formatBytes, cn } from '@/lib/utils';
+import { formatDate } from '@/lib/datetime';
 import { generateLink, generateSubscriptionUrl } from '@/lib/protocols';
 import { deviceIcon, timeAgo } from '@/lib/devices';
 import { Button } from '@/components/ui/Button';
@@ -1539,9 +1540,7 @@ function UserRow({
               )}
             </div>
             <div className="text-[10px] text-gray-500 font-mono mt-0.5">
-              {client.expiry_time
-                ? `Exp: ${new Date(client.expiry_time).toLocaleDateString()}`
-                : 'No expiry'}
+              {client.expiry_time ? `Exp: ${formatDate(client.expiry_time)}` : 'No expiry'}
             </div>
           </div>
         </div>

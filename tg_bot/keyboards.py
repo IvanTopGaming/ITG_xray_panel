@@ -1,66 +1,108 @@
+from typing import Optional
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-def user_main_kb():
+def user_main_kb(
+    *,
+    subs_label: str,
+    tariffs_label: str,
+    stats_label: str,
+    help_label: str,
+) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text="🚀 My Subscription", callback_data="user_sub")],
-        [InlineKeyboardButton(text="📊 Usage Stats", callback_data="user_stats")],
-        [InlineKeyboardButton(text="ℹ️ Help / Setup Guide", callback_data="user_help")],
+        [InlineKeyboardButton(text=subs_label, callback_data="user_sub")],
+        [InlineKeyboardButton(text=tariffs_label, callback_data="tariffs:list")],
+        [InlineKeyboardButton(text=stats_label, callback_data="user_stats")],
+        [InlineKeyboardButton(text=help_label, callback_data="user_help")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def user_keys_list_kb(records):
+def user_keys_list_kb(
+    records,
+    *,
+    entry_template: str,
+    back_label: str,
+) -> InlineKeyboardMarkup:
     buttons = []
     for r in records:
-        db_id = r[0]
-        name = r[3]
-        inbound_tag = str(r[4] or "").strip()
-        suffix = f" [{inbound_tag}]" if inbound_tag and inbound_tag.lower() != "multi" else ""
-        buttons.append([InlineKeyboardButton(text=f"🔑 {name}{suffix}", callback_data=f"show_key_{db_id}")])
-
-    buttons.append([InlineKeyboardButton(text="⬅️ Main Menu", callback_data="user_home")])
+        client_id = r["id"]
+        name = r.get("inbound_label") or r.get("inbound_tag") or client_id
+        full = name
+        buttons.append(
+            [InlineKeyboardButton(text=entry_template.format(name=full), callback_data=f"show_key_{client_id}")]
+        )
+    buttons.append([InlineKeyboardButton(text=back_label, callback_data="user_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def sub_actions_kb():
+def sub_actions_kb(
+    *,
+    qr_label: str,
+    stats_label: str,
+    back_label: str,
+    back_callback: str = "user_home",
+    renew_label: str | None = None,
+    renew_tariff_id: int | None = None,
+) -> InlineKeyboardMarkup:
+    buttons = []
+    if renew_label and renew_tariff_id:
+        buttons.append([InlineKeyboardButton(text=renew_label, callback_data=f"buy:{renew_tariff_id}")])
+    buttons.extend(
+        [
+            [InlineKeyboardButton(text=qr_label, callback_data="qr_select_server")],
+            [InlineKeyboardButton(text=stats_label, callback_data="user_stats")],
+            [InlineKeyboardButton(text=back_label, callback_data=back_callback)],
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def user_qr_server_kb(
+    panels,
+    *,
+    server_template: str,
+    back_label: str,
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for idx, p in enumerate(panels):
+        buttons.append([InlineKeyboardButton(text=server_template.format(name=p.name), callback_data=f"qr_gen_{idx}")])
+    buttons.append([InlineKeyboardButton(text=back_label, callback_data="back_to_keys")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def qr_back_kb(*, back_label: str) -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(text=back_label, callback_data="back_to_keys")]]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def back_to_main_kb(*, back_label: str) -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(text=back_label, callback_data="user_home")]]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def user_stats_kb(*, refresh_label: str, back_label: str) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text="📱 Show QR Code", callback_data="qr_select_server")],
-        [InlineKeyboardButton(text="📊 My Stats", callback_data="user_stats")],
-        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="user_home")],
+        [InlineKeyboardButton(text=refresh_label, callback_data="user_stats")],
+        [InlineKeyboardButton(text=back_label, callback_data="user_home")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def user_qr_server_kb(panels):
-    buttons = []
-    for idx, p in enumerate(panels):
-        buttons.append([InlineKeyboardButton(text=f"💻 {p.name}", callback_data=f"qr_gen_{idx}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Back to Keys", callback_data="back_to_keys")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def qr_back_kb():
-    buttons = [[InlineKeyboardButton(text="⬅️ Back to Keys", callback_data="back_to_keys")]]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def back_to_main_kb():
-    buttons = [[InlineKeyboardButton(text="⬅️ Back to Main Menu", callback_data="user_home")]]
+def expired_keys_kb(*, show_again_label: str, back_label: str, client_id: str) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=show_again_label, callback_data=f"show_key_{client_id}")],
+        [InlineKeyboardButton(text=back_label, callback_data="user_home")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def admin_main_kb():
     buttons = [
-        [InlineKeyboardButton(text="👥 User Management", callback_data="admin_users")],
         [
             InlineKeyboardButton(text="🖥 System Resources", callback_data="admin_system"),
             InlineKeyboardButton(text="🔄 Restart Core", callback_data="admin_restart_menu"),
-        ],
-        [InlineKeyboardButton(text="♻️ Force Sync Users", callback_data="admin_force_sync")],
-        [
-            InlineKeyboardButton(text="➕ Generate New User", callback_data="admin_add_user"),
-            InlineKeyboardButton(text="🔗 Link Existing", callback_data="admin_link_user"),
         ],
         [InlineKeyboardButton(text="📦 Backup & Restore", callback_data="admin_backups_menu")],
     ]
@@ -69,11 +111,7 @@ def admin_main_kb():
 
 def admin_backups_kb():
     buttons = [
-        [
-            InlineKeyboardButton(text="⬇️ Download BOT DB", callback_data="backup_dl_bot"),
-            InlineKeyboardButton(text="⬇️ Download PANEL DB", callback_data="backup_dl_panel_menu"),
-        ],
-        [InlineKeyboardButton(text="🚀 Full Backup Now", callback_data="admin_force_backup")],
+        [InlineKeyboardButton(text="⬇️ Download PANEL DB", callback_data="backup_dl_panel_menu")],
         [InlineKeyboardButton(text="⬆️ Restore Data", callback_data="admin_backup_restore")],
         [InlineKeyboardButton(text="⬅️ Back to Dashboard", callback_data="admin_home")],
     ]
@@ -94,10 +132,7 @@ def server_selection_kb(panels, action_prefix, include_all=False):
 
 def admin_restore_type_kb():
     buttons = [
-        [
-            InlineKeyboardButton(text="🤖 Restore BOT DB", callback_data="restore_type_bot"),
-            InlineKeyboardButton(text="🎛 Restore PANEL DB", callback_data="restore_type_panel"),
-        ],
+        [InlineKeyboardButton(text="🎛 Restore PANEL DB", callback_data="restore_type_panel")],
         [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_cancel_restore")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -325,3 +360,61 @@ def skip_username_kb():
         [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_cancel_add")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def language_picker_kb(en_label: str, ru_label: str) -> InlineKeyboardMarkup:
+    """Two-button row: English / Русский. Callback data set_lang:en|ru."""
+    buttons = [
+        [
+            InlineKeyboardButton(text=en_label, callback_data="set_lang:en"),
+            InlineKeyboardButton(text=ru_label, callback_data="set_lang:ru"),
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def first_touch_kb(*, activate_label: str, skip_label: str) -> InlineKeyboardMarkup:
+    """Two-button row for the onboarding screen: activate trial / skip."""
+    buttons = [
+        [
+            InlineKeyboardButton(text=activate_label, callback_data="trial:activate"),
+            InlineKeyboardButton(text=skip_label, callback_data="trial:skip"),
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def trial_success_kb(*, subs_label: str, back_label: str) -> InlineKeyboardMarkup:
+    """Two stacked buttons shown after trial activation: jump to subscription
+    keys, or fall back to the main menu."""
+    buttons = [
+        [InlineKeyboardButton(text=subs_label, callback_data="user_sub")],
+        [InlineKeyboardButton(text=back_label, callback_data="user_home")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def payment_retry_kb(*, tariffs_label: str, back_label: str) -> InlineKeyboardMarkup:
+    """Two-button column shown after payment_cancelled or payment_failed:
+    open tariffs to try again, or go back to main menu."""
+    buttons = [
+        [InlineKeyboardButton(text=tariffs_label, callback_data="tariffs:list")],
+        [InlineKeyboardButton(text=back_label, callback_data="user_home")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def no_clients_menu_kb(
+    *,
+    trial_label: Optional[str],
+    tariffs_label: str,
+    help_label: str,
+) -> InlineKeyboardMarkup:
+    """Menu for users without active clients. The trial row appears only
+    when `trial_label` is truthy."""
+    rows = []
+    if trial_label:
+        rows.append([InlineKeyboardButton(text=trial_label, callback_data="trial:activate")])
+    rows.append([InlineKeyboardButton(text=tariffs_label, callback_data="tariffs:list")])
+    rows.append([InlineKeyboardButton(text=help_label, callback_data="user_help")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -11,6 +11,7 @@ import Routing from '@/pages/Routing';
 import System from '@/pages/System';
 import Statistics from '@/pages/Statistics';
 import Nodes from '@/pages/Nodes';
+import Bot from '@/pages/Bot';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,6 +49,7 @@ function App() {
             <Route path="statistics" element={<Statistics />} />
             <Route path="nodes" element={<Nodes />} />
             <Route path="routing" element={<Routing />} />
+            <Route path="bot" element={<Bot />} />
             <Route path="system" element={<System />} />
           </Route>
         </Routes>

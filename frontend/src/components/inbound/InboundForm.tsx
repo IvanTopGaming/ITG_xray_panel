@@ -83,6 +83,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
           : ss?.network || 'tcp';
       return {
         tag: inbound.tag,
+        label: inbound.label || '',
         port: inbound.port,
         protocol: inbound.protocol,
         network: storedNetwork,
@@ -130,6 +131,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
     }
     return {
       tag: '',
+      label: '',
       port: 443,
       protocol: 'vless',
       network: 'tcp',
@@ -296,6 +298,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
   const onSubmit = (data: any) => {
     const payload: any = {
       tag: data.tag,
+      label: data.label || null,
       port: Number(data.port),
       protocol: data.protocol,
       routing_profile_id: data.routing_profile_id ? Number(data.routing_profile_id) : null,
@@ -371,6 +374,13 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
         className="hidden"
         tabIndex={-1}
       />
+      <div className="grid grid-cols-1">
+        <Input
+          label="Display Label"
+          placeholder='e.g. "🇩🇪 Germany — VLESS"'
+          {...register('label')}
+        />
+      </div>
       <div className="grid grid-cols-2 gap-4">
         <Input label="Tag" {...register('tag', { required: true })} disabled={isEdit} />
         <Input label="Port" type="number" {...register('port', { required: true })} />

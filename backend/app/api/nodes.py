@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import Node, Inbound, SystemSetting
-from app.utils import token_required
+from app.utils import token_required, admin_or_bot_token_required
 from app.services import sub_cache
 from app.services.node_sync import (
     NodeClient,
@@ -83,7 +83,7 @@ def _validate_node_data(data, existing_id=None):
 
 
 @bp.route("/nodes", methods=["GET"])
-@token_required
+@admin_or_bot_token_required
 def list_nodes():
     include_password = str(request.args.get("include_password") or "").lower() in {"1", "true", "yes"}
     nodes = Node.query.order_by(Node.id).all()

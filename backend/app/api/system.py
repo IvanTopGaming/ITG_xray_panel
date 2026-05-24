@@ -8,7 +8,7 @@ import threading
 import time
 import json
 from flask import Blueprint, after_this_request, jsonify, request, send_file, Response, stream_with_context
-from app.utils import token_required
+from app.utils import token_required, admin_or_bot_token_required
 from app.extensions import limiter, db
 from app.models import Client, SystemSetting
 from app.services.xray import (
@@ -82,7 +82,7 @@ def _set_system_setting(key, value):
 
 
 @bp.route("/stats/system", methods=["GET"])
-@token_required
+@admin_or_bot_token_required
 @limiter.limit("60 per minute")
 def get_system_stats():
     try:
@@ -111,7 +111,7 @@ def get_users_stats():
 
 
 @bp.route("/restart", methods=["POST"])
-@token_required
+@admin_or_bot_token_required
 @limiter.limit("5 per minute")
 def restart():
     try:

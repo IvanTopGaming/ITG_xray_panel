@@ -1,0 +1,71 @@
+name: Dev Build (staging images)
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  build:
+    name: Build & push staging images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push all services
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA="${SHA:0:7}"
+          XRAY_REF=$(python3 -c "import json; print(json.load(open('versions.json'))['xray_core_ref'])")
+
+          for SERVICE in backend frontend caddy bot; do
+            case $SERVICE in
+              backend)
+                CONTEXT="./backend"
+                IMAGE="ghcr.io/ivantopgaming/panel-backend"
+                BUILD_ARGS="--build-arg XRAY_CORE_REF=$XRAY_REF"
+                ;;
+              frontend)
+                CONTEXT="./frontend"
+                IMAGE="ghcr.io/ivantopgaming/panel-frontend"
+                BUILD_ARGS="--build-context project=."
+                ;;
+              caddy)
+                CONTEXT="./caddy"
+                IMAGE="ghcr.io/ivantopgaming/panel-caddy"
+                BUILD_ARGS=""
+                ;;
+              bot)
+                CONTEXT="./tg_bot"
+                IMAGE="ghcr.io/ivantopgaming/panel-bot"
+                BUILD_ARGS=""
+                ;;
+            esac
+
+            echo "::group::Build $SERVICE (dev-$SHORT_SHA)"
+            docker buildx build $BUILD_ARGS \
+              --platform linux/amd64 \
+              --tag "$IMAGE:dev-$SHORT_SHA" \
+              --tag "$IMAGE:dev-latest" \
+              --push \
+              --cache-from "type=gha,scope=$SERVICE-dev" \
+              --cache-to   "type=gha,scope=$SERVICE-dev,mode=max" \
+              "$CONTEXT"
+            echo "::endgroup::"
+
+            echo "Pushed $IMAGE:dev-$SHORT_SHA and $IMAGE:dev-latest"
+          done

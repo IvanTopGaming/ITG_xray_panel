@@ -1,0 +1,358 @@
+"""Unit and integration tests for app.services.provisioning."""
+
+from app.services.provisioning import _generate_email, _generate_identity
+
+
+def test_generate_identity_vless_returns_uuid_hex():
+    """VLESS uses standard UUID hex strings."""
+    identity = _generate_identity("vless")
+    cleaned = identity.replace("-", "")
+    assert len(cleaned) >= 32
+    assert all(c in "0123456789abcdef" for c in cleaned)
+
+
+def test_generate_identity_vmess_returns_uuid_hex():
+    identity = _generate_identity("vmess")
+    cleaned = identity.replace("-", "")
+    assert len(cleaned) >= 32
+
+
+def test_generate_identity_unknown_protocol_returns_token():
+    """For protocols phase 3 doesn't natively support, return a URL-safe
+    random token (not a UUID)."""
+    identity = _generate_identity("trojan")
+    assert len(identity) >= 16
+    assert all(c.isalnum() or c in "-_" for c in identity)
+
+
+def test_generate_identity_two_calls_return_different_values():
+    a = _generate_identity("vless")
+    b = _generate_identity("vless")
+    assert a != b
+
+
+def test_generate_email_includes_telegram_id_and_inbound():
+    """Email format: tg<telegram_id>_<inbound_tag>."""
+    email = _generate_email(telegram_id=12345, inbound_tag="DE-vless")
+    assert "12345" in email
+    assert "DE-vless" in email
+    assert email.startswith("tg")
+
+
+import time as _time
+import uuid as _uuid
+from unittest.mock import patch
+
+import pytest
+
+from app.models import Client, Inbound, Tariff, TariffItem
+from app.services.provisioning import apply_tariff_for_user
+
+
+@pytest.fixture
+def basic_setup(app, db):
+    """Two inbounds, one tariff with two items matching them."""
+    inbound_de = Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}")
+    inbound_msk = Inbound(tag="MSK-vless", protocol="vless", port=10002, stream_settings="{}")
+    db.session.add_all([inbound_de, inbound_msk])
+    db.session.flush()
+
+    tariff = Tariff(name="Standard", price_rub=150, period_days=30)
+    db.session.add(tariff)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="DE-vless", traffic_gb=0, sort_order=0))
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="MSK-vless", traffic_gb=70, sort_order=1))
+    db.session.commit()
+    return tariff
+
+
+def _make_client(db, *, telegram_id, inbound_tag, expiry_ms, limit_bytes, up=0, down=0):
+    c = Client(
+        id=str(_uuid.uuid4()),
+        email=f"existing_{inbound_tag}",
+        inbound_tag=inbound_tag,
+        telegram_id=telegram_id,
+        limit_bytes=limit_bytes,
+        expiry_time=expiry_ms,
+        up=up,
+        down=down,
+        enable=True,
+    )
+    db.session.add(c)
+    db.session.commit()
+    return c
+
+
+def test_apply_extends_existing_client(app, db, basic_setup):
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    pre_expiry = now_ms + 5 * 86400_000
+    client = _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="DE-vless",
+        expiry_ms=pre_expiry,
+        limit_bytes=10_000_000_000,
+        up=2_000_000,
+        down=3_000_000,
+    )
+    _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="MSK-vless",
+        expiry_ms=pre_expiry,
+        limit_bytes=70 * 1024**3,
+        up=1_000_000,
+        down=1_500_000,
+    )
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        result = apply_tariff_for_user(42, tariff, source="trial")
+
+    db.session.refresh(client)
+    # Expiry stacks then snaps to noon in display tz — within 24h of raw target.
+    target = pre_expiry + 30 * 86400_000
+    assert abs(client.expiry_time - target) < 86400_000
+    assert client.up == 0
+    assert client.down == 0
+    assert client.limit_bytes == 0
+    assert client.enable is True
+    assert client.tariff_id == tariff.id
+
+    assert "clients" in result
+    assert abs(result["expires_at_ms"] - target) < 86400_000
+
+
+def test_apply_extends_uses_now_when_expiry_already_past(app, db, basic_setup):
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    past_expiry = now_ms - 86400_000
+    _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="DE-vless",
+        expiry_ms=past_expiry,
+        limit_bytes=0,
+    )
+    _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="MSK-vless",
+        expiry_ms=past_expiry,
+        limit_bytes=0,
+    )
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        result = apply_tariff_for_user(42, tariff, source="auto_renew")
+
+    expected = now_ms + 30 * 86400_000
+    # Snapped to noon in display tz — within a day of the naive target.
+    assert abs(result["expires_at_ms"] - expected) < 86400_000
+
+
+def test_apply_msk_item_sets_70gb_limit(app, db, basic_setup):
+    """traffic_gb=70 → limit_bytes = 70 * 1024**3."""
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    msk = _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="MSK-vless",
+        expiry_ms=now_ms,
+        limit_bytes=999,
+    )
+    _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="DE-vless",
+        expiry_ms=now_ms,
+        limit_bytes=999,
+    )
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(42, tariff, source="trial")
+
+    db.session.refresh(msk)
+    assert msk.limit_bytes == 70 * 1024**3
+
+
+def test_apply_creates_missing_client(app, db, basic_setup):
+    """User has no existing Client → both items create new ones."""
+    tariff = basic_setup
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        result = apply_tariff_for_user(99, tariff, source="trial")
+
+    clients = Client.query.filter_by(telegram_id=99).all()
+    assert len(clients) == 2
+    by_inbound = {c.inbound_tag: c for c in clients}
+    assert "DE-vless" in by_inbound
+    assert "MSK-vless" in by_inbound
+    assert by_inbound["DE-vless"].limit_bytes == 0
+    assert by_inbound["MSK-vless"].limit_bytes == 70 * 1024**3
+    assert by_inbound["DE-vless"].tariff_id == tariff.id
+    assert "-" in by_inbound["DE-vless"].id  # VLESS UUID has dashes
+    assert len(result["clients"]) == 2
+
+
+def test_apply_creates_only_missing_when_partial_overlap(app, db, basic_setup):
+    """User has Client for DE only → MSK is created; DE is extended."""
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    de_existing = _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="DE-vless",
+        expiry_ms=now_ms,
+        limit_bytes=0,
+    )
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(42, tariff, source="trial")
+
+    clients = Client.query.filter_by(telegram_id=42).all()
+    assert len(clients) == 2
+    by_inbound = {c.inbound_tag: c for c in clients}
+    # DE existing one preserved (same id)
+    assert by_inbound["DE-vless"].id == de_existing.id
+    # MSK newly created
+    assert by_inbound["MSK-vless"].id != de_existing.id
+    assert by_inbound["MSK-vless"].limit_bytes == 70 * 1024**3
+
+
+def test_apply_handles_email_collision(app, db, basic_setup):
+    """Force a collision on the default email; helper falls back to suffix."""
+    tariff = basic_setup
+    # Pre-populate a Client whose email collides with the default
+    _make_client(
+        db,
+        telegram_id=999,
+        inbound_tag="DE-vless",
+        expiry_ms=0,
+        limit_bytes=0,
+    )
+    db.session.query(Client).filter_by(telegram_id=999).update({"email": "tg99_DE-vless"})
+    db.session.commit()
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(99, tariff, source="trial")
+
+    new_clients = Client.query.filter_by(telegram_id=99).all()
+    assert len(new_clients) == 2
+    de_client = next(c for c in new_clients if c.inbound_tag == "DE-vless")
+    assert de_client.email != "tg99_DE-vless"
+    assert de_client.email.startswith("tg99_DE-vless_")
+
+
+def test_sync_calls_node_sync_create_for_new_clients(app, db, basic_setup):
+    """New clients trigger sync_user_create."""
+    tariff = basic_setup
+    with (
+        patch("app.services.provisioning.sync_user_create") as mock_create,
+        patch("app.services.provisioning.sync_user_update") as mock_update,
+        patch("app.services.provisioning.generate_config_file"),
+        patch("app.services.provisioning.restart_xray_container"),
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(99, tariff, source="trial")
+
+    assert mock_create.call_count == 2
+    assert mock_update.call_count == 0
+
+
+def test_sync_calls_node_sync_update_for_extended_clients(app, db, basic_setup):
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    _make_client(db, telegram_id=42, inbound_tag="DE-vless", expiry_ms=now_ms, limit_bytes=0)
+    _make_client(db, telegram_id=42, inbound_tag="MSK-vless", expiry_ms=now_ms, limit_bytes=0)
+
+    with (
+        patch("app.services.provisioning.sync_user_create") as mock_create,
+        patch("app.services.provisioning.sync_user_update") as mock_update,
+        patch("app.services.provisioning.generate_config_file"),
+        patch("app.services.provisioning.restart_xray_container"),
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(42, tariff, source="trial")
+
+    assert mock_update.call_count == 2
+    assert mock_create.call_count == 0
+
+
+def test_sync_calls_xray_regen_once(app, db, basic_setup):
+    """Provisioning calls generate_config_file + restart_xray_container ONCE
+    per call, not once per item."""
+    tariff = basic_setup
+    with (
+        patch("app.services.provisioning.sync_user_create"),
+        patch("app.services.provisioning.sync_user_update"),
+        patch("app.services.provisioning.generate_config_file") as mock_gen,
+        patch("app.services.provisioning.restart_xray_container") as mock_restart,
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(99, tariff, source="trial")
+
+    assert mock_gen.call_count == 1
+    assert mock_restart.call_count == 1
+
+
+def test_sync_swallows_node_sync_errors(app, db, basic_setup):
+    """If node_sync raises (e.g., a remote node is down), provisioning still
+    succeeds — sync errors are logged and the local Client persists."""
+    tariff = basic_setup
+    with (
+        patch(
+            "app.services.provisioning.sync_user_create",
+            side_effect=ConnectionError("node unreachable"),
+        ),
+        patch("app.services.provisioning.generate_config_file"),
+        patch("app.services.provisioning.restart_xray_container"),
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        result = apply_tariff_for_user(99, tariff, source="trial")
+    assert len(result["clients"]) == 2
+
+
+def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
+    """When a renewal resets a client's traffic counters to 0, any earlier
+    traffic_80/95/exhausted NotificationLog entries must be cleared too —
+    otherwise the dedup guard in send_traffic_notifications blocks the next
+    cycle's warnings even though the user is back at 0% usage."""
+    from app.models import NotificationLog
+
+    tariff = basic_setup
+    # Seed an existing client + stale traffic notification.
+    existing = Client(
+        id=str(_uuid.uuid4()),
+        email="tg77_DE-vless",
+        inbound_tag="DE-vless",
+        telegram_id=77,
+        tariff_id=tariff.id,
+        up=900_000_000,
+        down=200_000_000,
+        limit_bytes=1_000_000_000,
+        expiry_time=int(_time.time() * 1000) + 86_400_000,
+        enable=True,
+    )
+    db.session.add(existing)
+    db.session.flush()
+    db.session.add_all(
+        [
+            NotificationLog(telegram_id=77, client_id=existing.id, kind="traffic_80"),
+            NotificationLog(telegram_id=77, client_id=existing.id, kind="traffic_95"),
+            # Expiry notifications must be preserved — they track Client lifetime
+            # independent of billing cycles, so a renewed Client keeps its expiry log.
+            NotificationLog(telegram_id=77, client_id=existing.id, kind="expiry_1d"),
+        ]
+    )
+    db.session.commit()
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(77, tariff, source="auto_renew")
+
+    remaining = NotificationLog.query.filter_by(client_id=existing.id).all()
+    kinds = {n.kind for n in remaining}
+    assert "traffic_80" not in kinds
+    assert "traffic_95" not in kinds
+    assert "traffic_exhausted" not in kinds
+    assert "expiry_1d" in kinds  # preserved

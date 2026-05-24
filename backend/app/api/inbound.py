@@ -6,7 +6,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import Inbound, Client, ClientDevice
-from app.utils import token_required, normalize_tag, normalize_email, parse_int
+from app.utils import token_required, admin_or_bot_token_required, normalize_tag, normalize_email, parse_int
 from app.services.xray import (
     generate_config_file,
     restart_xray_container,
@@ -119,7 +119,7 @@ def _extract_ss_method(stream_settings_raw):
 
 
 @bp.route("/inbounds", methods=["GET"])
-@token_required
+@admin_or_bot_token_required
 def get_inbounds():
     from sqlalchemy import func
 
@@ -166,6 +166,7 @@ def get_inbounds():
                 "down": ib.down,
                 "fallback_address": ib.fallback_address,
                 "device_limit": ib.device_limit,
+                "label": ib.label,
             }
         )
     return jsonify(result)
@@ -194,6 +195,7 @@ def create_inbound():
         elif routing_profile_id is not None:
             routing_profile_id = parse_int(routing_profile_id, "routing_profile_id", min_value=1)
         device_limit = parse_int(data.get("device_limit", 0), "device_limit", min_value=0)
+        label = (data.get("label") or "").strip() or None
 
         new_ib = Inbound(
             tag=tag,
@@ -203,6 +205,7 @@ def create_inbound():
             routing_profile_id=routing_profile_id,
             fallback_address=fallback_address,
             device_limit=device_limit,
+            label=label,
         )
         db.session.add(new_ib)
         db.session.commit()
@@ -250,6 +253,9 @@ def update_inbound(tag):
                 ib.routing_profile_id = parse_int(data["routing_profile_id"], "routing_profile_id", min_value=1)
         if "device_limit" in data:
             ib.device_limit = parse_int(data["device_limit"], "device_limit", min_value=0)
+        if "label" in data:
+            label_value = (data["label"] or "").strip() or None
+            ib.label = label_value
 
         merged_stream_data = dict(data)
         current_stream = json.loads(ib.stream_settings or "{}")
@@ -442,7 +448,7 @@ def reset_ib_traffic(tag):
 
 
 @bp.route("/inbounds/<tag>/users", methods=["POST"])
-@token_required
+@admin_or_bot_token_required
 def add_user(tag):
     try:
         data = request.get_json(silent=True) or {}
@@ -533,7 +539,7 @@ def add_user(tag):
 
 
 @bp.route("/inbounds/<tag>/users", methods=["PUT"])
-@token_required
+@admin_or_bot_token_required
 def update_user(tag):
     try:
         data = request.get_json(silent=True) or {}
@@ -652,7 +658,7 @@ def update_user(tag):
 
 
 @bp.route("/inbounds/<tag>/users", methods=["DELETE"])
-@token_required
+@admin_or_bot_token_required
 def delete_user_route(tag):
     try:
         ib = Inbound.query.filter_by(tag=tag).first()

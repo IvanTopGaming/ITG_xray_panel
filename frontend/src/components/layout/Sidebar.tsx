@@ -7,6 +7,7 @@ import {
   Radar,
   BarChart3,
   Server,
+  Bot as BotIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore, AuthState } from '@/stores/authStore';
@@ -22,6 +23,7 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
     { icon: BarChart3, label: 'Stats', path: '/statistics' },
     { icon: Server, label: 'Nodes', path: '/nodes' },
     { icon: RouteIcon, label: 'Routing', path: '/routing' },
+    { icon: BotIcon, label: 'Bot', path: '/bot' },
     { icon: Settings, label: 'System', path: '/system' },
   ];
 

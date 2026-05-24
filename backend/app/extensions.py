@@ -19,7 +19,7 @@ def _sqlite_pragmas(dbapi_conn, _):
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA synchronous=NORMAL")
-    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA busy_timeout=15000")
     cur.execute("PRAGMA temp_store=MEMORY")
     cur.close()
 

@@ -117,7 +117,7 @@ jobs:
               frontend)
                 CONTEXT="./frontend"
                 IMAGE="ghcr.io/ivantopgaming/panel-frontend"
-                BUILD_ARGS=""
+                BUILD_ARGS="--build-context project=."
                 ;;
               caddy)
                 CONTEXT="./caddy"
