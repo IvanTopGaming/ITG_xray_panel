@@ -232,7 +232,12 @@ def get_config():
         ), 200
 
     # Only expose the link_token if it hasn't been used yet
-    link_token = cfg.link_token if (cfg.link_token and not cfg.link_token_used) else None
+    link_token = None
+    if cfg.link_token and not cfg.link_token_used:
+        import base64
+
+        panel_url = _build_panel_url()
+        link_token = base64.urlsafe_b64encode(f"{panel_url}|{cfg.link_token}".encode()).decode().rstrip("=")
 
     return jsonify(
         {

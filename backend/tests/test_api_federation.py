@@ -364,7 +364,11 @@ class TestGetConfig:
         resp = client.get("/api/federation/config", headers=admin_headers)
         assert resp.status_code == 200
         body = resp.get_json()
-        assert body["link_token"] == "pending-token-123"
+        # link_token is returned as base64-encoded composite (url|raw_token)
+        import base64
+
+        decoded = base64.urlsafe_b64decode(body["link_token"] + "==").decode()
+        assert decoded.endswith("|pending-token-123")
         assert body["is_linked"] is False
 
     def test_config_requires_auth(self, client):
