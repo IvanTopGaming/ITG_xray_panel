@@ -11,7 +11,6 @@ from api_service import panel_api
 from runtime_config import runtime_config
 from states import RestoreStates, BackupStates
 import keyboards as kb
-from utils import panel_backup_filename
 import datetime
 
 router = Router()
@@ -93,6 +92,7 @@ async def admin_start(message: types.Message):
         return
 
     alive_count = 0
+    total_count = len(panel_api.panels)
     for p in panel_api.panels:
         try:
             if await p.health_check():
@@ -100,10 +100,17 @@ async def admin_start(message: types.Message):
         except Exception as exc:
             logger.debug("Panel health check failed for %s: %s", p.name, exc)
 
-    status_text = f"✅ {alive_count}/{len(panel_api.panels)} Online"
+    linked = await panel_api.get_linked_panels()
+    for lp in linked:
+        if lp.get("enable", True):
+            total_count += 1
+            if lp.get("status") == "online":
+                alive_count += 1
+
+    status_text = f"✅ {alive_count}/{total_count} Online"
 
     await message.answer(
-        f"🛠 <b>Administrator Dashboard</b>\nNodes Status: {status_text}",
+        f"🛠 <b>Administrator Dashboard</b>\nPanels: {status_text}",
         reply_markup=kb.admin_main_kb(),
         parse_mode="HTML",
     )
@@ -112,8 +119,25 @@ async def admin_start(message: types.Message):
 @router.callback_query(F.data == "admin_home")
 async def admin_home(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
+
+    alive_count = 0
+    total_count = len(panel_api.panels)
+    for p in panel_api.panels:
+        try:
+            if await p.health_check():
+                alive_count += 1
+        except Exception:
+            pass
+    linked = await panel_api.get_linked_panels()
+    for lp in linked:
+        if lp.get("enable", True):
+            total_count += 1
+            if lp.get("status") == "online":
+                alive_count += 1
+
+    status_text = f"✅ {alive_count}/{total_count} Online"
     await callback.message.edit_text(
-        "🛠 <b>Administrator Dashboard</b>\n\nSelect an action:",
+        f"🛠 <b>Administrator Dashboard</b>\nPanels: {status_text}",
         reply_markup=kb.admin_main_kb(),
         parse_mode="HTML",
     )
@@ -138,31 +162,45 @@ async def admin_backup_dl_panel_menu(callback: types.CallbackQuery, state: FSMCo
         return
 
     await state.set_state(BackupStates.waiting_for_server)
+    linked = await panel_api.get_linked_panels()
     await callback.message.edit_text(
         "🖥 <b>Select Server</b>\nWhich panel database do you want to download?",
-        reply_markup=kb.server_selection_kb(panel_api.panels, "dl_server_"),
+        reply_markup=kb.server_selection_kb(panel_api.panels, "dl_server_", linked_panels=linked),
         parse_mode="HTML",
     )
 
 
 @router.callback_query(BackupStates.waiting_for_server, F.data.startswith("dl_server_"))
 async def admin_backup_dl_panel_process(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        idx = int(callback.data.split("_")[2])
-        target_panel = panel_api.panels[idx]
-    except (ValueError, IndexError):
-        await callback.answer("Error selecting server")
-        return
+    raw = callback.data.removeprefix("dl_server_")
 
-    await callback.answer(f"Downloading from {target_panel.name}...", show_alert=False)
+    if raw.startswith("lp_"):
+        panel_id = raw.removeprefix("lp_")
+        linked = await panel_api.get_linked_panels()
+        lp = next((p for p in linked if str(p.get("id")) == panel_id), None)
+        if not lp:
+            await callback.answer("Panel not found", show_alert=True)
+            return
+        panel_name = lp.get("name", f"Panel {panel_id}")
+        await callback.answer(f"Downloading from {panel_name}...", show_alert=False)
+        content = await panel_api.panels[0].request("GET", f"panels/{panel_id}/backup", timeout=300)
+    else:
+        try:
+            idx = int(raw)
+            target_panel = panel_api.panels[idx]
+        except (ValueError, IndexError):
+            await callback.answer("Error selecting server")
+            return
+        panel_name = target_panel.name
+        await callback.answer(f"Downloading from {panel_name}...", show_alert=False)
+        content = await target_panel.request("GET", "backup", timeout=300)
 
-    content = await target_panel.request("GET", "backup", timeout=300)
     if content and isinstance(content, bytes):
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-
+        filename = f"{panel_name}_{date_str}.db"
         await callback.message.answer_document(
-            BufferedInputFile(content, filename=panel_backup_filename(target_panel, date_str)),
-            caption=f"🎛 <b>{h(target_panel.name)}</b> Backup",
+            BufferedInputFile(content, filename=filename),
+            caption=f"🎛 <b>{h(panel_name)}</b> Backup",
             parse_mode="HTML",
         )
     else:
@@ -195,9 +233,10 @@ async def restore_type_selected(callback: types.CallbackQuery, state: FSMContext
 
     if restore_type == "panel":
         await state.set_state(RestoreStates.waiting_for_server)
+        linked = await panel_api.get_linked_panels()
         await callback.message.edit_text(
             "🖥 <b>Select Target Server</b>\nWhere should we restore the database?",
-            reply_markup=kb.server_selection_kb(panel_api.panels, "rest_server_"),
+            reply_markup=kb.server_selection_kb(panel_api.panels, "rest_server_", linked_panels=linked),
             parse_mode="HTML",
         )
     else:
@@ -206,14 +245,24 @@ async def restore_type_selected(callback: types.CallbackQuery, state: FSMContext
 
 @router.callback_query(RestoreStates.waiting_for_server, F.data.startswith("rest_server_"))
 async def restore_panel_server_selected(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        idx = int(callback.data.split("_")[2])
-        target_panel_name = panel_api.panels[idx].name
-    except (ValueError, IndexError):
-        await callback.answer("Selection error")
-        return
-
-    await state.update_data(server_idx=idx)
+    raw = callback.data.removeprefix("rest_server_")
+    if raw.startswith("lp_"):
+        panel_id = raw.removeprefix("lp_")
+        linked = await panel_api.get_linked_panels()
+        lp = next((p for p in linked if str(p.get("id")) == panel_id), None)
+        if not lp:
+            await callback.answer("Panel not found", show_alert=True)
+            return
+        target_panel_name = lp.get("name", f"Panel {panel_id}")
+        await state.update_data(linked_panel_id=int(panel_id))
+    else:
+        try:
+            idx = int(raw)
+            target_panel_name = panel_api.panels[idx].name
+        except (ValueError, IndexError):
+            await callback.answer("Selection error")
+            return
+        await state.update_data(server_idx=idx)
     await state.set_state(RestoreStates.waiting_for_file)
 
     await callback.message.edit_text(
@@ -253,33 +302,36 @@ async def process_restore_file(message: types.Message, state: FSMContext):
 
     if restore_type == "panel":
         try:
-            idx = data.get("server_idx")
-            if idx is None:
-                raise Exception("Server index lost")
-            target_panel = panel_api.panels[idx]
+            linked_panel_id = data.get("linked_panel_id")
+            if linked_panel_id:
+                import aiohttp
 
-            import aiohttp
+                form = aiohttp.FormData()
+                form.add_field("file", content, filename="restore.db", content_type="application/x-sqlite3")
+                res = await panel_api.panels[0].request("POST", f"panels/{linked_panel_id}/restore", data=form)
+                target_name = f"Linked Panel #{linked_panel_id}"
+            else:
+                idx = data.get("server_idx")
+                if idx is None:
+                    raise Exception("Server index lost")
+                target_panel = panel_api.panels[idx]
+                target_name = target_panel.name
+                import aiohttp
 
-            form = aiohttp.FormData()
-            form.add_field(
-                "file",
-                content,
-                filename="restore.db",
-                content_type="application/x-sqlite3",
-            )
-
-            res = await target_panel.request("POST", "restore", data=form)
+                form = aiohttp.FormData()
+                form.add_field("file", content, filename="restore.db", content_type="application/x-sqlite3")
+                res = await target_panel.request("POST", "restore", data=form)
 
             await wait_msg.delete()
             if res and isinstance(res, dict) and res.get("status") == "restored":
                 await message.answer(
-                    f"✅ <b>Database Restored on {h(target_panel.name)}!</b>\nThe backend is restarting.",
+                    f"✅ <b>Database Restored on {h(target_name)}!</b>\nThe backend is restarting.",
                     parse_mode="HTML",
                 )
             else:
                 reason = str(res.get("error")) if isinstance(res, dict) and res.get("error") else "unknown error"
                 await message.answer(
-                    f"❌ Server {h(target_panel.name)} returned error: {h(reason)}.",
+                    f"❌ Server {h(target_name)} returned error: {h(reason)}.",
                     parse_mode="HTML",
                 )
         except Exception as e:
@@ -311,47 +363,63 @@ async def admin_system(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin_restart_menu")
 async def admin_restart_menu(callback: types.CallbackQuery):
+    linked = await panel_api.get_linked_panels()
     await callback.message.edit_text(
         "🔄 <b>Restart Manager</b>\nSelect target:",
-        reply_markup=kb.server_selection_kb(panel_api.panels, "ask_restart_", include_all=True),
+        reply_markup=kb.server_selection_kb(panel_api.panels, "ask_restart_", include_all=True, linked_panels=linked),
         parse_mode="HTML",
     )
 
 
 @router.callback_query(F.data.startswith("ask_restart_"))
 async def admin_ask_restart(callback: types.CallbackQuery):
-    target = callback.data.split("_")[2]
-    if target == "all":
+    raw = callback.data.removeprefix("ask_restart_")
+    if raw == "all":
         target_name = "ALL SERVERS"
+        confirm_data = "all"
+    elif raw.startswith("lp_"):
+        panel_id = raw.removeprefix("lp_")
+        linked = await panel_api.get_linked_panels()
+        lp = next((p for p in linked if str(p.get("id")) == panel_id), None)
+        if not lp:
+            await callback.answer("Panel not found", show_alert=True)
+            return
+        target_name = lp.get("name", f"Panel {panel_id}")
+        confirm_data = f"lp_{panel_id}"
     else:
         panel_idx = _parse_callback_int(callback.data)
         if panel_idx is None or not (0 <= panel_idx < len(panel_api.panels)):
             await callback.answer("Invalid target", show_alert=True)
             return
         target_name = panel_api.panels[panel_idx].name
+        confirm_data = str(panel_idx)
 
     await callback.message.edit_text(
         f"⚠️ <b>Confirm Restart</b>\n\nTarget: <b>{h(target_name)}</b>\nConnections will drop briefly.",
-        reply_markup=kb.confirm_restart_kb(target),
+        reply_markup=kb.confirm_restart_kb(confirm_data),
         parse_mode="HTML",
     )
 
 
 @router.callback_query(F.data.startswith("confirm_restart_"))
 async def admin_do_restart(callback: types.CallbackQuery):
-    target = callback.data.split("_")[2]
+    raw = callback.data.removeprefix("confirm_restart_")
     await callback.message.edit_text("🔄 Sending command...", parse_mode="HTML")
 
-    if target == "all":
+    if raw == "all":
         await panel_api.restart_all()
-        msg = "✅ All nodes restarted."
+        msg = "✅ All panels restarted."
+    elif raw.startswith("lp_"):
+        panel_id = int(raw.removeprefix("lp_"))
+        await panel_api.restart_linked_panel(panel_id)
+        msg = "✅ Linked panel restarted."
     else:
-        panel_idx = _parse_callback_int(callback.data)
-        if panel_idx is None or not (0 <= panel_idx < len(panel_api.panels)):
+        panel_idx = int(raw)
+        if not (0 <= panel_idx < len(panel_api.panels)):
             await callback.answer("Invalid target", show_alert=True)
             await admin_restart_menu(callback)
             return
         await panel_api.restart_single(panel_idx)
-        msg = "✅ Node restarted."
+        msg = "✅ Panel restarted."
 
     await callback.message.edit_text(msg, reply_markup=kb.admin_back_kb(), parse_mode="HTML")

@@ -45,7 +45,7 @@ def test_tariff_item_attached_to_tariff(app, db):
     assert len(t.items) == 1
     assert t.items[0].label == "Germany"
     assert t.items[0].traffic_gb == 0
-    assert t.items[0].allowed_node_groups == ""
+    assert t.items[0].panel_id is None
 
 
 def test_tariff_item_cascade_delete(app, db):

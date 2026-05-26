@@ -10,7 +10,7 @@ import Dashboard from '@/pages/Dashboard';
 import Routing from '@/pages/Routing';
 import System from '@/pages/System';
 import Statistics from '@/pages/Statistics';
-import Nodes from '@/pages/Nodes';
+import Panels from '@/pages/Panels';
 import Bot from '@/pages/Bot';
 
 const queryClient = new QueryClient({
@@ -47,7 +47,7 @@ function App() {
           >
             <Route index element={<Dashboard />} />
             <Route path="statistics" element={<Statistics />} />
-            <Route path="nodes" element={<Nodes />} />
+            <Route path="panels" element={<Panels />} />
             <Route path="routing" element={<Routing />} />
             <Route path="bot" element={<Bot />} />
             <Route path="system" element={<System />} />

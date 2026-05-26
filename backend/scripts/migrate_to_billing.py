@@ -78,10 +78,13 @@ def migrate(panel_db_path: str, bot_db_path: str) -> Dict[str, int]:
             "UPDATE client SET telegram_id=?, email=? WHERE id=?",
             (tg_id, new_email, cid),
         )
-        panel.execute(
-            "UPDATE node_client_traffic SET email=? WHERE email=?",
-            (new_email, cur_email),
-        )
+        try:
+            panel.execute(
+                "UPDATE node_client_traffic SET email=? WHERE email=?",
+                (new_email, cur_email),
+            )
+        except Exception:
+            pass
         renamed.append((cur_email, new_email, tg_id))
         linked += 1
         if tg_id not in tg_seen:

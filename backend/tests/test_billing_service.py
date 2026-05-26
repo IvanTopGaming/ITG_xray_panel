@@ -71,7 +71,7 @@ def test_create_checkout_inserts_pending_payment_and_returns_url(app, public_tar
         assert p.tariff_snapshot["name"] == "Standard 30d"
         assert p.tariff_snapshot["price_rub"] == 150
         assert p.tariff_snapshot["items"] == [
-            {"inbound_tag": "vless-de", "traffic_gb": 0, "allowed_node_groups": ""},
+            {"inbound_tag": "vless-de", "traffic_gb": 0, "panel_id": None},
         ]
 
 

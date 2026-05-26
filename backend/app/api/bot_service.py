@@ -179,8 +179,31 @@ def get_user_state(tg_id):
     trial_available = user is None or user.trial_used_at is None
 
     clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
-    if clients:
-        expires_at_ms = max(c.expiry_time for c in clients)
+    clients_data = [c.to_dict() for c in clients]
+
+    from app.models import LinkedPanel
+    from app.services.panel_proxy import get_panel_snapshot
+
+    for panel in LinkedPanel.query.filter_by(enable=True).all():
+        snapshot = get_panel_snapshot(panel.id)
+        if not snapshot:
+            continue
+        for ib_data in snapshot.get("inbounds", []):
+            for c in ib_data.get("clients", []):
+                if c.get("telegram_id") != tg_id or not c.get("enable", True):
+                    continue
+                clients_data.append(
+                    {
+                        **c,
+                        "inbound_tag": ib_data.get("tag", ""),
+                        "inbound_label": ib_data.get("label") or ib_data.get("tag", ""),
+                        "panel_id": panel.id,
+                        "panel_name": panel.name,
+                    }
+                )
+
+    if clients_data:
+        expires_at_ms = max(c.get("expiry_time", 0) or 0 for c in clients_data)
     else:
         expires_at_ms = None
 
@@ -192,7 +215,7 @@ def get_user_state(tg_id):
             "trial_available": trial_available,
             "trial_used_at": user.trial_used_at.isoformat() if user and user.trial_used_at else None,
             "blocked": user.blocked if user else False,
-            "clients": [c.to_dict() for c in clients],
+            "clients": clients_data,
             "expires_at_ms": expires_at_ms,
         }
     )

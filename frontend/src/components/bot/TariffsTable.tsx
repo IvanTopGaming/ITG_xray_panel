@@ -330,13 +330,7 @@ function IncludesSummary({ tariff }: { tariff: Tariff }) {
   }
   const hasUnlim = tariff.items.some((i) => i.traffic_gb === 0);
   const totalGb = tariff.items.reduce((acc, i) => acc + i.traffic_gb, 0);
-  const groups = new Set(
-    tariff.items
-      .map((i) => i.allowed_node_groups)
-      .filter(Boolean)
-      .flatMap((g) => g.split(',').map((x) => x.trim()))
-      .filter(Boolean)
-  );
+  const panelCount = new Set(tariff.items.map((i) => i.panel_id).filter((id) => id != null)).size;
 
   return (
     <div className="flex items-center gap-1.5 text-xs">
@@ -352,11 +346,11 @@ function IncludesSummary({ tariff }: { tariff: Tariff }) {
       ) : (
         <span className="font-mono text-gray-400">{totalGb} GB</span>
       )}
-      {groups.size > 0 && (
+      {panelCount > 0 && (
         <>
           <span className="text-gray-600">·</span>
           <span className="font-mono text-[10px] uppercase tracking-wide text-indigo-300/85">
-            {[...groups].join(', ')}
+            {panelCount} panel{panelCount === 1 ? '' : 's'}
           </span>
         </>
       )}

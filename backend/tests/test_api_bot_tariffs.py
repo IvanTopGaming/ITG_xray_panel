@@ -140,14 +140,12 @@ def test_create_tariff_with_items(app_with_bot_api, db, client, auth_headers):
                     "inbound_tag": "DE-vless",
                     "label": "Germany",
                     "traffic_gb": 0,
-                    "allowed_node_groups": "",
                     "sort_order": 0,
                 },
                 {
                     "inbound_tag": "MSK-vless",
                     "label": "Russia",
                     "traffic_gb": 70,
-                    "allowed_node_groups": "eu",
                     "sort_order": 1,
                 },
             ],
@@ -156,8 +154,8 @@ def test_create_tariff_with_items(app_with_bot_api, db, client, auth_headers):
     assert resp.status_code == 201, resp.get_data(as_text=True)
     body = resp.get_json()
     assert len(body["items"]) == 2
-    assert body["items"][0]["allowed_node_groups"] == ""
-    assert body["items"][1]["allowed_node_groups"] == "eu"
+    assert body["items"][0]["inbound_tag"] == "DE-vless"
+    assert body["items"][1]["inbound_tag"] == "MSK-vless"
 
 
 def test_create_tariff_rejects_missing_required(app_with_bot_api, db, client, auth_headers):

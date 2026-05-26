@@ -8,40 +8,160 @@ from urllib.parse import quote, urlencode
 import yaml
 from flask import Blueprint, jsonify, request, Response
 from app.extensions import limiter, db
-from app.models import Client, Inbound, NodeClientTraffic, SystemSetting
+from app.models import Client, Inbound, SystemSetting
 from app.services import sub_cache
 
 
-def _master_groups():
-    """Return master panel's tag set (read from SystemSetting)."""
-    setting = SystemSetting.query.filter_by(key="master_groups").first()
-    raw = (setting.value if setting else "") or ""
-    return {g.strip() for g in raw.split(",") if g.strip()}
-
-
-def _master_visible_to_client(client, ib=None):
-    """Whether the master inbound should be exposed in this user's subscription.
-
-    Same rule as remote nodes:
-    - inbound has master_disabled=True → never (it doesn't run on master)
-    - user with no allowed_node_groups → no filter, master always visible
-    - user with allowed_node_groups + master has no tags → master is "common", visible
-    - user with allowed_node_groups + master has tags → must overlap
-    """
-    if ib is not None and getattr(ib, "master_disabled", False):
-        return False
-    if client is None:
-        return True
-    allowed = {g.strip() for g in (client.allowed_node_groups or "").split(",") if g.strip()}
-    if not allowed:
-        return True
-    master = _master_groups()
-    if not master:
-        return True
-    return bool(master & allowed)
-
-
 bp = Blueprint("subscription", __name__)
+
+
+def _try_proxy_sub_to_child(uuid_str: str, req) -> Response | None:
+    """If the UUID belongs to a client on a child panel, proxy the sub request there."""
+    from app.models import LinkedPanel
+    from app.services.panel_proxy import get_panel_snapshot
+
+    for panel in LinkedPanel.query.filter_by(enable=True).all():
+        snapshot = get_panel_snapshot(panel.id)
+        if not snapshot:
+            continue
+        for ib_data in snapshot.get("inbounds", []):
+            for c in ib_data.get("clients", []):
+                if c.get("id") == uuid_str:
+                    try:
+                        ua = req.headers.get("User-Agent", "")
+                        import requests as _req
+
+                        resp = _req.get(
+                            f"{panel.url.rstrip('/')}/api/sub/{uuid_str}",
+                            headers={"User-Agent": ua},
+                            timeout=8,
+                        )
+                        if resp.status_code == 200:
+                            return Response(
+                                resp.content,
+                                status=200,
+                                content_type=resp.headers.get("Content-Type", "text/plain"),
+                                headers={
+                                    k: v
+                                    for k, v in resp.headers.items()
+                                    if k.lower()
+                                    in (
+                                        "subscription-userinfo",
+                                        "profile-update-interval",
+                                        "profile-title",
+                                        "content-disposition",
+                                    )
+                                },
+                            )
+                    except Exception:
+                        pass
+                    return None
+    return None
+
+
+def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> list[str]:
+    """Fetch subscription links from child panels for clients matching this UUID or telegram_id."""
+    from urllib.parse import urlparse
+    from app.models import LinkedPanel
+    from app.services.panel_proxy import get_panel_snapshot
+
+    remote_links = []
+    panels = LinkedPanel.query.filter_by(enable=True).all()
+    if not panels:
+        return remote_links
+
+    for panel in panels:
+        snapshot = get_panel_snapshot(panel.id)
+        if not snapshot:
+            continue
+        try:
+            panel_host = urlparse(panel.url).hostname or ""
+        except Exception:
+            continue
+        if not panel_host:
+            continue
+
+        for ib_data in snapshot.get("inbounds", []):
+            for c in ib_data.get("clients", []):
+                if c.get("id") != client_uuid and (not telegram_id or c.get("telegram_id") != telegram_id):
+                    continue
+                if not c.get("enable", True):
+                    continue
+                remote_links.extend(_build_remote_link(panel_host, ib_data, c))
+    return remote_links
+
+
+def _build_remote_link(host: str, ib_data: dict, client_data: dict) -> list[str]:
+    """Build protocol link for a remote inbound+client using the child panel's hostname."""
+    protocol = ib_data.get("protocol", "")
+    port = ib_data.get("port", 443)
+    stream = ib_data.get("stream_settings", {})
+    if isinstance(stream, str):
+        try:
+            stream = json.loads(stream)
+        except Exception:
+            stream = {}
+    uuid = client_data.get("id", "")
+    label = ib_data.get("label") or ib_data.get("tag", "remote")
+    flow = client_data.get("flow", "")
+
+    if protocol == "vless":
+        query = {"type": stream.get("network", "tcp"), "security": stream.get("security", "none")}
+        if stream.get("security") == "reality":
+            rs = stream.get("realitySettings", {})
+            query["pbk"] = _normalize_reality_public_key(rs.get("publicKey", ""))
+            query["fp"] = rs.get("fingerprint", "chrome")
+            query["sni"] = rs.get("serverNames", ["google.com"])[0] if rs.get("serverNames") else "google.com"
+            query["sid"] = rs.get("shortIds", [""])[0] if rs.get("shortIds") else ""
+            spx = rs.get("spiderX", "")
+            if spx:
+                query["spx"] = spx
+        elif stream.get("security") == "tls":
+            sni = stream.get("tlsSettings", {}).get("serverName", "")
+            if sni:
+                query["sni"] = sni
+        if flow:
+            query["flow"] = flow
+        return [f"vless://{quote(str(uuid), safe='')}@{host}:{port}?{urlencode(query)}#{quote(label, safe='')}"]
+
+    if protocol == "vmess":
+        v_conf = {
+            "v": "2",
+            "ps": label,
+            "add": host,
+            "port": port,
+            "id": uuid,
+            "aid": "0",
+            "net": stream.get("network", "tcp"),
+            "type": "none",
+            "host": "",
+            "path": "",
+            "tls": stream.get("security", "none"),
+        }
+        return [f"vmess://{base64.b64encode(json.dumps(v_conf).encode()).decode()}"]
+
+    if protocol == "trojan":
+        query = {"security": stream.get("security", "none"), "type": stream.get("network", "tcp")}
+        if stream.get("security") == "reality":
+            rs = stream.get("realitySettings", {})
+            query["pbk"] = _normalize_reality_public_key(rs.get("publicKey", ""))
+            query["fp"] = rs.get("fingerprint", "chrome")
+            query["sni"] = rs.get("serverNames", ["google.com"])[0] if rs.get("serverNames") else "google.com"
+            query["sid"] = rs.get("shortIds", [""])[0] if rs.get("shortIds") else ""
+        return [f"trojan://{quote(str(uuid), safe='')}@{host}:{port}?{urlencode(query)}#{quote(label, safe='')}"]
+
+    if protocol == "shadowsocks":
+        method = stream.get("ssMethod", "chacha20-poly1305")
+        server_pass = str(stream.get("ssPassword", "") or "")
+        user_pass = str(uuid)
+        if _is_ss2022_method(method):
+            server_pass = _normalize_ss2022_key(server_pass)
+            user_pass = _normalize_ss2022_key(user_pass)
+        user_part = f"{method}:{server_pass}:{user_pass}" if _is_ss2022_method(method) else f"{method}:{user_pass}"
+        return [f"ss://{base64.b64encode(user_part.encode()).decode()}@{host}:{port}#{quote(label, safe='')}"]
+
+    return []
+
 
 WARN_REMARK = {
     "unsupported": "⚠ Use Happ / v2RayTun / Shadowrocket — client unsupported",
@@ -165,10 +285,9 @@ def _user_headers(client=None) -> dict:
     if client is None:
         return headers
 
-    node_rows = NodeClientTraffic.query.filter_by(email=client.email).all()
-    upload = int(client.up or 0) + sum(int(r.up or 0) for r in node_rows)
-    download = int(client.down or 0) + sum(int(r.down or 0) for r in node_rows)
-    total = int(client.global_limit_bytes or 0) or int(client.limit_bytes or 0)
+    upload = int(client.up or 0)
+    download = int(client.down or 0)
+    total = int(client.limit_bytes or 0)
     expire_ms = int(client.expiry_time or 0)
     expire_s = expire_ms // 1000 if expire_ms else 0
 
@@ -176,58 +295,6 @@ def _user_headers(client=None) -> dict:
     if client.email:
         headers["profile-title"] = client.email
     return headers
-
-
-def _get_remote_links(client_email, panel_client=None):
-    """Fetch subscription links from all active remote nodes for a given user email."""
-    try:
-        from app.services.node_sync import get_aggregated_sub_links
-
-        return get_aggregated_sub_links(client_email, client=panel_client)
-    except Exception:
-        return []
-
-
-def _get_remote_clash_proxies(client_email, panel_client=None):
-    """Fetch Clash proxy nodes from all active remote nodes."""
-    try:
-        from app.services.node_sync import get_remote_configs
-
-        configs = get_remote_configs(client_email, "clash", client=panel_client)
-        proxies = []
-        for node_name, raw_config in configs:
-            try:
-                config = yaml.safe_load(raw_config)
-                for proxy in config.get("proxies", []):
-                    proxy["name"] = f"{node_name}-{proxy.get('name', 'proxy')}"
-                    proxies.append(proxy)
-            except Exception:
-                pass
-        return proxies
-    except Exception:
-        return []
-
-
-def _get_remote_singbox_outbounds(client_email, panel_client=None):
-    """Fetch sing-box outbound entries from all active remote nodes."""
-    try:
-        from app.services.node_sync import get_remote_configs
-
-        configs = get_remote_configs(client_email, "singbox", client=panel_client)
-        outbounds = []
-        for node_name, raw_config in configs:
-            try:
-                config = json.loads(raw_config)
-                for ob in config.get("outbounds", []):
-                    if ob.get("type") in ("direct", "block", "dns"):
-                        continue
-                    ob["tag"] = f"{node_name}-{ob.get('tag', 'proxy')}"
-                    outbounds.append(ob)
-            except Exception:
-                pass
-        return outbounds
-    except Exception:
-        return []
 
 
 SS2022_METHODS = {
@@ -461,12 +528,18 @@ def get_subscription(uuid_str):
     if _looks_like_browser(user_agent):
         html = render_subscription_page(uuid_str)
         if html is None:
+            proxy_resp = _try_proxy_sub_to_child(uuid_str, request)
+            if proxy_resp is not None:
+                return proxy_resp
             return "User not found", 404
         return Response(html, mimetype="text/html; charset=utf-8")
 
     # Device tracking gate — runs before cache lookup.
     client = db.session.get(Client, uuid_str)
     if not client or not client.enable:
+        proxy_resp = _try_proxy_sub_to_child(uuid_str, request)
+        if proxy_resp is not None:
+            return proxy_resp
         return "User not found", 404
     inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
     if not inbound:
@@ -570,6 +643,20 @@ def get_subscription(uuid_str):
 
 
 def get_subscription_content(uuid_str):
+    """Local links + remote links from child panels for same user."""
+    local = _get_local_subscription_content(uuid_str)
+    client = db.session.get(Client, uuid_str)
+    if not client:
+        return local
+    try:
+        remote = _get_remote_links_for_client(uuid_str, None)
+    except Exception:
+        remote = []
+    links = (local or []) + remote
+    return links if links else None
+
+
+def _get_local_subscription_content(uuid_str):
     client = db.session.get(Client, uuid_str)
     if not client or not client.enable:
         return None
@@ -627,8 +714,7 @@ def get_subscription_content(uuid_str):
             f"vless://{quote(str(client.id), safe='')}@{host}:{ib.port}?"
             f"{urlencode(query)}#{quote(ib.label or ib.tag, safe='')}"
         )
-        local = [link] if _master_visible_to_client(client, ib) else []
-        return local + _get_remote_links(client.email, panel_client=client)
+        return [link]
 
     elif ib.protocol == "vmess":
         v_conf = {
@@ -651,12 +737,7 @@ def get_subscription_content(uuid_str):
             tls_sni = _extract_tls_server_name(stream)
             if tls_sni:
                 v_conf["sni"] = tls_sni
-        local = (
-            [f"vmess://{base64.b64encode(json.dumps(v_conf).encode()).decode()}"]
-            if _master_visible_to_client(client, ib)
-            else []
-        )
-        return local + _get_remote_links(client.email, panel_client=client)
+        return [f"vmess://{base64.b64encode(json.dumps(v_conf).encode()).decode()}"]
 
     elif ib.protocol == "trojan":
         security = stream.get("security", "none")
@@ -692,14 +773,9 @@ def get_subscription_content(uuid_str):
             tls_fp = _extract_tls_utls_fingerprint(stream)
             if tls_fp:
                 query["fp"] = tls_fp
-        local = (
-            [
-                f"trojan://{quote(str(client.id), safe='')}@{host}:{ib.port}?{urlencode(query)}#{quote(ib.label or ib.tag, safe='')}"
-            ]
-            if _master_visible_to_client(client, ib)
-            else []
-        )
-        return local + _get_remote_links(client.email, panel_client=client)
+        return [
+            f"trojan://{quote(str(client.id), safe='')}@{host}:{ib.port}?{urlencode(query)}#{quote(ib.label or ib.tag, safe='')}"
+        ]
 
     elif ib.protocol == "shadowsocks":
         method = stream.get("ssMethod", "2022-blake3-aes-128-gcm")
@@ -710,14 +786,9 @@ def get_subscription_content(uuid_str):
             user_pass = _normalize_ss2022_key(user_pass)
         user_part = f"{method}:{server_pass}:{user_pass}" if _is_ss2022_method(method) else f"{method}:{user_pass}"
         b64_user = base64.b64encode(user_part.encode()).decode()
-        local_links = (
-            [f"ss://{b64_user}@{host}:{ib.port}#{quote(ib.label or ib.tag, safe='')}"]
-            if _master_visible_to_client(client, ib)
-            else []
-        )
-        return local_links + _get_remote_links(client.email, panel_client=client)
+        return [f"ss://{b64_user}@{host}:{ib.port}#{quote(ib.label or ib.tag, safe='')}"]
 
-    return _get_remote_links(client.email, panel_client=client) or []
+    return []
 
 
 def generate_clash_config(uuid_str):
@@ -818,17 +889,8 @@ def generate_clash_config(uuid_str):
 
     _apply_clash_transport(proxy_node, stream)
 
-    if _master_visible_to_client(client, ib):
-        all_proxies = [proxy_node]
-        all_proxy_names = [proxy_node["name"]]
-    else:
-        all_proxies = []
-        all_proxy_names = []
-
-    remote_proxies = _get_remote_clash_proxies(client.email, panel_client=client)
-    for rp in remote_proxies:
-        all_proxies.append(rp)
-        all_proxy_names.append(rp["name"])
+    all_proxies = [proxy_node]
+    all_proxy_names = [proxy_node["name"]]
 
     config = {
         "port": 7890,
@@ -955,10 +1017,7 @@ def generate_singbox_config(uuid_str):
 
     _apply_singbox_transport(outbound, stream)
 
-    all_outbounds = [outbound] if _master_visible_to_client(client, ib) else []
-
-    remote_outbounds = _get_remote_singbox_outbounds(client.email, panel_client=client)
-    all_outbounds.extend(remote_outbounds)
+    all_outbounds = [outbound]
 
     config = {
         "log": {"level": "info", "timestamp": True},
@@ -1006,14 +1065,8 @@ def render_subscription_page(uuid_str: str):
     if not ib:
         return None
 
-    # Resolve aggregated usage from polled per-node counters.
-    node_rows = NodeClientTraffic.query.filter_by(email=client.email).all()
-    nodes_total = sum(int(r.up or 0) + int(r.down or 0) for r in node_rows)
-    master_total = int(client.up or 0) + int(client.down or 0)
-    aggregate_total = master_total + nodes_total
-
-    per_node_limit = int(client.limit_bytes or 0)
-    global_limit = int(client.global_limit_bytes or 0)
+    used_total = int(client.up or 0) + int(client.down or 0)
+    limit = int(client.limit_bytes or 0)
 
     # Build the absolute subscription URL.
     # - PANEL_BASE_URL (if set) is treated as a fully-formed prefix (may include secret path).
@@ -1032,35 +1085,7 @@ def render_subscription_page(uuid_str: str):
         host = request.headers.get("X-Forwarded-Host", request.host)
         abs_sub_url = f"{scheme}://{host}{sub_url}"
 
-    # Build a friendly node list (master + remote nodes).
-    try:
-        from app.models import Node
-
-        node_objs = Node.query.filter_by(enable=True).all()
-    except Exception:
-        node_objs = []
-    allowed = {g.strip() for g in (client.allowed_node_groups or "").split(",") if g.strip()}
-    master_groups_set = _master_groups()
-    node_items = []
-    if _master_visible_to_client(client, ib):
-        node_items.append(
-            {
-                "name": "Master",
-                "groups": sorted(master_groups_set),
-                "status": "online",
-            }
-        )
-    for n in node_objs:
-        node_groups = {g.strip() for g in (n.groups or "").split(",") if g.strip()}
-        if allowed and node_groups and not (allowed & node_groups):
-            continue
-        node_items.append(
-            {
-                "name": n.name,
-                "groups": sorted(node_groups),
-                "status": n.status or "unknown",
-            }
-        )
+    node_items = [{"name": "Master", "groups": [], "status": "online"}]
 
     def _esc(s):
         return html.escape(str(s or ""))
@@ -1320,11 +1345,8 @@ def render_subscription_page(uuid_str: str):
 
     <div class="card">
       <h2>Usage</h2>
-      <div class="row"><span class="label">Master node</span><span class="val">{_esc(_format_bytes(master_total))}</span></div>
-      <div class="row"><span class="label">All remote nodes</span><span class="val">{_esc(_format_bytes(nodes_total))}</span></div>
-      <div class="row"><span class="label">Aggregate (master + nodes)</span><span class="val">{_esc(_format_bytes(aggregate_total))}</span></div>
-      {('<div class="row"><span class="label">Per-node limit</span><span class="val">' + _esc(_format_bytes(per_node_limit)) + "</span></div>" + _bar(master_total, per_node_limit)) if per_node_limit > 0 else ""}
-      {('<div class="row"><span class="label">Global limit</span><span class="val">' + _esc(_format_bytes(global_limit)) + "</span></div>" + _bar(aggregate_total, global_limit)) if global_limit > 0 else ""}
+      <div class="row"><span class="label">Used</span><span class="val">{_esc(_format_bytes(used_total))}</span></div>
+      {('<div class="row"><span class="label">Limit</span><span class="val">' + _esc(_format_bytes(limit)) + "</span></div>" + _bar(used_total, limit)) if limit > 0 else ""}
       <div class="row"><span class="label">Expires</span><span class="val">{_esc(_format_expiry(client.expiry_time))}</span></div>
     </div>
 

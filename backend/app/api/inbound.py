@@ -6,7 +6,14 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import Inbound, Client, ClientDevice
-from app.utils import token_required, admin_or_bot_token_required, normalize_tag, normalize_email, parse_int
+from app.utils import (
+    token_required,
+    admin_or_bot_token_required,
+    admin_or_federation_token_required,
+    normalize_tag,
+    normalize_email,
+    parse_int,
+)
 from app.services.xray import (
     generate_config_file,
     restart_xray_container,
@@ -40,19 +47,6 @@ ALLOWED_INBOUND_PROTOCOLS = {
     "http",
 }
 PANEL_USER_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks", "wireguard"}
-
-
-def _normalize_node_groups(value):
-    if value is None:
-        return ""
-    if isinstance(value, list):
-        items = [str(g).strip() for g in value if str(g).strip()]
-    else:
-        items = [g.strip() for g in str(value or "").split(",") if g.strip()]
-    for g in items:
-        if len(g) > 30 or not all(ch.isalnum() or ch in "-_" for ch in g):
-            raise ValueError("Group tags must be 1-30 chars: letters, digits, '-', '_'")
-    return ",".join(sorted(set(items)))
 
 
 def _parse_bool(value, default=False):
@@ -167,15 +161,57 @@ def get_inbounds():
                 "fallback_address": ib.fallback_address,
                 "device_limit": ib.device_limit,
                 "label": ib.label,
-                "master_disabled": ib.master_disabled,
+                "panel_id": None,
+                "panel_name": "Master",
             }
         )
+    panel_filter = request.args.get("panel")
+    if panel_filter != "local":
+        from app.models import LinkedPanel
+        from app.services.panel_proxy import get_panel_snapshot
+
+        if panel_filter and panel_filter not in ("all", "local"):
+            try:
+                panels = [LinkedPanel.query.get(int(panel_filter))]
+                panels = [p for p in panels if p and p.enable]
+            except (ValueError, TypeError):
+                panels = []
+        else:
+            panels = LinkedPanel.query.filter_by(enable=True).all()
+
+        for panel in panels:
+            snapshot = get_panel_snapshot(panel.id)
+            if snapshot is None:
+                continue
+            for ib_data in snapshot.get("inbounds", []):
+                ib_data["panel_id"] = panel.id
+                ib_data["panel_name"] = panel.name
+                if "clients" in ib_data:
+                    ib_data["settings"] = {"clients": ib_data.pop("clients")}
+                if "stream_settings" in ib_data and "streamSettings" not in ib_data:
+                    ib_data["streamSettings"] = ib_data.pop("stream_settings")
+                result.append(ib_data)
+
     return jsonify(result)
 
 
 @bp.route("/inbounds", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 def create_inbound():
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from app.services.panel_proxy import proxy_create_inbound
+
+        try:
+            return jsonify(proxy_create_inbound(panel_id, request.get_json(silent=True) or {}))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception("proxy_create_inbound failed: %s", exc)
+            return jsonify({"error": f"Remote panel error: {exc}"}), 502
+
     data = request.get_json(silent=True) or {}
     try:
         tag = normalize_tag(data.get("tag"))
@@ -197,7 +233,6 @@ def create_inbound():
             routing_profile_id = parse_int(routing_profile_id, "routing_profile_id", min_value=1)
         device_limit = parse_int(data.get("device_limit", 0), "device_limit", min_value=0)
         label = (data.get("label") or "").strip() or None
-        master_disabled = bool(data.get("master_disabled", False))
 
         new_ib = Inbound(
             tag=tag,
@@ -208,17 +243,9 @@ def create_inbound():
             fallback_address=fallback_address,
             device_limit=device_limit,
             label=label,
-            master_disabled=master_disabled,
         )
         db.session.add(new_ib)
         db.session.commit()
-
-        try:
-            from app.services.node_sync import sync_inbound_to_all_nodes
-
-            sync_inbound_to_all_nodes(new_ib)
-        except Exception:
-            pass
 
         generate_config_file()
         restart_xray_container()
@@ -230,8 +257,19 @@ def create_inbound():
 
 
 @bp.route("/inbounds/<tag>", methods=["PUT"])
-@token_required
+@admin_or_federation_token_required
 def update_inbound(tag):
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from app.services.panel_proxy import proxy_update_inbound
+
+        try:
+            return jsonify(proxy_update_inbound(panel_id, tag, request.get_json(silent=True) or {}))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            return jsonify({"error": "Remote panel error"}), 502
+
     try:
         ib = Inbound.query.filter_by(tag=tag).first()
         if not ib:
@@ -259,8 +297,6 @@ def update_inbound(tag):
         if "label" in data:
             label_value = (data["label"] or "").strip() or None
             ib.label = label_value
-        if "master_disabled" in data:
-            ib.master_disabled = bool(data["master_disabled"])
 
         merged_stream_data = dict(data)
         current_stream = json.loads(ib.stream_settings or "{}")
@@ -391,13 +427,6 @@ def update_inbound(tag):
         db.session.commit()
 
         try:
-            from app.services.node_sync import sync_inbound_to_all_nodes
-
-            sync_inbound_to_all_nodes(ib)
-        except Exception:
-            pass
-
-        try:
             sub_cache.invalidate_all_for_inbound(ib.tag)
         except Exception:
             pass
@@ -412,8 +441,19 @@ def update_inbound(tag):
 
 
 @bp.route("/inbounds/<tag>", methods=["DELETE"])
-@token_required
+@admin_or_federation_token_required
 def delete_inbound(tag):
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from app.services.panel_proxy import proxy_delete_inbound
+
+        try:
+            return jsonify(proxy_delete_inbound(panel_id, tag))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            return jsonify({"error": "Remote panel error"}), 502
+
     try:
         ib = Inbound.query.filter_by(tag=tag).first()
         if not ib:
@@ -425,13 +465,6 @@ def delete_inbound(tag):
             pass
         db.session.delete(ib)
         db.session.commit()
-
-        try:
-            from app.services.node_sync import sync_inbound_delete_to_all_nodes
-
-            sync_inbound_delete_to_all_nodes(deleted_tag)
-        except Exception:
-            pass
 
         generate_config_file()
         restart_xray_container()
@@ -453,8 +486,19 @@ def reset_ib_traffic(tag):
 
 
 @bp.route("/inbounds/<tag>/users", methods=["POST"])
-@admin_or_bot_token_required
+@admin_or_federation_token_required
 def add_user(tag):
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from app.services.panel_proxy import proxy_create_user
+
+        try:
+            return jsonify(proxy_create_user(panel_id, tag, request.get_json(silent=True) or {}))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            return jsonify({"error": "Remote panel error"}), 502
+
     try:
         data = request.get_json(silent=True) or {}
         ib = Inbound.query.filter_by(tag=tag).first()
@@ -497,30 +541,10 @@ def add_user(tag):
             enable=_parse_bool(data.get("enable"), default=True),
             reset_day=parse_int(data.get("reset_day"), "reset_day", min_value=0, max_value=31),
             flow=data.get("flow", "xtls-rprx-vision" if ib.protocol == "vless" else ""),
-            global_limit_bytes=parse_int(data.get("global_limit_bytes", 0), "global_limit_bytes", min_value=0),
-            allowed_node_groups=_normalize_node_groups(data.get("allowed_node_groups", "")),
             device_limit=_parse_optional_int(data.get("device_limit", None), "device_limit"),
         )
         db.session.add(new_client)
         db.session.commit()
-
-        try:
-            from app.services.node_sync import sync_user_create
-
-            sync_user_create(
-                email,
-                {
-                    "email": email,
-                    "id": provided_id,
-                    "limit_bytes": new_client.limit_bytes,
-                    "expiry_time": new_client.expiry_time,
-                    "enable": new_client.enable,
-                    "reset_day": new_client.reset_day or 0,
-                    "flow": new_client.flow or "",
-                },
-            )
-        except Exception:
-            pass
 
         try:
             sub_cache.invalidate_user(provided_id)
@@ -544,8 +568,19 @@ def add_user(tag):
 
 
 @bp.route("/inbounds/<tag>/users", methods=["PUT"])
-@admin_or_bot_token_required
+@admin_or_federation_token_required
 def update_user(tag):
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from app.services.panel_proxy import proxy_update_user
+
+        try:
+            return jsonify(proxy_update_user(panel_id, tag, request.get_json(silent=True) or {}))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            return jsonify({"error": "Remote panel error"}), 502
+
     try:
         data = request.get_json(silent=True) or {}
         ib = Inbound.query.filter_by(tag=tag).first()
@@ -584,15 +619,6 @@ def update_user(tag):
         flow = str(data.get("flow", client.flow or "") or "").strip()
         if ib.protocol != "vless":
             flow = ""
-        global_limit_bytes = parse_int(
-            data.get("global_limit_bytes", client.global_limit_bytes or 0),
-            "global_limit_bytes",
-            min_value=0,
-        )
-        if "allowed_node_groups" in data:
-            allowed_groups = _normalize_node_groups(data.get("allowed_node_groups"))
-        else:
-            allowed_groups = client.allowed_node_groups or ""
 
         old_runtime_email = client.email
         old_runtime_enabled = bool(client.enable)
@@ -605,31 +631,10 @@ def update_user(tag):
         client.reset_day = reset_day
         client.enable = enable
         client.flow = flow
-        client.global_limit_bytes = global_limit_bytes
-        client.allowed_node_groups = allowed_groups
         if "device_limit" in data:
             client.device_limit = _parse_optional_int(data.get("device_limit"), "device_limit")
 
         db.session.commit()
-
-        try:
-            from app.services.node_sync import sync_user_update
-
-            sync_user_update(
-                old_email,
-                {
-                    "old_email": old_email,
-                    "new_email": new_email,
-                    "new_id": new_id,
-                    "limit_bytes": limit_bytes,
-                    "expiry_time": expiry_time,
-                    "enable": enable,
-                    "reset_day": reset_day,
-                    "flow": flow,
-                },
-            )
-        except Exception:
-            pass
 
         try:
             sub_cache.invalidate_user(old_client_id)
@@ -663,8 +668,20 @@ def update_user(tag):
 
 
 @bp.route("/inbounds/<tag>/users", methods=["DELETE"])
-@admin_or_bot_token_required
+@admin_or_federation_token_required
 def delete_user_route(tag):
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from app.services.panel_proxy import proxy_delete_user
+
+        email = request.args.get("email", "")
+        try:
+            return jsonify(proxy_delete_user(panel_id, tag, email))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            return jsonify({"error": "Remote panel error"}), 502
+
     try:
         ib = Inbound.query.filter_by(tag=tag).first()
         if ib and ib.protocol not in PANEL_USER_PROTOCOLS:
@@ -679,13 +696,6 @@ def delete_user_route(tag):
         deleted_client_id = client.id
         db.session.delete(client)
         db.session.commit()
-
-        try:
-            from app.services.node_sync import sync_user_delete
-
-            sync_user_delete(email)
-        except Exception:
-            pass
 
         try:
             sub_cache.invalidate_user(deleted_client_id)
@@ -735,14 +745,6 @@ def bulk_delete_users_route():
                 doomed_ids.append(row[0])
 
         deleted_count = bulk_delete_users(normalized)
-
-        try:
-            from app.services.node_sync import sync_user_delete
-
-            for user in normalized:
-                sync_user_delete(user["email"])
-        except Exception:
-            pass
 
         try:
             for cid in doomed_ids:
@@ -826,24 +828,6 @@ def bulk_enable_users_route():
         for item in updated:
             client = item["client"]
             try:
-                from app.services.node_sync import sync_user_update
-
-                sync_user_update(
-                    client.email,
-                    {
-                        "old_email": client.email,
-                        "new_email": client.email,
-                        "new_id": client.id,
-                        "limit_bytes": client.limit_bytes,
-                        "expiry_time": client.expiry_time,
-                        "enable": enable,
-                        "reset_day": client.reset_day,
-                        "flow": client.flow or "",
-                    },
-                )
-            except Exception:
-                pass
-            try:
                 sub_cache.invalidate_user(client.id)
             except Exception:
                 pass
@@ -869,49 +853,6 @@ def bulk_enable_users_route():
             restart_xray_container()
 
         return jsonify({"status": "ok", "count": len(updated)}), 200
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@bp.route("/users/bulk-groups", methods=["POST"])
-@token_required
-def bulk_update_groups_route():
-    try:
-        data = request.get_json(silent=True) or {}
-        users = data.get("users")
-        if not isinstance(users, list) or not users:
-            raise ValueError("users array required")
-        if "allowed_node_groups" not in data:
-            raise ValueError("allowed_node_groups field required")
-        groups = _normalize_node_groups(data["allowed_node_groups"])
-
-        normalized = []
-        for user in users:
-            if not isinstance(user, dict):
-                raise ValueError("each user must be an object")
-            normalized.append(
-                {
-                    "tag": normalize_tag(user.get("tag")),
-                    "email": normalize_email(user.get("email")),
-                }
-            )
-
-        count = 0
-        for u in normalized:
-            client = Client.query.filter_by(inbound_tag=u["tag"], email=u["email"]).first()
-            if not client:
-                continue
-            if client.allowed_node_groups == groups:
-                continue
-            client.allowed_node_groups = groups
-            count += 1
-
-        if count:
-            db.session.commit()
-
-        return jsonify({"status": "ok", "count": count}), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
@@ -963,24 +904,6 @@ def bulk_adjust_days_route():
             db.session.commit()
 
             for client in updated_clients:
-                try:
-                    from app.services.node_sync import sync_user_update
-
-                    sync_user_update(
-                        client.email,
-                        {
-                            "old_email": client.email,
-                            "new_email": client.email,
-                            "new_id": client.id,
-                            "limit_bytes": client.limit_bytes,
-                            "expiry_time": client.expiry_time,
-                            "enable": client.enable,
-                            "reset_day": client.reset_day,
-                            "flow": client.flow or "",
-                        },
-                    )
-                except Exception:
-                    pass
                 try:
                     sub_cache.invalidate_user(client.id)
                 except Exception:
@@ -1042,24 +965,6 @@ def bulk_adjust_traffic_route():
             db.session.commit()
 
             for client in updated_clients:
-                try:
-                    from app.services.node_sync import sync_user_update
-
-                    sync_user_update(
-                        client.email,
-                        {
-                            "old_email": client.email,
-                            "new_email": client.email,
-                            "new_id": client.id,
-                            "limit_bytes": client.limit_bytes,
-                            "expiry_time": client.expiry_time,
-                            "enable": client.enable,
-                            "reset_day": client.reset_day,
-                            "flow": client.flow or "",
-                        },
-                    )
-                except Exception:
-                    pass
                 try:
                     sub_cache.invalidate_user(client.id)
                 except Exception:

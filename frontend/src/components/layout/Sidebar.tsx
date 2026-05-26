@@ -21,7 +21,7 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
   const navItems = [
     { icon: LayoutDashboard, label: 'Panel', path: '/' },
     { icon: BarChart3, label: 'Stats', path: '/statistics' },
-    { icon: Server, label: 'Nodes', path: '/nodes' },
+    { icon: Server, label: 'Panels', path: '/panels' },
     { icon: RouteIcon, label: 'Routing', path: '/routing' },
     { icon: BotIcon, label: 'Bot', path: '/bot' },
     { icon: Settings, label: 'System', path: '/system' },

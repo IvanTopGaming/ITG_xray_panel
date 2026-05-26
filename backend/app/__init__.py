@@ -17,12 +17,6 @@ from .extensions import db, migrate, scheduler, limiter
 from .models import Admin, Outbound
 from .services.xray import generate_config_file
 from .services.stats import sync_traffic_job, check_limits_job, parse_access_logs, cleanup_stats_job
-from .services.node_sync import (
-    node_health_check_job,
-    node_user_sync_job,
-    node_inbound_sync_job,
-    node_traffic_poll_job,
-)
 from .jobs.billing import auto_renew_free_users
 from .jobs.notifications import (
     cleanup_bot_events,
@@ -31,6 +25,7 @@ from .jobs.notifications import (
     send_traffic_notifications,
 )
 from .jobs.payments import cleanup_old_payments, poll_pending_payments
+from .jobs.panels import poll_linked_panels
 
 grpc_gevent.init_gevent()
 LOCAL_DEV_ORIGINS = [
@@ -175,10 +170,6 @@ def create_app():
     _ensure_scheduler_job("check_limits", check_limits_job, 60)
     _ensure_scheduler_job("parse_logs", parse_access_logs, 15)
     _ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)  # daily
-    _ensure_scheduler_job("node_health_check", node_health_check_job, 60)
-    _ensure_scheduler_job("node_user_sync", node_user_sync_job, 3600)
-    _ensure_scheduler_job("node_inbound_sync", node_inbound_sync_job, 300)
-    _ensure_scheduler_job("node_traffic_poll", node_traffic_poll_job, 60)
     _ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)  # 15 minutes
     _ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
     _ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
@@ -186,6 +177,7 @@ def create_app():
     _ensure_scheduler_job("send_traffic_notifications", send_traffic_notifications, 900)
     _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
+    _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
     if not scheduler.running:
         scheduler.start()
 
@@ -197,10 +189,11 @@ def create_app():
         system,
         subscription,
         statistics,
-        nodes,
         bot_admin,
         bot_service,
         billing as billing_api,
+        panels,
+        federation,
     )
 
     app.register_blueprint(auth.bp, url_prefix="/api")
@@ -210,10 +203,11 @@ def create_app():
     app.register_blueprint(system.bp, url_prefix="/api")
     app.register_blueprint(subscription.bp, url_prefix="/api")
     app.register_blueprint(statistics.bp, url_prefix="/api")
-    app.register_blueprint(nodes.bp, url_prefix="/api")
     app.register_blueprint(bot_admin.bp, url_prefix="/api")
     app.register_blueprint(bot_service.bp, url_prefix="/api")
     app.register_blueprint(billing_api.bp, url_prefix="/api")
+    app.register_blueprint(panels.bp, url_prefix="/api")
+    app.register_blueprint(federation.bp, url_prefix="/api")
 
     @app.get("/healthz")
     def healthz():

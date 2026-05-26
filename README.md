@@ -20,9 +20,9 @@ YooKassa payments.
 
 ### Proxy panel
 - **Multi-protocol** — VLESS (XTLS · Reality · WebSocket · gRPC · TCP), VMess, Trojan, Shadowsocks 2022, WireGuard, SOCKS5, HTTP
-- **Multi-node** — one master orchestrates remote panel instances: push inbounds and users, aggregate traffic for global limits, group users to a subset of nodes, optional strict-mirror mode that deletes drift
-- **Aggregated subscriptions** — a single URL returns merged entries from every node the user can see (Redis-cached, configurable refresh interval)
-- **Traffic statistics** — hourly snapshots kept indefinitely, charts, period filtering (1h → all-time), top destination domains, per-node breakdown
+- **Panel Federation** — one master panel manages linked remote panels: proxy user/inbound CRUD to specific panels via `TariffItem.panel_id` routing, health polling, mutual federation-token auth
+- **Aggregated subscriptions** — a single URL returns merged entries from the master and linked panels (Redis-cached, configurable refresh interval)
+- **Traffic statistics** — hourly snapshots kept indefinitely, charts, period filtering (1h → all-time), top destination domains, per-panel breakdown
 - **Live user status** — online/offline/expired/over-limit/disabled with filtering, last-seen and source-IP tracking
 - **Routing** — outbound servers, weighted balancers with fallback, per-user route overrides
 - **Device tracking** — optional per-client / per-inbound device limit; HWID-aware subscription delivery
@@ -30,7 +30,7 @@ YooKassa payments.
 
 ### Telegram billing bot
 - **YooKassa payments** — full checkout flow inside Telegram, idempotent webhook + 30-second poll fallback, double-provision protection
-- **Tariffs** — flexible plans with multiple inbound items (e.g. "EU 100 GB + RU 50 GB / 30 days"), public/private/archived visibility, per-tariff allowed node groups
+- **Tariffs** — flexible plans with multiple inbound items (e.g. "EU 100 GB + RU 50 GB / 30 days"), public/private/archived visibility, optional per-item panel routing
 - **Subscription lifecycle** — auto-renewal for free tiers, manual grants by admin (paid · gift · free), revocation
 - **Trial** — one-time per-user trial that consumes a dedicated trial tariff
 - **Smart notifications** — 3-day / 1-day / 1-hour / expired warnings; 80% / 95% / exhausted traffic warnings; per-cycle dedup with automatic re-arm on monthly reset and tariff renewal
@@ -41,7 +41,7 @@ YooKassa payments.
 - **Telegram proxy** — route the bot's calls through any HTTP/SOCKS5 proxy (handy on RU hosts)
 
 ### Operations
-- **One-master fan-out** — bot only talks to the master panel; the master's `node_sync` propagates user CRUD to nodes in real time, with hourly drift-reconcile as a safety net
+- **Panel Federation** — bot only talks to the master panel; the master's `panel_proxy` proxies user CRUD to linked panels as needed
 - **Automatic TLS** — Caddy fetches Let's Encrypt certificates, masquerades non-panel paths as a decoy site
 - **Hidden panel URL** — everything outside `/<PANEL_SECRET_PATH>/` returns 404
 - **Backup + restore** — admin-side DB export/import (admin JWT only)
@@ -130,8 +130,8 @@ End-user flow:
 5. **Notifications** — payment status, access granted, expiry warnings (3d / 1d / 1h / expired), traffic warnings (80 / 95 / 100%), free-tier auto-renew pause
 
 Admin panel UI (under **Bot** in the side nav):
-- **Tariffs** — CRUD with items (one inbound per item, traffic cap in GB, optional node-group restriction), visibility (`public` / `private` / `archived`), trial flag, drag-sort, archive/restore/duplicate, permanent delete (refused while payments reference it)
-- **Users** — every Telegram user the bot has seen, with grants and active clients; per-user `block` / `unblock` (cancels grants, removes from Xray runtime, disables clients across all nodes via `sync_user_delete`)
+- **Tariffs** — CRUD with items (one inbound per item, traffic cap in GB, optional panel routing), visibility (`public` / `private` / `archived`), trial flag, drag-sort, archive/restore/duplicate, permanent delete (refused while payments reference it)
+- **Users** — every Telegram user the bot has seen, with grants and active clients; per-user `block` / `unblock` (cancels grants, removes from Xray runtime, disables clients, propagates to linked panels)
 - **Granted** — `UserTariffAccess` records (the "whitelist" of free / paid / gift grants), revoke per tariff (`vless`/`vmess` removed via gRPC immediately, others trigger config regen + restart)
 - **Texts** — every bot string is editable inline, with RU/EN tabs. The bundled `bot_texts_defaults.yaml` ships > 300 keys covering the entire user journey. Versioned via `CURRENT_BOT_TEXTS_VERSION`: bumping it triggers a one-shot force-reseed at startup that pushes the new default set
 - **Payments** — searchable history (status: pending / processing / succeeded / failed / cancelled), one-click open in YooKassa
@@ -159,10 +159,10 @@ Admin panel UI (under **Bot** in the side nav):
        ┌────────────┼─────────────┐
        │            │             │
        ▼            ▼             ▼
-     Xray         Redis        Remote
-     (gRPC)      (cache,        panel
-                  pubsub,        nodes
-                  rate-limit)    (HTTP)
+     Xray         Redis        Linked
+     (gRPC)      (cache,        panels
+                  pubsub,       (federation
+                  rate-limit)    HTTP)
                     ▲
                     │ subscribe bot:events
                     │
@@ -193,13 +193,10 @@ Two Docker networks: `panel-net` (frontend/backend/caddy + Xray) and `control-ne
 | Job | Interval | What it does |
 |---|---|---|
 | `sync_traffic` | 10s | Pulls per-user up/down from Xray gRPC, persists to `client` + upserts hourly `traffic_snapshot` rows |
-| `check_limits` | 60s | Removes users who exceeded limit or hit expiry (uses traffic aggregated across master + every node) |
+| `check_limits` | 60s | Removes users who exceeded limit or hit expiry |
 | `parse_logs` | 15s | Streams Xray access logs, fills `domain_stat` for the top-sites tab |
 | `cleanup_stats` | 24h | Prunes `domain_stat` to 90 days |
-| `node_health_check` | 60s | Pings each enabled node, updates status / last_error |
-| `node_traffic_poll` | 60s | Fetches per-user counters from each node into `node_client_traffic` |
-| `node_inbound_sync` | 5m | Pushes inbound configs from master to nodes with `sync_inbound=True` |
-| `node_user_sync` | 1h | Full reconcile of users on each node — adds missing, updates drifted, deletes extras when `strict_mirror=True` |
+| `poll_linked_panels` | 10s | Pings each enabled `LinkedPanel`, updates `status` / `last_poll` / `last_error` |
 | `auto_renew_free_users` | 15m | Re-provisions free-tier grants whose `next_renewal_at` has passed; pauses + notifies on tariff archive / disable |
 | `poll_pending_payments` | 30s | Webhook fallback: reconciles aged-but-unsettled YooKassa payments |
 | `cleanup_old_payments` | 24h | Cancels payments stuck `pending > 24h` (with `payment_cancelled` notification) and deletes terminal records `> 90d` |
@@ -210,7 +207,7 @@ Two Docker networks: `panel-net` (frontend/backend/caddy + Xray) and `control-ne
 
 ### Database
 
-SQLite at `./db_data/panel.db`, custom in-app migration system (`backend/db_migration.py`) keyed off `PRAGMA user_version` — current schema **v13**, currently includes 20 tables. Migrations are idempotent and run on every backend startup.
+SQLite at `./db_data/panel.db`, custom in-app migration system (`backend/db_migration.py`) keyed off `PRAGMA user_version` — current schema **v15**, currently includes 20 tables. Migrations are idempotent and run on every backend startup.
 
 **Storage budget:**
 - `traffic_snapshot` ≈ 100 bytes × entities × 8760 hours/year — negligible for typical deployments
@@ -219,19 +216,16 @@ SQLite at `./db_data/panel.db`, custom in-app migration system (`backend/db_migr
 
 **Backups:** `GET /api/backup` (admin JWT only) streams a SQLite Backup-API snapshot that includes WAL. `POST /api/restore` swaps a backup back in and triggers a worker restart.
 
-### Multi-node setup
+### Panel Federation
 
-Run a second (or third…) panel exactly the same way as the master, then on the master:
-**Nodes → Add** with its URL, admin credentials, and the inbound tag that should receive synced users. Per node you can toggle:
+Run a second (or third...) panel exactly the same way as the master, then on the master:
+**Panels --> Add** with the remote panel's URL and a shared federation token. The remote panel stores the master's credentials in its `FederationConfig` singleton.
 
-| Flag | Effect |
-|---|---|
-| **Sync users** | Real-time fan-out of user create / update / delete plus hourly drift reconcile |
-| **Sync inbound** | Push the inbound config (UUIDs, keys, routing) from master so identities stay aligned |
-| **Strict mirror** | Also delete users on the node that aren't on the master |
-| **Groups** (CSV) | Restrict a node to a tag set; a `Client.allowed_node_groups` (also CSV) filters which clients land on it (empty = all nodes) |
+The master proxies user/inbound CRUD to linked panels via `panel_proxy.py`. Tariff items can optionally specify a `panel_id` to route provisioning to a specific linked panel instead of the local instance.
 
-Subscription links served by the master aggregate per-protocol entries from every node visible to the requesting user, cached in Redis.
+The `poll_linked_panels` job (10s) monitors each linked panel's health, updating its `status`, `last_poll`, and `last_error` fields.
+
+Subscription links served by the master can merge entries from linked panels visible to the requesting user, cached in Redis.
 
 ---
 

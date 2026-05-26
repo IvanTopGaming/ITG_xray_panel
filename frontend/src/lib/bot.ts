@@ -118,7 +118,7 @@ export async function getBotUser(tgId: number): Promise<BotUserDetail> {
 
 export async function createGrant(
   tgId: number,
-  payload: { tariff_id: number; billing: GrantBilling; note?: string }
+  payload: { tariff_id: number; billing: GrantBilling; note?: string; silent?: boolean }
 ): Promise<UserTariffGrant> {
   const { data } = await api.post<UserTariffGrant>(`/bot/users/${tgId}/grants`, payload);
   return data;

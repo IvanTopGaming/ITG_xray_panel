@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta
 import json
 from sqlalchemy import text
-from app.models import Inbound, Client, DomainStat, NodeClientTraffic, NotificationLog
+from app.models import Inbound, Client, DomainStat, NotificationLog
 from app.extensions import db, scheduler
 from app.proxyman.command import command_pb2, command_pb2_grpc
 from app.stats.command import (
@@ -251,19 +251,6 @@ def sync_traffic_stats():
         logger.warning("Traffic sync failed: %s", e)
 
 
-def _global_node_usage_map():
-    """Return {email: total_bytes_across_all_nodes} from node_client_traffic."""
-    rows = db.session.query(
-        NodeClientTraffic.email,
-        NodeClientTraffic.up,
-        NodeClientTraffic.down,
-    ).all()
-    out = {}
-    for email, up, down in rows:
-        out[email] = out.get(email, 0) + int(up or 0) + int(down or 0)
-    return out
-
-
 def check_limits_and_reset():
     clients = Client.query.filter_by(enable=True).all()
     now_dt = datetime.now()
@@ -271,7 +258,6 @@ def check_limits_and_reset():
     current_day = now_dt.day
     config_changed = False
     restart_required = False
-    node_usage = _global_node_usage_map()
 
     for c in clients:
         if c.reset_day > 0 and c.reset_day == current_day:
@@ -314,10 +300,8 @@ def check_limits_and_reset():
                 except grpc.RpcError as e:
                     logger.debug("Failed to reset gRPC counters for %s: %s", c.email, e)
 
-        global_used = (c.up + c.down) + int(node_usage.get(c.email, 0))
-        global_over = (c.global_limit_bytes or 0) > 0 and global_used >= (c.global_limit_bytes or 0)
-        per_node_over = c.limit_bytes > 0 and (c.up + c.down) >= c.limit_bytes
-        if (c.expiry_time > 0 and now_ts > c.expiry_time) or per_node_over or global_over:
+        over_limit = c.limit_bytes > 0 and (c.up + c.down) >= c.limit_bytes
+        if (c.expiry_time > 0 and now_ts > c.expiry_time) or over_limit:
             c.enable = False
             config_changed = True
             try:

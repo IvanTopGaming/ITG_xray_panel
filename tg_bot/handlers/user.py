@@ -5,6 +5,7 @@ import datetime
 from html import escape
 from zoneinfo import ZoneInfo
 from aiogram import Router, F, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
@@ -453,18 +454,6 @@ async def show_key_details(
 
     msg = callback.message
 
-    if links:
-        links_text = "\n\n".join([f"<code>{h(link)}</code>" for link in links])
-        display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
-        header = await i18n.t("keys.details.header", lang, email=h(display))
-        self_destruct = await i18n.t("keys.details.self_destruct", lang)
-        final_text = f"{header}\n\n{links_text}\n\n{self_destruct}"
-    else:
-        display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
-        final_text = await i18n.t("keys.details.none", lang, email=h(display))
-
-    qr_label = await i18n.t("sub.actions.show_qr", lang)
-    stats_label = await i18n.t("sub.actions.show_stats", lang)
     if has_other_keys:
         back = await i18n.t("common.back_to_keys", lang)
         back_callback = "back_to_keys_picker"
@@ -472,34 +461,124 @@ async def show_key_details(
         back = await i18n.t("common.back_to_main", lang)
         back_callback = "user_home"
 
+    if not links:
+        display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
+        final_text = await i18n.t("keys.details.none", lang, email=h(display))
+        msg = await safe_edit(
+            msg,
+            final_text,
+            reply_markup=kb.sub_actions_kb(
+                qr_label=await i18n.t("sub.actions.show_qr", lang),
+                stats_label=await i18n.t("sub.actions.show_stats", lang),
+                back_label=back,
+                back_callback=back_callback,
+            ),
+        )
+        return
+
+    await state.update_data(cached_links=links)
+
+    if len(links) == 1:
+        await _show_single_link(
+            callback, state, links[0], record, i18n=i18n, lang=lang, back_label=back, back_callback=back_callback
+        )
+        return
+
+    display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
+    header = await i18n.t("keys.details.header", lang, email=h(display))
+    msg = await safe_edit(
+        msg,
+        header,
+        reply_markup=kb.key_picker_kb(links, back_label=back, back_callback=back_callback),
+    )
+
+
+async def _show_single_link(callback, state, link, record, *, i18n, lang, back_label, back_callback):
+    """Display a single key with self-destruct timer."""
+    client_id = record["id"]
+    display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
+    header = await i18n.t("keys.details.header", lang, email=h(display))
+    self_destruct = await i18n.t("keys.details.self_destruct", lang)
+    final_text = f"{header}\n\n<code>{h(link)}</code>\n\n{self_destruct}"
+
     renew_tariff_id = record.get("tariff_id")
     renew_label = None
     if renew_tariff_id:
         renew_label = await i18n.t("notification.button.renew", lang)
 
     msg = await safe_edit(
-        msg,
+        callback.message,
         final_text,
         reply_markup=kb.sub_actions_kb(
-            qr_label=qr_label,
-            stats_label=stats_label,
-            back_label=back,
+            qr_label=await i18n.t("sub.actions.show_qr", lang),
+            stats_label=await i18n.t("sub.actions.show_stats", lang),
+            back_label=back_label,
             back_callback=back_callback,
             renew_label=renew_label,
             renew_tariff_id=renew_tariff_id,
         ),
     )
+    asyncio.create_task(auto_expire_keys_message(msg, state, i18n=i18n, lang=lang, client_id=client_id))
 
-    if links:
-        asyncio.create_task(
-            auto_expire_keys_message(
-                msg,
-                state,
-                i18n=i18n,
-                lang=lang,
-                client_id=client_id,
-            )
-        )
+
+@router.callback_query(F.data.startswith("show_link_"))
+async def show_selected_link(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+):
+    idx_str = callback.data.removeprefix("show_link_")
+    try:
+        idx = int(idx_str)
+    except ValueError:
+        await callback.answer("Invalid link", show_alert=True)
+        return
+
+    data = await state.get_data()
+    links = data.get("cached_links", [])
+    if idx < 0 or idx >= len(links):
+        await callback.answer("Link not found", show_alert=True)
+        return
+
+    link = links[idx]
+    label = link.rsplit("#", 1)[-1] if "#" in link else f"Key {idx + 1}"
+    from urllib.parse import unquote
+
+    label = unquote(label)
+
+    self_destruct = await i18n.t("keys.details.self_destruct", lang)
+    text = f"🔑 <b>{h(label)}</b>\n\n<code>{h(link)}</code>\n\n{self_destruct}"
+
+    client_id = data.get("selected_key_client_id")
+    msg = await safe_edit(
+        callback.message,
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_link_picker")],
+            ]
+        ),
+    )
+    asyncio.create_task(auto_expire_keys_message(msg, state, i18n=i18n, lang=lang, client_id=client_id))
+
+
+@router.callback_query(F.data == "back_to_link_picker")
+async def back_to_link_picker(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+):
+    data = await state.get_data()
+    links = data.get("cached_links", [])
+    back = await i18n.t("common.back_to_main", lang)
+    header = "🔑 Select a key:"
+    await safe_edit(
+        callback.message,
+        header,
+        reply_markup=kb.key_picker_kb(links, back_label=back, back_callback="user_home"),
+    )
 
 
 @router.callback_query(F.data == "back_to_keys")

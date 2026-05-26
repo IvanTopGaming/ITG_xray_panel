@@ -37,7 +37,7 @@ def _serialize_item(item):
         "inbound_tag": item.inbound_tag,
         "label": item.label or "",
         "traffic_gb": item.traffic_gb,
-        "allowed_node_groups": item.allowed_node_groups or "",
+        "panel_id": item.panel_id,
         "sort_order": item.sort_order,
     }
 
@@ -159,7 +159,7 @@ def _apply_items(tariff, items_payload):
                 inbound_tag=item["inbound_tag"].strip(),
                 label=(item.get("label") or "").strip() or None,
                 traffic_gb=item["traffic_gb"],
-                allowed_node_groups=(item.get("allowed_node_groups") or "").strip(),
+                panel_id=item.get("panel_id"),
                 sort_order=item.get("sort_order", idx),
             )
         )
@@ -307,7 +307,7 @@ def duplicate_tariff(tariff_id):
                 inbound_tag=item.inbound_tag,
                 label=item.label,
                 traffic_gb=item.traffic_gb,
-                allowed_node_groups=item.allowed_node_groups,
+                panel_id=item.panel_id,
                 sort_order=item.sort_order,
             )
         )
@@ -491,6 +491,7 @@ def create_grant(tg_id):
     tariff_id = payload.get("tariff_id")
     billing = payload.get("billing")
     note = payload.get("note") or None
+    silent = bool(payload.get("silent", False))
 
     if not isinstance(tariff_id, int):
         return jsonify({"error": "tariff_id (integer) is required"}), 400
@@ -540,35 +541,36 @@ def create_grant(tg_id):
 
     db.session.commit()
 
-    if billing == "free" and result is not None:
-        bot_events.publish(
-            "access_granted",
-            tg_id,
-            {
-                "tariff_name": tariff.name,
-                "expires_at_ms": result["expires_at_ms"],
-                "lang": user.language or "ru",
-            },
-        )
-    elif billing == "gift" and result is not None:
-        bot_events.publish(
-            "access_granted_once",
-            tg_id,
-            {
-                "tariff_name": tariff.name,
-                "expires_at_ms": result["expires_at_ms"],
-                "lang": user.language or "ru",
-            },
-        )
-    elif billing == "paid":
-        bot_events.publish(
-            "access_offered",
-            tg_id,
-            {
-                "tariff_name": tariff.name,
-                "lang": user.language or "ru",
-            },
-        )
+    if not silent:
+        if billing == "free" and result is not None:
+            bot_events.publish(
+                "access_granted",
+                tg_id,
+                {
+                    "tariff_name": tariff.name,
+                    "expires_at_ms": result["expires_at_ms"],
+                    "lang": user.language or "ru",
+                },
+            )
+        elif billing == "gift" and result is not None:
+            bot_events.publish(
+                "access_granted_once",
+                tg_id,
+                {
+                    "tariff_name": tariff.name,
+                    "expires_at_ms": result["expires_at_ms"],
+                    "lang": user.language or "ru",
+                },
+            )
+        elif billing == "paid":
+            bot_events.publish(
+                "access_offered",
+                tg_id,
+                {
+                    "tariff_name": tariff.name,
+                    "lang": user.language or "ru",
+                },
+            )
 
     return jsonify(_serialize_grant(grant)), 201
 
@@ -616,13 +618,6 @@ def block_user(tg_id):
         generate_config_file()
         if restart_required:
             restart_xray_container()
-        from app.services.node_sync import sync_user_delete
-
-        for c in active_clients:
-            try:
-                sync_user_delete(c.email)
-            except Exception:
-                logger.warning("block_user: node sync failed for %s", c.email)
 
     try:
         bot_events.publish("user_blocked", telegram_id=tg_id, payload={})

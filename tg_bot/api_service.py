@@ -6,7 +6,6 @@ import binascii
 import json
 import os
 import re
-import time
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -126,19 +125,13 @@ def _dedup_pairs(pairs):
 
 
 class SinglePanel:
-    def __init__(self, conf, *, is_virtual=False, parent_master=None):
+    def __init__(self, conf):
         self.name = conf["name"]
         self.base_url = conf["url"].rstrip("/")
         self.token = conf["token"]
         self.target_inbound = conf["inbound_tag"]
         self.role = conf.get("role", "standalone")
-        self.is_virtual = is_virtual
-        self.parent_master = parent_master
         self.session = None
-
-    @property
-    def is_master(self):
-        return self.role == "master"
 
     async def ensure_session(self):
         if self.session is None or self.session.closed:
@@ -217,17 +210,12 @@ class SinglePanel:
 
 
 class MultiPanelManager:
-    SHADOW_CACHE_TTL = 300  # seconds
-
     def __init__(self):
         # Single-master topology: panels[] always has zero or one entry,
         # rebuilt from runtime_config (panel admin user/password + the
         # backend URL the bot is configured to talk to). Filled in on
         # first reload_from_runtime() call.
         self.panels: list[SinglePanel] = []
-        self._shadow_cache = None
-        self._shadow_cache_expires = 0.0
-        self._shadow_cache_lock = asyncio.Lock()
 
     @staticmethod
     def _normalize_inbound_tag(value):
@@ -245,104 +233,8 @@ class MultiPanelManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _fetch_master_node_hosts(self, master_panel):
-        """Return the set of lowercased hostnames of a master's sync-enabled nodes."""
-        hosts = set()
-        try:
-            nodes = await master_panel.request("GET", "nodes")
-        except Exception as exc:
-            logger.warning(
-                "[%s] Failed to fetch node list for shadow detection: %s",
-                master_panel.name,
-                exc,
-            )
-            return hosts
-
-        if not isinstance(nodes, list):
-            return hosts
-
-        for n in nodes:
-            if not isinstance(n, dict):
-                continue
-            if not n.get("enable", True):
-                continue
-            if not n.get("sync_users", False):
-                continue
-            url = n.get("url") or ""
-            if not url:
-                continue
-            try:
-                parsed = urlparse(url)
-            except ValueError:
-                continue
-            host = (parsed.hostname or "").strip().lower()
-            if host:
-                hosts.add(host)
-        return hosts
-
-    async def _resolve_shadow_map(self):
-        """Return mapping {shadowed_panel_name: master_panel_name}.
-
-        A panel is "shadowed" when its hostname matches one of a master panel's
-        sync-enabled node hostnames. Shadowed panels are skipped in write
-        operations because the master already fans the change out to them.
-        The value is the name of the master that owns that node.
-        Result is cached for SHADOW_CACHE_TTL seconds.
-        """
-        now = time.time()
-        if self._shadow_cache is not None and now < self._shadow_cache_expires:
-            return self._shadow_cache
-
-        async with self._shadow_cache_lock:
-            now = time.time()
-            if self._shadow_cache is not None and now < self._shadow_cache_expires:
-                return self._shadow_cache
-
-            master_panels = [p for p in self.panels if p.is_master]
-            if not master_panels:
-                self._shadow_cache = {}
-                self._shadow_cache_expires = now + self.SHADOW_CACHE_TTL
-                return self._shadow_cache
-
-            node_host_results = await asyncio.gather(
-                *[self._fetch_master_node_hosts(m) for m in master_panels],
-                return_exceptions=False,
-            )
-
-            shadowed = {}
-            for p in self.panels:
-                if p.is_master:
-                    continue
-                ph = _panel_hostname(p)
-                if not ph:
-                    continue
-                for master, hosts in zip(master_panels, node_host_results):
-                    if ph in hosts:
-                        shadowed[p.name] = master.name
-                        break
-
-            self._shadow_cache = shadowed
-            self._shadow_cache_expires = now + self.SHADOW_CACHE_TTL
-            return shadowed
-
-    def invalidate_shadow_cache(self):
-        self._shadow_cache = None
-        self._shadow_cache_expires = 0.0
-
-    async def writable_panels(self):
-        shadowed = await self._resolve_shadow_map()
-        return [p for p in self.panels if not p.is_virtual and p.name not in shadowed]
-
-    async def _fetch_master_nodes_full(self, master_panel):
-        """Return list of node dicts with unmasked credentials, or []."""
-        try:
-            nodes = await master_panel.request("GET", "nodes", params={"include_password": "1"})
-        except Exception as exc:
-            logger.warning("[%s] Failed to fetch nodes with credentials: %s", master_panel.name, exc)
-            return []
-        if not isinstance(nodes, list):
-            return []
-        return nodes
+    def writable_panels(self):
+        return list(self.panels)
 
     async def reload_from_runtime(self):
         """Rebuild the single master panel from env (BACKEND_API_URL + BOT_SERVICE_TOKEN)."""
@@ -368,6 +260,15 @@ class MultiPanelManager:
         if old:
             await asyncio.gather(*[p.close() for p in old], return_exceptions=True)
 
+    async def get_linked_panels(self):
+        if not self.panels:
+            return []
+        try:
+            res = await self.panels[0].request("GET", "panels")
+            return res if isinstance(res, list) else []
+        except Exception:
+            return []
+
     async def get_system_stats_all(self):
         stats_list = []
         for p in self.panels:
@@ -377,10 +278,34 @@ class MultiPanelManager:
                 stats_list.append(res)
             else:
                 stats_list.append({"server_name": p.name, "error": True})
+
+        linked = await self.get_linked_panels()
+        for lp in linked:
+            if not lp.get("enable", True):
+                continue
+            panel_id = lp.get("id")
+            name = lp.get("name", f"Panel {panel_id}")
+            try:
+                res = await self.panels[0].request("GET", f"panels/{panel_id}/system-stats")
+                if isinstance(res, dict) and "error" not in res:
+                    res["server_name"] = name
+                    res["panel_id"] = panel_id
+                    stats_list.append(res)
+                else:
+                    stats_list.append({"server_name": name, "panel_id": panel_id, "error": True})
+            except Exception:
+                stats_list.append({"server_name": name, "panel_id": panel_id, "error": True})
+
         return stats_list
 
     async def restart_all(self):
         tasks = [p.request("POST", "restart") for p in self.panels]
+
+        linked = await self.get_linked_panels()
+        for lp in linked:
+            if lp.get("enable", True):
+                tasks.append(self.panels[0].request("POST", f"panels/{lp['id']}/restart"))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
         failed = any(_operation_failed(item) for item in results)
         if failed:
@@ -390,6 +315,11 @@ class MultiPanelManager:
     async def restart_single(self, panel_idx):
         if 0 <= panel_idx < len(self.panels):
             return await self.panels[panel_idx].request("POST", "restart")
+        return None
+
+    async def restart_linked_panel(self, panel_id):
+        if self.panels:
+            return await self.panels[0].request("POST", f"panels/{panel_id}/restart")
         return None
 
     async def add_client_all(self, email, limit_bytes=0, expiry_time=0, user_id=None, inbound_tag=None):
@@ -403,28 +333,8 @@ class MultiPanelManager:
         if user_id:
             base_data["id"] = user_id
 
-        shadowed = await self._resolve_shadow_map()
         for p in self.panels:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
-            if p.is_virtual:
-                master_name = p.parent_master or "master"
-                report["skipped"].append(
-                    {
-                        "name": p.name,
-                        "reason": f"managed by {master_name}",
-                        "inbound_tag": target_inbound,
-                    }
-                )
-                continue
-            if p.name in shadowed:
-                report["skipped"].append(
-                    {
-                        "name": p.name,
-                        "reason": f"managed by {shadowed[p.name]}",
-                        "inbound_tag": target_inbound,
-                    }
-                )
-                continue
 
             res = await p.request(
                 "POST",
@@ -482,7 +392,7 @@ class MultiPanelManager:
         return {"success": False, "error": reason}
 
     async def update_client_all(self, email, updates, inbound_tag=None):
-        writable = await self.writable_panels()
+        writable = self.writable_panels()
         tasks = []
         for p in writable:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
@@ -497,7 +407,7 @@ class MultiPanelManager:
         return not failed
 
     async def delete_client_all(self, email, inbound_tag=None):
-        writable = await self.writable_panels()
+        writable = self.writable_panels()
         tasks = []
         for p in writable:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
@@ -515,7 +425,7 @@ class MultiPanelManager:
         return not failed
 
     async def reset_traffic_all(self, email, inbound_tag=None):
-        writable = await self.writable_panels()
+        writable = self.writable_panels()
         tasks = []
         for p in writable:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)

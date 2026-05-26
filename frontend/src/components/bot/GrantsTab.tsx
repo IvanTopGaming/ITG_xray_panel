@@ -29,6 +29,7 @@ interface AddDialogProps {
     tariff_id: number;
     billing: GrantBilling;
     note: string;
+    silent: boolean;
   }) => void;
   submitting: boolean;
 }
@@ -38,6 +39,7 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
   const [tariffId, setTariffId] = useState<number | null>(null);
   const [billing, setBilling] = useState<GrantBilling>('paid');
   const [note, setNote] = useState('');
+  const [silent, setSilent] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -45,6 +47,7 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
       setTariffId(null);
       setBilling('paid');
       setNote('');
+      setSilent(false);
     }
   }, [open]);
 
@@ -54,7 +57,7 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
       toast.error('Telegram ID and tariff are required');
       return;
     }
-    onSubmit({ tg_id: tgId, tariff_id: tariffId, billing, note });
+    onSubmit({ tg_id: tgId, tariff_id: tariffId, billing, note, silent });
   };
 
   const tariffOptions = [
@@ -150,6 +153,16 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
           />
         </label>
 
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={silent}
+            onChange={(e) => setSilent(e.target.checked)}
+            className="h-4 w-4 rounded border-white/20 bg-black/40 text-primary focus:ring-primary/50"
+          />
+          <span className="text-sm text-white/70">Silent (don't notify user)</span>
+        </label>
+
         <div className="mt-2 flex justify-end gap-3">
           <Button variant="secondary" onClick={onClose}>
             Cancel
@@ -183,11 +196,18 @@ export function GrantsTab() {
   });
 
   const addMutation = useMutation({
-    mutationFn: (args: { tg_id: number; tariff_id: number; billing: GrantBilling; note: string }) =>
+    mutationFn: (args: {
+      tg_id: number;
+      tariff_id: number;
+      billing: GrantBilling;
+      note: string;
+      silent: boolean;
+    }) =>
       createGrant(args.tg_id, {
         tariff_id: args.tariff_id,
         billing: args.billing,
         note: args.note || undefined,
+        silent: args.silent || undefined,
       }),
     onSuccess: (_data, vars) => {
       const label =

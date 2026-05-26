@@ -515,7 +515,6 @@ def test_block_user_disables_and_removes_via_grpc(app_with_admin, db, client, ad
         patch("app.api.bot_admin.generate_config_file") as regen,
         patch("app.api.bot_admin.restart_xray_container") as restart,
         patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.services.node_sync.sync_user_delete") as sync,
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -529,15 +528,9 @@ def test_block_user_disables_and_removes_via_grpc(app_with_admin, db, client, ad
     assert all(c.enable is False for c in remaining)
     assert UserTariffAccess.query.filter_by(telegram_id=42).count() == 0
 
-    # vless inbounds → one gRPC remove per disabled client, config regen
-    # to drop them from disk, and no container restart needed.
     assert remove.call_count == 2
     regen.assert_called_once()
     restart.assert_not_called()
-    # Nodes mirror the deletion so the user is gone on every node too.
-    assert sync.call_count == 2
-    synced_emails = {call.args[0] for call in sync.call_args_list}
-    assert synced_emails == {"tg42_DE", "tg42_MSK"}
 
 
 def test_block_user_restarts_when_grpc_fails(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
@@ -552,7 +545,6 @@ def test_block_user_restarts_when_grpc_fails(app_with_admin, db, client, admin_h
         patch("app.api.bot_admin.generate_config_file") as regen,
         patch("app.api.bot_admin.restart_xray_container") as restart,
         patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.services.node_sync.sync_user_delete"),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -588,7 +580,6 @@ def test_block_user_restarts_for_non_vless_protocol(app_with_admin, db, client, 
         patch("app.api.bot_admin.generate_config_file") as regen,
         patch("app.api.bot_admin.restart_xray_container") as restart,
         patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.services.node_sync.sync_user_delete"),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -608,7 +599,6 @@ def test_block_user_no_clients_skips_xray_touch(app_with_admin, db, client, admi
         patch("app.api.bot_admin.generate_config_file") as regen,
         patch("app.api.bot_admin.restart_xray_container") as restart,
         patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.services.node_sync.sync_user_delete") as sync,
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -617,4 +607,3 @@ def test_block_user_no_clients_skips_xray_touch(app_with_admin, db, client, admi
     remove.assert_not_called()
     regen.assert_not_called()
     restart.assert_not_called()
-    sync.assert_not_called()

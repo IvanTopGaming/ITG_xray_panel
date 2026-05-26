@@ -244,48 +244,11 @@ def test_apply_handles_email_collision(app, db, basic_setup):
     assert de_client.email.startswith("tg99_DE-vless_")
 
 
-def test_sync_calls_node_sync_create_for_new_clients(app, db, basic_setup):
-    """New clients trigger sync_user_create."""
-    tariff = basic_setup
-    with (
-        patch("app.services.provisioning.sync_user_create") as mock_create,
-        patch("app.services.provisioning.sync_user_update") as mock_update,
-        patch("app.services.provisioning.generate_config_file"),
-        patch("app.services.provisioning.restart_xray_container"),
-        patch("app.services.provisioning.sub_cache"),
-    ):
-        apply_tariff_for_user(99, tariff, source="trial")
-
-    assert mock_create.call_count == 2
-    assert mock_update.call_count == 0
-
-
-def test_sync_calls_node_sync_update_for_extended_clients(app, db, basic_setup):
-    tariff = basic_setup
-    now_ms = int(_time.time() * 1000)
-    _make_client(db, telegram_id=42, inbound_tag="DE-vless", expiry_ms=now_ms, limit_bytes=0)
-    _make_client(db, telegram_id=42, inbound_tag="MSK-vless", expiry_ms=now_ms, limit_bytes=0)
-
-    with (
-        patch("app.services.provisioning.sync_user_create") as mock_create,
-        patch("app.services.provisioning.sync_user_update") as mock_update,
-        patch("app.services.provisioning.generate_config_file"),
-        patch("app.services.provisioning.restart_xray_container"),
-        patch("app.services.provisioning.sub_cache"),
-    ):
-        apply_tariff_for_user(42, tariff, source="trial")
-
-    assert mock_update.call_count == 2
-    assert mock_create.call_count == 0
-
-
-def test_sync_calls_xray_regen_once(app, db, basic_setup):
+def test_provision_calls_xray_regen_once(app, db, basic_setup):
     """Provisioning calls generate_config_file + restart_xray_container ONCE
     per call, not once per item."""
     tariff = basic_setup
     with (
-        patch("app.services.provisioning.sync_user_create"),
-        patch("app.services.provisioning.sync_user_update"),
         patch("app.services.provisioning.generate_config_file") as mock_gen,
         patch("app.services.provisioning.restart_xray_container") as mock_restart,
         patch("app.services.provisioning.sub_cache"),
@@ -294,23 +257,6 @@ def test_sync_calls_xray_regen_once(app, db, basic_setup):
 
     assert mock_gen.call_count == 1
     assert mock_restart.call_count == 1
-
-
-def test_sync_swallows_node_sync_errors(app, db, basic_setup):
-    """If node_sync raises (e.g., a remote node is down), provisioning still
-    succeeds — sync errors are logged and the local Client persists."""
-    tariff = basic_setup
-    with (
-        patch(
-            "app.services.provisioning.sync_user_create",
-            side_effect=ConnectionError("node unreachable"),
-        ),
-        patch("app.services.provisioning.generate_config_file"),
-        patch("app.services.provisioning.restart_xray_container"),
-        patch("app.services.provisioning.sub_cache"),
-    ):
-        result = apply_tariff_for_user(99, tariff, source="trial")
-    assert len(result["clients"]) == 2
 
 
 def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):

@@ -3,10 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, Trash2, Package, Gift } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/Select';
-import { TagInput } from '@/components/ui/TagInput';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
 import type {
   Inbound,
+  LinkedPanel,
   Tariff,
   TariffStats,
   TariffVisibility,
@@ -18,7 +18,7 @@ interface TariffDrawerProps {
   tariff: Tariff | null; // null = create mode
   stats: TariffStats | null;
   inbounds: Inbound[];
-  nodeGroups: string[];
+  panels: LinkedPanel[];
   saving: boolean;
   onClose: () => void;
   onSave: (payload: TariffWritePayload) => Promise<void>;
@@ -28,7 +28,7 @@ interface FormItem {
   inbound_tag: string;
   label: string;
   traffic_gb: string;
-  allowed_node_groups: string;
+  panel_id: number | null;
   sort_order: number;
 }
 
@@ -56,7 +56,7 @@ const emptyForm = (isTrial = false): FormState => ({
       inbound_tag: '',
       label: '',
       traffic_gb: '0',
-      allowed_node_groups: '',
+      panel_id: null,
       sort_order: 0,
     },
   ],
@@ -74,7 +74,7 @@ const tariffToForm = (t: Tariff): FormState => ({
     inbound_tag: i.inbound_tag,
     label: i.label,
     traffic_gb: String(i.traffic_gb),
-    allowed_node_groups: i.allowed_node_groups,
+    panel_id: i.panel_id ?? null,
     sort_order: i.sort_order,
   })),
 });
@@ -84,7 +84,7 @@ export function TariffDrawer({
   tariff,
   stats,
   inbounds,
-  nodeGroups,
+  panels,
   saving,
   onClose,
   onSave,
@@ -107,10 +107,10 @@ export function TariffDrawer({
     return () => document.removeEventListener('keydown', onEsc);
   }, [open, onClose]);
 
-  const updateItem = (idx: number, key: keyof FormItem, value: string) => {
+  const updateItem = (idx: number, updated: FormItem) => {
     setForm((prev) => ({
       ...prev,
-      items: prev.items.map((it, i) => (i === idx ? { ...it, [key]: value } : it)),
+      items: prev.items.map((it, i) => (i === idx ? updated : it)),
     }));
   };
 
@@ -123,7 +123,7 @@ export function TariffDrawer({
           inbound_tag: '',
           label: '',
           traffic_gb: '0',
-          allowed_node_groups: '',
+          panel_id: null,
           sort_order: prev.items.length,
         },
       ],
@@ -150,7 +150,7 @@ export function TariffDrawer({
           inbound_tag: it.inbound_tag.trim(),
           label: it.label.trim(),
           traffic_gb: parseInt(it.traffic_gb, 10) || 0,
-          allowed_node_groups: it.allowed_node_groups.trim(),
+          panel_id: it.panel_id,
           sort_order: it.sort_order,
         })),
     };
@@ -306,9 +306,9 @@ export function TariffDrawer({
                   <ItemRow
                     key={idx}
                     item={item}
-                    inbounds={inbounds}
-                    nodeGroups={nodeGroups}
-                    onChange={(key, value) => updateItem(idx, key, value)}
+                    allInbounds={inbounds}
+                    panels={panels}
+                    onChange={(updated) => updateItem(idx, updated)}
                     onRemove={() => removeItem(idx)}
                   />
                 ))}
@@ -513,42 +513,42 @@ function ToggleField({
 
 function ItemRow({
   item,
-  inbounds,
-  nodeGroups,
+  allInbounds,
+  panels,
   onChange,
   onRemove,
 }: {
   item: FormItem;
-  inbounds: Inbound[];
-  nodeGroups: string[];
-  onChange: (key: keyof FormItem, value: string) => void;
+  allInbounds: Inbound[];
+  panels: LinkedPanel[];
+  onChange: (updated: FormItem) => void;
   onRemove: () => void;
 }) {
-  const matchedInbound = useMemo(
-    () => inbounds.find((i) => i.tag === item.inbound_tag) || null,
-    [inbounds, item.inbound_tag]
+  const filteredInbounds = useMemo(
+    () =>
+      allInbounds.filter((ib) =>
+        item.panel_id == null ? !ib.panel_id : ib.panel_id === item.panel_id
+      ),
+    [allInbounds, item.panel_id]
   );
+
+  const matchedInbound = useMemo(
+    () => allInbounds.find((i) => i.tag === item.inbound_tag) || null,
+    [allInbounds, item.inbound_tag]
+  );
+
   const [confirmRemove, setConfirmRemove] = useState(false);
   const itemLabel = item.inbound_tag.trim() || 'this inbound';
 
   const inboundOptions = useMemo(
     () => [
-      { value: '', label: 'Pick an inbound…' },
-      ...inbounds.map((i) => ({
+      { value: '', label: 'Pick an inbound...' },
+      ...filteredInbounds.map((i) => ({
         value: i.tag,
-        label: `${i.tag}  ·  ${i.protocol} :${i.port}`,
+        label: i.label || `${i.tag}  ·  ${i.protocol} :${i.port}`,
       })),
     ],
-    [inbounds]
-  );
-
-  const selectedGroups = useMemo(
-    () =>
-      item.allowed_node_groups
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean),
-    [item.allowed_node_groups]
+    [filteredInbounds]
   );
 
   const isUnknown = !!item.inbound_tag.trim() && !matchedInbound;
@@ -589,27 +589,42 @@ function ItemRow({
       />
 
       <div className="space-y-3">
-        <div>
+        <div className="grid grid-cols-2 gap-3">
           <Select
-            value={item.inbound_tag}
-            onChange={(e) => onChange('inbound_tag', e.target.value)}
-            options={inboundOptions}
+            label="Panel"
+            value={item.panel_id != null ? String(item.panel_id) : 'local'}
+            onChange={(e) => {
+              const val = e.target.value === 'local' ? null : Number(e.target.value);
+              onChange({ ...item, panel_id: val, inbound_tag: '' });
+            }}
+            options={[
+              { value: 'local', label: 'Master (local)' },
+              ...(panels || []).map((p) => ({ value: String(p.id), label: p.name })),
+            ]}
           />
-          <p
-            className={cn(
-              'mt-2 text-sm leading-relaxed',
-              isUnknown ? 'text-amber-300/90' : 'text-white/55'
-            )}
-          >
-            {matchedInbound
-              ? `✓ matches ${matchedInbound.protocol} :${matchedInbound.port}`
-              : isUnknown
-                ? `⚠ no inbound with this tag — provisioning will fail`
-                : 'Pick from existing panel inbounds.'}
-          </p>
+          <div>
+            <Select
+              label="Inbound"
+              value={item.inbound_tag}
+              onChange={(e) => onChange({ ...item, inbound_tag: e.target.value })}
+              options={inboundOptions}
+            />
+            <p
+              className={cn(
+                'mt-2 text-sm leading-relaxed',
+                isUnknown ? 'text-amber-300/90' : 'text-white/55'
+              )}
+            >
+              {matchedInbound
+                ? `${matchedInbound.protocol} :${matchedInbound.port}`
+                : isUnknown
+                  ? `no inbound with this tag`
+                  : 'Pick from existing panel inbounds.'}
+            </p>
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           <div>
             <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-white/65">
               Traffic GB
@@ -617,25 +632,13 @@ function ItemRow({
             <input
               type="number"
               value={item.traffic_gb}
-              onChange={(e) => onChange('traffic_gb', e.target.value.replace(/\D/g, ''))}
+              onChange={(e) => onChange({ ...item, traffic_gb: e.target.value.replace(/\D/g, '') })}
               placeholder="0"
               className="w-full rounded-lg border border-white/[0.06] bg-black/30 px-3.5 py-3 font-mono text-base text-white placeholder:text-white/25 focus:border-violet-500/40 focus:outline-none"
             />
             <p className="mt-2 text-sm leading-relaxed text-white/55">
               <span className="text-emerald-300/90">0 = unlimited.</span>
             </p>
-          </div>
-          <div>
-            <TagInput
-              label="Node groups"
-              value={selectedGroups}
-              onChange={(tags) => onChange('allowed_node_groups', tags.join(','))}
-              suggestions={nodeGroups}
-              placeholder={selectedGroups.length === 0 ? 'Any node…' : ''}
-              helperText="Empty = provision on any node."
-              pattern={null}
-              maxLength={40}
-            />
           </div>
         </div>
 
@@ -645,7 +648,7 @@ function ItemRow({
           </span>
           <input
             value={item.label}
-            onChange={(e) => onChange('label', e.target.value)}
+            onChange={(e) => onChange({ ...item, label: e.target.value })}
             placeholder={
               matchedInbound ? `e.g. ${matchedInbound.tag} · 100 GB` : 'VLESS Premium · unlimited'
             }

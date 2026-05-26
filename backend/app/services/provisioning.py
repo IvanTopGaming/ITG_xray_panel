@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo
 from app.extensions import db
 from app.models import Client, Inbound, NotificationLog, SystemSetting
 from app.services import sub_cache
-from app.services.node_sync import sync_user_create, sync_user_update
 from app.services.xray import generate_config_file, restart_xray_container
 
 if TYPE_CHECKING:
@@ -43,45 +42,9 @@ def _sync_after_provision(
     new_clients: list,
     extended_clients: list,
 ) -> None:
-    # node_sync / sub_cache errors are swallowed — local DB is source of truth.
+    # sub_cache errors are swallowed — local DB is source of truth.
     # Xray regen errors propagate — a broken local Xray is worth surfacing.
-    for c in new_clients:
-        try:
-            sync_user_create(
-                c.email,
-                {
-                    "email": c.email,
-                    "id": c.id,
-                    "limit_bytes": c.limit_bytes,
-                    "expiry_time": c.expiry_time,
-                    "enable": c.enable,
-                    "reset_day": c.reset_day or 0,
-                    "flow": c.flow or "",
-                },
-            )
-        except Exception as exc:
-            logger.warning("sync_user_create failed for email=%s: %s", c.email, exc)
-        try:
-            sub_cache.invalidate_user(c.id)
-        except Exception as exc:
-            logger.warning("sub_cache.invalidate_user failed: %s", exc)
-
-    for c in extended_clients:
-        try:
-            sync_user_update(
-                c.email,
-                {
-                    "email": c.email,
-                    "id": c.id,
-                    "limit_bytes": c.limit_bytes,
-                    "expiry_time": c.expiry_time,
-                    "enable": c.enable,
-                    "reset_day": c.reset_day or 0,
-                    "flow": c.flow or "",
-                },
-            )
-        except Exception as exc:
-            logger.warning("sync_user_update failed for email=%s: %s", c.email, exc)
+    for c in new_clients + extended_clients:
         try:
             sub_cache.invalidate_user(c.id)
         except Exception as exc:
@@ -138,10 +101,75 @@ def _create_client_for_item(
         down=0,
         enable=True,
         flow="xtls-rprx-vision" if inbound.protocol == "vless" else "",
-        allowed_node_groups=item.allowed_node_groups or "",
     )
     db.session.add(client)
     return client
+
+
+def provision_single_item(
+    *,
+    telegram_id: int,
+    inbound_tag: str,
+    expiry_ms: int,
+    limit_bytes: int,
+    tariff_id: int | None = None,
+) -> dict:
+    """Create or extend a single Client by (telegram_id, inbound_tag). Used by federation provision endpoint."""
+    now_ms = int(time.time() * 1000)
+    inbound = Inbound.query.filter_by(tag=inbound_tag).first()
+    if inbound is None:
+        raise ValueError(f"Inbound {inbound_tag!r} not found")
+
+    client = Client.query.filter_by(telegram_id=telegram_id, inbound_tag=inbound_tag).first()
+
+    if client is not None:
+        client.expiry_time = expiry_ms
+        client.limit_bytes = limit_bytes
+        client.up = 0
+        client.down = 0
+        client.last_reset_time = now_ms
+        client.enable = True
+        if tariff_id is not None:
+            client.tariff_id = tariff_id
+        NotificationLog.query.filter(
+            NotificationLog.client_id == client.id,
+            NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
+        ).delete(synchronize_session=False)
+    else:
+        identity = _generate_identity(inbound.protocol)
+        base_email = _generate_email(telegram_id, inbound_tag)
+        email = base_email
+        for _attempt in range(8):
+            if not Client.query.filter_by(inbound_tag=inbound_tag, email=email).first():
+                break
+            email = f"{base_email}_{secrets.token_hex(3)}"
+        else:
+            raise RuntimeError(f"Could not find unique email for tg={telegram_id}")
+
+        client = Client(
+            id=identity,
+            email=email,
+            inbound_tag=inbound_tag,
+            telegram_id=telegram_id,
+            tariff_id=tariff_id,
+            limit_bytes=limit_bytes,
+            expiry_time=expiry_ms,
+            up=0,
+            down=0,
+            enable=True,
+            flow="xtls-rprx-vision" if inbound.protocol == "vless" else "",
+        )
+        db.session.add(client)
+
+    db.session.commit()
+    generate_config_file()
+    restart_xray_container()
+    try:
+        sub_cache.invalidate_user(client.id)
+    except Exception:
+        pass
+
+    return {"client": client.to_dict(), "expires_at_ms": expiry_ms}
 
 
 def apply_tariff_for_user(
@@ -162,6 +190,22 @@ def apply_tariff_for_user(
     extended_clients = []
     for item in tariff.items:
         limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
+
+        if item.panel_id is not None:
+            from app.services.panel_proxy import proxy_provision
+
+            try:
+                proxy_provision(
+                    item.panel_id,
+                    telegram_id,
+                    item.inbound_tag,
+                    {"expiry_ms": new_expiry_ms, "limit_bytes": limit_bytes, "tariff_id": tariff.id},
+                )
+            except Exception as exc:
+                logger.warning("proxy_provision failed for panel=%s tag=%s: %s", item.panel_id, item.inbound_tag, exc)
+                raise
+            continue
+
         client = next(
             (c for c in existing if c.inbound_tag == item.inbound_tag),
             None,
@@ -174,7 +218,6 @@ def apply_tariff_for_user(
             client.last_reset_time = now_ms
             client.enable = True
             client.tariff_id = tariff.id
-            client.allowed_node_groups = item.allowed_node_groups or ""
             # Counters reset → re-arm traffic warnings (expiry warnings deliberately preserved).
             NotificationLog.query.filter(
                 NotificationLog.client_id == client.id,

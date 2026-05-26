@@ -37,6 +37,23 @@ def user_keys_list_kb(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def key_picker_kb(
+    links: list[str],
+    *,
+    back_label: str,
+    back_callback: str = "user_home",
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for i, link in enumerate(links):
+        label = link.rsplit("#", 1)[-1] if "#" in link else f"Key {i + 1}"
+        from urllib.parse import unquote
+
+        label = unquote(label)
+        buttons.append([InlineKeyboardButton(text=f"🔑 {label}", callback_data=f"show_link_{i}")])
+    buttons.append([InlineKeyboardButton(text=back_label, callback_data=back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def sub_actions_kb(
     *,
     qr_label: str,
@@ -118,13 +135,24 @@ def admin_backups_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def server_selection_kb(panels, action_prefix, include_all=False):
+def server_selection_kb(panels, action_prefix, include_all=False, linked_panels=None):
     buttons = []
     if include_all:
         buttons.append([InlineKeyboardButton(text="🌐 All Servers", callback_data=f"{action_prefix}all")])
 
     for idx, panel in enumerate(panels):
         buttons.append([InlineKeyboardButton(text=f"💻 {panel.name}", callback_data=f"{action_prefix}{idx}")])
+
+    for lp in linked_panels or []:
+        if lp.get("enable", True):
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"🔗 {lp.get('name', 'Panel')}",
+                        callback_data=f"{action_prefix}lp_{lp['id']}",
+                    )
+                ]
+            )
 
     buttons.append([InlineKeyboardButton(text="⬅️ Cancel", callback_data="admin_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)

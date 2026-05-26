@@ -5,9 +5,8 @@ from sqlalchemy import func, literal_column
 from datetime import datetime
 
 from app.extensions import db
-from app.models import Client, Inbound, TrafficSnapshot, DomainStat, NodeClientTraffic, Node
+from app.models import Client, Inbound, TrafficSnapshot, DomainStat
 from app.utils import token_required
-from app.services.node_sync import NodeClient
 
 bp = Blueprint("statistics", __name__)
 
@@ -102,21 +101,6 @@ def get_overview():
     total_up_alltime = sum(c.up for c in clients)
     total_down_alltime = sum(c.down for c in clients)
 
-    # Aggregate per-user traffic across all nodes (sampled by node_traffic_poll_job).
-    node_rows = (
-        db.session.query(
-            NodeClientTraffic.email,
-            func.sum(NodeClientTraffic.up).label("up"),
-            func.sum(NodeClientTraffic.down).label("down"),
-        )
-        .group_by(NodeClientTraffic.email)
-        .all()
-    )
-    node_up_by_email = {r.email: int(r.up or 0) for r in node_rows}
-    node_down_by_email = {r.email: int(r.down or 0) for r in node_rows}
-    nodes_total_up = sum(node_up_by_email.values())
-    nodes_total_down = sum(node_down_by_email.values())
-
     # Period traffic from snapshots
     user_snaps_q = db.session.query(
         TrafficSnapshot.entity_id,
@@ -141,15 +125,10 @@ def get_overview():
                 "up": r.up,
                 "down": r.down,
                 "total": r.up + r.down,
-                "node_up": node_up_by_email.get(r.entity_id, 0),
-                "node_down": node_down_by_email.get(r.entity_id, 0),
-                "aggregate_total": (
-                    r.up + r.down + node_up_by_email.get(r.entity_id, 0) + node_down_by_email.get(r.entity_id, 0)
-                ),
             }
             for r in user_snaps
         ],
-        key=lambda x: x["aggregate_total"],
+        key=lambda x: x["total"],
         reverse=True,
     )[:10]
 
@@ -191,17 +170,10 @@ def get_overview():
     domain_q = domain_q.group_by(DomainStat.domain).order_by(func.sum(DomainStat.hit_count).desc()).limit(10)
     top_domains = [{"domain": r.domain, "hit_count": r.hits} for r in domain_q.all()]
 
-    nodes_count = Node.query.filter_by(enable=True).count()
-
     return jsonify(
         {
             "total_up_alltime": total_up_alltime,
             "total_down_alltime": total_down_alltime,
-            "nodes_total_up": nodes_total_up,
-            "nodes_total_down": nodes_total_down,
-            "aggregate_total_up": total_up_alltime + nodes_total_up,
-            "aggregate_total_down": total_down_alltime + nodes_total_down,
-            "active_nodes": nodes_count,
             "period_up": period_up,
             "period_down": period_down,
             "active_users": sum(1 for c in clients if c.enable),
@@ -418,78 +390,3 @@ def get_users_ranking():
         )
 
     return jsonify({"users": result})
-
-
-@bp.get("/stats/nodes/summary")
-@token_required
-def get_nodes_summary():
-    """Per-node traffic totals from NodeClientTraffic."""
-    nodes = Node.query.all()
-
-    rows = (
-        db.session.query(
-            NodeClientTraffic.node_id,
-            func.sum(NodeClientTraffic.up).label("up"),
-            func.sum(NodeClientTraffic.down).label("down"),
-            func.count(NodeClientTraffic.email).label("user_count"),
-            func.max(NodeClientTraffic.last_polled).label("last_polled"),
-        )
-        .group_by(NodeClientTraffic.node_id)
-        .all()
-    )
-    traffic_by_id = {r.node_id: r for r in rows}
-
-    result = []
-    for n in nodes:
-        t = traffic_by_id.get(n.id)
-        entry = n.to_dict()
-        entry.update(
-            {
-                "total_up": int(t.up or 0) if t else 0,
-                "total_down": int(t.down or 0) if t else 0,
-                "tracked_users": int(t.user_count or 0) if t else 0,
-                "last_polled": int(t.last_polled or 0) if t else 0,
-            }
-        )
-        result.append(entry)
-
-    return jsonify(result)
-
-
-@bp.get("/stats/nodes/<int:node_id>/overview")
-@token_required
-def get_node_overview(node_id):
-    """Proxy overview statistics from a remote node."""
-    node = db.session.get(Node, node_id)
-    if not node:
-        return jsonify({"error": "Node not found"}), 404
-
-    raw_from = request.args.get("from")
-    raw_to = request.args.get("to")
-    client = NodeClient(node)
-    if raw_from is not None and raw_to is not None:
-        qs = f"from={raw_from}&to={raw_to}"
-    else:
-        period = request.args.get("period", "7d")
-        qs = f"period={period}"
-    body, status = client.request("GET", f"stats/overview?{qs}")
-    if status == 0:
-        return jsonify({"error": body.get("error", "Node unreachable")}), 503
-    return jsonify(body), status
-
-
-@bp.get("/stats/nodes/<int:node_id>/traffic")
-@token_required
-def get_node_traffic(node_id):
-    """Proxy traffic time-series from a remote node."""
-    node = db.session.get(Node, node_id)
-    if not node:
-        return jsonify({"error": "Node not found"}), 404
-
-    client = NodeClient(node)
-    params = request.args.to_dict()
-    qs = "&".join(f"{k}={v}" for k, v in params.items())
-    body, status = client.request("GET", f"stats/traffic?{qs}")
-    if status == 0:
-        return jsonify({"error": body.get("error", "Node unreachable")}), 503
-    return jsonify(body), status

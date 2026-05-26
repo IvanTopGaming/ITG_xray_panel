@@ -24,8 +24,6 @@ export interface Client {
   source_ips?: string[];
   inbound_tag: string;
   preferred_outbound?: string;
-  global_limit_bytes?: number;
-  allowed_node_groups?: string[];
   device_limit?: number | null; // null = inherit from inbound
   device_count?: number; // present on list endpoints (batch-injected)
   tariff_id?: number | null; // set when client was provisioned via a tariff
@@ -95,7 +93,8 @@ export interface Inbound {
   routing_profile_id?: number;
   fallback_address?: string;
   device_limit?: number; // 0 = unlimited (feature off)
-  master_disabled?: boolean; // true → served only on nodes, master Xray skips
+  panel_id?: number | null;
+  panel_name?: string;
 }
 
 export interface Outbound {
@@ -124,25 +123,24 @@ export interface Balancer {
   fallback_tag?: string | null;
 }
 
-export interface MasterInfo {
-  groups: string[];
-}
-
-export interface Node {
+export interface LinkedPanel {
   id: number;
   name: string;
   url: string;
-  username: string;
-  password?: string;
-  inbound_tag: string;
-  enable: boolean;
-  sync_users: boolean;
-  sync_inbound: boolean;
+  federation_token: string;
   status: 'online' | 'offline' | 'unknown';
-  last_check: number;
-  last_error: string;
-  groups?: string[];
-  strict_mirror?: boolean;
+  last_poll: number | null;
+  last_error: string | null;
+  enable: boolean;
+  created_at: number;
+}
+
+export interface FederationConfig {
+  master_url: string | null;
+  master_name: string | null;
+  linked_at: number | null;
+  link_token: string | null;
+  is_linked: boolean;
 }
 
 export interface RoutingRule {
@@ -176,8 +174,8 @@ export interface TariffItem {
   inbound_tag: string;
   label: string;
   traffic_gb: number; // 0 = unlimited
-  allowed_node_groups: string; // CSV
   sort_order: number;
+  panel_id?: number | null;
 }
 
 export interface Tariff {

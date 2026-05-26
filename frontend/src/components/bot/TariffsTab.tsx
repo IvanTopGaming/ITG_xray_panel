@@ -14,7 +14,7 @@ import {
   restoreTariff,
   getTariffStats,
 } from '@/lib/bot';
-import type { Inbound, Tariff, TariffStatsMap, TariffWritePayload } from '@/lib/types';
+import type { Inbound, LinkedPanel, Tariff, TariffStatsMap, TariffWritePayload } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
 import { TrialCard } from './TrialCard';
@@ -58,22 +58,16 @@ export function TariffsTab() {
     staleTime: 60_000,
   });
 
-  const nodesQuery = useQuery({
-    queryKey: ['nodes'],
-    queryFn: async () => (await api.get<{ id: number; groups: string[] }[]>('/nodes')).data,
+  const panelsQuery = useQuery<LinkedPanel[]>({
+    queryKey: ['panels'],
+    queryFn: async () => (await api.get<LinkedPanel[]>('/panels')).data,
     staleTime: 60_000,
   });
 
   const tariffs = tariffsQuery.data ?? [];
   const stats: TariffStatsMap = statsQuery.data ?? {};
   const inbounds = inboundsQuery.data ?? [];
-  const nodeGroups = useMemo(() => {
-    const set = new Set<string>();
-    for (const n of nodesQuery.data ?? []) {
-      for (const g of n.groups) set.add(g);
-    }
-    return [...set].sort();
-  }, [nodesQuery.data]);
+  const panels = panelsQuery.data ?? [];
 
   const trial = useMemo(() => tariffs.find((t) => t.is_trial) ?? null, [tariffs]);
 
@@ -285,7 +279,7 @@ export function TariffsTab() {
         tariff={drawerSeedTariff}
         stats={drawerSeedTariff ? (stats[drawerSeedTariff.id] ?? null) : null}
         inbounds={inbounds}
-        nodeGroups={nodeGroups}
+        panels={panels}
         saving={saveMutation.isPending}
         onClose={closeDrawer}
         onSave={async (payload) => {

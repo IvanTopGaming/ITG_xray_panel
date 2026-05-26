@@ -191,6 +191,78 @@ def admin_or_bot_token_required(f):
     return decorated
 
 
+def _check_federation_token(token: str) -> bool:
+    import hmac
+    from app.models import FederationConfig
+
+    cfg = FederationConfig.query.get(1)
+    if cfg is None or not cfg.federation_token:
+        return False
+    return hmac.compare_digest(token, cfg.federation_token)
+
+
+def federation_token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get("X-Federation-Token", "")
+        if not token or not _check_federation_token(token):
+            return jsonify({"error": "invalid or missing federation token"}), 401
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+def admin_or_federation_token_required(f):
+    """Admin JWT OR bot service token OR federation token."""
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        fed_token = request.headers.get("X-Federation-Token", "")
+        if fed_token and _check_federation_token(fed_token):
+            return f(*args, **kwargs)
+        # Fall through to existing admin_or_bot logic
+        header = request.headers.get("Authorization", "")
+        scheme, _, value = header.partition(" ")
+        if scheme.lower() != "bearer" or not value.strip():
+            return jsonify({"message": "Token is missing!"}), 401
+        token = value.strip()
+        if _check_bot_service_token(token):
+            return f(*args, **kwargs)
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            return jsonify({"message": "Token is expired!"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"message": "Token is invalid!"}), 401
+        if payload.get("role") != "admin":
+            return jsonify({"message": "Token is invalid!"}), 401
+        from app.models import Admin
+        from app.extensions import db
+
+        admin = None
+        admin_id = payload.get("admin_id")
+        if admin_id is not None:
+            try:
+                admin = db.session.get(Admin, int(admin_id))
+            except (TypeError, ValueError):
+                admin = None
+        if admin is None and payload.get("user"):
+            admin = Admin.query.filter_by(username=payload.get("user")).first()
+        if admin is None:
+            return jsonify({"message": "Token is invalid!"}), 401
+        token_pwd_version = payload.get("pwdv")
+        try:
+            token_pwd_version = int(token_pwd_version)
+        except (TypeError, ValueError):
+            return jsonify({"message": "Token is invalid!"}), 401
+        current_pwd_version = int(admin.password_changed_at or 0)
+        if token_pwd_version != current_pwd_version:
+            return jsonify({"message": "Token is invalid!"}), 401
+        return f(*args, **kwargs)
+
+    return decorated
+
+
 def validate_password(password):
     if len(password) < 8:
         return "Password must be at least 8 characters long"

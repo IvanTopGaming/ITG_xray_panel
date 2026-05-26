@@ -3,7 +3,7 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 14
+CURRENT_DB_VERSION = 15
 CURRENT_BOT_TEXTS_VERSION = 15
 
 
@@ -134,66 +134,40 @@ def _ensure_stats_tables(cursor: sqlite3.Cursor) -> int:
     return created
 
 
-def _ensure_node_table(cursor: sqlite3.Cursor) -> int:
-    """Create the node table for multi-node management if it doesn't exist."""
-    if _table_exists(cursor, "node"):
-        changed = 0
-        # NOTE: sync_inbound defaults to 0 here so existing nodes preserve the previous
-        # "no inbound sync" behaviour. The SQLAlchemy model default is True, so any node
-        # created via the API after migration will be opted in by default.
-        for col, spec in [
-            ("sync_users", "BOOLEAN NOT NULL DEFAULT 1"),
-            ("sync_inbound", "BOOLEAN NOT NULL DEFAULT 0"),
-            ("status", "VARCHAR(20) DEFAULT 'unknown'"),
-            ("last_check", "BIGINT DEFAULT 0"),
-            ("last_error", "TEXT DEFAULT ''"),
-            ("groups", "TEXT NOT NULL DEFAULT ''"),
-            ("strict_mirror", "BOOLEAN NOT NULL DEFAULT 0"),
-        ]:
-            if _add_column_if_missing(cursor, "node", col, spec):
-                changed += 1
-        return changed
-    cursor.execute(
-        """
-        CREATE TABLE node (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            name          TEXT    NOT NULL UNIQUE,
-            url           TEXT    NOT NULL,
-            username      TEXT    NOT NULL,
-            password      TEXT    NOT NULL,
-            inbound_tag   TEXT    NOT NULL,
-            enable        BOOLEAN NOT NULL DEFAULT 1,
-            sync_users    BOOLEAN NOT NULL DEFAULT 1,
-            sync_inbound  BOOLEAN NOT NULL DEFAULT 1,
-            status        VARCHAR(20) DEFAULT 'unknown',
-            last_check    BIGINT DEFAULT 0,
-            last_error    TEXT    DEFAULT '',
-            groups        TEXT    NOT NULL DEFAULT '',
-            strict_mirror BOOLEAN NOT NULL DEFAULT 0
+def _ensure_linked_panel_table(cursor: sqlite3.Cursor) -> int:
+    if _table_exists(cursor, "linked_panel"):
+        return 0
+    cursor.execute("""
+        CREATE TABLE linked_panel (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            name             TEXT    NOT NULL UNIQUE,
+            url              TEXT    NOT NULL,
+            federation_token TEXT    NOT NULL,
+            status           TEXT    NOT NULL DEFAULT 'unknown',
+            last_poll        BIGINT,
+            last_error       TEXT,
+            enable           BOOLEAN NOT NULL DEFAULT 1,
+            created_at       BIGINT  NOT NULL
         )
-        """
-    )
+    """)
     return 1
 
 
-def _ensure_node_client_traffic_table(cursor: sqlite3.Cursor) -> int:
-    """Create the node_client_traffic table for per-node per-user aggregated traffic."""
-    if _table_exists(cursor, "node_client_traffic"):
+def _ensure_federation_config_table(cursor: sqlite3.Cursor) -> int:
+    if _table_exists(cursor, "federation_config"):
         return 0
-    cursor.execute(
-        """
-        CREATE TABLE node_client_traffic (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            node_id     INTEGER NOT NULL,
-            email       TEXT    NOT NULL,
-            up          BIGINT  DEFAULT 0,
-            down        BIGINT  DEFAULT 0,
-            last_polled BIGINT  DEFAULT 0,
-            CONSTRAINT uq_nct UNIQUE (node_id, email)
+    cursor.execute("""
+        CREATE TABLE federation_config (
+            id                INTEGER PRIMARY KEY CHECK (id = 1),
+            master_url        TEXT,
+            master_name       TEXT,
+            federation_token  TEXT,
+            link_token        TEXT,
+            link_token_used   BOOLEAN NOT NULL DEFAULT 0,
+            linked_at         BIGINT
         )
-        """
-    )
-    cursor.execute("CREATE INDEX IF NOT EXISTS ix_nct_email ON node_client_traffic (email)")
+    """)
+    cursor.execute("INSERT OR IGNORE INTO federation_config (id) VALUES (1)")
     return 1
 
 
@@ -256,7 +230,7 @@ def _ensure_billing_tables(cursor: sqlite3.Cursor) -> int:
                 inbound_tag VARCHAR(120) NOT NULL,
                 label VARCHAR(60),
                 traffic_gb INTEGER NOT NULL,
-                allowed_node_groups VARCHAR(255) NOT NULL DEFAULT '',
+                panel_id INTEGER REFERENCES linked_panel(id),
                 sort_order INTEGER NOT NULL DEFAULT 0
             )
             """,
@@ -521,8 +495,6 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("client", "source_ips", "TEXT DEFAULT '[]'"),
         ("client", "flow", "VARCHAR(50)"),
         ("client", "preferred_outbound", "VARCHAR(50)"),
-        ("client", "global_limit_bytes", "BIGINT DEFAULT 0"),
-        ("client", "allowed_node_groups", "TEXT NOT NULL DEFAULT ''"),
         # Device tracking — Stage 1
         ("inbound", "device_limit", "INTEGER NOT NULL DEFAULT 0"),
         ("client", "device_limit", "INTEGER"),
@@ -535,8 +507,8 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         # Payment Telegram message coords — for edit-in-place webhook callbacks
         ("payment", "chat_id", "BIGINT"),
         ("payment", "message_id", "INTEGER"),
-        # Inbound that's served only on nodes, never on master Xray.
-        ("inbound", "master_disabled", "BOOLEAN NOT NULL DEFAULT 0"),
+        # Panel Federation — tariff item linked to a specific remote panel
+        ("tariff_item", "panel_id", "INTEGER REFERENCES linked_panel(id)"),
     ]
 
     for table_name, column_name, spec in schema_patches:
@@ -664,8 +636,8 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         old_version = _get_db_version(cursor)
 
         stats_tables = _ensure_stats_tables(cursor)
-        node_table = _ensure_node_table(cursor)
-        node_client_traffic_table = _ensure_node_client_traffic_table(cursor)
+        linked_panel_table = _ensure_linked_panel_table(cursor)
+        federation_config_table = _ensure_federation_config_table(cursor)
         client_device_table = _ensure_client_device_table(cursor)
         billing_tables = _ensure_billing_tables(cursor)
         client_billing_columns = _alter_client_billing_columns(cursor)
@@ -684,8 +656,8 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "old_version": old_version,
             "new_version": CURRENT_DB_VERSION,
             "stats_tables_created": stats_tables,
-            "node_table_created": node_table,
-            "node_client_traffic_table_created": node_client_traffic_table,
+            "linked_panel_table_created": linked_panel_table,
+            "federation_config_table_created": federation_config_table,
             "client_device_table_created": client_device_table,
             "billing_tables_created": billing_tables,
             "client_billing_columns_added": client_billing_columns,
@@ -698,8 +670,8 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         }
         changed = (
             stats_tables > 0
-            or node_table > 0
-            or node_client_traffic_table > 0
+            or linked_panel_table > 0
+            or federation_config_table > 0
             or client_device_table > 0
             or billing_tables > 0
             or client_billing_columns > 0
@@ -713,12 +685,14 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         )
         if logger and changed:
             logger.warning(
-                "DB migration complete (v%s -> v%s): stats_tables=%s, node_table=%s, schema=%s, "
+                "DB migration complete (v%s -> v%s): stats_tables=%s, linked_panel=%s, "
+                "federation_config=%s, schema=%s, "
                 "removed_legacy_inbounds=%s, normalized_streams=%s, fixed_rows=%s",
                 old_version,
                 CURRENT_DB_VERSION,
                 stats_tables,
-                node_table,
+                linked_panel_table,
+                federation_config_table,
                 schema_changes,
                 removed_legacy_inbounds,
                 normalized_streams,

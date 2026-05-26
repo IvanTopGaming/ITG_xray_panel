@@ -50,7 +50,7 @@ def _build_snapshot(tariff: Tariff) -> Dict[str, Any]:
             {
                 "inbound_tag": item.inbound_tag,
                 "traffic_gb": item.traffic_gb,
-                "allowed_node_groups": item.allowed_node_groups or "",
+                "panel_id": item.panel_id,
             }
             for item in tariff.items
         ],

@@ -8,8 +8,7 @@ import {
   ClientDevice,
   Outbound,
   Balancer,
-  Node,
-  MasterInfo,
+  LinkedPanel,
 } from '@/lib/types';
 import { formatBytes, cn } from '@/lib/utils';
 import { formatDate } from '@/lib/datetime';
@@ -19,7 +18,6 @@ import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
 import { Input } from '@/components/ui/Input';
-import { TagInput } from '@/components/ui/TagInput';
 import { InboundForm } from '@/components/inbound/InboundForm';
 import { UserForm } from '@/components/inbound/UserForm';
 import {
@@ -44,7 +42,6 @@ import {
   CheckSquare,
   Square,
   Minus,
-  Tag,
   ChevronDown,
   Smartphone,
   Loader2,
@@ -222,6 +219,7 @@ export default function Dashboard() {
   const [now, setNow] = useState(Date.now());
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [panelFilter, setPanelFilter] = useState<string>('all');
   const hasShownInboundsRef = useRef(false);
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
 
@@ -273,6 +271,13 @@ export default function Dashboard() {
     queryFn: async () => (await api.get<Balancer[]>('/balancers')).data,
   });
 
+  const { data: panels } = useQuery<LinkedPanel[]>({
+    queryKey: ['panels'],
+    queryFn: async () => (await api.get<LinkedPanel[]>('/panels')).data,
+    refetchOnWindowFocus: false,
+    refetchInterval: 10000,
+  });
+
   useEffect(() => {
     const fetchStats = async () => {
       try {
@@ -293,7 +298,16 @@ export default function Dashboard() {
     const lowerTerm = searchTerm.toLowerCase();
     const supportsUsers = (ib: Inbound) => !['socks', 'http'].includes(ib.protocol);
 
-    return inbounds
+    let preFiltered = inbounds;
+    if (panelFilter !== 'all') {
+      if (panelFilter === 'local') {
+        preFiltered = preFiltered.filter((ib) => !ib.panel_id);
+      } else {
+        preFiltered = preFiltered.filter((ib) => String(ib.panel_id) === panelFilter);
+      }
+    }
+
+    return preFiltered
       .map((ib) => {
         let clients = ib.settings.clients;
 
@@ -318,7 +332,7 @@ export default function Dashboard() {
         return { ...ib, settings: { ...ib.settings, clients } };
       })
       .filter(Boolean) as Inbound[];
-  }, [inbounds, searchTerm, statusFilter, now]);
+  }, [inbounds, searchTerm, statusFilter, panelFilter, now]);
 
   const totalUsers = inbounds?.reduce((acc, curr) => acc + curr.settings.clients.length, 0) || 0;
 
@@ -473,6 +487,20 @@ export default function Dashboard() {
             );
           })}
         </div>
+        {panels && panels.length > 0 && (
+          <div className="ml-auto shrink-0 w-40">
+            <Select
+              value={panelFilter}
+              onChange={(e) => setPanelFilter(e.target.value)}
+              options={[
+                { value: 'all', label: 'All panels' },
+                { value: 'local', label: 'Master' },
+                ...panels.map((p) => ({ value: String(p.id), label: p.name })),
+              ]}
+              className="h-8 text-xs bg-white/[0.04] border-white/[0.07]"
+            />
+          </div>
+        )}
       </div>
 
       {/* Inbound list */}
@@ -549,6 +577,7 @@ export default function Dashboard() {
                 onToggleUser={toggleUser}
                 onSelectAll={selectAllInInbound}
                 onDeselectAll={deselectAllInInbound}
+                panels={panels}
               />
             </motion.div>
           ));
@@ -681,28 +710,12 @@ function BulkToolbar({
   const [confirmBulkEnable, setConfirmBulkEnable] = useState(false);
   const [confirmBulkDisable, setConfirmBulkDisable] = useState(false);
   const [confirmBulkReset, setConfirmBulkReset] = useState(false);
-  const [groupsModal, setGroupsModal] = useState(false);
-  const [draftGroups, setDraftGroups] = useState<string[]>([]);
   const [daysModal, setDaysModal] = useState(false);
   const [trafficModal, setTrafficModal] = useState(false);
   const [draftDays, setDraftDays] = useState(30);
   const [draftDaysMode, setDraftDaysMode] = useState<AdjustMode>('add');
   const [draftGB, setDraftGB] = useState(10);
   const [draftTrafficMode, setDraftTrafficMode] = useState<AdjustMode>('add');
-
-  const { data: nodes = [] } = useQuery<Node[]>({
-    queryKey: ['nodes'],
-    queryFn: () => api.get('/nodes').then((r) => r.data),
-    staleTime: 60_000,
-  });
-  const { data: master } = useQuery<MasterInfo>({
-    queryKey: ['nodes', 'master'],
-    queryFn: () => api.get('/nodes/master').then((r) => r.data),
-    staleTime: 60_000,
-  });
-  const tagSuggestions = Array.from(
-    new Set([...nodes.flatMap((n) => n.groups || []), ...(master?.groups || [])])
-  ).sort();
 
   const parseUsers = () =>
     [...selectedUsers].map((k) => {
@@ -743,16 +756,6 @@ function BulkToolbar({
       setConfirmBulkDisable(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk enable failed'),
-  });
-
-  const bulkGroupsMutation = useMutation({
-    mutationFn: (groups: string[]) =>
-      api.post('/users/bulk-groups', { users: parseUsers(), allowed_node_groups: groups }),
-    onSuccess: () => {
-      onSuccess(`Groups updated for ${selectedUsers.size} user(s)`);
-      setGroupsModal(false);
-    },
-    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk groups update failed'),
   });
 
   const bulkAdjustDaysMutation = useMutation({
@@ -852,17 +855,6 @@ function BulkToolbar({
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => {
-                  setDraftGroups([]);
-                  setGroupsModal(true);
-                }}
-                className="text-cyan-400 hover:bg-cyan-500/10"
-              >
-                <Tag size={13} className="mr-1" /> Groups
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
                 onClick={() => setConfirmBulkDelete(true)}
                 className="text-red-400 hover:bg-red-500/10"
               >
@@ -917,36 +909,6 @@ function BulkToolbar({
         isLoading={bulkResetMutation.isPending}
       />
 
-      <Modal
-        isOpen={groupsModal}
-        onClose={() => setGroupsModal(false)}
-        title="Set Node Groups"
-        maxWidth="max-w-sm"
-      >
-        <div className="space-y-4 pt-2">
-          <p className="text-sm text-gray-400">
-            Assign node groups to {selectedUsers.size} selected user(s). Leave empty for all nodes.
-          </p>
-          <TagInput
-            value={draftGroups}
-            onChange={setDraftGroups}
-            suggestions={tagSuggestions}
-            placeholder="Type a tag and press Enter (blank = all nodes)"
-            helperText="Users will only be provisioned on nodes carrying any of these tags"
-          />
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="ghost" onClick={() => setGroupsModal(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => bulkGroupsMutation.mutate(draftGroups)}
-              isLoading={bulkGroupsMutation.isPending}
-            >
-              Apply Groups
-            </Button>
-          </div>
-        </div>
-      </Modal>
       <Modal isOpen={daysModal} onClose={() => setDaysModal(false)} title="Adjust Days">
         <div className="space-y-4 pt-2">
           <p className="text-sm text-gray-400">
@@ -1064,6 +1026,7 @@ function InboundCard({
   onToggleUser,
   onSelectAll,
   onDeselectAll,
+  panels,
 }: {
   inbound: Inbound;
   now: number;
@@ -1072,6 +1035,7 @@ function InboundCard({
   onToggleUser: (tag: string, email: string) => void;
   onSelectAll: (tag: string, emails: string[]) => void;
   onDeselectAll: (tag: string, emails: string[]) => void;
+  panels?: LinkedPanel[];
 }) {
   const [editModal, setEditModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1080,13 +1044,19 @@ function InboundCard({
   const supportsPanelUsers = !['socks', 'http'].includes(inbound.protocol);
   const queryClient = useQueryClient();
 
+  const panelOffline =
+    inbound.panel_id != null
+      ? panels?.find((p) => p.id === inbound.panel_id)?.status === 'offline'
+      : false;
+  const panelQs = inbound.panel_id != null ? `?panel_id=${inbound.panel_id}` : '';
+
   const protocolBadge =
     PROTOCOL_COLORS[inbound.protocol] || 'bg-white/10 text-gray-300 border-white/10';
   const headerGlow = PROTOCOL_GLOW[inbound.protocol] || 'from-white/5';
   const hasTraffic = inbound.up + inbound.down > 0;
 
   const deleteMutation = useMutation({
-    mutationFn: () => api.delete(`/inbounds/${inbound.tag}`),
+    mutationFn: () => api.delete(`/inbounds/${inbound.tag}${panelQs}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success(`Inbound ${inbound.tag} deleted`);
@@ -1095,7 +1065,7 @@ function InboundCard({
   });
 
   const resetInboundMutation = useMutation({
-    mutationFn: () => api.post(`/inbounds/${inbound.tag}/reset-traffic`),
+    mutationFn: () => api.post(`/inbounds/${inbound.tag}/reset-traffic${panelQs}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success('Traffic stats reset successfully');
@@ -1104,7 +1074,7 @@ function InboundCard({
   });
 
   const addUserMutation = useMutation({
-    mutationFn: () => api.post(`/inbounds/${inbound.tag}/users`, { email: userEmail }),
+    mutationFn: () => api.post(`/inbounds/${inbound.tag}/users${panelQs}`, { email: userEmail }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       setUserEmail('');
@@ -1159,6 +1129,11 @@ function InboundCard({
               >
                 {inbound.protocol}
               </span>
+              {inbound.panel_id != null && inbound.panel_name && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.06] text-white/40 border border-white/[0.05]">
+                  {inbound.panel_name}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-3 mt-1.5 flex-wrap">
               <div className="text-[10px] md:text-xs text-gray-400 font-mono bg-black/25 px-2 py-0.5 rounded border border-white/[0.06]">
@@ -1181,6 +1156,8 @@ function InboundCard({
             variant="secondary"
             size="sm"
             onClick={() => setConfirmReset(true)}
+            disabled={panelOffline}
+            title={panelOffline ? 'Panel is offline' : undefined}
             className="w-full lg:w-auto justify-center"
           >
             <RotateCcw size={13} className="mr-1.5" /> Reset
@@ -1189,6 +1166,8 @@ function InboundCard({
             variant="secondary"
             size="sm"
             onClick={() => setEditModal(true)}
+            disabled={panelOffline}
+            title={panelOffline ? 'Panel is offline' : undefined}
             className="w-full lg:w-auto justify-center"
           >
             <Edit size={13} className="mr-1.5" /> Config
@@ -1197,6 +1176,8 @@ function InboundCard({
             variant="danger"
             size="sm"
             onClick={() => setConfirmDelete(true)}
+            disabled={panelOffline}
+            title={panelOffline ? 'Panel is offline' : undefined}
             className="col-span-2 md:col-span-1 w-full lg:w-auto justify-center"
           >
             <Trash2 size={13} />
@@ -1220,6 +1201,9 @@ function InboundCard({
                       routeOptions={routeOptions}
                       isSelected={selectedUsers.has(`${inbound.tag}\0${c.email}`)}
                       onToggleSelect={() => onToggleUser(inbound.tag, c.email)}
+                      panelQs={panelQs}
+                      panelOffline={panelOffline}
+                      panels={panels}
                     />
                   ))}
                 </AnimatePresence>
@@ -1233,16 +1217,21 @@ function InboundCard({
 
               <div className="mt-5 pt-5 border-t border-white/[0.05] flex flex-col md:flex-row gap-2.5">
                 <Input
-                  placeholder="New user email / username"
+                  placeholder={panelOffline ? 'Panel is offline' : 'New user email / username'}
                   value={userEmail}
                   onChange={(e) => setUserEmail(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && userEmail && addUserMutation.mutate()}
+                  onKeyDown={(e) =>
+                    e.key === 'Enter' && userEmail && !panelOffline && addUserMutation.mutate()
+                  }
+                  disabled={panelOffline}
                   className="bg-black/20 border-white/[0.07] hover:border-white/15 h-10"
                 />
                 <Button
                   className="h-10 px-5 bg-white/[0.07] hover:bg-white/[0.12] text-white border border-white/[0.09] w-full md:w-auto shrink-0"
                   onClick={() => userEmail && addUserMutation.mutate()}
                   isLoading={addUserMutation.isPending}
+                  disabled={panelOffline}
+                  title={panelOffline ? 'Panel is offline' : undefined}
                 >
                   <Plus size={16} className="mr-1.5" /> Add User
                 </Button>
@@ -1305,6 +1294,9 @@ function UserRow({
   routeOptions,
   isSelected,
   onToggleSelect,
+  panelQs,
+  panelOffline,
+  panels,
 }: {
   client: Client;
   inbound: Inbound;
@@ -1312,6 +1304,9 @@ function UserRow({
   routeOptions: any[];
   isSelected: boolean;
   onToggleSelect: () => void;
+  panelQs: string;
+  panelOffline: boolean;
+  panels?: LinkedPanel[];
 }) {
   const [qr, setQr] = useState(false);
   const [edit, setEdit] = useState(false);
@@ -1330,11 +1325,22 @@ function UserRow({
   }, [client.preferred_outbound]);
 
   const queryClient = useQueryClient();
-  const link = generateLink(inbound, client);
+  const panelHost =
+    inbound.panel_id != null
+      ? (() => {
+          try {
+            return new URL(panels?.find((p) => p.id === inbound.panel_id)?.url || '').hostname;
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+  const link = generateLink(inbound, client, panelHost);
   const subscriptionUrl = generateSubscriptionUrl(client);
 
   const resetMutation = useMutation({
-    mutationFn: () => api.post('/users/reset-traffic', { tag: inbound.tag, email: client.email }),
+    mutationFn: () =>
+      api.post(`/users/reset-traffic${panelQs}`, { tag: inbound.tag, email: client.email }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success('Traffic reset');
@@ -1344,7 +1350,9 @@ function UserRow({
 
   const deleteMutation = useMutation({
     mutationFn: () =>
-      api.delete(`/inbounds/${inbound.tag}/users`, { params: { email: client.email } }),
+      api.delete(`/inbounds/${inbound.tag}/users${panelQs}`, {
+        params: { email: client.email },
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success('User deleted');
@@ -1354,7 +1362,11 @@ function UserRow({
 
   const routingMutation = useMutation({
     mutationFn: (outbound_tag: string) =>
-      api.post('/user/routing', { email: client.email, inbound_tag: inbound.tag, outbound_tag }),
+      api.post(`/user/routing${panelQs}`, {
+        email: client.email,
+        inbound_tag: inbound.tag,
+        outbound_tag,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success('Routing updated');
@@ -1642,7 +1654,8 @@ function UserRow({
               size="icon"
               className="h-8 w-full sm:w-8 text-indigo-400 hover:text-indigo-200 hover:bg-indigo-500/10"
               onClick={() => setRoutingModal(true)}
-              title="Route"
+              disabled={panelOffline}
+              title={panelOffline ? 'Panel is offline' : 'Route'}
             >
               <Network size={13} />
             </Button>
@@ -1651,7 +1664,8 @@ function UserRow({
               size="icon"
               className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
               onClick={() => setEdit(true)}
-              title="Edit"
+              disabled={panelOffline}
+              title={panelOffline ? 'Panel is offline' : 'Edit'}
             >
               <Edit size={13} />
             </Button>
@@ -1660,7 +1674,8 @@ function UserRow({
               size="icon"
               className="h-8 w-full sm:w-8 text-yellow-500/60 hover:text-yellow-400 hover:bg-yellow-500/10"
               onClick={() => setConfirmReset(true)}
-              title="Reset traffic"
+              disabled={panelOffline}
+              title={panelOffline ? 'Panel is offline' : 'Reset traffic'}
             >
               <RotateCcw size={13} />
             </Button>
@@ -1669,7 +1684,8 @@ function UserRow({
               size="icon"
               className="h-8 w-full sm:w-8 text-red-500/60 hover:text-red-400 hover:bg-red-500/10"
               onClick={() => setConfirmDel(true)}
-              title="Delete"
+              disabled={panelOffline}
+              title={panelOffline ? 'Panel is offline' : 'Delete'}
             >
               <Trash2 size={13} />
             </Button>
@@ -1748,7 +1764,12 @@ function UserRow({
       </Modal>
 
       <Modal isOpen={edit} onClose={() => setEdit(false)} title="Edit User">
-        <UserForm inbound={inbound} client={client} onClose={() => setEdit(false)} />
+        <UserForm
+          inbound={inbound}
+          client={client}
+          onClose={() => setEdit(false)}
+          panelQs={panelQs}
+        />
       </Modal>
 
       <Modal

@@ -10,7 +10,6 @@ from app.extensions import db
 from app.models import (
     BotEvent,
     Client,
-    NodeClientTraffic,
     NotificationLog,
     Tariff,
     TelegramUser,
@@ -115,41 +114,25 @@ def send_expiry_notifications() -> None:
             )
 
 
-def _global_node_usage_map() -> dict[str, int]:
-    """email -> sum(up + down) across all NodeClientTraffic rows."""
-    rows = db.session.query(NodeClientTraffic.email, NodeClientTraffic.up, NodeClientTraffic.down).all()
-    out: dict[str, int] = {}
-    for email, up, down in rows:
-        out[email] = out.get(email, 0) + int(up or 0) + int(down or 0)
-    return out
-
-
 def send_traffic_notifications() -> None:
-    """Warn at 80/95/100%. Picks the tighter of global vs per-inbound limit (whichever check_limits will hit first)."""
+    """Warn at 80/95/100% of per-inbound limit."""
     lang_cache: dict[int, str] = {}
     renewable_cache: dict = {}
-    node_usage = _global_node_usage_map()
 
     clients = (
         Client.query.filter(Client.telegram_id.isnot(None))
         .filter(Client.enable.is_(True))
-        .filter((Client.global_limit_bytes > 0) | (Client.limit_bytes > 0))
+        .filter(Client.limit_bytes > 0)
         .limit(2000)
         .all()
     )
     for c in clients:
-        per_inbound_used = (c.up or 0) + (c.down or 0)
-        global_used = per_inbound_used + int(node_usage.get(c.email, 0))
-
-        ratios: list[tuple[float, str, int, int]] = []  # (pct, limit_kind, used, limit)
-        if (c.global_limit_bytes or 0) > 0:
-            ratios.append((global_used / c.global_limit_bytes, "global", global_used, c.global_limit_bytes))
-        if (c.limit_bytes or 0) > 0:
-            ratios.append((per_inbound_used / c.limit_bytes, "per_inbound", per_inbound_used, c.limit_bytes))
-        if not ratios:
+        used_bytes = (c.up or 0) + (c.down or 0)
+        limit_bytes = c.limit_bytes
+        if not limit_bytes:
             continue
-
-        pct, limit_kind, used_bytes, limit_bytes = max(ratios, key=lambda r: r[0])
+        pct = used_bytes / limit_bytes
+        limit_kind = "per_inbound"
 
         kind = next((k for k, threshold in _TRAFFIC_BUCKETS if pct >= threshold), None)
         if kind is None:

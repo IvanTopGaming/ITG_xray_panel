@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
-import { Inbound, RoutingProfile } from '@/lib/types';
+import { Inbound, LinkedPanel, RoutingProfile } from '@/lib/types';
 import api from '@/lib/api';
 import { toast } from 'react-toastify';
 import { Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
@@ -73,6 +73,13 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
   const isEdit = !!inbound;
   const queryClient = useQueryClient();
   const [showAuthPass, setShowAuthPass] = useState(false);
+  const [targetPanelId, setTargetPanelId] = useState<number | null>(null);
+
+  const { data: panels } = useQuery<LinkedPanel[]>({
+    queryKey: ['panels'],
+    queryFn: async () => (await api.get<LinkedPanel[]>('/panels')).data,
+    enabled: !isEdit,
+  });
 
   const getDefaults = () => {
     if (inbound) {
@@ -91,7 +98,6 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
         routing_profile_id: inbound.routing_profile_id || '',
         fallback_address: inbound.fallback_address || '',
         device_limit: inbound.device_limit ?? 0,
-        master_disabled: inbound.master_disabled ?? false,
 
         realityDest: ss?.realitySettings?.dest || 'www.google.com:443',
         realitySNI: ss?.realitySettings?.serverNames?.[0] || 'www.google.com',
@@ -140,7 +146,6 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
       routing_profile_id: '',
       fallback_address: '',
       device_limit: 0,
-      master_disabled: false,
       realityDest: 'www.google.com:443',
       realitySNI: 'www.google.com',
       realityPrivateKey: '',
@@ -239,8 +244,11 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
   };
 
   const mutation = useMutation({
-    mutationFn: (data: any) =>
-      isEdit ? api.put(`/inbounds/${inbound!.tag}`, data) : api.post('/inbounds', data),
+    mutationFn: (data: any) => {
+      if (isEdit) return api.put(`/inbounds/${inbound!.tag}`, data);
+      const url = targetPanelId != null ? `/inbounds?panel_id=${targetPanelId}` : '/inbounds';
+      return api.post(url, data);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success(isEdit ? 'Inbound updated' : 'Inbound created');
@@ -308,7 +316,6 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
       network: data.network,
       security: data.security,
       device_limit: Math.max(0, Number(data.device_limit) || 0),
-      master_disabled: !!data.master_disabled,
     };
 
     if (data.protocol === 'shadowsocks') {
@@ -377,6 +384,21 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
         className="hidden"
         tabIndex={-1}
       />
+      {!isEdit && panels && panels.length > 0 && (
+        <Select
+          label="Target Panel"
+          value={targetPanelId != null ? String(targetPanelId) : 'local'}
+          onChange={(e) => {
+            const val = e.target.value === 'local' ? null : Number(e.target.value);
+            setTargetPanelId(val);
+          }}
+          options={[
+            { value: 'local', label: 'Master (local)' },
+            ...panels.map((p) => ({ value: String(p.id), label: p.name })),
+          ]}
+        />
+      )}
+
       <div className="grid grid-cols-1">
         <Input
           label="Display Label"
@@ -455,23 +477,6 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
           0 = unlimited (feature off). Only HWID-aware clients (Happ, v2RayTun, Shadowrocket,
           Karing) are limited.
         </span>
-      </div>
-
-      <div className="bg-white/5 p-3 rounded-xl border border-white/5">
-        <label className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            {...register('master_disabled')}
-            className="mt-0.5 h-4 w-4 rounded border-white/20 bg-transparent accent-primary"
-          />
-          <span className="flex flex-col">
-            <span className="text-sm font-medium">Run on nodes only</span>
-            <span className="text-xs text-gray-500 mt-0.5">
-              Master Xray skips this inbound — only synced nodes serve it. Use for tariffs that
-              should route exclusively through a specific node.
-            </span>
-          </span>
-        </label>
       </div>
 
       {['vless', 'trojan'].includes(protocol) && security === 'reality' && isSecurityAvailable && (

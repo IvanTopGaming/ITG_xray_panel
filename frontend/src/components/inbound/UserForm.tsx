@@ -1,11 +1,10 @@
-import { useForm, useWatch, Controller } from 'react-hook-form';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useForm, useWatch } from 'react-hook-form';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
-import { TagInput } from '@/components/ui/TagInput';
-import { Inbound, Client, Node, MasterInfo } from '@/lib/types';
+import { Inbound, Client } from '@/lib/types';
 import api from '@/lib/api';
 import { epochMsForDateAtNoon, formatDateForPicker } from '@/lib/datetime';
 import { toast } from 'react-toastify';
@@ -15,9 +14,10 @@ interface UserFormProps {
   inbound: Inbound;
   client: Client;
   onClose: () => void;
+  panelQs?: string;
 }
 
-export function UserForm({ inbound, client, onClose }: UserFormProps) {
+export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormProps) {
   const queryClient = useQueryClient();
   const { register, handleSubmit, setValue, control } = useForm({
     defaultValues: {
@@ -28,8 +28,6 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       reset_day: client.reset_day,
       enable: client.enable,
       flow: client.flow || '',
-      global_limit_gb: client.global_limit_bytes ? client.global_limit_bytes / 1024 ** 3 : 0,
-      allowed_node_groups: client.allowed_node_groups || [],
       device_limit:
         client.device_limit === null || client.device_limit === undefined
           ? ''
@@ -41,24 +39,8 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
 
   const flow = useWatch({ control, name: 'flow' });
 
-  const { data: nodes = [] } = useQuery<Node[]>({
-    queryKey: ['nodes'],
-    queryFn: () => api.get('/nodes').then((r) => r.data),
-    staleTime: 60_000,
-  });
-
-  const { data: master } = useQuery<MasterInfo>({
-    queryKey: ['nodes', 'master'],
-    queryFn: () => api.get('/nodes/master').then((r) => r.data),
-    staleTime: 60_000,
-  });
-
-  const tagSuggestions = Array.from(
-    new Set([...nodes.flatMap((n) => n.groups || []), ...(master?.groups || [])])
-  ).sort();
-
   const mutation = useMutation({
-    mutationFn: (data: any) => api.put(`/inbounds/${inbound.tag}/users`, data),
+    mutationFn: (data: any) => api.put(`/inbounds/${inbound.tag}/users${panelQs}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success('User updated');
@@ -101,8 +83,6 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
       reset_day: Number(data.reset_day),
       enable: data.enable,
       flow: data.flow,
-      global_limit_bytes: Number(data.global_limit_gb) * 1024 ** 3,
-      allowed_node_groups: data.allowed_node_groups,
       device_limit:
         data.device_limit === '' || data.device_limit === null || data.device_limit === undefined
           ? null
@@ -147,20 +127,12 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
         <Input label="Expiry Date" type="date" {...register('expiry_date')} />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <Input
-          label="Global Data Limit (GB)"
-          type="number"
-          {...register('global_limit_gb')}
-          placeholder="0 = unlimited"
-        />
-        <Input
-          label="Auto Reset Day (1-31)"
-          type="number"
-          {...register('reset_day')}
-          placeholder="0 to disable"
-        />
-      </div>
+      <Input
+        label="Auto Reset Day (1-31)"
+        type="number"
+        {...register('reset_day')}
+        placeholder="0 to disable"
+      />
 
       <div>
         <Input
@@ -174,21 +146,6 @@ export function UserForm({ inbound, client, onClose }: UserFormProps) {
           Leave empty to inherit from inbound · 0 = unlimited for this user · N = hard cap
         </p>
       </div>
-
-      <Controller
-        control={control}
-        name="allowed_node_groups"
-        render={({ field }) => (
-          <TagInput
-            label="Allowed Node Tags"
-            value={field.value || []}
-            onChange={field.onChange}
-            suggestions={tagSuggestions}
-            placeholder="Type a tag and press Enter (blank = all nodes)"
-            helperText="User will only be provisioned on nodes carrying any of these tags"
-          />
-        )}
-      />
 
       <div className="pt-2">
         <Switch label="Enable User" {...register('enable')} />

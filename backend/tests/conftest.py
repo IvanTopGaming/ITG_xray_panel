@@ -19,6 +19,16 @@ inside the backend Docker container, or require a future
 import sys
 from unittest.mock import MagicMock
 
+# grpc package — required by app/__init__.py (`from grpc.experimental import gevent`).
+# grpcio is not installed on dev checkouts; stub it before any app import runs.
+_grpc_mock = MagicMock()
+_grpc_experimental_mock = MagicMock()
+_grpc_experimental_mock.gevent = MagicMock()
+_grpc_mock.experimental = _grpc_experimental_mock
+sys.modules.setdefault("grpc", _grpc_mock)
+sys.modules.setdefault("grpc.experimental", _grpc_experimental_mock)
+sys.modules.setdefault("grpc_gevent", MagicMock())
+
 # Generated gRPC stubs — must be in sys.modules before `import app` runs.
 _GRPC_STUBS = [
     "app.proxyman",
@@ -73,6 +83,10 @@ def app():
     _db.init_app(app)
     with app.app_context():
         _db.create_all()
+        from app.models import FederationConfig
+
+        _db.session.add(FederationConfig(id=1))
+        _db.session.commit()
         yield app
         _db.session.remove()
         _db.drop_all()
