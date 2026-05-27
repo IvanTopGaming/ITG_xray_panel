@@ -15,6 +15,7 @@ from app.models import (
     BotText,
     Client,
     Inbound,
+    LinkedPanel,
     Payment,
     SystemSetting,
     Tariff,
@@ -23,6 +24,7 @@ from app.models import (
     UserTariffAccess,
 )
 from app.services import bot_events
+from app.services.panel_proxy import get_panel_snapshot
 from app.services.provisioning import apply_tariff_for_user
 from app.services.stats import _api_remove_user_grpc
 from app.services.xray import generate_config_file, restart_xray_container
@@ -431,8 +433,60 @@ def _serialize_grant(g):
     }
 
 
-def _serialize_user_summary(u):
-    clients_count = Client.query.filter_by(telegram_id=u.telegram_id).count()
+def _remote_clients_by_telegram_id() -> dict[int, list[dict]]:
+    """Bucket all enabled linked-panel clients by telegram_id from cached snapshots.
+
+    Each client dict mirrors Client.to_dict() so frontend code can treat local
+    and remote rows uniformly, with extra ``panel_id`` / ``panel_name`` fields
+    so the UI can show where the client lives.
+
+    Returns {} if no panels are linked or all snapshots are missing — callers
+    should handle this gracefully (it's the steady-state on a standalone panel).
+    """
+    bucket: dict[int, list[dict]] = {}
+    for panel in LinkedPanel.query.filter_by(enable=True).all():
+        snapshot = get_panel_snapshot(panel.id)
+        if not snapshot:
+            continue
+        for ib_data in snapshot.get("inbounds", []):
+            inbound_tag = ib_data.get("tag", "")
+            inbound_label = ib_data.get("label") or inbound_tag
+            for c in ib_data.get("clients", []):
+                tg_id = c.get("telegram_id")
+                if not tg_id:
+                    continue
+                bucket.setdefault(tg_id, []).append(
+                    {
+                        "id": c.get("id", ""),
+                        "email": c.get("email", ""),
+                        "inbound_tag": inbound_tag,
+                        "inbound_label": inbound_label,
+                        "limit_bytes": c.get("limit_bytes", 0),
+                        "expiry_time": c.get("expiry_time", 0),
+                        "up": c.get("up", 0),
+                        "down": c.get("down", 0),
+                        "enable": bool(c.get("enable", True)),
+                        "reset_day": c.get("reset_day", 0),
+                        "last_reset_time": 0,
+                        "last_seen": c.get("last_seen", 0),
+                        "source_ips": [],
+                        "flow": c.get("flow", ""),
+                        "preferred_outbound": "",
+                        "device_limit": None,
+                        "telegram_id": tg_id,
+                        "tariff_id": c.get("tariff_id"),
+                        "panel_id": panel.id,
+                        "panel_name": panel.name,
+                    }
+                )
+    return bucket
+
+
+def _serialize_user_summary(u, remote_clients_by_tg: dict[int, list[dict]] | None = None):
+    local_clients_count = Client.query.filter_by(telegram_id=u.telegram_id).count()
+    if remote_clients_by_tg is None:
+        remote_clients_by_tg = _remote_clients_by_telegram_id()
+    remote_count = len(remote_clients_by_tg.get(u.telegram_id, ()))
     grants_count = UserTariffAccess.query.filter_by(telegram_id=u.telegram_id).count()
     return {
         "telegram_id": u.telegram_id,
@@ -442,7 +496,7 @@ def _serialize_user_summary(u):
         "first_seen_at": u.first_seen_at.isoformat() if u.first_seen_at else None,
         "last_seen_at": u.last_seen_at.isoformat() if u.last_seen_at else None,
         "trial_used_at": u.trial_used_at.isoformat() if u.trial_used_at else None,
-        "clients_count": clients_count,
+        "clients_count": local_clients_count + remote_count,
         "grants_count": grants_count,
     }
 
@@ -451,7 +505,8 @@ def _serialize_user_summary(u):
 @token_required
 def list_telegram_users():
     users = TelegramUser.query.order_by(TelegramUser.first_seen_at.desc()).all()
-    return jsonify({"users": [_serialize_user_summary(u) for u in users]})
+    remote_by_tg = _remote_clients_by_telegram_id()
+    return jsonify({"users": [_serialize_user_summary(u, remote_by_tg) for u in users]})
 
 
 @bp.route("/bot/users/<int:tg_id>", methods=["GET"])
@@ -460,13 +515,15 @@ def get_telegram_user(tg_id):
     user = TelegramUser.query.get(tg_id)
     if user is None:
         return jsonify({"error": "telegram user not found"}), 404
-    clients = Client.query.filter_by(telegram_id=tg_id).all()
+    local_clients = Client.query.filter_by(telegram_id=tg_id).all()
+    remote_by_tg = _remote_clients_by_telegram_id()
+    clients_payload = [c.to_dict() for c in local_clients] + remote_by_tg.get(tg_id, [])
     grants = UserTariffAccess.query.filter_by(telegram_id=tg_id).all()
     payments = Payment.query.filter_by(telegram_id=tg_id).all()
     return jsonify(
         {
-            **_serialize_user_summary(user),
-            "clients": [c.to_dict() for c in clients],
+            **_serialize_user_summary(user, remote_by_tg),
+            "clients": clients_payload,
             "grants": [_serialize_grant(g) for g in grants],
             "payments": [
                 {

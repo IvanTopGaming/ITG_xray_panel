@@ -360,6 +360,7 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                         <thead className="bg-white/[0.02]">
                           <tr className="text-xs uppercase tracking-wider text-white/50">
                             <th className="px-3 py-2.5 text-left font-semibold">Inbound</th>
+                            <th className="px-3 py-2.5 text-left font-semibold">Panel</th>
                             <th className="px-3 py-2.5 text-left font-semibold">Email</th>
                             <th className="px-3 py-2.5 text-right font-semibold">Up / Down</th>
                             <th className="px-3 py-2.5 text-right font-semibold">Limit</th>
@@ -369,7 +370,9 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                         <tbody>
                           {detail.clients.map((c: Client) => (
                             <tr
-                              key={c.id}
+                              key={
+                                c.panel_id != null ? `panel-${c.panel_id}-${c.id}` : `local-${c.id}`
+                              }
                               className={cn(
                                 'border-t border-white/[0.04]',
                                 !c.enable && 'opacity-50'
@@ -382,6 +385,15 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                                 )}
                               >
                                 {c.inbound_tag}
+                              </td>
+                              <td className="px-3 py-2.5 text-white/70">
+                                {c.panel_name ? (
+                                  <span className="inline-flex items-center rounded-md border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-violet-300">
+                                    {c.panel_name}
+                                  </span>
+                                ) : (
+                                  <span className="text-white/35">—</span>
+                                )}
                               </td>
                               <td
                                 className={cn(

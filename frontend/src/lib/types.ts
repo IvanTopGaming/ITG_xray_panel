@@ -27,6 +27,8 @@ export interface Client {
   device_limit?: number | null; // null = inherit from inbound
   device_count?: number; // present on list endpoints (batch-injected)
   tariff_id?: number | null; // set when client was provisioned via a tariff
+  panel_id?: number | null; // set on the bot user drawer when client lives on a linked panel
+  panel_name?: string;
 }
 
 export interface ClientDevice {
