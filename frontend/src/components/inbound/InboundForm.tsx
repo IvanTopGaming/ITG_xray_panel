@@ -245,7 +245,10 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
 
   const mutation = useMutation({
     mutationFn: (data: any) => {
-      if (isEdit) return api.put(`/inbounds/${inbound!.tag}`, data);
+      if (isEdit) {
+        const qs = inbound!.panel_id != null ? `?panel_id=${inbound!.panel_id}` : '';
+        return api.put(`/inbounds/${inbound!.tag}${qs}`, data);
+      }
       const url = targetPanelId != null ? `/inbounds?panel_id=${targetPanelId}` : '/inbounds';
       return api.post(url, data);
     },
