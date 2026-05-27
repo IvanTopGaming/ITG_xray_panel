@@ -476,6 +476,15 @@ async def show_key_details(
         )
         return
 
+    display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
+
+    from urllib.parse import unquote
+
+    if has_other_keys:
+        matched = [lk for lk in links if "#" in lk and unquote(lk.rsplit("#", 1)[-1]) == display]
+        if matched:
+            links = matched
+
     await state.update_data(cached_links=links)
 
     if len(links) == 1:
@@ -484,11 +493,8 @@ async def show_key_details(
         )
         return
 
-    display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
     header = await i18n.t("keys.details.header", lang, email=h(display))
     self_destruct = await i18n.t("keys.details.self_destruct", lang)
-
-    from urllib.parse import unquote
 
     link_lines = []
     for link in links:
