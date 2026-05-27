@@ -172,6 +172,7 @@ services:
         condition: service_healthy
     networks:
       - panel-net
+      - control-net
 
 networks:
   panel-net:

@@ -486,11 +486,38 @@ async def show_key_details(
 
     display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
     header = await i18n.t("keys.details.header", lang, email=h(display))
+    self_destruct = await i18n.t("keys.details.self_destruct", lang)
+
+    from urllib.parse import unquote
+
+    link_lines = []
+    for link in links:
+        label = unquote(link.rsplit("#", 1)[-1]) if "#" in link else ""
+        if label:
+            link_lines.append(f"🔑 <b>{h(label)}</b>\n<code>{h(link)}</code>")
+        else:
+            link_lines.append(f"<code>{h(link)}</code>")
+
+    final_text = f"{header}\n\n" + "\n\n".join(link_lines) + f"\n\n{self_destruct}"
+
+    renew_tariff_id = record.get("tariff_id")
+    renew_label = None
+    if renew_tariff_id:
+        renew_label = await i18n.t("notification.button.renew", lang)
+
     msg = await safe_edit(
         msg,
-        header,
-        reply_markup=kb.key_picker_kb(links, back_label=back, back_callback=back_callback),
+        final_text,
+        reply_markup=kb.sub_actions_kb(
+            qr_label=await i18n.t("sub.actions.show_qr", lang),
+            stats_label=await i18n.t("sub.actions.show_stats", lang),
+            back_label=back,
+            back_callback=back_callback,
+            renew_label=renew_label,
+            renew_tariff_id=renew_tariff_id,
+        ),
     )
+    asyncio.create_task(auto_expire_keys_message(msg, state, i18n=i18n, lang=lang, client_id=client_id))
 
 
 async def _show_single_link(callback, state, link, record, *, i18n, lang, back_label, back_callback):

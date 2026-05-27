@@ -94,7 +94,7 @@ def create_panel():
             name=name,
             url=url,
             federation_token=federation_token,
-            created_at=int(time.time()),
+            created_at=int(time.time() * 1000),
         )
         db.session.add(panel)
         db.session.commit()
