@@ -176,7 +176,9 @@ def activate_trial():
 def get_user_state(tg_id):
     """Everything the bot needs to render /start: user row, trial availability, active clients, soonest expiry."""
     user = TelegramUser.query.get(tg_id)
-    trial_available = user is None or user.trial_used_at is None
+    trial_available = (user is None or user.trial_used_at is None) and Tariff.query.filter_by(
+        is_trial=True, enabled=True
+    ).first() is not None
 
     clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
     clients_data = [c.to_dict() for c in clients]

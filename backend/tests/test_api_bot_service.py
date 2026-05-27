@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.models import BotText, SystemSetting, TelegramUser
+from app.models import BotText, SystemSetting, Tariff, TelegramUser
 
 
 @pytest.fixture
@@ -135,6 +135,8 @@ def test_upsert_user_requires_token(app_with_service_api, db, client):
 
 def test_get_user_state_brand_new_user(app_with_service_api, db, client, service_headers):
     """Unknown telegram_id → trial available, no clients."""
+    db.session.add(Tariff(name="Trial", is_trial=True, enabled=True, price_rub=0, period_days=1))
+    db.session.commit()
     resp = client.get("/api/bot-service/users/9999/state", headers=service_headers)
     assert resp.status_code == 200
     body = resp.get_json()
