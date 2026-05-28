@@ -14,4 +14,3 @@ class BackupStates(StatesGroup):
 class UserStates(StatesGroup):
     viewing_keys = State()
     viewing_qr = State()
-    selected_key_db_id = State()

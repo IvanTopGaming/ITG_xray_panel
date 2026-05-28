@@ -27,10 +27,6 @@ def list_devices(client_id: str):
     return ClientDevice.query.filter_by(client_id=client_id).order_by(ClientDevice.last_seen.desc()).all()
 
 
-def count_active_devices(client_id: str) -> int:
-    return ClientDevice.query.filter_by(client_id=client_id).count()
-
-
 def revoke_device(client_id: str, device_id: int) -> bool:
     """Hard delete + caller is responsible for sub_cache.invalidate_user."""
     row = ClientDevice.query.filter_by(id=device_id, client_id=client_id).first()

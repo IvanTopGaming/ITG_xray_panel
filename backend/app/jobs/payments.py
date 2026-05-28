@@ -61,7 +61,7 @@ def poll_pending_payments() -> None:
                 payment.yookassa_id,
             )
         except gevent.Timeout:
-            logger.warning(
+            logger.info(
                 "poll_pending_payments: yookassa find_one timed out after %ss payment=%s yk=%s",
                 _YK_CALL_TIMEOUT_S,
                 payment.id,
@@ -69,7 +69,7 @@ def poll_pending_payments() -> None:
             )
             continue
         except Exception as exc:
-            logger.warning(
+            logger.info(
                 "poll_pending_payments: lookup failed payment=%s yk=%s err=%s",
                 payment.id,
                 payment.yookassa_id,

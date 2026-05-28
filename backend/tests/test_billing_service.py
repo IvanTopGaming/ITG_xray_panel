@@ -100,7 +100,7 @@ def test_create_checkout_includes_metadata(app, public_tariff):
 
 def test_create_checkout_rejects_disabled_tariff(app, public_tariff):
     with app.app_context():
-        Tariff.query.get(public_tariff).enabled = False
+        db.session.get(Tariff, public_tariff).enabled = False
         db.session.commit()
         with pytest.raises(ValueError, match="tariff_not_available"):
             billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
@@ -108,7 +108,7 @@ def test_create_checkout_rejects_disabled_tariff(app, public_tariff):
 
 def test_create_checkout_rejects_archived_tariff(app, public_tariff):
     with app.app_context():
-        Tariff.query.get(public_tariff).visibility = "archived"
+        db.session.get(Tariff, public_tariff).visibility = "archived"
         db.session.commit()
         with pytest.raises(ValueError, match="tariff_not_available"):
             billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
@@ -116,7 +116,7 @@ def test_create_checkout_rejects_archived_tariff(app, public_tariff):
 
 def test_create_checkout_rejects_trial_tariff(app, public_tariff):
     with app.app_context():
-        Tariff.query.get(public_tariff).is_trial = True
+        db.session.get(Tariff, public_tariff).is_trial = True
         db.session.commit()
         with pytest.raises(ValueError, match="tariff_not_available"):
             billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
@@ -174,6 +174,39 @@ def test_create_checkout_raises_when_yookassa_not_configured(app):
             billing.create_checkout(telegram_id=42, tariff_id=t.id, lang="ru")
 
 
+def test_create_checkout_commits_payment_before_yookassa_call(app, public_tariff):
+    """Holding the SQLite write transaction across an 8-16s YooKassa HTTPS
+    round-trip blocks every other writer. The Payment row must be committed
+    BEFORE yookassa.Payment.create runs."""
+    from sqlalchemy import event as _event
+    from sqlalchemy.orm import Session as _SQLASession
+
+    commits_count = [0]
+    yk_call_commit_idx: list[int] = []
+
+    def _on_commit(_session):
+        commits_count[0] += 1
+
+    def _on_yk(*_a, **_kw):
+        yk_call_commit_idx.append(commits_count[0])
+        return _mock_yk_payment()
+
+    with app.app_context():
+        _event.listen(_SQLASession, "after_commit", _on_commit)
+        try:
+            with patch("app.services.billing.yookassa.Payment.create", side_effect=_on_yk):
+                billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
+        finally:
+            _event.remove(_SQLASession, "after_commit", _on_commit)
+
+    assert len(yk_call_commit_idx) == 1, "yookassa.Payment.create should be invoked exactly once"
+    assert yk_call_commit_idx[0] >= 1, (
+        f"yookassa.Payment.create was called after {yk_call_commit_idx[0]} commits — "
+        f"the Payment INSERT is still inside an open SQLite write transaction. "
+        f"Holds the writer lock across the HTTPS call (up to 16s with retry)."
+    )
+
+
 from app.services import provisioning  # noqa: E402,F401
 
 
@@ -205,10 +238,10 @@ def test_apply_payment_marks_succeeded_and_calls_provisioning(app, public_tariff
             "expires_at_ms": 9999999999000,
             "source": "yookassa",
         }
-        billing.apply_payment(Payment.query.get(pid))
+        billing.apply_payment(db.session.get(Payment, pid))
 
     with app.app_context():
-        p = Payment.query.get(pid)
+        p = db.session.get(Payment, pid)
         assert p.status == "succeeded"
         assert p.paid_at is not None
     mock_provision.assert_called_once()
@@ -229,7 +262,7 @@ def test_apply_payment_is_idempotent(app, public_tariff):
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish") as mock_publish,
     ):
-        billing.apply_payment(Payment.query.get(pid))
+        billing.apply_payment(db.session.get(Payment, pid))
     mock_provision.assert_not_called()
     mock_publish.assert_not_called()
 
@@ -237,7 +270,7 @@ def test_apply_payment_is_idempotent(app, public_tariff):
 def test_apply_payment_marks_failed_when_tariff_archived_with_no_items(app, public_tariff):
     pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
     with app.app_context():
-        t = Tariff.query.get(public_tariff)
+        t = db.session.get(Tariff, public_tariff)
         for item in list(t.items):
             db.session.delete(item)
         db.session.commit()
@@ -246,10 +279,10 @@ def test_apply_payment_marks_failed_when_tariff_archived_with_no_items(app, publ
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish") as mock_publish,
     ):
-        billing.apply_payment(Payment.query.get(pid))
+        billing.apply_payment(db.session.get(Payment, pid))
 
     with app.app_context():
-        assert Payment.query.get(pid).status == "failed"
+        assert db.session.get(Payment, pid).status == "failed"
     mock_provision.assert_not_called()
     mock_publish.assert_called_once()
     assert mock_publish.call_args.args[0] == "payment_failed"
@@ -261,7 +294,7 @@ def test_apply_payment_marks_failed_when_tariff_archived_between_checkout_and_we
     payment is marked failed and the user is notified."""
     pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
     with app.app_context():
-        t = Tariff.query.get(public_tariff)
+        t = db.session.get(Tariff, public_tariff)
         t.visibility = "archived"
         db.session.commit()
     with (
@@ -269,10 +302,10 @@ def test_apply_payment_marks_failed_when_tariff_archived_between_checkout_and_we
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish") as mock_publish,
     ):
-        billing.apply_payment(Payment.query.get(pid))
+        billing.apply_payment(db.session.get(Payment, pid))
 
     with app.app_context():
-        assert Payment.query.get(pid).status == "failed"
+        assert db.session.get(Payment, pid).status == "failed"
     mock_provision.assert_not_called()
     mock_publish.assert_called_once()
     event_type, tg_id, payload = mock_publish.call_args.args
@@ -303,7 +336,7 @@ def test_apply_payment_skips_when_row_no_longer_pending(app, public_tariff):
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish") as mock_publish,
     ):
-        billing.apply_payment(Payment.query.get(pid))
+        billing.apply_payment(db.session.get(Payment, pid))
 
     mock_provision.assert_not_called()
     mock_publish.assert_not_called()
@@ -315,7 +348,7 @@ def test_apply_payment_marks_failed_when_private_tariff_lost_grant(app, public_t
     catches this via the private+no-grant branch."""
     pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
     with app.app_context():
-        t = Tariff.query.get(public_tariff)
+        t = db.session.get(Tariff, public_tariff)
         t.visibility = "private"
         db.session.commit()
     with (
@@ -323,9 +356,9 @@ def test_apply_payment_marks_failed_when_private_tariff_lost_grant(app, public_t
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish") as mock_publish,
     ):
-        billing.apply_payment(Payment.query.get(pid))
+        billing.apply_payment(db.session.get(Payment, pid))
 
     with app.app_context():
-        assert Payment.query.get(pid).status == "failed"
+        assert db.session.get(Payment, pid).status == "failed"
     mock_provision.assert_not_called()
     assert mock_publish.call_args.args[0] == "payment_failed"

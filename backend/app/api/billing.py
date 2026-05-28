@@ -88,6 +88,7 @@ def yookassa_webhook():
 
     try:
         if event == "payment.succeeded":
+            logger.info("yookassa_webhook: payment succeeded id=%s yk=%s", payment.id, yk_id)
             billing.apply_payment(payment)
         elif event == "payment.canceled":
             if payment.status not in ("succeeded", "cancelled"):

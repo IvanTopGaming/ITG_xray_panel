@@ -165,14 +165,13 @@ def create_tariffs() -> list[Tariff]:
         )
         db.session.add(t)
         db.session.flush()
-        for item_sort, (tag, label, gb, groups) in enumerate(items):
+        for item_sort, (tag, label, gb, _groups) in enumerate(items):
             db.session.add(
                 TariffItem(
                     tariff_id=t.id,
                     inbound_tag=tag,
                     label=label,
                     traffic_gb=gb,
-                    allowed_node_groups=groups,
                     sort_order=item_sort,
                 )
             )

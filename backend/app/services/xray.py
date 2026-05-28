@@ -509,7 +509,6 @@ def _normalize_fallback_dest(value):
     return f"{host}:{port}"
 
 
-# NOTE: keep flatten_stream_settings (below this function) in sync with this builder.
 def _build_stream_settings(settings_dict):
     protocol = str(settings_dict.get("protocol", "") or "").strip().lower()
     requested_network = settings_dict.get("network", "tcp")
@@ -688,105 +687,6 @@ def _build_stream_settings(settings_dict):
         stream["authPass"] = auth_pass
 
     return stream
-
-
-def flatten_stream_settings(stream, protocol):
-    """Inverse of _build_stream_settings: produce the flat-key dict that the
-    POST/PUT /api/inbounds endpoint accepts, from a stored Inbound.stream_settings JSON.
-
-    Used by the master → node inbound config sync. Keep in sync with
-    _build_stream_settings above.
-
-    Raises ValueError when the inbound uses local TLS certificate files — those paths
-    won't exist on a remote node, so syncing them would silently break the node's xray.
-    """
-    if not isinstance(stream, dict):
-        stream = {}
-
-    protocol = str(protocol or "").strip().lower()
-    flat = {
-        "network": stream.get("network", "tcp"),
-        "security": stream.get("security", "none"),
-    }
-
-    ws_settings = stream.get("wsSettings") or {}
-    xhttp_settings = stream.get("xhttpSettings") or {}
-    http_upgrade_settings = stream.get("httpUpgradeSettings") or {}
-    split_http_settings = stream.get("splitHttpSettings") or {}
-    grpc_settings = stream.get("grpcSettings") or {}
-    tls_settings = stream.get("tlsSettings") or {}
-    reality_settings = stream.get("realitySettings") or {}
-
-    flat["wsPath"] = (
-        ws_settings.get("path")
-        or xhttp_settings.get("path")
-        or http_upgrade_settings.get("path")
-        or split_http_settings.get("path")
-        or "/"
-    )
-    flat["wsHost"] = (
-        (ws_settings.get("headers") or {}).get("Host")
-        or xhttp_settings.get("host")
-        or http_upgrade_settings.get("host")
-        or split_http_settings.get("host")
-        or ""
-    )
-    flat["grpcServiceName"] = grpc_settings.get("serviceName", "grpc")
-
-    if isinstance(reality_settings, dict):
-        server_names = reality_settings.get("serverNames") or []
-        short_ids = reality_settings.get("shortIds") or []
-        reality_private = (reality_settings.get("privateKey") or "").strip()
-        reality_public = (reality_settings.get("publicKey") or "").strip()
-        if reality_private and not reality_public:
-            derived = _derive_reality_pubkey(reality_private)
-            if derived:
-                reality_public = derived
-        flat["realityDest"] = reality_settings.get("dest", "www.google.com:443")
-        flat["realitySNI"] = server_names[0] if server_names else "www.google.com"
-        flat["realityPrivateKey"] = reality_private
-        flat["realityPublicKey"] = reality_public
-        flat["realityShortIds"] = ",".join([s for s in short_ids if s])
-        flat["realityFingerprint"] = reality_settings.get("fingerprint", "chrome")
-        flat["realitySpiderX"] = reality_settings.get("spiderX", "")
-
-    if isinstance(tls_settings, dict):
-        flat["tlsServerName"] = str(tls_settings.get("serverName", "") or "")
-        raw_alpn = tls_settings.get("alpn", [])
-        if isinstance(raw_alpn, list):
-            flat["tlsAlpn"] = ",".join([str(item).strip() for item in raw_alpn if str(item).strip()])
-        elif isinstance(raw_alpn, str):
-            flat["tlsAlpn"] = raw_alpn
-        else:
-            flat["tlsAlpn"] = ""
-        flat["tlsUTLSFingerprint"] = str(tls_settings.get("_utlsFingerprint", "") or "")
-        certs = tls_settings.get("certificates") or []
-        first_cert = certs[0] if isinstance(certs, list) and certs else {}
-        if not isinstance(first_cert, dict):
-            first_cert = {}
-        cert_file = str(first_cert.get("certificateFile", "") or "").strip()
-        key_file = str(first_cert.get("keyFile", "") or "").strip()
-        if cert_file or key_file:
-            raise ValueError("inbound uses local TLS cert files; cannot sync to remote nodes")
-        flat["tlsCertFile"] = ""
-        flat["tlsKeyFile"] = ""
-
-    if protocol == "shadowsocks":
-        flat["ssMethod"] = stream.get("ssMethod", "")
-        flat["ssPassword"] = stream.get("ssPassword", "")
-        flat["ssNetwork"] = stream.get("ssNetwork", stream.get("network", "tcp"))
-
-    if protocol == "wireguard":
-        flat["wgSecretKey"] = stream.get("wgSecretKey", "")
-        flat["wgPublicKey"] = stream.get("wgPublicKey", "")
-        wg_mtu = stream.get("wgMTU", "")
-        flat["wgMTU"] = wg_mtu if wg_mtu not in [None, ""] else ""
-
-    if protocol in ("socks", "http"):
-        flat["authUser"] = stream.get("authUser", "")
-        flat["authPass"] = stream.get("authPass", "")
-
-    return flat
 
 
 def generate_config_file():

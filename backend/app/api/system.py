@@ -10,7 +10,7 @@ import json
 from flask import Blueprint, after_this_request, jsonify, request, send_file, Response, stream_with_context
 from app.utils import token_required, admin_or_federation_token_required
 from app.extensions import limiter, db
-from app.models import Client, SystemSetting
+from app.models import SystemSetting
 from app.services.xray import (
     restart_xray_container,
     update_geo_db,
@@ -95,17 +95,6 @@ def get_system_stats():
                 "mem_percent": mem.percent,
             }
         )
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500
-
-
-@bp.route("/stats/users", methods=["GET"])
-@token_required
-def get_users_stats():
-    try:
-        total = Client.query.count()
-        active = Client.query.filter_by(enable=True).count()
-        return jsonify({"total": total, "active": active})
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
 

@@ -57,7 +57,7 @@ def _is_renewable(tariff_id: int | None, telegram_id: int, cache: dict[int, bool
     cached = cache.get(key)
     if cached is not None:
         return cached
-    tariff = Tariff.query.get(tariff_id)
+    tariff = db.session.get(Tariff, tariff_id)
     if tariff is None or not tariff.enabled or tariff.visibility == "archived" or tariff.is_trial:
         result = False
     elif tariff.visibility == "private":
@@ -195,7 +195,7 @@ def replay_undelivered_bot_events() -> None:
         try:
             redis_client.publish("bot:events", message)
         except Exception as exc:
-            logger.warning("replay: publish failed for event=%s: %s", event.id, exc)
+            logger.info("replay: publish failed for event=%s: %s", event.id, exc)
             continue
         event.delivered_at = now
     db.session.commit()

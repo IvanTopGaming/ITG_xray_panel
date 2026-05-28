@@ -172,7 +172,7 @@ def get_inbounds():
 
         if panel_filter and panel_filter not in ("all", "local"):
             try:
-                panels = [LinkedPanel.query.get(int(panel_filter))]
+                panels = [db.session.get(LinkedPanel, int(panel_filter))]
                 panels = [p for p in panels if p and p.enable]
             except (ValueError, TypeError):
                 panels = []

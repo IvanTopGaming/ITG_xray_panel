@@ -60,7 +60,7 @@ def test_tariff_item_cascade_delete(app, db):
     item_id = item.id
     db.session.delete(t)
     db.session.commit()
-    assert TariffItem.query.get(item_id) is None
+    assert db.session.get(TariffItem, item_id) is None
 
 
 def test_user_tariff_access_free(app, db):
@@ -166,7 +166,7 @@ def test_bot_text_create(app, db):
     bt = BotText(key="welcome.title", lang="ru", text="Привет")
     db.session.add(bt)
     db.session.commit()
-    assert BotText.query.get(("welcome.title", "ru")).text == "Привет"
+    assert db.session.get(BotText, ("welcome.title", "ru")).text == "Привет"
 
 
 def test_bot_text_composite_pk(app, db):
@@ -175,8 +175,8 @@ def test_bot_text_composite_pk(app, db):
     db.session.add(BotText(key="k", lang="ru", text="ru-text"))
     db.session.add(BotText(key="k", lang="en", text="en-text"))
     db.session.commit()
-    assert BotText.query.get(("k", "ru")).text == "ru-text"
-    assert BotText.query.get(("k", "en")).text == "en-text"
+    assert db.session.get(BotText, ("k", "ru")).text == "ru-text"
+    assert db.session.get(BotText, ("k", "en")).text == "en-text"
     db.session.add(BotText(key="k", lang="ru", text="dup"))
     with pytest.raises(IntegrityError):
         db.session.commit()
@@ -224,7 +224,7 @@ def test_telegram_user_pk_is_telegram_id(app, db):
 
     db.session.add(TelegramUser(telegram_id=1))
     db.session.commit()
-    assert TelegramUser.query.get(1) is not None
+    assert db.session.get(TelegramUser, 1) is not None
     db.session.add(TelegramUser(telegram_id=1))
     with pytest.raises(IntegrityError):
         db.session.commit()

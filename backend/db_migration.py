@@ -3,8 +3,32 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 15
-CURRENT_BOT_TEXTS_VERSION = 15
+CURRENT_DB_VERSION = 16
+CURRENT_BOT_TEXTS_VERSION = 16
+
+# Keys removed from bot_texts_defaults.yaml in a past cleanup — purge orphan
+# bot_text rows on the next force-reseed so they stop appearing in the panel's
+# Bot → Texts admin UI. Append future deletions here.
+_REMOVED_BOT_TEXT_KEYS = (
+    "checkout.button.cancel",
+    "checkout.cancelled",
+    "checkout.message",
+    "checkout.success",
+    "common.back",
+    "errors.access_denied",
+    "errors.payment_failed",
+    "errors.tariff_not_available",
+    "home.menu_header",
+    "home.subscription_active",
+    "home.title",
+    "menu.keys",
+    "menu.settings",
+    "settings.language",
+    "settings.language_changed",
+    "tariff.button.buy",
+    "tariff.button.renew",
+    "tariff.unlimited_label",
+)
 
 
 def _table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
@@ -455,6 +479,13 @@ def _maybe_force_reseed_bot_texts(cursor: sqlite3.Cursor) -> bool:
     if stored >= CURRENT_BOT_TEXTS_VERSION:
         return False
 
+    if _REMOVED_BOT_TEXT_KEYS:
+        placeholders = ",".join("?" * len(_REMOVED_BOT_TEXT_KEYS))
+        cursor.execute(
+            f"DELETE FROM bot_text WHERE key IN ({placeholders})",
+            _REMOVED_BOT_TEXT_KEYS,
+        )
+
     _seed_bot_texts(cursor, force=True)
 
     cursor.execute(
@@ -607,6 +638,26 @@ def _apply_data_fixups(cursor: sqlite3.Cursor) -> int:
         "client",
         "preferred_outbound",
         "UPDATE client SET preferred_outbound = NULL WHERE preferred_outbound IS NOT NULL AND TRIM(preferred_outbound) = ''",
+    )
+
+    # linked_panel.created_at was stored in Unix seconds before commit 54b624b
+    # (May 27 2026). The frontend treats numeric timestamps as ms, so legacy
+    # rows render as "01/21/1970". Anything below 10**11 must be seconds (a
+    # genuine ms value for any year ≥ 1973 is already above this threshold).
+    _run_if_column(
+        "linked_panel",
+        "created_at",
+        "UPDATE linked_panel SET created_at = created_at * 1000 WHERE created_at > 0 AND created_at < 100000000000",
+    )
+    # linked_panel.last_poll: same problem from the other direction — when a
+    # child panel running pre-fix code returned `timestamp` in seconds via
+    # /api/federation/snapshot, the master stored it verbatim. Normalize same
+    # way; NULL stays NULL (panel never polled yet).
+    _run_if_column(
+        "linked_panel",
+        "last_poll",
+        "UPDATE linked_panel SET last_poll = last_poll * 1000 "
+        "WHERE last_poll IS NOT NULL AND last_poll > 0 AND last_poll < 100000000000",
     )
 
     return changed

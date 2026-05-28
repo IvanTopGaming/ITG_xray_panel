@@ -53,7 +53,7 @@ def test_set_chat_coords_persists(http, svc_headers, db):
     assert body["chat_id"] == 8070297806
     assert body["message_id"] == 12345
 
-    fetched = Payment.query.get(p.id)
+    fetched = db.session.get(Payment, p.id)
     assert fetched.chat_id == 8070297806
     assert fetched.message_id == 12345
 
@@ -71,7 +71,7 @@ def test_set_chat_coords_overwrites(http, svc_headers, db):
         headers=svc_headers,
     )
     assert resp.status_code == 200
-    fetched = Payment.query.get(p.id)
+    fetched = db.session.get(Payment, p.id)
     assert fetched.chat_id == 2
     assert fetched.message_id == 2
 

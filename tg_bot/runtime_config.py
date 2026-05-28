@@ -99,7 +99,7 @@ class RuntimeConfig:
             try:
                 payload = await self._fetch()
             except Exception as exc:
-                logger.warning(
+                logger.info(
                     "runtime_config: bootstrap fetch failed: %s — retry in %ss",
                     exc,
                     self.BOOTSTRAP_RETRY_SECONDS,
@@ -114,7 +114,7 @@ class RuntimeConfig:
                     len(self.admin_ids),
                 )
                 return
-            logger.warning(
+            logger.info(
                 "runtime_config: bot_token not yet set in panel — waiting (retry in %ss)",
                 self.BOOTSTRAP_RETRY_SECONDS,
             )
@@ -128,7 +128,7 @@ class RuntimeConfig:
             try:
                 payload = await self._fetch()
             except Exception as exc:
-                logger.warning("runtime_config: refresh failed: %s", exc)
+                logger.info("runtime_config: refresh failed: %s", exc)
                 continue
             if int(payload.get("version") or 0) == self.version:
                 continue

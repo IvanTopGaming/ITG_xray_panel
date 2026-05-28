@@ -117,12 +117,6 @@ class BackendClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def get_payment(self, payment_id: int) -> dict:
-        c = self._ensure_client()
-        resp = await c.get(f"/bot-service/payments/{payment_id}")
-        resp.raise_for_status()
-        return resp.json()
-
     async def cancel_payment(self, payment_id: int) -> dict:
         c = self._ensure_client()
         resp = await c.post(f"/bot-service/payments/{payment_id}/cancel")

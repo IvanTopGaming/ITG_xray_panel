@@ -21,7 +21,7 @@ def auto_renew_free_users() -> None:
         .all()
     )
     for grant in due:
-        tariff = Tariff.query.get(grant.tariff_id)
+        tariff = db.session.get(Tariff, grant.tariff_id)
         if tariff is None or tariff.visibility == "archived" or not tariff.enabled:
             grant.next_renewal_at = None
             db.session.commit()
@@ -32,7 +32,7 @@ def auto_renew_free_users() -> None:
                 grant.tariff_id,
                 reason,
             )
-            user = TelegramUser.query.get(grant.telegram_id)
+            user = db.session.get(TelegramUser, grant.telegram_id)
             tariff_name = tariff.name if tariff is not None else f"#{grant.tariff_id}"
             try:
                 bot_events.publish(
@@ -46,13 +46,14 @@ def auto_renew_free_users() -> None:
                     },
                 )
             except Exception as exc:
-                logger.warning("auto_renew: access_paused publish failed: %s", exc)
+                logger.info("auto_renew: access_paused publish failed: %s", exc)
             continue
         try:
             result = apply_tariff_for_user(grant.telegram_id, tariff, source="auto_renew")
             grant.next_renewal_at = now + timedelta(days=tariff.period_days)
             db.session.commit()
-            user = TelegramUser.query.get(grant.telegram_id)
+            logger.info("auto_renew: renewed tg=%s tariff=%s", grant.telegram_id, grant.tariff_id)
+            user = db.session.get(TelegramUser, grant.telegram_id)
             bot_events.publish(
                 "access_renewed",
                 telegram_id=grant.telegram_id,

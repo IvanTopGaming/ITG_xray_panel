@@ -54,7 +54,7 @@ for _name in _GRPC_STUBS:
 import os  # noqa: E402
 
 # Env defaults that `app.create_app()` reads at import time
-os.environ.setdefault("SECRET_KEY", "test-secret-key-for-pytest-only")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-pytest-only-must-be-long-enough-for-hs256-jwt-signing")
 os.environ.setdefault("PANEL_ADMIN_USER", "admin")
 os.environ.setdefault("PANEL_ADMIN_PASSWORD", "admin")
 os.environ.setdefault("PANEL_DOMAIN", "localhost")

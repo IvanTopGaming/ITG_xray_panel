@@ -7,7 +7,7 @@ def test_language_chosen_defaults_to_false(app, db):
     u = TelegramUser(telegram_id=111, language="ru")
     db.session.add(u)
     db.session.commit()
-    fetched = TelegramUser.query.get(111)
+    fetched = db.session.get(TelegramUser, 111)
     assert fetched.language_chosen is False
 
 
@@ -15,7 +15,7 @@ def test_language_chosen_persists_true(app, db):
     u = TelegramUser(telegram_id=222, language="en", language_chosen=True)
     db.session.add(u)
     db.session.commit()
-    fetched = TelegramUser.query.get(222)
+    fetched = db.session.get(TelegramUser, 222)
     assert fetched.language_chosen is True
 
 

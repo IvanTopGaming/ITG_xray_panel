@@ -147,7 +147,7 @@ def _api_add_user_grpc(inbound_tag, client_obj):
         )
         return True
     except grpc.RpcError as e:
-        logger.warning("gRPC add user failed for %s/%s: %s", inbound_tag, client_obj.email, e)
+        logger.info("gRPC add user failed for %s/%s: %s", inbound_tag, client_obj.email, e)
         return False
 
 
@@ -167,97 +167,113 @@ def _api_remove_user_grpc(inbound_tag, email):
         )
         return True
     except grpc.RpcError as e:
-        logger.warning("gRPC remove user failed for %s/%s: %s", inbound_tag, email, e)
+        logger.info("gRPC remove user failed for %s/%s: %s", inbound_tag, email, e)
         return False
 
 
 def sync_traffic_stats():
+    """Pull per-user / per-inbound traffic deltas from Xray and persist them.
+
+    Split into two phases to keep the SQLite write transaction short:
+
+    1. **Read phase (no DB writes):** issue all `QueryStats` gRPC calls and
+       collect `(entity, up_delta, down_delta)` tuples in memory. gevent
+       greenlets yield freely here without holding the writer lock.
+    2. **Write phase:** in a single tight transaction, bump counters on the
+       attached ORM rows, upsert snapshot rows, commit.
+
+    Previously the loop interleaved gRPC and `_upsert_snapshot`, holding the
+    SQLite writer lock for the duration of every per-client gRPC round-trip
+    and starving `parse_logs` / `check_limits` / `poll_pending_payments` until
+    `busy_timeout` fired with `database is locked`.
+    """
     inbounds = Inbound.query.all()
     clients = Client.query.filter_by(enable=True).all()
     if not inbounds:
         return
+
     try:
         channel = get_channel()
         stub = stats_command_pb2_grpc.StatsServiceStub(channel)
-        has_updates = False
-        now = datetime.now()
-        bucket = _ten_min_bucket(now)
-
-        for c in clients:
-            runtime_email = build_runtime_email(c.inbound_tag, c.email)
-            up_delta = 0
-            down_delta = 0
-            try:
-                u = stub.QueryStats(
-                    stats_command_pb2.QueryStatsRequest(
-                        pattern=f"user>>>{runtime_email}>>>traffic>>>uplink", reset=True
-                    ),
-                    timeout=1,
-                )
-                if u.stat:
-                    delta = u.stat[0].value
-                    c.up += delta
-                    up_delta += delta
-                    has_updates = True
-                d = stub.QueryStats(
-                    stats_command_pb2.QueryStatsRequest(
-                        pattern=f"user>>>{runtime_email}>>>traffic>>>downlink", reset=True
-                    ),
-                    timeout=1,
-                )
-                if d.stat:
-                    delta = d.stat[0].value
-                    c.down += delta
-                    down_delta += delta
-                    has_updates = True
-            except grpc.RpcError:
-                continue
-
-            if up_delta > 0 or down_delta > 0:
-                _upsert_snapshot("user", c.email, c.inbound_tag, bucket, up_delta, down_delta)
-
-        for ib in inbounds:
-            up_delta = 0
-            down_delta = 0
-            try:
-                u = stub.QueryStats(
-                    stats_command_pb2.QueryStatsRequest(pattern=f"inbound>>>{ib.tag}>>>traffic>>>uplink", reset=True),
-                    timeout=1,
-                )
-                if u.stat:
-                    delta = u.stat[0].value
-                    ib.up += delta
-                    up_delta += delta
-                    has_updates = True
-                d = stub.QueryStats(
-                    stats_command_pb2.QueryStatsRequest(pattern=f"inbound>>>{ib.tag}>>>traffic>>>downlink", reset=True),
-                    timeout=1,
-                )
-                if d.stat:
-                    delta = d.stat[0].value
-                    ib.down += delta
-                    down_delta += delta
-                    has_updates = True
-            except grpc.RpcError:
-                continue
-
-            if up_delta > 0 or down_delta > 0:
-                _upsert_snapshot("inbound", ib.tag, "", bucket, up_delta, down_delta)
-
-        if has_updates:
-            db.session.commit()
     except grpc.RpcError as e:
         _close_channel()
-        logger.warning("Traffic sync failed: %s", e)
+        logger.info("Traffic sync failed (channel init): %s", e)
+        return
+
+    def _query_pair(pattern_up: str, pattern_down: str) -> tuple[int, int] | None:
+        try:
+            u = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_up, reset=True), timeout=1)
+            d = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_down, reset=True), timeout=1)
+        except grpc.RpcError:
+            return None
+        up_delta = u.stat[0].value if u.stat else 0
+        down_delta = d.stat[0].value if d.stat else 0
+        return up_delta, down_delta
+
+    # ── Phase 1: read-only ───────────────────────────────────────────────
+    user_deltas: list[tuple[Client, int, int]] = []
+    inbound_deltas: list[tuple[Inbound, int, int]] = []
+
+    for c in clients:
+        runtime_email = build_runtime_email(c.inbound_tag, c.email)
+        pair = _query_pair(
+            f"user>>>{runtime_email}>>>traffic>>>uplink",
+            f"user>>>{runtime_email}>>>traffic>>>downlink",
+        )
+        if pair is None:
+            continue
+        up_d, down_d = pair
+        if up_d or down_d:
+            user_deltas.append((c, up_d, down_d))
+
+    for ib in inbounds:
+        pair = _query_pair(
+            f"inbound>>>{ib.tag}>>>traffic>>>uplink",
+            f"inbound>>>{ib.tag}>>>traffic>>>downlink",
+        )
+        if pair is None:
+            continue
+        up_d, down_d = pair
+        if up_d or down_d:
+            inbound_deltas.append((ib, up_d, down_d))
+
+    if not user_deltas and not inbound_deltas:
+        return
+
+    # ── Phase 2: single short write transaction ──────────────────────────
+    bucket = _ten_min_bucket(datetime.now())
+    for c, up_d, down_d in user_deltas:
+        c.up += up_d
+        c.down += down_d
+        _upsert_snapshot("user", c.email, c.inbound_tag, bucket, up_d, down_d)
+    for ib, up_d, down_d in inbound_deltas:
+        ib.up += up_d
+        ib.down += down_d
+        _upsert_snapshot("inbound", ib.tag, "", bucket, up_d, down_d)
+    db.session.commit()
 
 
 def check_limits_and_reset():
+    """Run monthly traffic counter resets and disable expired / over-limit users.
+
+    Three-phase to keep the SQLite write transaction short:
+
+    1. **Decide (read-only):** classify each enabled client as needing a
+       monthly reset, a disable, both, or neither. No DB mutation.
+    2. **gRPC side-effects:** zero Xray's internal counters for reset clients,
+       and remove disabled vless/vmess users from the runtime. No DB writes.
+    3. **Persist (single commit):** zero counters, clear traffic
+       notifications, flip `enable=False`, commit, then regenerate config
+       (and restart only as a fallback when gRPC removes failed).
+    """
     clients = Client.query.filter_by(enable=True).all()
     now_dt = datetime.now()
     now_ts = int(now_dt.timestamp() * 1000)
     current_day = now_dt.day
-    config_changed = False
-    restart_required = False
+
+    # ── Phase 1: classify ────────────────────────────────────────────────
+    to_reset: list[Client] = []
+    to_disable: list[tuple[Client, str]] = []  # (client, reason)
 
     for c in clients:
         if c.reset_day > 0 and c.reset_day == current_day:
@@ -267,65 +283,78 @@ def check_limits_and_reset():
                     last_reset_dt = datetime.fromtimestamp(c.last_reset_time / 1000)
                 except (OSError, OverflowError, ValueError):
                     last_reset_dt = None
-
             already_reset_today = last_reset_dt is not None and last_reset_dt.date() == now_dt.date()
             if not already_reset_today:
-                c.up = 0
-                c.down = 0
-                c.last_reset_time = now_ts
-                config_changed = True
-                # Clear stale traffic notifications so the next cycle re-fires
-                # 80% / 95% / exhausted warnings. Time-based expiry kinds are
-                # intentionally untouched — they belong to the lifecycle of
-                # this Client.id, not its billing cycle.
-                NotificationLog.query.filter(
-                    NotificationLog.client_id == c.id,
-                    NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
-                ).delete(synchronize_session=False)
-                try:
-                    channel = get_channel()
-                    stub = stats_command_pb2_grpc.StatsServiceStub(channel)
-                    stub.QueryStats(
-                        stats_command_pb2.QueryStatsRequest(
-                            pattern=f"user>>>{build_runtime_email(c.inbound_tag, c.email)}>>>traffic>>>uplink",
-                            reset=True,
-                        )
-                    )
-                    stub.QueryStats(
-                        stats_command_pb2.QueryStatsRequest(
-                            pattern=f"user>>>{build_runtime_email(c.inbound_tag, c.email)}>>>traffic>>>downlink",
-                            reset=True,
-                        )
-                    )
-                except grpc.RpcError as e:
-                    logger.debug("Failed to reset gRPC counters for %s: %s", c.email, e)
+                to_reset.append(c)
 
         over_limit = c.limit_bytes > 0 and (c.up + c.down) >= c.limit_bytes
-        if (c.expiry_time > 0 and now_ts > c.expiry_time) or over_limit:
-            c.enable = False
-            config_changed = True
-            try:
-                ib = Inbound.query.filter_by(tag=c.inbound_tag).first()
-                if ib and ib.protocol in ["vless", "vmess"]:
-                    removed = _api_remove_user_grpc(c.inbound_tag, c.email)
-                    if not removed:
-                        restart_required = True
-                else:
-                    restart_required = True
-            except Exception as e:
-                restart_required = True
-                logger.warning(
-                    "Failed to process limit disable for %s/%s: %s",
-                    c.inbound_tag,
-                    c.email,
-                    e,
-                )
+        expired = c.expiry_time > 0 and now_ts > c.expiry_time
+        if expired or over_limit:
+            to_disable.append((c, "over_limit" if over_limit else "expired"))
 
-    if config_changed:
-        db.session.commit()
-        generate_config_file()
-        if restart_required:
-            restart_xray_container()
+    if not to_reset and not to_disable:
+        return
+
+    # Prefetch the inbounds we'll need in Phase 2 so the gRPC block doesn't
+    # interleave additional SELECTs (and their potential autoflushes).
+    relevant_tags = {c.inbound_tag for c in to_reset} | {c.inbound_tag for c, _ in to_disable}
+    inbounds_by_tag = (
+        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(relevant_tags)).all()} if relevant_tags else {}
+    )
+
+    # ── Phase 2: gRPC only (no DB writes) ────────────────────────────────
+    if to_reset:
+        try:
+            channel = get_channel()
+            stub = stats_command_pb2_grpc.StatsServiceStub(channel)
+            for c in to_reset:
+                runtime_email = build_runtime_email(c.inbound_tag, c.email)
+                for suffix in ("uplink", "downlink"):
+                    try:
+                        stub.QueryStats(
+                            stats_command_pb2.QueryStatsRequest(
+                                pattern=f"user>>>{runtime_email}>>>traffic>>>{suffix}",
+                                reset=True,
+                            )
+                        )
+                    except grpc.RpcError as e:
+                        logger.debug("Failed to reset gRPC %s for %s: %s", suffix, c.email, e)
+        except grpc.RpcError as e:
+            logger.debug("Failed to acquire gRPC channel for monthly reset: %s", e)
+
+    restart_required = False
+    for c, _reason in to_disable:
+        ib = inbounds_by_tag.get(c.inbound_tag)
+        try:
+            if ib and ib.protocol in ("vless", "vmess"):
+                if not _api_remove_user_grpc(c.inbound_tag, c.email):
+                    restart_required = True
+            else:
+                restart_required = True
+        except Exception as e:
+            restart_required = True
+            logger.warning("Failed to process limit disable for %s/%s: %s", c.inbound_tag, c.email, e)
+
+    # ── Phase 3: single short write transaction ──────────────────────────
+    for c in to_reset:
+        c.up = 0
+        c.down = 0
+        c.last_reset_time = now_ts
+        # Clear stale traffic notifications so the next cycle re-fires
+        # 80% / 95% / exhausted warnings. Expiry kinds intentionally preserved.
+        NotificationLog.query.filter(
+            NotificationLog.client_id == c.id,
+            NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
+        ).delete(synchronize_session=False)
+
+    for c, reason in to_disable:
+        c.enable = False
+        logger.info("disabled %s/%s: %s", c.inbound_tag, c.email, reason)
+
+    db.session.commit()
+    generate_config_file()
+    if restart_required:
+        restart_xray_container()
 
 
 def _read_access_offset():
@@ -426,7 +455,7 @@ def _parse_access_logs_logic():
 
         db.session.commit()
     except Exception as e:
-        logger.warning("Log parsing error: %s", e)
+        logger.info("Log parsing error: %s", e)
 
 
 def cleanup_old_domain_stats():
@@ -438,7 +467,7 @@ def cleanup_old_domain_stats():
             db.session.commit()
             logger.info("Cleaned up %d old domain stat rows", deleted)
     except Exception as e:
-        logger.warning("Domain stat cleanup failed: %s", e)
+        logger.info("Domain stat cleanup failed: %s", e)
 
 
 def sync_traffic_job():
@@ -547,8 +576,3 @@ def bulk_delete_users(users_list):
             restart_xray_container()
 
     return deleted_count
-
-
-def bulk_reset_traffic(users_list):
-    for u in users_list:
-        reset_user_traffic(u["tag"], u["email"])

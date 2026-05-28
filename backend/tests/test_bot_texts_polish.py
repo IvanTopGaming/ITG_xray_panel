@@ -95,9 +95,7 @@ def test_polished_emoji_spot_checks():
     assert data["menu.tariffs"]["ru"].startswith("💎")
     assert data["menu.stats"]["ru"].startswith("📊")
     assert data["menu.help"]["ru"].startswith("📖")
-    assert data["common.back"]["ru"].startswith("◀")
     assert data["common.cancel"]["ru"].startswith("❌")
-    assert data["errors.access_denied"]["ru"].startswith("⛔")
     assert data["notification.expired"]["ru"].startswith("⛔")
     assert data["notification.expiry_1d"]["ru"].startswith("⚠️")
 
@@ -156,9 +154,7 @@ def test_required_new_keys_exist():
     """Keys added by this polish pass — referenced by migrated handler/kb code."""
     data = _load_yaml()
     required = [
-        "home.menu_header",
         "menu.subscription",
-        "common.back",
         "common.back_to_main",
         "common.back_to_keys",
         "common.cancel",

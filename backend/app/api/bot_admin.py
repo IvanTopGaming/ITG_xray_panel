@@ -201,7 +201,7 @@ def create_tariff():
 @bp.route("/bot/tariffs/<int:tariff_id>", methods=["PUT"])
 @token_required
 def update_tariff(tariff_id):
-    t = Tariff.query.get(tariff_id)
+    t = db.session.get(Tariff, tariff_id)
     if t is None:
         return jsonify({"error": "tariff not found"}), 404
 
@@ -238,7 +238,7 @@ def update_tariff(tariff_id):
 @bp.route("/bot/tariffs/<int:tariff_id>", methods=["DELETE"])
 @token_required
 def archive_tariff(tariff_id):
-    t = Tariff.query.get(tariff_id)
+    t = db.session.get(Tariff, tariff_id)
     if t is None:
         return jsonify({"error": "tariff not found"}), 404
     t.visibility = "archived"
@@ -250,7 +250,7 @@ def archive_tariff(tariff_id):
 @token_required
 def restore_tariff(tariff_id):
     """Bring an archived tariff back to 'public'. No-op on already-visible."""
-    t = Tariff.query.get(tariff_id)
+    t = db.session.get(Tariff, tariff_id)
     if t is None:
         return jsonify({"error": "tariff not found"}), 404
     if t.visibility == "archived":
@@ -265,7 +265,7 @@ def delete_tariff_permanent(tariff_id):
     """Hard-delete a tariff. Refuses when Payment rows reference it
     (FK is RESTRICT — preserves billing history). TariffItem and
     UserTariffAccess cascade-delete with the tariff row."""
-    t = Tariff.query.get(tariff_id)
+    t = db.session.get(Tariff, tariff_id)
     if t is None:
         return jsonify({"error": "tariff not found"}), 404
     payment_count = Payment.query.filter_by(tariff_id=tariff_id).count()
@@ -288,7 +288,7 @@ def delete_tariff_permanent(tariff_id):
 @bp.route("/bot/tariffs/<int:tariff_id>/duplicate", methods=["POST"])
 @token_required
 def duplicate_tariff(tariff_id):
-    src = Tariff.query.get(tariff_id)
+    src = db.session.get(Tariff, tariff_id)
     if src is None:
         return jsonify({"error": "tariff not found"}), 404
 
@@ -384,7 +384,7 @@ def upsert_text(key):
     if not isinstance(text, str):
         return jsonify({"error": "text must be a string"}), 400
 
-    row = BotText.query.get((key, lang))
+    row = db.session.get(BotText, (key, lang))
     if row is None:
         row = BotText(key=key, lang=lang, text=text)
         db.session.add(row)
@@ -410,7 +410,7 @@ def delete_text(key):
     lang = request.args.get("lang", "")
     if lang not in _VALID_TEXT_LANGS:
         return jsonify({"error": f"lang must be one of {sorted(_VALID_TEXT_LANGS)}"}), 400
-    row = BotText.query.get((key, lang))
+    row = db.session.get(BotText, (key, lang))
     if row is None:
         return jsonify({"error": "not found"}), 404
     db.session.delete(row)
@@ -512,7 +512,7 @@ def list_telegram_users():
 @bp.route("/bot/users/<int:tg_id>", methods=["GET"])
 @token_required
 def get_telegram_user(tg_id):
-    user = TelegramUser.query.get(tg_id)
+    user = db.session.get(TelegramUser, tg_id)
     if user is None:
         return jsonify({"error": "telegram user not found"}), 404
     local_clients = Client.query.filter_by(telegram_id=tg_id).all()
@@ -555,7 +555,7 @@ def create_grant(tg_id):
     if billing not in _VALID_BILLING:
         return jsonify({"error": f"billing must be one of {sorted(_VALID_BILLING)}"}), 400
 
-    tariff = Tariff.query.get(tariff_id)
+    tariff = db.session.get(Tariff, tariff_id)
     if tariff is None:
         return jsonify({"error": "tariff not found"}), 404
 
@@ -564,7 +564,7 @@ def create_grant(tg_id):
             {"error": "'paid' grants are only meaningful for private tariffs (the user can already buy public ones)"}
         ), 400
 
-    user = TelegramUser.query.get(tg_id)
+    user = db.session.get(TelegramUser, tg_id)
     if user is None:
         user = TelegramUser(telegram_id=tg_id, language="ru")
         db.session.add(user)
@@ -646,28 +646,40 @@ def revoke_grant(tg_id, grant_id):
 @bp.route("/bot/users/<int:tg_id>/block", methods=["POST"])
 @token_required
 def block_user(tg_id):
-    """Block: bot ignores them, grants cancelled, clients disabled (kept for audit), Xray sessions yanked."""
-    user = TelegramUser.query.get(tg_id)
+    """Block: bot ignores them, grants cancelled, clients disabled (kept for audit), Xray sessions yanked.
+
+    Three-phase to keep the SQLite writer lock short: classify clients,
+    run gRPC removals with no DB writes in flight, then commit all mutations
+    in one transaction.
+    """
+    user = db.session.get(TelegramUser, tg_id)
     if user is None:
         return jsonify({"error": "user not found"}), 404
 
-    user.blocked = True
-
     active_clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
+    # Pre-fetch inbounds so the gRPC block doesn't pull in extra SELECTs.
+    inbound_tags = {c.inbound_tag for c in active_clients}
+    inbounds_by_tag = (
+        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
+    )
+
+    # ── Phase: gRPC side-effects (no DB writes) ──────────────────────────
     restart_required = False
     for c in active_clients:
-        c.enable = False
-        ib = Inbound.query.filter_by(tag=c.inbound_tag).first()
+        ib = inbounds_by_tag.get(c.inbound_tag)
         if ib and ib.protocol in ("vless", "vmess"):
             try:
-                removed = _api_remove_user_grpc(c.inbound_tag, c.email)
-                if not removed:
+                if not _api_remove_user_grpc(c.inbound_tag, c.email):
                     restart_required = True
             except Exception:
                 restart_required = True
         else:
             restart_required = True
 
+    # ── Phase: single short write transaction ────────────────────────────
+    user.blocked = True
+    for c in active_clients:
+        c.enable = False
     cancelled_grants = UserTariffAccess.query.filter_by(telegram_id=tg_id).delete(synchronize_session=False)
     db.session.commit()
 
@@ -695,7 +707,7 @@ def block_user(tg_id):
 @token_required
 def unblock_user(tg_id):
     """Lift the block flag only — cancelled tariffs and disabled clients stay; admin re-grants if needed."""
-    user = TelegramUser.query.get(tg_id)
+    user = db.session.get(TelegramUser, tg_id)
     if user is None:
         return jsonify({"error": "user not found"}), 404
     user.blocked = False
@@ -710,28 +722,37 @@ def unblock_user(tg_id):
 @bp.route("/bot/users/<int:tg_id>/tariffs/<int:tariff_id>", methods=["DELETE"])
 @token_required
 def revoke_tariff_from_user(tg_id, tariff_id):
-    """Revoke one tariff: disable matching clients, gRPC-yank vless/vmess (else regen+restart), drop the grant."""
-    active_clients = Client.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id, enable=True).all()
+    """Revoke one tariff: disable matching clients, gRPC-yank vless/vmess (else regen+restart), drop the grant.
 
+    Three-phase to keep the SQLite writer lock short: classify clients,
+    run gRPC removals with no DB writes in flight, then commit in one go.
+    """
+    active_clients = Client.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id, enable=True).all()
+    inbound_tags = {c.inbound_tag for c in active_clients}
+    inbounds_by_tag = (
+        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
+    )
+
+    # ── Phase: gRPC side-effects (no DB writes) ──────────────────────────
     restart_required = False
     for c in active_clients:
-        c.enable = False
-        c.tariff_id = None
-        ib = Inbound.query.filter_by(tag=c.inbound_tag).first()
+        ib = inbounds_by_tag.get(c.inbound_tag)
         if ib and ib.protocol in ("vless", "vmess"):
             try:
-                removed = _api_remove_user_grpc(c.inbound_tag, c.email)
-                if not removed:
+                if not _api_remove_user_grpc(c.inbound_tag, c.email):
                     restart_required = True
             except Exception:
                 restart_required = True
         else:
             restart_required = True
 
+    # ── Phase: single short write transaction ────────────────────────────
+    for c in active_clients:
+        c.enable = False
+        c.tariff_id = None
     revoked_grants = UserTariffAccess.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id).delete(
         synchronize_session=False
     )
-
     db.session.commit()
 
     if active_clients:

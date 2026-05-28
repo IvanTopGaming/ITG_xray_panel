@@ -64,12 +64,15 @@ class TestFederationClient:
     def test_base_url_strips_trailing_slash(self):
         assert self.client.base_url == "https://child.example.com"
 
-    def test_snapshot_calls_correct_url(self):
+    def test_snapshot_calls_correct_url_with_split_timeout(self):
+        """Snapshot is called every 10s by poll_linked_panels. Use a tuple
+        (connect, read) timeout so an unreachable panel fails fast on connect
+        (2s) instead of blocking the polling cycle for the full 5s read budget."""
         with patch.object(self.client._session, "get", return_value=_mock_response({"inbounds": []})) as mock_get:
             result = self.client.snapshot()
         mock_get.assert_called_once_with(
             "https://child.example.com/api/federation/snapshot",
-            timeout=5,
+            timeout=(2, 5),
         )
         assert result == {"inbounds": []}
 

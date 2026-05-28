@@ -44,15 +44,12 @@ from app.models import (  # noqa: E402
     Client,
     DomainStat,
     Inbound,
-    Node,
-    NodeClientTraffic,
     Outbound,
     RoutingProfile,
     TrafficSnapshot,
 )
 
 DEMO_PREFIX = "demo-"
-DEMO_NODE_PREFIX = "demo-node-"
 
 random.seed(20260522)
 
@@ -63,7 +60,7 @@ random.seed(20260522)
 INBOUNDS = [
     {
         "tag": f"{DEMO_PREFIX}vless-reality-vision",
-        "port": 443,
+        "port": 14443,
         "protocol": "vless",
         "label": "🇩🇪 Frankfurt — VLESS Reality (Vision)",
         "routing": f"{DEMO_PREFIX}ru-direct",
@@ -218,23 +215,28 @@ INBOUNDS = [
             "network": "tcp",
             "security": "none",
             "ssMethod": "2022-blake3-aes-128-gcm",
-            "ssPassword": "HH8QWOxZOy8vctWMHJyVFA==",
+            "ssPassword": "J87ix+jNMGJ4Fa7bRkfSGg==",
             "ssNetwork": "tcp",
         },
     },
     {
-        "tag": f"{DEMO_PREFIX}ss-2022-chacha",
+        # Xray multi-user mode (panel's default — clients live in `Client`
+        # rows, not in inbound settings) only supports the blake3-aes-*-gcm
+        # methods. chacha20-poly1305 is single-user only and crashes startup
+        # with "shadowsocks 2022 (multi-user): only blake3-aes-*-gcm methods
+        # are supported".
+        "tag": f"{DEMO_PREFIX}ss-2022-aes256",
         "port": 2087,
         "protocol": "shadowsocks",
-        "label": "🇯🇵 Tokyo — Shadowsocks 2022 (ChaCha20)",
+        "label": "🇯🇵 Tokyo — Shadowsocks 2022 (AES-256)",
         "routing": None,
         "device_limit": 0,
         "fallback": None,
         "stream": {
             "network": "tcp,udp",
             "security": "none",
-            "ssMethod": "2022-blake3-chacha20-poly1305",
-            "ssPassword": "Lk1nbZQ95K6Apg5JaY3qLAQR0bdrXdwJgUdcb1g0RzM=",
+            "ssMethod": "2022-blake3-aes-256-gcm",
+            "ssPassword": "zh67p2SoGJT/sLv2AMd/9ldXvcAa8o8k5SnD990OaYM=",
             "ssNetwork": "tcp,udp",
         },
     },
@@ -584,8 +586,8 @@ USER_EMAILS = [
     ("trent", f"{DEMO_PREFIX}ss-2022-aes"),
     ("uma", f"{DEMO_PREFIX}ss-2022-aes"),
     # Shadowsocks 2022 ChaCha20
-    ("victor", f"{DEMO_PREFIX}ss-2022-chacha"),
-    ("wendy", f"{DEMO_PREFIX}ss-2022-chacha"),
+    ("victor", f"{DEMO_PREFIX}ss-2022-aes256"),
+    ("wendy", f"{DEMO_PREFIX}ss-2022-aes256"),
     # Extras spread across the rest
     ("xavier", f"{DEMO_PREFIX}vless-reality-vision"),
     ("yara", f"{DEMO_PREFIX}vmess-ws"),
@@ -813,17 +815,6 @@ def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
     else:
         device_limit = 0
 
-    # global_limit_bytes (aggregate across master + nodes): 20% have it
-    global_limit = 0
-    if random.random() < 0.20:
-        global_limit = limit_bytes * 3 if limit_bytes else 500 * 1024**3
-
-    # allowed_node_groups: 25% restricted to one group
-    if random.random() < 0.25:
-        node_groups = random.choice(["eu", "us", "asia", "eu,us"])
-    else:
-        node_groups = ""
-
     # reset_day: 30% have monthly reset
     reset_day = random.choice([0, 1, 5, 15]) if random.random() < 0.3 else 0
 
@@ -852,8 +843,6 @@ def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
         "limit_bytes": limit_bytes,
         "expiry_time": expiry_time,
         "device_limit": device_limit if device_limit else None,
-        "global_limit_bytes": global_limit,
-        "allowed_node_groups": node_groups,
         "reset_day": reset_day,
         "last_seen": last_seen,
         "enable": enable,
@@ -886,9 +875,6 @@ def wipe_existing_demo():
             & (TrafficSnapshot.entity_id.like(pattern))
         )
     ).delete(synchronize_session=False)
-    NodeClientTraffic.query.filter(NodeClientTraffic.email.in_(demo_emails)).delete(
-        synchronize_session=False
-    )
     Client.query.filter(Client.inbound_tag.like(pattern)).delete(
         synchronize_session=False
     )
@@ -896,9 +882,6 @@ def wipe_existing_demo():
     Balancer.query.filter(Balancer.tag.like(pattern)).delete(synchronize_session=False)
     Outbound.query.filter(Outbound.tag.like(pattern)).delete(synchronize_session=False)
     RoutingProfile.query.filter(RoutingProfile.name.like(pattern)).delete(
-        synchronize_session=False
-    )
-    Node.query.filter(Node.name.like(f"{DEMO_NODE_PREFIX}%")).delete(
         synchronize_session=False
     )
     db.session.commit()
@@ -971,6 +954,22 @@ def _inbound_meta_by_tag() -> dict[str, dict]:
     return {ib["tag"]: ib for ib in INBOUNDS}
 
 
+def _generate_client_id(inbound: dict) -> str:
+    """For ss-2022 multi-user inbounds, the client's PSK must be base64-encoded
+    bytes of the same length as the server PSK (16 for aes-128, 32 for aes-256).
+    UUIDs work everywhere else."""
+    import base64
+    import secrets
+
+    if inbound["protocol"] == "shadowsocks":
+        method = (inbound.get("stream") or {}).get("ssMethod", "")
+        if "aes-128-gcm" in method:
+            return base64.b64encode(secrets.token_bytes(16)).decode()
+        if "aes-256-gcm" in method:
+            return base64.b64encode(secrets.token_bytes(32)).decode()
+    return str(uuid.uuid4())
+
+
 def create_clients(user_profiles) -> dict[tuple[str, str], Client]:
     print("→ Creating clients with diverse constraints...")
     meta = _inbound_meta_by_tag()
@@ -980,7 +979,7 @@ def create_clients(user_profiles) -> dict[tuple[str, str], Client]:
         constraints = assign_constraints(email, profile, meta[tag])
         ips = pick_ips(profile)
         c = Client(
-            id=str(uuid.uuid4()),
+            id=_generate_client_id(meta[tag]),
             email=email,
             inbound_tag=tag,
             limit_bytes=constraints["limit_bytes"],
@@ -990,8 +989,6 @@ def create_clients(user_profiles) -> dict[tuple[str, str], Client]:
             enable=constraints["enable"],
             last_seen=constraints["last_seen"],
             source_ips=json.dumps(ips),
-            global_limit_bytes=constraints["global_limit_bytes"],
-            allowed_node_groups=constraints["allowed_node_groups"],
             reset_day=constraints["reset_day"],
             device_limit=constraints["device_limit"],
             flow=constraints["flow"],
@@ -1111,107 +1108,6 @@ def create_domain_stats(user_profiles):
     db.session.commit()
 
 
-def create_nodes(user_profiles):
-    print("→ Creating demo nodes...")
-    now_ms = int(datetime.now().timestamp() * 1000)
-    # name, status, last_error, enable, groups, sync_inbound, strict_mirror
-    nodes = [
-        (f"{DEMO_NODE_PREFIX}eu-fra", "online", "", True, "eu", True, False),
-        (
-            f"{DEMO_NODE_PREFIX}us-nyc",
-            "offline",
-            "connection refused",
-            True,
-            "us",
-            False,
-            False,
-        ),
-        (f"{DEMO_NODE_PREFIX}asia-sgp", "online", "", True, "asia", True, False),
-        (
-            f"{DEMO_NODE_PREFIX}eu-ams",
-            "online",
-            "",
-            False,
-            "eu",
-            False,
-            False,
-        ),  # disabled, still listed
-        (
-            f"{DEMO_NODE_PREFIX}asia-tyo",
-            "online",
-            "",
-            True,
-            "asia",
-            True,
-            True,
-        ),  # strict mirror
-        (
-            f"{DEMO_NODE_PREFIX}us-lax",
-            "degraded",
-            "high latency (300ms)",
-            True,
-            "us",
-            False,
-            False,
-        ),
-    ]
-    created = []
-    for name, status, err, enable, groups, sync_inbound, strict_mirror in nodes:
-        n = Node(
-            name=name,
-            url=f"https://{name}.example.com",
-            username="admin",
-            password="demo",
-            inbound_tag=f"{DEMO_PREFIX}vless-reality-vision",
-            enable=enable,
-            sync_users=True,
-            sync_inbound=sync_inbound,
-            strict_mirror=strict_mirror,
-            status=status,
-            last_check=now_ms,
-            last_error=err,
-            groups=groups,
-        )
-        db.session.add(n)
-        created.append(n)
-    db.session.commit()
-
-    print("→ Creating node client traffic samples (varied per node)...")
-    online = [n for n in created if n.status == "online" and n.enable]
-    rows = []
-    for n in online:
-        for (email, tag), profile in user_profiles.items():
-            # Only users whose allowed_node_groups matches this node's group
-            c = Client.query.filter_by(email=email, inbound_tag=tag).first()
-            if c and c.allowed_node_groups:
-                groups = [
-                    g.strip() for g in c.allowed_node_groups.split(",") if g.strip()
-                ]
-                if n.groups not in groups:
-                    continue
-            # 30% of remaining users skip this node
-            if random.random() < 0.30:
-                continue
-            mult = profile["peak"] / 1_000_000_000  # GB/h baseline
-            # Each node sees a fraction of user's traffic
-            node_share = random.uniform(0.05, 0.5)
-            up = int(mult * node_share * 100_000_000 * random.uniform(0.5, 1.8))
-            down = int(up * random.uniform(2.5, 7.0))
-            rows.append(
-                {
-                    "node_id": n.id,
-                    "email": email,
-                    "up": max(0, up),
-                    "down": max(0, down),
-                    "last_polled": now_ms,
-                }
-            )
-    if rows:
-        db.session.bulk_insert_mappings(NodeClientTraffic, rows)
-    db.session.commit()
-    print(f"   {len(rows)} per-node traffic rows")
-
-
 def main():
     app = create_app()
     with app.app_context():
@@ -1222,7 +1118,6 @@ def main():
         clients_by_key = create_clients(user_profiles)
         create_traffic_snapshots(user_profiles, clients_by_key)
         create_domain_stats(user_profiles)
-        create_nodes(user_profiles)
 
         print("\n─── Seed complete ───")
         print(f"  Routing profiles:   {RoutingProfile.query.count()}")
@@ -1232,8 +1127,6 @@ def main():
         print(f"  Clients:            {Client.query.count()}")
         print(f"  Traffic snapshots:  {TrafficSnapshot.query.count()}")
         print(f"  Domain stats:       {DomainStat.query.count()}")
-        print(f"  Nodes:              {Node.query.count()}")
-        print(f"  Node-client rows:   {NodeClientTraffic.query.count()}")
 
         # Constraint diversity breakdown
         clients = Client.query.filter(Client.inbound_tag.like(f"{DEMO_PREFIX}%")).all()
@@ -1244,16 +1137,12 @@ def main():
             if c.expiry_time and c.expiry_time < int(datetime.now().timestamp() * 1000)
         )
         with_limit = sum(1 for c in clients if c.limit_bytes > 0)
-        with_global = sum(1 for c in clients if c.global_limit_bytes > 0)
-        with_group_filter = sum(1 for c in clients if c.allowed_node_groups)
         with_device_lim = sum(1 for c in clients if c.device_limit)
         no_ips = sum(1 for c in clients if c.source_ips == "[]" or not c.source_ips)
         print("\n  Client constraint diversity:")
         print(f"    disabled:               {disabled}/{len(clients)}")
         print(f"    expired:                {expired}/{len(clients)}")
         print(f"    byte limit set:         {with_limit}/{len(clients)}")
-        print(f"    global limit set:       {with_global}/{len(clients)}")
-        print(f"    node group restricted:  {with_group_filter}/{len(clients)}")
         print(f"    device limit set:       {with_device_lim}/{len(clients)}")
         print(f"    empty source_ips:       {no_ips}/{len(clients)}")
 

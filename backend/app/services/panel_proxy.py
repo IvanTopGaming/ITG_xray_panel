@@ -41,8 +41,13 @@ class FederationClient:
     # ── snapshot ──────────────────────────────────────────────────────────
 
     def snapshot(self) -> dict:
-        """GET /api/federation/snapshot — returns the child's current state."""
-        resp = self._session.get(f"{self.base_url}/api/federation/snapshot", timeout=5)
+        """GET /api/federation/snapshot — returns the child's current state.
+
+        Called every 10s by `poll_linked_panels`. Uses a split `(connect, read)`
+        timeout so an offline panel fails fast on connect (2s) instead of
+        blocking the polling cycle for the full read budget.
+        """
+        resp = self._session.get(f"{self.base_url}/api/federation/snapshot", timeout=(2, 5))
         resp.raise_for_status()
         return resp.json()
 
@@ -200,7 +205,7 @@ def _get_panel_or_raise(panel_id: int) -> LinkedPanel:
     - panel.enable is False
     - panel.status is "offline"
     """
-    panel = LinkedPanel.query.get(panel_id)
+    panel = db.session.get(LinkedPanel, panel_id)
     if panel is None:
         raise ValueError(f"Panel {panel_id} not found")
     if not panel.enable:

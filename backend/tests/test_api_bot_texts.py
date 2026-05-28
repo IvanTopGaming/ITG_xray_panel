@@ -72,7 +72,7 @@ def test_put_text_creates_new_row(app_with_admin, db, client, admin_headers):
     assert body["key"] == "welcome.title"
     assert body["lang"] == "en"
     assert body["text"] == "Hello world"
-    assert BotText.query.get(("welcome.title", "en")).text == "Hello world"
+    assert db.session.get(BotText, ("welcome.title", "en")).text == "Hello world"
 
 
 def test_put_text_updates_existing(app_with_admin, db, client, admin_headers):
@@ -85,7 +85,7 @@ def test_put_text_updates_existing(app_with_admin, db, client, admin_headers):
         json={"lang": "ru", "text": "новое"},
     )
     assert resp.status_code == 200
-    assert BotText.query.get(("welcome.title", "ru")).text == "новое"
+    assert db.session.get(BotText, ("welcome.title", "ru")).text == "новое"
 
 
 def test_put_text_rejects_invalid_lang(app_with_admin, db, client, admin_headers):
@@ -103,7 +103,7 @@ def test_delete_text_removes_row(app_with_admin, db, client, admin_headers):
 
     resp = client.delete("/api/bot/texts/welcome.title?lang=ru", headers=admin_headers)
     assert resp.status_code == 200
-    assert BotText.query.get(("welcome.title", "ru")) is None
+    assert db.session.get(BotText, ("welcome.title", "ru")) is None
 
 
 def test_delete_text_404_if_missing(app_with_admin, db, client, admin_headers):

@@ -48,6 +48,7 @@ const DATETIME_OPTIONS: Intl.DateTimeFormatOptions = {
   day: '2-digit',
   hour: '2-digit',
   minute: '2-digit',
+  hour12: false, // 24h everywhere — no "05:26 PM"
 };
 
 const DATE_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -63,35 +64,6 @@ export function formatDateTime(input: string | number | null | undefined, fallba
     ...DATETIME_OPTIONS,
     timeZone: _timezone,
   }).format(d);
-}
-
-// Given a date string (YYYY-MM-DD), returns the epoch-ms that corresponds to
-// 12:00:00 *in the configured display timezone* on that day. The picker in
-// UserForm sends only a date — without this helper, `new Date(yyyy-mm-dd)`
-// parses as UTC midnight, which shows up as 03:00 of the next/previous day
-// in MSK and confuses admins about when a key actually dies. Anchoring to
-// noon gives a stable, locale-neutral "end of business day" semantic.
-export function epochMsForDateAtNoon(dateOnly: string): number {
-  const want = `${dateOnly}T12:00:00`;
-  const wantAsUtc = Date.parse(want + 'Z');
-  // Start with noon UTC; measure how that moment renders in our tz, then
-  // shift by the difference so the rendered output matches 12:00 in tz.
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: _timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  const parts = Object.fromEntries(fmt.formatToParts(wantAsUtc).map((p) => [p.type, p.value]));
-  let hour = parts.hour;
-  if (hour === '24') hour = '00';
-  const seenStr = `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}:${parts.second}`;
-  const seenAsUtc = Date.parse(seenStr + 'Z');
-  return wantAsUtc + (wantAsUtc - seenAsUtc);
 }
 
 export function formatDate(input: string | number | null | undefined, fallback = '—'): string {
@@ -170,8 +142,8 @@ export function formatDateTimeForLocalInput(input: string | number | null | unde
 }
 
 // Inverse of formatDateTimeForLocalInput: interpret "YYYY-MM-DDTHH:MM" as a
-// wall-clock time in the configured timezone, return Unix epoch in seconds.
-export function epochSecFromLocalDateTimeInput(str: string): number {
+// wall-clock time in the configured timezone, return Unix epoch in ms.
+export function epochMsFromLocalDateTimeInput(str: string): number {
   if (!str) return 0;
   const want = `${str}:00`;
   const wantAsUtc = Date.parse(want + 'Z');
@@ -190,5 +162,11 @@ export function epochSecFromLocalDateTimeInput(str: string): number {
   if (hour === '24') hour = '00';
   const seenStr = `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}:${parts.second}`;
   const seenAsUtc = Date.parse(seenStr + 'Z');
-  return Math.floor((wantAsUtc + (wantAsUtc - seenAsUtc)) / 1000);
+  return wantAsUtc + (wantAsUtc - seenAsUtc);
+}
+
+// Same as above but returns seconds — Statistics chart endpoints take Unix
+// seconds for their range parameters.
+export function epochSecFromLocalDateTimeInput(str: string): number {
+  return Math.floor(epochMsFromLocalDateTimeInput(str) / 1000);
 }

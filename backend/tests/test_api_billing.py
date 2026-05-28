@@ -161,7 +161,7 @@ def test_webhook_processes_succeeded_payment(client, public_tariff, app):
         )
     assert resp.status_code == 200
     with app.app_context():
-        assert Payment.query.get(pid).status == "succeeded"
+        assert db.session.get(Payment, pid).status == "succeeded"
 
 
 def test_webhook_is_idempotent_on_repeat_delivery(client, public_tariff, app):
@@ -192,7 +192,7 @@ def test_webhook_marks_cancelled(client, public_tariff, app):
         )
     assert resp.status_code == 200
     with app.app_context():
-        assert Payment.query.get(pid).status == "cancelled"
+        assert db.session.get(Payment, pid).status == "cancelled"
     mock_publish.assert_called_once()
     assert mock_publish.call_args.args[0] == "payment_cancelled"
 

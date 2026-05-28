@@ -71,7 +71,7 @@ def test_activate_trial_creates_client_and_marks_used(app_with_service_api, db, 
     assert "clients" in body
     assert len(body["clients"]) == 1
 
-    user = TelegramUser.query.get(42)
+    user = db.session.get(TelegramUser, 42)
     assert user.trial_used_at is not None
     assert Client.query.filter_by(telegram_id=42).count() == 1
 
@@ -117,7 +117,7 @@ def test_activate_trial_creates_telegram_user_if_missing(
             json={"telegram_id": 42},
         )
     assert resp.status_code == 200
-    assert TelegramUser.query.get(42) is not None
+    assert db.session.get(TelegramUser, 42) is not None
 
 
 def test_activate_trial_requires_token(app_with_service_api, db, client):

@@ -72,7 +72,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         try:
             middleware.invalidate(int(tg_id))
         except Exception as exc:
-            logger.warning("middleware.invalidate %s failed: %s", tg_id, exc)
+            logger.info("middleware.invalidate %s failed: %s", tg_id, exc)
         return
 
     markup = None
@@ -166,7 +166,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         try:
             await bot.send_message(tg_id, text, reply_markup=keyboard)
         except Exception as exc:
-            logger.warning("bot_events.send to %s failed: %s", tg_id, exc)
+            logger.error("bot_events.send to %s failed: %s", tg_id, exc)
         return
     elif etype == "traffic_notification":
         from aiogram import types as _types
@@ -201,7 +201,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         try:
             await bot.send_message(tg_id, text, reply_markup=keyboard)
         except Exception as exc:
-            logger.warning("bot_events.send to %s failed: %s", tg_id, exc)
+            logger.error("bot_events.send to %s failed: %s", tg_id, exc)
         return
     else:
         return
@@ -212,13 +212,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         try:
             await bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception as exc:
-            logger.warning(
-                "delete_message failed for %s (%s/%s): %s — sending new message anyway",
-                etype,
-                chat_id,
-                message_id,
-                exc,
-            )
+            logger.info("delete_message failed for %s (%s/%s): %s", etype, chat_id, message_id, exc)
     try:
         await bot.send_message(tg_id, text, reply_markup=markup, parse_mode="HTML")
     except Exception as exc:
@@ -234,12 +228,22 @@ async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None) -> No
     backoff = 1.0
     while True:
         try:
-            client = redis_async.from_url(uri)
+            client = redis_async.from_url(
+                uri,
+                socket_keepalive=True,
+                health_check_interval=30,
+            )
             pubsub = client.pubsub()
             await pubsub.subscribe(_CHANNEL)
             logger.info("bot_events_consumer: subscribed to %s", _CHANNEL)
             backoff = 1.0
-            async for raw in pubsub.listen():
+            while True:
+                raw = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=30.0,
+                )
+                if raw is None:
+                    continue
                 if raw.get("type") != "message":
                     continue
                 try:

@@ -21,7 +21,7 @@ def app_with_fed_endpoints(app, db):
     def _dual():
         return jsonify({"ok": True})
 
-    cfg = FederationConfig.query.get(1)
+    cfg = db.session.get(FederationConfig, 1)
     cfg.federation_token = "valid-fed-token-123"
     db.session.commit()
     return app

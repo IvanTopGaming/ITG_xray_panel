@@ -35,7 +35,11 @@ def _build_bot() -> Bot:
 
 
 async def main() -> None:
-    logging.basicConfig(level=getattr(logging, config.BOT_LOG_LEVEL, logging.INFO))
+    logging.basicConfig(
+        level=getattr(logging, config.BOT_LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     await runtime_config.bootstrap()
     await panel_api.reload_from_runtime()
@@ -89,6 +93,7 @@ async def main() -> None:
     # Accessor, not the Bot itself — hot-swap replaces state["bot"] under us.
     consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware))
 
+    logger.info("bot started, polling Telegram")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)

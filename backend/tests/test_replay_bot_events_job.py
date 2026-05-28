@@ -33,7 +33,7 @@ def test_replay_picks_up_old_undelivered_and_marks_them(app, db):
         replay_undelivered_bot_events()
 
     fake_redis.publish.assert_called_once()
-    refreshed = BotEvent.query.get(event.id)
+    refreshed = db.session.get(BotEvent, event.id)
     assert refreshed.delivered_at is not None
 
 
@@ -85,7 +85,7 @@ def test_replay_keeps_delivered_at_null_when_publish_fails(app, db):
     with patch("app.jobs.notifications._get_redis", return_value=fake_redis):
         replay_undelivered_bot_events()
 
-    refreshed = BotEvent.query.get(e.id)
+    refreshed = db.session.get(BotEvent, e.id)
     assert refreshed.delivered_at is None
 
 
@@ -102,5 +102,5 @@ def test_replay_noop_when_redis_unconfigured(app, db):
     with patch("app.jobs.notifications._get_redis", return_value=None):
         replay_undelivered_bot_events()  # must not raise
 
-    refreshed = BotEvent.query.get(e.id)
+    refreshed = db.session.get(BotEvent, e.id)
     assert refreshed.delivered_at is None

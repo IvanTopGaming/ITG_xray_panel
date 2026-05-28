@@ -6,6 +6,8 @@ import tempfile
 from functools import wraps
 from flask import request, jsonify
 
+from app.extensions import db
+
 
 def get_or_create_secret_key():
     env_key = os.getenv("SECRET_KEY")
@@ -195,7 +197,7 @@ def _check_federation_token(token: str) -> bool:
     import hmac
     from app.models import FederationConfig
 
-    cfg = FederationConfig.query.get(1)
+    cfg = db.session.get(FederationConfig, 1)
     if cfg is None or not cfg.federation_token:
         return False
     return hmac.compare_digest(token, cfg.federation_token)

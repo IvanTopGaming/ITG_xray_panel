@@ -22,10 +22,6 @@ import {
   RefreshCw,
   ChevronUp,
   ChevronDown,
-  Server,
-  Wifi,
-  WifiOff,
-  HelpCircle,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -58,7 +54,7 @@ function toLocalDateTimeInput(ts: number): string {
 function fromLocalDateTimeInput(s: string): number {
   return epochSecFromLocalDateTimeInput(s);
 }
-type StatsTab = 'overview' | 'users' | 'inbounds' | 'sites' | 'nodes';
+type StatsTab = 'overview' | 'users' | 'inbounds' | 'sites';
 
 interface OverviewData {
   total_up_alltime: number;
@@ -100,22 +96,6 @@ interface UserRankEntry {
   last_seen: number;
   limit_bytes: number;
   source_ips?: string[];
-}
-
-interface NodeSummary {
-  id: number;
-  name: string;
-  url: string;
-  status: string;
-  last_check: number;
-  last_error: string;
-  groups: string[];
-  enable: boolean;
-  inbound_tag: string;
-  total_up: number;
-  total_down: number;
-  tracked_users: number;
-  last_polled: number;
 }
 
 // ─── Protocol colors ────────────────────────────────────────────────────────
@@ -602,7 +582,6 @@ const TABS: { id: StatsTab; label: string; icon: React.ElementType }[] = [
   { id: 'users', label: 'Users', icon: Users },
   { id: 'inbounds', label: 'Inbounds', icon: Layers },
   { id: 'sites', label: 'Sites', icon: Globe },
-  { id: 'nodes', label: 'Nodes', icon: Server },
 ];
 
 // ─── Sortable table header ────────────────────────────────────────────────────
@@ -755,43 +734,6 @@ export default function Statistics() {
       },
     enabled: tab === 'users',
     refetchInterval: 30_000,
-  });
-
-  // ── Node stats ──
-  const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
-
-  const { data: nodesSummary, isLoading: nodesLoading } = useQuery<NodeSummary[]>({
-    queryKey: ['stats-nodes-summary'],
-    queryFn: async () => (await api.get('/stats/nodes/summary')).data,
-    enabled: tab === 'nodes',
-    refetchInterval: 30_000,
-  });
-
-  const {
-    data: nodeOverview,
-    isLoading: nodeOverviewLoading,
-    isError: nodeOverviewError,
-  } = useQuery<OverviewData>({
-    queryKey: ['stats-node-overview', selectedNodeId, period, customRange],
-    queryFn: async () =>
-      (await api.get(`/stats/nodes/${selectedNodeId}/overview?${periodQuery(period, customRange)}`))
-        .data,
-    enabled: !!selectedNodeId && tab === 'nodes',
-    refetchInterval: 30_000,
-    retry: false,
-  });
-
-  const { data: nodeTraffic } = useQuery<TrafficData>({
-    queryKey: ['stats-node-traffic', selectedNodeId, period, customRange],
-    queryFn: async () =>
-      (
-        await api.get(
-          `/stats/nodes/${selectedNodeId}/traffic?${periodQuery(period, customRange)}&entity_type=all`
-        )
-      ).data,
-    enabled: !!selectedNodeId && tab === 'nodes',
-    refetchInterval: 30_000,
-    retry: false,
   });
 
   const handleSort = (key: string) => {
@@ -1641,226 +1583,6 @@ export default function Statistics() {
                 </div>
               )}
             </div>
-          </motion.div>
-        )}
-
-        {/* ── NODES ──��───────────────────────────────────────────────── */}
-        {tab === 'nodes' && (
-          <motion.div
-            key="nodes"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="flex flex-col gap-5"
-          >
-            {/* Node cards grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {nodesLoading &&
-                [1, 2, 3].map((i) => <div key={i} className="h-32 rounded-2xl skeleton" />)}
-              {!nodesLoading &&
-                (nodesSummary ?? []).map((n) => {
-                  const isSelected = selectedNodeId === n.id;
-                  const StatusIcon =
-                    n.status === 'online' ? Wifi : n.status === 'offline' ? WifiOff : HelpCircle;
-                  const statusColor =
-                    n.status === 'online'
-                      ? 'text-emerald-400'
-                      : n.status === 'offline'
-                        ? 'text-red-400'
-                        : 'text-gray-500';
-                  return (
-                    <div
-                      key={n.id}
-                      onClick={() => setSelectedNodeId(isSelected ? null : n.id)}
-                      className={cn(
-                        'relative rounded-2xl border p-4 cursor-pointer transition-all duration-200',
-                        isSelected
-                          ? 'bg-primary/10 border-primary/30 shadow-[0_0_16px_rgba(208,188,255,0.1)]'
-                          : 'bg-[#1e1b24]/60 border-white/5 hover:border-white/10 hover:bg-white/[0.03]'
-                      )}
-                    >
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className={cn(
-                              'p-2 rounded-xl',
-                              isSelected ? 'bg-primary/20' : 'bg-white/5'
-                            )}
-                          >
-                            <Server
-                              size={16}
-                              className={isSelected ? 'text-primary' : 'text-gray-400'}
-                            />
-                          </div>
-                          <div>
-                            <h4 className="text-sm font-bold text-white">{n.name}</h4>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <StatusIcon size={10} className={statusColor} />
-                              <span
-                                className={cn('text-[10px] font-semibold uppercase', statusColor)}
-                              >
-                                {n.status}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        {!n.enable && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/20 text-gray-500 border border-gray-500/20">
-                            Disabled
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2 text-center">
-                        <div>
-                          <p className="text-[10px] text-gray-500 mb-0.5">Upload</p>
-                          <p className="text-xs font-bold text-violet-400">
-                            {formatBytes(n.total_up)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-gray-500 mb-0.5">Download</p>
-                          <p className="text-xs font-bold text-blue-400">
-                            {formatBytes(n.total_down)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-gray-500 mb-0.5">Users</p>
-                          <p className="text-xs font-bold text-gray-300">{n.tracked_users}</p>
-                        </div>
-                      </div>
-
-                      {n.groups.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-3">
-                          {n.groups.map((g) => (
-                            <span
-                              key={g}
-                              className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-gray-500 border border-white/5"
-                            >
-                              {g}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              {!nodesLoading && (!nodesSummary || nodesSummary.length === 0) && (
-                <div className="col-span-full text-center py-12 border border-white/5 rounded-2xl bg-white/[0.01]">
-                  <Server size={28} className="mx-auto text-gray-600 mb-2" />
-                  <p className="text-sm text-gray-500">No nodes configured</p>
-                </div>
-              )}
-            </div>
-
-            {/* Node detail panel */}
-            <AnimatePresence>
-              {selectedNodeId && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden"
-                >
-                  {nodeOverviewError ? (
-                    <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-6 text-center">
-                      <WifiOff size={24} className="mx-auto text-red-400 mb-2" />
-                      <p className="text-sm text-red-400 font-medium">Node unreachable</p>
-                      <p className="text-xs text-gray-500 mt-1">
-                        Cannot fetch statistics — the node may be offline
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-4">
-                      {/* Node stat cards */}
-                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                        <StatCard
-                          icon={TrendingUp}
-                          label={`Upload (${rangeLabel})`}
-                          value={formatBytes(nodeOverview?.period_up ?? 0)}
-                          color="violet"
-                        />
-                        <StatCard
-                          icon={TrendingDown}
-                          label={`Download (${rangeLabel})`}
-                          value={formatBytes(nodeOverview?.period_down ?? 0)}
-                          color="blue"
-                        />
-                        <StatCard
-                          icon={Users}
-                          label="Active Users"
-                          value={String(nodeOverview?.active_users ?? 0)}
-                          sub={`${nodeOverview?.total_users ?? 0} total`}
-                          color="emerald"
-                        />
-                        <StatCard
-                          icon={Layers}
-                          label="Inbounds"
-                          value={String(nodeOverview?.active_inbounds ?? 0)}
-                          color="orange"
-                        />
-                      </div>
-
-                      {/* Node traffic chart */}
-                      <div className="rounded-2xl border border-white/5 bg-[#1e1b24]/60 p-5">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-sm font-medium text-gray-300">
-                            Node Traffic Over Time
-                          </h3>
-                          <div className="flex items-center gap-4 text-xs text-gray-500">
-                            <span className="flex items-center gap-1.5">
-                              <span className="w-3 h-0.5 rounded-full bg-violet-400 inline-block" />
-                              Upload
-                            </span>
-                            <span className="flex items-center gap-1.5">
-                              <span className="w-3 h-0.5 rounded-full bg-blue-400 inline-block" />
-                              Download
-                            </span>
-                          </div>
-                        </div>
-                        {nodeOverviewLoading ? (
-                          <div className="h-[200px] flex items-center justify-center">
-                            <RefreshCw size={16} className="animate-spin text-gray-600" />
-                          </div>
-                        ) : (
-                          <AreaChart points={nodeTraffic?.points ?? []} height={200} />
-                        )}
-                      </div>
-
-                      {/* Node top users */}
-                      {(nodeOverview?.top_users?.length ?? 0) > 0 && (
-                        <div className="rounded-2xl border border-white/5 bg-[#1e1b24]/60 p-5">
-                          <h3 className="text-sm font-medium text-gray-300 mb-4 flex items-center gap-2">
-                            <Users size={14} className="text-violet-400" /> Top Users on Node
-                          </h3>
-                          <div className="space-y-2">
-                            {(nodeOverview?.top_users ?? []).slice(0, 10).map((u, i) => (
-                              <div key={i} className="flex items-center gap-3">
-                                <span className="text-xs text-gray-600 w-4 shrink-0">#{i + 1}</span>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-xs text-gray-200 truncate">{u.email}</p>
-                                  <p className="text-[10px] text-gray-600 truncate">
-                                    {u.inbound_tag}
-                                  </p>
-                                </div>
-                                <div className="flex items-center gap-2 text-[10px] font-mono">
-                                  <span className="text-violet-400">
-                                    <ArrowUp size={8} className="inline" /> {formatBytes(u.up)}
-                                  </span>
-                                  <span className="text-blue-400">
-                                    <ArrowDown size={8} className="inline" /> {formatBytes(u.down)}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>

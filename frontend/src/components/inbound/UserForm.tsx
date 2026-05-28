@@ -6,7 +6,7 @@ import { Select } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
 import { Inbound, Client } from '@/lib/types';
 import api from '@/lib/api';
-import { epochMsForDateAtNoon, formatDateForPicker } from '@/lib/datetime';
+import { epochMsFromLocalDateTimeInput, formatDateTimeForLocalInput } from '@/lib/datetime';
 import { toast } from 'react-toastify';
 import { RefreshCw } from 'lucide-react';
 
@@ -19,12 +19,24 @@ interface UserFormProps {
 
 export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormProps) {
   const queryClient = useQueryClient();
-  const { register, handleSubmit, setValue, control } = useForm({
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    control,
+    formState: { dirtyFields },
+  } = useForm({
     defaultValues: {
       email: client.email,
       id: client.id,
       limit_gb: client.limit_bytes ? client.limit_bytes / 1024 ** 3 : 0,
-      expiry_date: client.expiry_time ? formatDateForPicker(client.expiry_time) : '',
+      // Pre-fill with the existing expiry if set, otherwise with "now" so the
+      // picker has a starting point instead of an empty box. On submit we
+      // check `dirtyFields.expiry_date` — if the admin did NOT touch the
+      // field, we preserve the original client.expiry_time (which may be 0,
+      // i.e. unlimited). Without that guard, opening + saving an unlimited
+      // client would silently revoke it by setting expiry to "now".
+      expiry_date: formatDateTimeForLocalInput(client.expiry_time || Date.now()),
       reset_day: client.reset_day,
       enable: client.enable,
       flow: client.flow || '',
@@ -73,13 +85,21 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
   });
 
   const onSubmit = (data: any) => {
+    // If the admin did not touch the expiry picker, send back the original
+    // expiry_time (preserves unlimited=0 instead of using the pre-fill).
+    const expiry_time = dirtyFields.expiry_date
+      ? data.expiry_date
+        ? epochMsFromLocalDateTimeInput(data.expiry_date)
+        : 0
+      : client.expiry_time;
+
     mutation.mutate({
       tag: inbound.tag,
       old_email: client.email,
       new_email: data.email,
       new_id: data.id,
       limit_bytes: Number(data.limit_gb) * 1024 ** 3,
-      expiry_time: data.expiry_date ? epochMsForDateAtNoon(data.expiry_date) : 0,
+      expiry_time,
       reset_day: Number(data.reset_day),
       enable: data.enable,
       flow: data.flow,
@@ -124,7 +144,12 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
 
       <div className="grid grid-cols-2 gap-4">
         <Input label="Per-Node Data Limit (GB)" type="number" {...register('limit_gb')} />
-        <Input label="Expiry Date" type="date" {...register('expiry_date')} />
+        {/*
+          Native datetime-local widgets use the browser locale's 12/24h
+          preference. `lang="en-GB"` forces 24h without AM/PM while keeping
+          the input's English UI strings.
+        */}
+        <Input label="Expiry" type="datetime-local" lang="en-GB" {...register('expiry_date')} />
       </div>
 
       <Input

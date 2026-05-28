@@ -26,7 +26,7 @@ def _get_redis():
     try:
         return redis_lib.Redis.from_url(uri, socket_connect_timeout=1)
     except Exception as exc:
-        logger.warning("Failed to construct redis client: %s", exc)
+        logger.info("Failed to construct redis client: %s", exc)
         return None
 
 

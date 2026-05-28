@@ -509,3 +509,83 @@ def test_bot_service_tariffs_only_owning_tariff_marked_active(app_with_service_a
     by_name = {t["name"]: t for t in body}
     assert by_name["Owned"]["is_active"] is True
     assert by_name["Other"]["is_active"] is False
+
+
+def test_bot_service_tariffs_item_includes_inbound_label_fallback(app_with_service_api, db, client, service_headers):
+    from app.models import Inbound, Tariff, TariffItem
+
+    with app_with_service_api.app_context():
+        db.session.add(Inbound(tag="de-vless", protocol="vless", port=20001, stream_settings="{}", label="Germany"))
+        db.session.add(Inbound(tag="nl-vless", protocol="vless", port=20002, stream_settings="{}", label=None))
+        t = Tariff(
+            name="Combo",
+            price_rub=200,
+            period_days=30,
+            visibility="public",
+            enabled=True,
+            is_trial=False,
+            sort_order=1,
+        )
+        t.items = [
+            TariffItem(inbound_tag="de-vless", label=None, traffic_gb=0, sort_order=0),
+            TariffItem(inbound_tag="nl-vless", label="Custom NL", traffic_gb=50, sort_order=1),
+            TariffItem(inbound_tag="unknown-tag", label=None, traffic_gb=0, sort_order=2),
+        ]
+        db.session.add(t)
+        db.session.commit()
+
+    resp = client.get("/api/bot-service/tariffs", headers=service_headers)
+    assert resp.status_code == 200
+    body = resp.get_json()
+    items = body[0]["items"]
+    by_tag = {it["inbound_tag"]: it for it in items}
+
+    assert by_tag["de-vless"]["inbound_label"] == "Germany"
+    assert by_tag["nl-vless"]["inbound_label"] == "nl-vless"
+    assert by_tag["unknown-tag"]["inbound_label"] == "unknown-tag"
+
+
+def test_bot_service_tariffs_inbound_label_resolves_from_linked_panel(
+    app_with_service_api, db, client, service_headers, monkeypatch
+):
+    from app.models import LinkedPanel, Tariff, TariffItem
+
+    with app_with_service_api.app_context():
+        panel = LinkedPanel(
+            name="Gateway",
+            url="https://gateway.example.com",
+            federation_token="x" * 32,
+            enable=True,
+            status="online",
+            created_at=int(__import__("time").time() * 1000),
+        )
+        db.session.add(panel)
+        db.session.flush()
+        t = Tariff(
+            name="Combo",
+            price_rub=200,
+            period_days=30,
+            visibility="public",
+            enabled=True,
+            is_trial=False,
+            sort_order=1,
+        )
+        t.items = [
+            TariffItem(inbound_tag="gateway", panel_id=panel.id, label=None, traffic_gb=0, sort_order=0),
+        ]
+        db.session.add(t)
+        db.session.commit()
+        panel_id = panel.id
+
+    def fake_snapshot(pid):
+        if pid == panel_id:
+            return {"inbounds": [{"tag": "gateway", "label": "🇩🇪 Gateway"}]}
+        return None
+
+    monkeypatch.setattr("app.services.panel_proxy.get_panel_snapshot", fake_snapshot)
+
+    resp = client.get("/api/bot-service/tariffs", headers=service_headers)
+    assert resp.status_code == 200
+    item = resp.get_json()[0]["items"][0]
+    assert item["inbound_label"] == "🇩🇪 Gateway"
+    assert item["panel_id"] == panel_id

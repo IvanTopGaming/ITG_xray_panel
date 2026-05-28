@@ -69,8 +69,13 @@ def _ensure_tariff_available(tariff: Tariff | None, telegram_id: int) -> None:
 
 
 def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str, Any]:
-    tariff = Tariff.query.get(tariff_id)
+    tariff = db.session.get(Tariff, tariff_id)
     _ensure_tariff_available(tariff, telegram_id)
+
+    # Validate YooKassa config BEFORE the Payment INSERT so a misconfigured
+    # panel doesn't leak placeholder pending rows that linger until cleanup.
+    _configure_sdk()
+    return_url = _get_setting("yookassa_return_url") or "https://t.me/"
 
     payment = Payment(
         yookassa_id=f"pending-{uuid.uuid4().hex}",  # placeholder, overwritten after API call
@@ -82,11 +87,10 @@ def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str,
         metadata_json={"telegram_id": telegram_id, "tariff_id": tariff.id, "lang": lang},
     )
     db.session.add(payment)
-    db.session.flush()  # need payment.id for metadata
-
-    _configure_sdk()
-
-    return_url = _get_setting("yookassa_return_url") or "https://t.me/"
+    # Commit before the YooKassa HTTPS call so the SQLite writer lock is
+    # released. Otherwise an 8-16s yookassa.Payment.create round-trip blocks
+    # every other writer (sync_traffic, parse_logs, check_limits, etc.).
+    db.session.commit()
     # No `receipt` field — merchant uses "Чеки самозанятого" mode in YooKassa
     # cabinet, so YooKassa auto-generates fiscal receipts via the "Мой налог"
     # FNS integration. If the merchant later switches to ИП/ООО with an
@@ -166,7 +170,7 @@ def apply_payment(payment: Payment) -> None:
     if claim.rowcount == 0:
         return
 
-    tariff = Tariff.query.get(payment.tariff_id)
+    tariff = db.session.get(Tariff, payment.tariff_id)
 
     rejected = False
     if tariff is None or not tariff.items:

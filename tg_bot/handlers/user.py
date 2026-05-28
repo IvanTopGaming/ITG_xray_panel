@@ -133,7 +133,7 @@ async def _render_welcome(
     try:
         user_state = await backend.get_user_state(telegram_id)
     except Exception as exc:
-        logger.warning("get_user_state failed for %s: %s", telegram_id, exc)
+        logger.info("get_user_state failed for %s: %s", telegram_id, exc)
 
     legacy_users = list((user_state or {}).get("clients") or [])
     has_clients = bool(legacy_users) or bool((user_state or {}).get("clients"))
@@ -210,7 +210,7 @@ async def _render_first_touch(
     try:
         user_state = await backend.get_user_state(telegram_id)
     except Exception as exc:
-        logger.warning("get_user_state failed for %s: %s", telegram_id, exc)
+        logger.info("get_user_state failed for %s: %s", telegram_id, exc)
 
     has_clients = bool((user_state or {}).get("clients"))
     trial_available = bool((user_state or {}).get("trial_available"))
@@ -283,8 +283,8 @@ async def cb_set_language(
 
     try:
         await backend.set_language(callback.from_user.id, new_lang)
-    except Exception as exc:
-        logger.warning("set_language failed for %s: %s", callback.from_user.id, exc)
+    except Exception:
+        logger.exception("set_language failed for %s", callback.from_user.id)
         await callback.answer("Не удалось сохранить выбор. Попробуйте ещё раз.", show_alert=True)
         return
 
@@ -350,7 +350,7 @@ async def user_sub(
         state_data = await backend.get_user_state(callback.from_user.id)
         users_records = list((state_data or {}).get("clients") or [])
     except Exception as exc:
-        logger.warning("get_user_state failed: %s", exc)
+        logger.info("get_user_state failed: %s", exc)
         users_records = []
     if not users_records:
         msg = await i18n.t("home.no_subscription", lang)
@@ -411,7 +411,7 @@ async def user_key_selected(
     try:
         state_data = await backend.get_user_state(callback.from_user.id)
     except Exception as exc:
-        logger.warning("get_user_state failed: %s", exc)
+        logger.info("get_user_state failed: %s", exc)
         await callback.answer("Service temporarily unavailable.", show_alert=True)
         return
 
@@ -448,8 +448,8 @@ async def show_key_details(
 
     try:
         links = await panel_api.get_dedup_subscription_links(email, inbound_tag=inbound_tag)
-    except Exception as exc:
-        logger.warning("Failed to fetch subscription links: %s", exc)
+    except Exception:
+        logger.exception("Failed to fetch subscription links")
         links = []
 
     msg = callback.message
@@ -633,7 +633,7 @@ async def back_to_keys(
     try:
         state_data = await backend.get_user_state(callback.from_user.id)
     except Exception as exc:
-        logger.warning("get_user_state failed: %s", exc)
+        logger.info("get_user_state failed: %s", exc)
         await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
         return
 
@@ -662,7 +662,7 @@ async def back_to_keys_picker(
         state_data = await backend.get_user_state(callback.from_user.id)
         users_records = list((state_data or {}).get("clients") or [])
     except Exception as exc:
-        logger.warning("get_user_state failed: %s", exc)
+        logger.info("get_user_state failed: %s", exc)
         await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
         return
 
@@ -735,7 +735,7 @@ async def qr_generate_for_server(
     try:
         state_data = await backend.get_user_state(callback.from_user.id)
     except Exception as exc:
-        logger.warning("get_user_state failed: %s", exc)
+        logger.info("get_user_state failed: %s", exc)
         await callback.answer("Service temporarily unavailable.", show_alert=True)
         return
 
@@ -876,7 +876,7 @@ async def user_stats(
         state_data = await backend.get_user_state(callback.from_user.id)
         users_records = list((state_data or {}).get("clients") or [])
     except Exception as exc:
-        logger.warning("get_user_state failed: %s", exc)
+        logger.info("get_user_state failed: %s", exc)
         users_records = []
     if not users_records:
         return
@@ -981,8 +981,8 @@ async def cb_trial_activate(
             await callback.answer("Error, try again later", show_alert=True)
         await callback.answer()
         return
-    except Exception as exc:
-        logger.error("activate_trial unexpected error: %s", exc)
+    except Exception:
+        logger.exception("activate_trial unexpected error")
         await callback.answer("Error, try again later", show_alert=True)
         return
 

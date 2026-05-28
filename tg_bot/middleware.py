@@ -73,7 +73,7 @@ class LangMiddleware(BaseMiddleware):
             # rendering the picker against a backend that can't persist a choice.
             language_chosen = bool(response.get("language_chosen", True))
         except Exception as exc:
-            logger.warning("upsert_user failed for %s: %s", user.id, exc)
+            logger.info("upsert_user failed for %s: %s", user.id, exc)
             code = (user.language_code or "ru").lower()
             lang = "ru" if code.startswith("ru") else "en"
             blocked = False

@@ -296,7 +296,7 @@ def test_delete_panel(client, admin_token, db):
     resp = client.delete(f"/api/panels/{panel_id}", headers=_auth(admin_token))
     assert resp.status_code == 200
     assert resp.get_json()["ok"] is True
-    assert LinkedPanel.query.get(panel_id) is None
+    assert db.session.get(LinkedPanel, panel_id) is None
 
 
 @patch("app.api.panels.get_redis")
@@ -383,3 +383,40 @@ def test_test_panel_timeout(mock_get, client, admin_token, db):
 def test_test_panel_not_found(client, admin_token):
     resp = client.post("/api/panels/9999/test", headers=_auth(admin_token))
     assert resp.status_code == 404
+
+
+@patch("app.api.panels.requests.get")
+def test_test_panel_writes_last_poll_in_ms_on_success(mock_get, client, admin_token, db):
+    """Regression guard: panel.last_poll must be ms (13 digits), not seconds.
+    The frontend treats numeric timestamps as ms, so a seconds value (10 digits)
+    renders as "01/21/1970"."""
+    panel = _make_panel(db, name="ok-panel")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_get.return_value = mock_resp
+
+    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    assert resp.get_json()["last_poll"] >= 10**12, (
+        f"last_poll={resp.get_json()['last_poll']} looks like seconds, not ms"
+    )
+
+
+@patch("app.api.panels.requests.get")
+def test_test_panel_writes_last_poll_in_ms_on_connection_error(mock_get, client, admin_token, db):
+    panel = _make_panel(db, name="refused-panel")
+    mock_get.side_effect = __import__("requests").ConnectionError("refused")
+
+    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    assert resp.get_json()["last_poll"] >= 10**12
+
+
+@patch("app.api.panels.requests.get")
+def test_test_panel_writes_last_poll_in_ms_on_timeout(mock_get, client, admin_token, db):
+    panel = _make_panel(db, name="timeout-panel")
+    mock_get.side_effect = __import__("requests").Timeout("timed out")
+
+    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    assert resp.get_json()["last_poll"] >= 10**12

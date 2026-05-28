@@ -261,7 +261,7 @@ def test_panel(panel_id):
             )
         except requests.ConnectionError:
             panel.status = "offline"
-            panel.last_poll = int(time.time())
+            panel.last_poll = int(time.time() * 1000)
             panel.last_error = "Connection refused"
             db.session.commit()
             result = panel.to_dict()
@@ -269,7 +269,7 @@ def test_panel(panel_id):
             return jsonify(result), 200
         except requests.Timeout:
             panel.status = "offline"
-            panel.last_poll = int(time.time())
+            panel.last_poll = int(time.time() * 1000)
             panel.last_error = "Connection timed out"
             db.session.commit()
             result = panel.to_dict()
@@ -285,7 +285,7 @@ def test_panel(panel_id):
             panel.status = "error"
             panel.last_error = f"HTTP {resp.status_code}"
 
-        panel.last_poll = int(time.time())
+        panel.last_poll = int(time.time() * 1000)
         db.session.commit()
 
         result = panel.to_dict()

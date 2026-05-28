@@ -41,11 +41,18 @@ def poll_linked_panels():
         panel = db.session.get(LinkedPanel, panel_id)
         if panel is None:
             continue
+        old_status = panel.status
         panel.status = status
         if status == "online":
+            # Defend against child panels running pre-fix code that returns
+            # `timestamp` in seconds (10 digits) instead of ms (13 digits).
+            if ts and ts < 100_000_000_000:
+                ts *= 1000
             panel.last_poll = ts or int(time.time() * 1000)
             panel.last_error = None
         else:
             panel.last_error = error
+        if old_status != status:
+            logger.info("panel %s: %s → %s", panel.name, old_status, status)
 
     db.session.commit()

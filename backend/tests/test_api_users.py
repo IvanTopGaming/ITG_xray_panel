@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import jwt as jwt_lib
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from app.models import (
     Admin,
@@ -15,6 +17,27 @@ from app.models import (
     TelegramUser,
     UserTariffAccess,
 )
+
+
+class _SqlOrderRecorder:
+    """Hook SQLAlchemy's engine to log INSERT/UPDATE/DELETE statements into a
+    shared list, so a test can assert that gRPC calls precede every DB write."""
+
+    def __init__(self, order: list[str], label: str = "sql_write"):
+        self._order = order
+        self._label = label
+
+    def _listener(self, _conn, _cur, statement, *_args):
+        head = statement.lstrip().split(None, 1)[0].upper() if statement.strip() else ""
+        if head in ("INSERT", "UPDATE", "DELETE"):
+            self._order.append(self._label)
+
+    def __enter__(self):
+        event.listen(Engine, "before_cursor_execute", self._listener)
+        return self
+
+    def __exit__(self, *_exc):
+        event.remove(Engine, "before_cursor_execute", self._listener)
 
 
 @pytest.fixture
@@ -285,7 +308,7 @@ def test_revoke_grant(app_with_admin, db, client, admin_headers, two_inbounds_an
 
     resp = client.delete(f"/api/bot/users/42/grants/{grant.id}", headers=admin_headers)
     assert resp.status_code == 200
-    assert UserTariffAccess.query.get(grant.id) is None
+    assert db.session.get(UserTariffAccess, grant.id) is None
 
 
 def test_revoke_grant_404_if_missing(app_with_admin, db, client, admin_headers):
@@ -607,3 +630,78 @@ def test_block_user_no_clients_skips_xray_touch(app_with_admin, db, client, admi
     remove.assert_not_called()
     regen.assert_not_called()
     restart.assert_not_called()
+
+
+# === Transaction-shape invariants =============================================
+#
+# block_user and revoke_tariff_from_user used to mix _api_remove_user_grpc calls
+# with autoflushed UPDATE/DELETE statements inside a single open SQLite write
+# transaction, holding the writer lock for the entire loop. These tests pin the
+# fix: gRPC must complete before the first DB write.
+
+
+def test_block_user_grpc_calls_precede_all_sql_writes(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
+):
+    tariff = two_inbounds_and_tariff
+    _make_user_with_active_clients(db, tariff)
+    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free"))
+    db.session.commit()
+
+    order: list[str] = []
+
+    def _on_grpc(*_a, **_kw):
+        order.append("grpc")
+        return True
+
+    with (
+        _SqlOrderRecorder(order),
+        patch("app.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+        patch("app.api.bot_admin.bot_events.publish"),
+    ):
+        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    grpc_indices = [i for i, op in enumerate(order) if op == "grpc"]
+    write_indices = [i for i, op in enumerate(order) if op == "sql_write"]
+    assert grpc_indices, f"No gRPC calls recorded — fixture should hit two vless clients. Order: {order}"
+    assert write_indices, f"No SQL writes recorded — block_user should commit user.blocked=True. Order: {order}"
+    assert max(grpc_indices) < min(write_indices), (
+        f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
+        f"This holds the SQLite write lock across gRPC, blocking concurrent writers. Order: {order}"
+    )
+
+
+def test_revoke_tariff_grpc_calls_precede_all_sql_writes(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
+):
+    tariff = two_inbounds_and_tariff
+    _make_user_with_active_clients(db, tariff)
+    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free"))
+    db.session.commit()
+
+    order: list[str] = []
+
+    def _on_grpc(*_a, **_kw):
+        order.append("grpc")
+        return True
+
+    with (
+        _SqlOrderRecorder(order),
+        patch("app.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+    ):
+        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    grpc_indices = [i for i, op in enumerate(order) if op == "grpc"]
+    write_indices = [i for i, op in enumerate(order) if op == "sql_write"]
+    assert grpc_indices, f"No gRPC calls recorded — fixture has two vless clients. Order: {order}"
+    assert write_indices, f"No SQL writes recorded — revoke should update clients + delete grant. Order: {order}"
+    assert max(grpc_indices) < min(write_indices), (
+        f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
+        f"This holds the SQLite write lock across gRPC, blocking concurrent writers. Order: {order}"
+    )

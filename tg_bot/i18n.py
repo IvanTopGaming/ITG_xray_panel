@@ -36,7 +36,7 @@ class I18n:
                 self._cache[lang] = data.get("texts", {})
                 self._loaded_at[lang] = time.time()
             except Exception as exc:
-                logger.warning("i18n.fetch failed for lang=%s: %s", lang, exc)
+                logger.info("i18n.fetch failed for lang=%s: %s", lang, exc)
                 # Don't bump _loaded_at so we'll retry next call.
 
     async def t(self, key: str, lang: str = "ru", **vars: object) -> str:

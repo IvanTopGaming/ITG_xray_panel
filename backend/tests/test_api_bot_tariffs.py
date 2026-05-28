@@ -269,7 +269,7 @@ def test_update_tariff_replaces_items(app_with_bot_api, db, client, auth_headers
     tags = {item["inbound_tag"] for item in body["items"]}
     assert tags == {"NEW1", "NEW2"}
     db.session.expire_all()
-    fresh = Tariff.query.get(t.id)
+    fresh = db.session.get(Tariff, t.id)
     assert {i.inbound_tag for i in fresh.items} == {"NEW1", "NEW2"}
 
 
@@ -323,8 +323,8 @@ def test_delete_tariff_soft_archives_it(app_with_bot_api, db, client, auth_heade
     assert body["visibility"] == "archived"
 
     db.session.expire_all()
-    assert Tariff.query.get(tid) is not None
-    assert Tariff.query.get(tid).visibility == "archived"
+    assert db.session.get(Tariff, tid) is not None
+    assert db.session.get(Tariff, tid).visibility == "archived"
 
 
 def test_delete_already_archived_is_idempotent(app_with_bot_api, db, client, auth_headers):

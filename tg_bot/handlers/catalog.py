@@ -24,7 +24,7 @@ async def _tariff_card(tariff: dict, *, i18n: I18n, lang: str) -> str:
     )
     lines = [header]
     for item in tariff["items"]:
-        display = item.get("label") or item.get("inbound_tag", "")
+        display = item.get("label") or item.get("inbound_label") or item.get("inbound_tag", "")
         if item["traffic_gb"]:
             amount = await i18n.t(
                 "catalog.tariff_card.item.gb_amount",
@@ -77,8 +77,8 @@ async def show_catalog(
 ):
     try:
         tariffs = await backend.list_tariffs(callback.from_user.id)
-    except Exception as exc:
-        logger.warning("catalog: list_tariffs failed: %s", exc)
+    except Exception:
+        logger.exception("catalog: list_tariffs failed")
         await callback.answer("Service temporarily unavailable.", show_alert=True)
         return
     if not tariffs:
@@ -128,12 +128,12 @@ async def start_checkout(
             msg = await i18n.t("catalog.tariff_not_available", lang)
             await callback.answer(msg, show_alert=True)
             return
-        logger.warning("catalog: create_checkout failed: %s", exc)
+        logger.exception("catalog: create_checkout failed")
         fallback = await i18n.t("errors.checkout_unavailable", lang)
         await callback.answer(fallback, show_alert=True)
         return
-    except Exception as exc:
-        logger.warning("catalog: create_checkout failed: %s", exc)
+    except Exception:
+        logger.exception("catalog: create_checkout failed")
         fallback = await i18n.t("errors.checkout_unavailable", lang)
         await callback.answer(fallback, show_alert=True)
         return
@@ -158,11 +158,7 @@ async def start_checkout(
             message_id=msg.message_id,
         )
     except Exception as exc:
-        logger.warning(
-            "set_payment_chat_coords failed for payment=%s: %s",
-            result["payment_id"],
-            exc,
-        )
+        logger.info("set_payment_chat_coords failed for payment=%s: %s", result["payment_id"], exc)
     await callback.answer()
 
 
@@ -184,7 +180,7 @@ async def cancel_payment(
         result = await backend.cancel_payment(payment_id)
         status = (result or {}).get("status")
     except Exception as exc:
-        logger.warning("catalog: cancel_payment failed: %s", exc)
+        logger.info("catalog: cancel_payment failed: %s", exc)
 
     # Race with the YooKassa webhook: if the payment already succeeded, the
     # push notification has either already replaced this message or is about

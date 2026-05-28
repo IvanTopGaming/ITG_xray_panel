@@ -81,7 +81,7 @@ def test_set_language_persists_choice(http, svc_headers, db):
     assert body["language"] == "en"
     assert body["language_chosen"] is True
 
-    fetched = TelegramUser.query.get(601)
+    fetched = db.session.get(TelegramUser, 601)
     assert fetched.language == "en"
     assert fetched.language_chosen is True
 

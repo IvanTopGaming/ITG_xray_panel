@@ -145,7 +145,7 @@ def test_federation_config_singleton_seeded_by_fixture(app, db):
 
 def test_federation_config_defaults_are_null(app, db):
     """The freshly seeded singleton has all nullable fields as None/False."""
-    cfg = FederationConfig.query.get(1)
+    cfg = db.session.get(FederationConfig, 1)
     assert cfg is not None
     assert cfg.master_url is None
     assert cfg.master_name is None
@@ -158,7 +158,7 @@ def test_federation_config_defaults_are_null(app, db):
 def test_federation_config_can_be_updated(app, db):
     """Fields on the singleton row can be written and read back."""
     now = int(time.time())
-    cfg = FederationConfig.query.get(1)
+    cfg = db.session.get(FederationConfig, 1)
     cfg.master_url = "https://master.example.com"
     cfg.master_name = "Main Panel"
     cfg.federation_token = "fed-token-xyz"
@@ -168,7 +168,7 @@ def test_federation_config_can_be_updated(app, db):
     db.session.commit()
 
     db.session.expire(cfg)
-    refreshed = FederationConfig.query.get(1)
+    refreshed = db.session.get(FederationConfig, 1)
     assert refreshed.master_url == "https://master.example.com"
     assert refreshed.master_name == "Main Panel"
     assert refreshed.federation_token == "fed-token-xyz"

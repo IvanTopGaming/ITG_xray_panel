@@ -404,7 +404,10 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                                 {c.email}
                               </td>
                               <td className="px-3 py-2.5 text-right font-mono text-white/70">
-                                {bytes(c.up)} / {bytes(c.down)}
+                                <div className="flex flex-col items-end leading-tight">
+                                  <span className="whitespace-nowrap">↑ {bytes(c.up)}</span>
+                                  <span className="whitespace-nowrap">↓ {bytes(c.down)}</span>
+                                </div>
                               </td>
                               <td className="px-3 py-2.5 text-right font-mono text-white/70">
                                 {bytes(c.limit_bytes)}

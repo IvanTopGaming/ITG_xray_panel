@@ -22,7 +22,7 @@ def _warn_once(exc):
     if _warned:
         return
     _warned = True
-    logger.warning("sub_cache: Redis unavailable, falling through (%s)", exc)
+    logger.info("sub_cache: Redis unavailable, falling through (%s)", exc)
 
 
 def _key(kind, uuid_str):
@@ -64,31 +64,6 @@ def invalidate_user(uuid_str):
         return
     try:
         r.delete(*[_key(k, uuid_str) for k in KINDS])
-    except Exception as e:
-        _warn_once(e)
-
-
-def invalidate_all_users():
-    """Drop every cached subscription response. Used when global filters change
-    (e.g. master tag list) so users see fresh subscription contents immediately."""
-    r = get_redis()
-    if r is None:
-        return
-    try:
-        rows = Client.query.with_entities(Client.id).all()
-        if not rows:
-            return
-        chunk = []
-        for (uuid_str,) in rows:
-            if not uuid_str:
-                continue
-            for k in KINDS:
-                chunk.append(_key(k, uuid_str))
-            if len(chunk) >= 1500:
-                r.delete(*chunk)
-                chunk = []
-        if chunk:
-            r.delete(*chunk)
     except Exception as e:
         _warn_once(e)
 

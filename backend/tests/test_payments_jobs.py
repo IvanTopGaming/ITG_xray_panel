@@ -69,7 +69,7 @@ def test_poll_promotes_succeeded_payments(app, tariff):
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         poll_pending_payments()
     with app.app_context():
-        assert Payment.query.get(pid).status == "succeeded"
+        assert db.session.get(Payment, pid).status == "succeeded"
 
 
 def test_poll_marks_cancelled(app, tariff):
@@ -85,7 +85,7 @@ def test_poll_marks_cancelled(app, tariff):
         mock_find.return_value = SimpleNamespace(status="canceled")
         poll_pending_payments()
     with app.app_context():
-        assert Payment.query.get(pid).status == "cancelled"
+        assert db.session.get(Payment, pid).status == "cancelled"
     # The publish call lives in app.jobs.payments — check that name first; fall back to billing's
     assert (mock_publish_local.call_args or mock_publish.call_args).args[0] == "payment_cancelled"
 
@@ -96,7 +96,7 @@ def test_poll_cancel_event_carries_chat_coords(app, tariff):
     consumer can delete the stale checkout bubble."""
     pid = _insert_pending(app, tariff)
     with app.app_context():
-        p = Payment.query.get(pid)
+        p = db.session.get(Payment, pid)
         p.chat_id = 42_000
         p.message_id = 555
         db.session.commit()
@@ -127,7 +127,7 @@ def test_poll_skips_payments_younger_than_30s(app, tariff):
         poll_pending_payments()
     mock_find.assert_not_called()
     with app.app_context():
-        assert Payment.query.get(pid).status == "pending"
+        assert db.session.get(Payment, pid).status == "pending"
 
 
 def test_poll_skips_payments_older_than_24h(app, tariff):
@@ -159,8 +159,8 @@ def test_poll_swallows_individual_failures(app, tariff):
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         poll_pending_payments()  # must not raise
     with app.app_context():
-        assert Payment.query.get(pid_a).status == "pending"
-        assert Payment.query.get(pid_b).status == "succeeded"
+        assert db.session.get(Payment, pid_a).status == "pending"
+        assert db.session.get(Payment, pid_b).status == "succeeded"
 
 
 def test_cleanup_cancels_stale_pending(app, tariff):
@@ -169,7 +169,7 @@ def test_cleanup_cancels_stale_pending(app, tariff):
 
     with app.app_context(), patch("app.jobs.payments.bot_events.publish"):
         cleanup_old_payments()
-        assert Payment.query.get(pid).status == "cancelled"
+        assert db.session.get(Payment, pid).status == "cancelled"
 
 
 def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
@@ -180,7 +180,7 @@ def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
     pid_b = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-stuck-b")
     with app.app_context():
         for pid, chat, msg in [(pid_a, 100, 1), (pid_b, 200, 2)]:
-            p = Payment.query.get(pid)
+            p = db.session.get(Payment, pid)
             p.chat_id = chat
             p.message_id = msg
         db.session.commit()
@@ -200,10 +200,10 @@ def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
 def test_cleanup_deletes_ancient_cancelled(app, tariff):
     pid = _insert_pending(app, tariff, age_seconds=91 * 86400)
     with app.app_context():
-        Payment.query.get(pid).status = "cancelled"
+        db.session.get(Payment, pid).status = "cancelled"
         db.session.commit()
     from app.jobs.payments import cleanup_old_payments
 
     with app.app_context():
         cleanup_old_payments()
-        assert Payment.query.get(pid) is None
+        assert db.session.get(Payment, pid) is None

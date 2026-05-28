@@ -21,7 +21,7 @@ def test_deletes_delivered_older_than_7_days(app):
 
     with app.app_context():
         cleanup_bot_events()
-        assert BotEvent.query.get(eid) is None
+        assert db.session.get(BotEvent, eid) is None
 
 
 def test_keeps_delivered_younger_than_7_days(app):
@@ -30,7 +30,7 @@ def test_keeps_delivered_younger_than_7_days(app):
 
     with app.app_context():
         cleanup_bot_events()
-        assert BotEvent.query.get(eid) is not None
+        assert db.session.get(BotEvent, eid) is not None
 
 
 def test_deletes_undelivered_older_than_30_days(app):
@@ -39,7 +39,7 @@ def test_deletes_undelivered_older_than_30_days(app):
 
     with app.app_context():
         cleanup_bot_events()
-        assert BotEvent.query.get(eid) is None
+        assert db.session.get(BotEvent, eid) is None
 
 
 def test_keeps_undelivered_younger_than_30_days(app):
@@ -48,4 +48,4 @@ def test_keeps_undelivered_younger_than_30_days(app):
 
     with app.app_context():
         cleanup_bot_events()
-        assert BotEvent.query.get(eid) is not None
+        assert db.session.get(BotEvent, eid) is not None

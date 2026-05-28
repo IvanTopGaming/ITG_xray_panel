@@ -145,6 +145,10 @@ def create_app():
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_path}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SCHEDULER_API_ENABLED"] = False
+    app.config["SCHEDULER_JOB_DEFAULTS"] = {
+        "coalesce": True,
+        "misfire_grace_time": 30,
+    }
 
     panel_host = _panel_domain_host()
     rate_limit_storage = os.getenv("RATELIMIT_STORAGE_URI", "memory://").strip() or "memory://"
@@ -273,4 +277,5 @@ def create_app():
             app.logger.exception("Startup error")
             raise
 
+    app.logger.info("backend ready (db=%s, scheduler started)", db_path)
     return app

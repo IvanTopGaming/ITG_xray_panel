@@ -7,18 +7,9 @@ welcome.body:
   en: "⚡ Pick what you'd like to do:"
 
 # Home screen
-home.title:
-  ru: "👋 Привет, {user_name}!"
-  en: "👋 Hey, {user_name}!"
-home.subscription_active:
-  ru: "🔓 Подписка активна до <b>{expires_at}</b>\n⏳ Осталось: {days_remaining} дн."
-  en: "🔓 Active until <b>{expires_at}</b>\n⏳ Left: {days_remaining} day(s)"
 home.no_subscription:
   ru: "ℹ️ У тебя ещё нет активной подписки.\n💎 Загляни в «Тарифы», чтобы выбрать подходящий план."
   en: "ℹ️ You don't have a subscription yet.\n💎 Open «Tariffs» to pick a plan."
-home.menu_header:
-  ru: "👇 Главное меню"
-  en: "👇 Main menu"
 
 # Main menu buttons
 menu.subscription:
@@ -33,17 +24,8 @@ menu.stats:
 menu.help:
   ru: "📖 Помощь"
   en: "📖 Help"
-menu.keys:
-  ru: "🔑 Мои ключи"
-  en: "🔑 My keys"
-menu.settings:
-  ru: "⚙️ Настройки"
-  en: "⚙️ Settings"
 
 # Common buttons
-common.back:
-  ru: "◀ Назад"
-  en: "◀ Back"
 common.back_to_main:
   ru: "🏠 В главное меню"
   en: "🏠 Back to main"
@@ -92,18 +74,9 @@ qr.server_label:
   en: "🖥️ {name}"
 
 # Tariffs / catalog
-tariff.button.buy:
-  ru: "💳 Купить ({price} ₽)"
-  en: "💳 Buy ({price} ₽)"
-tariff.button.renew:
-  ru: "💎 Продлить ({price} ₽)"
-  en: "💎 Renew ({price} ₽)"
 notification.button.renew:
   ru: "💎 Продлить подписку"
   en: "💎 Renew subscription"
-tariff.unlimited_label:
-  ru: "♾️ Безлимит"
-  en: "♾️ Unlimited"
 catalog.tariff_card.header:
   ru: "<b>💎 {name}</b>\n💰 {price} ₽ / ⏳ {days} дн."
   en: "<b>💎 {name}</b>\n💰 {price} ₽ / ⏳ {days} days"
@@ -136,21 +109,9 @@ catalog.tariff_not_available:
   en: "⚠️ This plan is no longer available. Contact support or pick another one in «Tariffs»."
 
 # Checkout
-checkout.message:
-  ru: "💎 Выбранный тариф: <b>«{tariff_name}»</b> ({price} ₽)\n\n⚡ Оплати сейчас, и доступ откроется автоматически."
-  en: "💎 Selected plan: <b>«{tariff_name}»</b> ({price} ₽)\n\n⚡ Pay now and access will activate automatically."
 checkout.button.pay:
   ru: "💳 Оплатить {price} ₽"
   en: "💳 Pay {price} ₽"
-checkout.button.cancel:
-  ru: "❌ Отмена"
-  en: "❌ Cancel"
-checkout.success:
-  ru: "🎉 <b>Оплата успешно прошла!</b>\nТвой доступ открыт до {expires_at}."
-  en: "🎉 <b>Payment successful!</b>\nYour access is open until {expires_at}."
-checkout.cancelled:
-  ru: "ℹ️ Платёж отменён. Ты всегда можешь вернуться к оплате в меню «Тарифы»."
-  en: "ℹ️ Payment cancelled. You can return to payment anytime in the «Tariffs» menu."
 
 # Trial
 trial.button.activate:
@@ -215,24 +176,7 @@ help.body:
   ru: "ℹ️ <b>Как подключиться?</b>\n\n1️⃣ Установи <b>Happ</b> (Android) или <b>V2Box</b> (iOS).\n2️⃣ Перейди в раздел «🔐 Моя подписка».\n3️⃣ Скопируй все ключи.\n4️⃣ Импортируй их из буфера обмена в приложении.\n\n💬 Если что-то не получается — смело пиши в поддержку!"
   en: "ℹ️ <b>How to connect?</b>\n\n1️⃣ Install <b>Happ</b> (Android) or <b>V2Box</b> (iOS).\n2️⃣ Go to '🔐 My subscription'.\n3️⃣ Copy all keys.\n4️⃣ Import them from clipboard in the app.\n\n💬 If you face any issues — feel free to contact support!"
 
-# Settings
-settings.language:
-  ru: "🌐 Изменить язык"
-  en: "🌐 Change Language"
-settings.language_changed:
-  ru: "✅ <b>Готово!</b>\nЯзык интерфейса успешно обновлён."
-  en: "✅ <b>Done!</b>\nInterface language successfully updated."
-
 # Errors
-errors.tariff_not_available:
-  ru: "⚠️ Тариф недоступен\n\nСейчас этот тариф выбрать нельзя. Посмотри другие в разделе «Тарифы»."
-  en: "⚠️ Plan unavailable\n\nThis plan is not available right now. Check other options in «Tariffs»."
-errors.payment_failed:
-  ru: "⚠️ Платёж отклонён\n\nПроизошла ошибка при оплате. Попробуй ещё раз или используй другой способ."
-  en: "⚠️ Payment failed\n\nAn error occurred during payment. Please try again or use another method."
-errors.access_denied:
-  ru: "⛔ Доступ запрещён\n\nЕсли ты считаешь, что это ошибка — напиши администратору."
-  en: "⛔ Access denied\n\nIf you believe this is an error, please reach out to the admin."
 errors.checkout_unavailable:
   ru: "⚠️ Оплата временно недоступна\n\nЧто-то пошло не так. Пожалуйста, попробуй позже."
   en: "⚠️ Checkout unavailable\n\nSomething went wrong. Please try again later."

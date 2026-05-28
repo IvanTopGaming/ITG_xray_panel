@@ -6,7 +6,17 @@ import time
 from flask import Blueprint, jsonify, request
 
 from app.extensions import db
-from app.models import BotText, Client, Payment, SystemSetting, Tariff, TelegramUser, UserTariffAccess
+from app.models import (
+    BotText,
+    Client,
+    Inbound,
+    LinkedPanel,
+    Payment,
+    SystemSetting,
+    Tariff,
+    TelegramUser,
+    UserTariffAccess,
+)
 from app.services import bot_events
 from app.services.provisioning import apply_tariff_for_user
 from app.utils import bot_service_token_required
@@ -115,7 +125,7 @@ def upsert_user():
     language_code = payload.get("language_code")
     detected_lang = _normalize_language_code(language_code)
 
-    user = TelegramUser.query.get(tg_id)
+    user = db.session.get(TelegramUser, tg_id)
     if user is None:
         user = TelegramUser(
             telegram_id=tg_id,
@@ -139,7 +149,7 @@ def activate_trial():
     if not isinstance(tg_id, int) or isinstance(tg_id, bool):
         return jsonify({"error": "telegram_id (integer) is required"}), 400
 
-    user = TelegramUser.query.get(tg_id)
+    user = db.session.get(TelegramUser, tg_id)
     if user is None:
         # Bot may hit /trial/activate before middleware has upserted the row.
         user = TelegramUser(telegram_id=tg_id, language="ru")
@@ -175,7 +185,7 @@ def activate_trial():
 @bot_service_token_required
 def get_user_state(tg_id):
     """Everything the bot needs to render /start: user row, trial availability, active clients, soonest expiry."""
-    user = TelegramUser.query.get(tg_id)
+    user = db.session.get(TelegramUser, tg_id)
     trial_available = (user is None or user.trial_used_at is None) and Tariff.query.filter_by(
         is_trial=True, enabled=True
     ).first() is not None
@@ -234,7 +244,7 @@ def set_user_language(tg_id):
     if lang not in _VALID_LANGS:
         return jsonify({"error": f"language must be one of {sorted(_VALID_LANGS)}"}), 400
 
-    user = TelegramUser.query.get(tg_id)
+    user = db.session.get(TelegramUser, tg_id)
     if user is None:
         return jsonify({"error": "user not found"}), 404
 
@@ -302,30 +312,30 @@ def list_tariffs_for_bot():
         )
         active_tariff_ids = {r[0] for r in rows if r[0] is not None}
 
-    return jsonify([_serialize_tariff_for_bot(t, active_ids=active_tariff_ids) for t in ordered])
+    from app.services.panel_proxy import get_panel_snapshot
 
+    inbound_labels: dict[tuple[int | None, str], str | None] = {
+        (None, tag): label for tag, label in db.session.query(Inbound.tag, Inbound.label).all()
+    }
+    for panel in LinkedPanel.query.filter_by(enable=True).all():
+        snapshot = get_panel_snapshot(panel.id)
+        if not snapshot:
+            continue
+        for ib_data in snapshot.get("inbounds", []):
+            tag = ib_data.get("tag")
+            if not tag:
+                continue
+            inbound_labels[(panel.id, tag)] = ib_data.get("label")
 
-@bp.route("/bot-service/payments/<int:payment_id>", methods=["GET"])
-@bot_service_token_required
-def get_payment_for_bot(payment_id):
-    p = Payment.query.get(payment_id)
-    if p is None:
-        return jsonify({"error": "not_found"}), 404
     return jsonify(
-        {
-            "id": p.id,
-            "status": p.status,
-            "amount_rub": p.amount_rub,
-            "yookassa_id": p.yookassa_id,
-            "confirmation_url": p.confirmation_url,
-        }
+        [_serialize_tariff_for_bot(t, active_ids=active_tariff_ids, inbound_labels=inbound_labels) for t in ordered]
     )
 
 
 @bp.route("/bot-service/payments/<int:payment_id>/cancel", methods=["POST"])
 @bot_service_token_required
 def cancel_payment_for_bot(payment_id):
-    p = Payment.query.get(payment_id)
+    p = db.session.get(Payment, payment_id)
     if p is None:
         return jsonify({"error": "not_found"}), 404
     if p.status == "pending":
@@ -348,7 +358,7 @@ def set_payment_chat_coords(payment_id):
     if not isinstance(message_id, int) or isinstance(message_id, bool):
         return jsonify({"error": "message_id (integer) is required"}), 400
 
-    payment = Payment.query.get(payment_id)
+    payment = db.session.get(Payment, payment_id)
     if payment is None:
         return jsonify({"error": "payment not found"}), 404
 
@@ -365,7 +375,8 @@ def set_payment_chat_coords(payment_id):
     )
 
 
-def _serialize_tariff_for_bot(t, active_ids=frozenset()):
+def _serialize_tariff_for_bot(t, active_ids=frozenset(), inbound_labels=None):
+    labels = inbound_labels or {}
     return {
         "id": t.id,
         "name": t.name,
@@ -376,6 +387,8 @@ def _serialize_tariff_for_bot(t, active_ids=frozenset()):
             {
                 "inbound_tag": i.inbound_tag,
                 "label": i.label or "",
+                "inbound_label": labels.get((i.panel_id, i.inbound_tag)) or i.inbound_tag,
+                "panel_id": i.panel_id,
                 "traffic_gb": i.traffic_gb,
             }
             for i in t.items

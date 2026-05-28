@@ -110,9 +110,9 @@ def test_apply_extends_existing_client(app, db, basic_setup):
         result = apply_tariff_for_user(42, tariff, source="trial")
 
     db.session.refresh(client)
-    # Expiry stacks then snaps to noon in display tz — within 24h of raw target.
+    # Expiry stacks precisely on the previous one — no calendar-day snap.
     target = pre_expiry + 30 * 86400_000
-    assert abs(client.expiry_time - target) < 86400_000
+    assert client.expiry_time == target
     assert client.up == 0
     assert client.down == 0
     assert client.limit_bytes == 0
@@ -120,7 +120,7 @@ def test_apply_extends_existing_client(app, db, basic_setup):
     assert client.tariff_id == tariff.id
 
     assert "clients" in result
-    assert abs(result["expires_at_ms"] - target) < 86400_000
+    assert result["expires_at_ms"] == target
 
 
 def test_apply_extends_uses_now_when_expiry_already_past(app, db, basic_setup):
@@ -145,9 +145,29 @@ def test_apply_extends_uses_now_when_expiry_already_past(app, db, basic_setup):
     with patch("app.services.provisioning._sync_after_provision"):
         result = apply_tariff_for_user(42, tariff, source="auto_renew")
 
+    # Wall-clock semantics: now + period, no noon snap. Allow a small
+    # window for the elapsed millis between now_ms capture and the call.
     expected = now_ms + 30 * 86400_000
-    # Snapped to noon in display tz — within a day of the naive target.
-    assert abs(result["expires_at_ms"] - expected) < 86400_000
+    assert abs(result["expires_at_ms"] - expected) < 2_000
+
+
+def test_apply_expiry_is_wall_clock_offset_from_purchase_time(app, db, basic_setup):
+    """A 1-day tariff bought at HH:MM expires at HH:MM next day — no noon snap.
+    Buying at 23:15 must yield expiry at 23:15 the next day, not at 12:00."""
+    one_day_tariff = Tariff(name="One day", price_rub=50, period_days=1)
+    db.session.add(one_day_tariff)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=one_day_tariff.id, inbound_tag="DE-vless", traffic_gb=0, sort_order=0))
+    db.session.commit()
+
+    fixed_now_ms = int(_time.time() * 1000)
+    with (
+        patch("app.services.provisioning.time.time", return_value=fixed_now_ms / 1000),
+        patch("app.services.provisioning._sync_after_provision"),
+    ):
+        result = apply_tariff_for_user(7777, one_day_tariff, source="trial")
+
+    assert result["expires_at_ms"] == fixed_now_ms + 86400_000
 
 
 def test_apply_msk_item_sets_70gb_limit(app, db, basic_setup):
@@ -245,17 +265,116 @@ def test_apply_handles_email_collision(app, db, basic_setup):
 
 
 def test_provision_calls_xray_regen_once(app, db, basic_setup):
-    """Provisioning calls generate_config_file + restart_xray_container ONCE
-    per call, not once per item."""
+    """Provisioning calls generate_config_file ONCE per call, not once per item.
+    Restart is fast-path-skipped when all items are vless/vmess — see
+    test_provision_new_vless_uses_grpc_no_restart for the runtime sync contract."""
     tariff = basic_setup
     with (
         patch("app.services.provisioning.generate_config_file") as mock_gen,
         patch("app.services.provisioning.restart_xray_container") as mock_restart,
+        patch("app.services.provisioning._api_add_user_grpc", return_value=True),
         patch("app.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial")
 
     assert mock_gen.call_count == 1
+    assert mock_restart.call_count == 0
+
+
+def test_provision_new_vless_uses_grpc_no_restart(app, db, basic_setup):
+    """All new vless clients → AddUser via gRPC, no restart."""
+    tariff = basic_setup
+    with (
+        patch("app.services.provisioning.generate_config_file") as mock_gen,
+        patch("app.services.provisioning.restart_xray_container") as mock_restart,
+        patch("app.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(99, tariff, source="trial")
+
+    assert mock_gen.call_count == 1
+    assert mock_restart.call_count == 0
+    assert mock_add.call_count == 2  # DE-vless + MSK-vless
+
+
+def test_provision_extending_enabled_vless_skips_runtime(app, db, basic_setup):
+    """Extending vless clients that were already enabled → no restart, no gRPC.
+    Their runtime state (id + email) hasn't changed, so Xray doesn't need to know."""
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    _make_client(db, telegram_id=42, inbound_tag="DE-vless", expiry_ms=now_ms, limit_bytes=0)
+    _make_client(db, telegram_id=42, inbound_tag="MSK-vless", expiry_ms=now_ms, limit_bytes=0)
+
+    with (
+        patch("app.services.provisioning.generate_config_file") as mock_gen,
+        patch("app.services.provisioning.restart_xray_container") as mock_restart,
+        patch("app.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(42, tariff, source="auto_renew")
+
+    assert mock_gen.call_count == 1
+    assert mock_restart.call_count == 0
+    assert mock_add.call_count == 0
+
+
+def test_provision_extending_disabled_vless_re_adds_via_grpc(app, db, basic_setup):
+    """Extending a previously-disabled vless client → AddUser to re-arm runtime."""
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    de = _make_client(db, telegram_id=42, inbound_tag="DE-vless", expiry_ms=now_ms, limit_bytes=0)
+    _make_client(db, telegram_id=42, inbound_tag="MSK-vless", expiry_ms=now_ms, limit_bytes=0)
+    de.enable = False
+    db.session.commit()
+
+    with (
+        patch("app.services.provisioning.generate_config_file"),
+        patch("app.services.provisioning.restart_xray_container") as mock_restart,
+        patch("app.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(42, tariff, source="auto_renew")
+
+    assert mock_restart.call_count == 0
+    assert mock_add.call_count == 1  # only the disabled one needs re-add
+
+
+def test_provision_non_vless_inbound_requires_restart(app, db):
+    """Tariff item on non-vless/vmess inbound (e.g. shadowsocks) → restart required.
+    Config-embedded user data can't be patched in via gRPC."""
+    inbound_ss = Inbound(tag="SS-1", protocol="shadowsocks", port=10003, stream_settings="{}")
+    db.session.add(inbound_ss)
+    db.session.flush()
+    tariff = Tariff(name="SS", price_rub=100, period_days=30)
+    db.session.add(tariff)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="SS-1", traffic_gb=0, sort_order=0))
+    db.session.commit()
+
+    with (
+        patch("app.services.provisioning.generate_config_file"),
+        patch("app.services.provisioning.restart_xray_container") as mock_restart,
+        patch("app.services.provisioning._api_add_user_grpc") as mock_add,
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(99, tariff, source="trial")
+
+    assert mock_restart.call_count == 1
+    assert mock_add.call_count == 0  # don't even try gRPC for non-vless
+
+
+def test_provision_grpc_failure_falls_back_to_restart(app, db, basic_setup):
+    """If gRPC AddUser returns False → restart fallback so user is still routed."""
+    tariff = basic_setup
+
+    with (
+        patch("app.services.provisioning.generate_config_file"),
+        patch("app.services.provisioning.restart_xray_container") as mock_restart,
+        patch("app.services.provisioning._api_add_user_grpc", return_value=False),
+        patch("app.services.provisioning.sub_cache"),
+    ):
+        apply_tariff_for_user(99, tariff, source="trial")
+
     assert mock_restart.call_count == 1
 
 
