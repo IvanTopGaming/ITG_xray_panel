@@ -540,6 +540,86 @@ class TestGenerateConfigFile:
         assert "geosite:category-ads" in domain_rules[0]["domain"]
         assert domain_rules[0]["outboundTag"] == "block"
 
+    # ---- test: a proxy outbound is inert until explicitly routed ----
+
+    def test_proxy_outbound_does_not_create_implicit_catch_all(self):
+        """A proxy outbound must not silently capture all traffic.
+
+        Two inbounds, one proxy outbound. The first inbound has a routing
+        profile sending its traffic to the proxy outbound; the second inbound
+        has no rules. The second inbound's traffic must fall through to the
+        first outbound (``direct``) — there must be NO implicit
+        ``system_auto_balancer`` and NO unfiltered tcp/udp catch-all rule.
+        """
+        from app.services.xray import generate_config_file
+
+        self._seed_outbounds()
+
+        # A proxy (non-system) outbound.
+        db.session.add(
+            Outbound(
+                tag="proxy-out",
+                protocol="vless",
+                enable=True,
+                settings="{}",
+                stream_settings="{}",
+                mux="{}",
+            )
+        )
+
+        # Inbound #1: routed to the proxy outbound via a routing profile.
+        profile = RoutingProfile(
+            name="via-proxy",
+            enable=True,
+            rules=json.dumps([{"type": "field", "outboundTag": "proxy-out", "enabled": True}]),
+        )
+        db.session.add(profile)
+        db.session.flush()
+
+        stream = json.dumps({"network": "tcp", "security": "none"})
+        db.session.add(
+            Inbound(
+                tag="in-routed",
+                port=12443,
+                protocol="vless",
+                stream_settings=stream,
+                routing_profile_id=profile.id,
+            )
+        )
+
+        # Inbound #2: no routing profile — implies direct egress.
+        db.session.add(
+            Inbound(
+                tag="in-direct",
+                port=12444,
+                protocol="vless",
+                stream_settings=stream,
+            )
+        )
+        db.session.commit()
+
+        generate_config_file()
+        cfg = self._read_config()
+
+        balancers = cfg["routing"]["balancers"]
+        rules = cfg["routing"]["rules"]
+
+        # No implicit balancer was synthesized.
+        assert all(b["tag"] != "system_auto_balancer" for b in balancers)
+        # No unfiltered tcp/udp catch-all rule pointing at a balancer.
+        catch_all = [r for r in rules if r.get("network") == "tcp,udp" and "balancerTag" in r and "inboundTag" not in r]
+        assert catch_all == []
+
+        # direct is the first outbound, so unmatched (inbound #2) traffic egresses direct.
+        assert cfg["outbounds"][0]["tag"] == "direct"
+        assert "proxy-out" in [o["tag"] for o in cfg["outbounds"]]
+
+        # Sanity: inbound #1's rule still targets the proxy outbound, scoped to itself.
+        routed = [r for r in rules if r.get("outboundTag") == "proxy-out"]
+        assert len(routed) == 1
+        assert "in-routed" in routed[0]["inboundTag"]
+        assert "in-direct" not in routed[0].get("inboundTag", [])
+
     # ---- test: port 443 gets sockopt ----
 
     def test_port_443_gets_sockopt(self):

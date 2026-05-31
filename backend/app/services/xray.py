@@ -708,7 +708,6 @@ def generate_config_file():
             outbounds_db = Outbound.query.all()
             outbounds_json = []
 
-            proxy_outbounds = []
             observed_tags = []
 
             for ob in outbounds_db:
@@ -727,7 +726,6 @@ def generate_config_file():
 
                 if not is_system_outbound:
                     observed_tags.append(ob.tag)
-                    proxy_outbounds.append(ob.tag)
             known_outbound_tags = {item["tag"] for item in outbounds_json}
 
             balancers_db = Balancer.query.all()
@@ -1037,26 +1035,6 @@ def generate_config_file():
                             else:
                                 continue
                             routing_rules.append(new_rule)
-
-            if proxy_outbounds:
-                system_balancer_tag = "system_auto_balancer"
-
-                if system_balancer_tag not in balancer_tags:
-                    balancers_json.append(
-                        {
-                            "tag": system_balancer_tag,
-                            "selector": proxy_outbounds,
-                            "strategy": {"type": "random"},
-                        }
-                    )
-
-                routing_rules.append(
-                    {
-                        "type": "field",
-                        "network": "tcp,udp",
-                        "balancerTag": system_balancer_tag,
-                    }
-                )
 
             observatory = {}
             if observed_tags:
