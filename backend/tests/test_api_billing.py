@@ -118,8 +118,6 @@ def test_checkout_validates_required_fields(client, bot_token):
 
 from app.models import Payment  # noqa: E402
 
-WHITELIST_IP = "185.71.76.5"  # inside 185.71.76.0/27
-
 
 def _make_pending(app, public_tariff, yk_id="yk-pending-1"):
     with app.app_context():
@@ -137,27 +135,18 @@ def _make_pending(app, public_tariff, yk_id="yk-pending-1"):
         return p.id
 
 
-def test_webhook_rejects_non_whitelisted_ip(client, public_tariff, app):
-    _make_pending(app, public_tariff)
-    resp = client.post(
-        "/api/billing/yookassa/webhook",
-        json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
-        environ_base={"REMOTE_ADDR": "1.2.3.4"},
-    )
-    assert resp.status_code == 403
-
-
 def test_webhook_processes_succeeded_payment(client, public_tariff, app):
     pid = _make_pending(app, public_tariff)
     with (
+        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish"),
     ):
+        mock_find.return_value = SimpleNamespace(status="succeeded")
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         resp = client.post(
             "/api/billing/yookassa/webhook",
             json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
-            environ_base={"REMOTE_ADDR": WHITELIST_IP},
         )
     assert resp.status_code == 200
     with app.app_context():
@@ -167,15 +156,16 @@ def test_webhook_processes_succeeded_payment(client, public_tariff, app):
 def test_webhook_is_idempotent_on_repeat_delivery(client, public_tariff, app):
     _make_pending(app, public_tariff)
     with (
+        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish"),
     ):
+        mock_find.return_value = SimpleNamespace(status="succeeded")
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         for _ in range(2):
             resp = client.post(
                 "/api/billing/yookassa/webhook",
                 json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
-                environ_base={"REMOTE_ADDR": WHITELIST_IP},
             )
             assert resp.status_code == 200
     # Provisioning called exactly once even though webhook hit twice.
@@ -184,11 +174,14 @@ def test_webhook_is_idempotent_on_repeat_delivery(client, public_tariff, app):
 
 def test_webhook_marks_cancelled(client, public_tariff, app):
     pid = _make_pending(app, public_tariff)
-    with patch("app.services.billing.bot_events.publish") as mock_publish:
+    with (
+        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("app.services.billing.bot_events.publish") as mock_publish,
+    ):
+        mock_find.return_value = SimpleNamespace(status="canceled")
         resp = client.post(
             "/api/billing/yookassa/webhook",
             json={"event": "payment.canceled", "object": {"id": "yk-pending-1"}},
-            environ_base={"REMOTE_ADDR": WHITELIST_IP},
         )
     assert resp.status_code == 200
     with app.app_context():
@@ -201,38 +194,49 @@ def test_webhook_returns_200_for_unknown_payment(client, public_tariff):
     resp = client.post(
         "/api/billing/yookassa/webhook",
         json={"event": "payment.succeeded", "object": {"id": "unknown-yk"}},
-        environ_base={"REMOTE_ADDR": WHITELIST_IP},
     )
     assert resp.status_code == 200
 
 
-def test_webhook_uses_x_forwarded_for(client, public_tariff, app):
-    _make_pending(app, public_tariff)
+def test_webhook_does_nothing_when_status_lookup_unavailable(client, public_tariff, app):
+    """If YooKassa can't be reached (timeout/misconfig), fetch_remote_status
+    returns None. The webhook must not provision; the poll cron retries the
+    still-pending row later."""
+    pid = _make_pending(app, public_tariff)
     with (
+        patch("app.services.billing.fetch_remote_status", return_value=None),
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish"),
     ):
-        mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         resp = client.post(
             "/api/billing/yookassa/webhook",
             json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
-            environ_base={"REMOTE_ADDR": "10.0.0.1"},  # internal proxy
-            headers={"X-Forwarded-For": WHITELIST_IP},
         )
     assert resp.status_code == 200
+    mock_provision.assert_not_called()
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "pending"
 
 
-def test_webhook_rejects_spoofed_leftmost_xff(client, public_tariff, app):
-    """Caddy appends the real client IP to any incoming X-Forwarded-For. The
-    leftmost entry is attacker-controllable; the rightmost is the only
-    trustworthy hop. A request whose XFF claims a whitelist IP on the left
-    but reveals a non-YooKassa IP on the right (added by Caddy) must be
-    rejected, not accepted."""
-    _make_pending(app, public_tariff)
-    resp = client.post(
-        "/api/billing/yookassa/webhook",
-        json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
-        environ_base={"REMOTE_ADDR": "10.0.0.1"},
-        headers={"X-Forwarded-For": f"{WHITELIST_IP}, 9.9.9.9"},
-    )
-    assert resp.status_code == 403
+def test_webhook_ignores_spoofed_succeeded_when_yookassa_says_pending(client, public_tariff, app):
+    """The webhook body is only a trigger, never proof of payment. An attacker
+    who knows a real pending yookassa_id can POST a forged
+    {"event": "payment.succeeded"} from any IP. The handler must re-verify the
+    authoritative status via yookassa.Payment.find_one and refuse to provision
+    when the real status is not 'succeeded'."""
+    pid = _make_pending(app, public_tariff)
+    with (
+        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("app.services.billing.bot_events.publish"),
+    ):
+        mock_find.return_value = SimpleNamespace(status="pending")  # YooKassa: not paid
+        resp = client.post(
+            "/api/billing/yookassa/webhook",
+            json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
+            environ_base={"REMOTE_ADDR": "1.2.3.4"},  # IP no longer gates anything
+        )
+    assert resp.status_code == 200
+    mock_provision.assert_not_called()
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "pending"

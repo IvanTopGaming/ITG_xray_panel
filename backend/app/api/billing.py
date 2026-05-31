@@ -1,6 +1,5 @@
-"""Billing endpoints. Checkout: bot service token. Webhook: unauthenticated, IP-whitelisted."""
+"""Billing endpoints. Checkout: bot service token. Webhook: status re-verified against YooKassa."""
 
-import ipaddress
 import logging
 
 from flask import Blueprint, jsonify, request
@@ -12,32 +11,6 @@ from app.utils import bot_service_token_required
 
 logger = logging.getLogger(__name__)
 bp = Blueprint("billing", __name__)
-
-_YOOKASSA_NETS = [
-    ipaddress.ip_network("185.71.76.0/27"),
-    ipaddress.ip_network("185.71.77.0/27"),
-    ipaddress.ip_network("77.75.153.0/25"),
-    ipaddress.ip_network("77.75.156.11/32"),
-    ipaddress.ip_network("77.75.156.35/32"),
-    ipaddress.ip_network("77.75.154.128/25"),
-    ipaddress.ip_network("2a02:5180::/32"),
-]
-
-
-def _client_ip() -> str:
-    # Leftmost XFF is attacker-controlled; Caddy appends the real IP rightmost.
-    raw_xff = (request.headers.get("X-Forwarded-For") or "").strip()
-    if raw_xff:
-        return raw_xff.rsplit(",", 1)[-1].strip()
-    return request.remote_addr or ""
-
-
-def _is_yookassa_ip(raw_ip: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(raw_ip)
-    except ValueError:
-        return False
-    return any(ip in net for net in _YOOKASSA_NETS)
 
 
 @bp.route("/billing/checkout", methods=["POST"])
@@ -70,10 +43,6 @@ def checkout():
 
 @bp.route("/billing/yookassa/webhook", methods=["POST"])
 def yookassa_webhook():
-    if not _is_yookassa_ip(_client_ip()):
-        logger.warning("yookassa_webhook: rejected IP %s", _client_ip())
-        return jsonify({"error": "forbidden"}), 403
-
     body = request.get_json(silent=True) or {}
     event = body.get("event")
     obj = body.get("object") or {}
@@ -86,11 +55,17 @@ def yookassa_webhook():
         logger.info("yookassa_webhook: unknown payment yk=%s", yk_id)
         return jsonify({"ok": True}), 200
 
+    # YooKassa webhooks carry no signature, so the body is only a trigger.
+    # Re-fetch the authoritative status before acting — a forged notification
+    # then provisions nothing. None means the lookup was unavailable; the poll
+    # cron retries the row, so we simply do nothing here.
+    real_status = billing.fetch_remote_status(payment)
+
     try:
-        if event == "payment.succeeded":
+        if real_status == "succeeded":
             logger.info("yookassa_webhook: payment succeeded id=%s yk=%s", payment.id, yk_id)
             billing.apply_payment(payment)
-        elif event == "payment.canceled":
+        elif real_status == "canceled":
             if payment.status not in ("succeeded", "cancelled"):
                 payment.status = "cancelled"
                 db.session.commit()

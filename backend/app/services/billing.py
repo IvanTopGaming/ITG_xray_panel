@@ -153,6 +153,31 @@ def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str,
     }
 
 
+def fetch_remote_status(payment: Payment) -> str | None:
+    """Authoritative payment status from YooKassa, or None if unavailable.
+
+    YooKassa notifications carry no signature or shared secret, so the webhook
+    body is only a trigger — never proof of payment. This re-fetch is the
+    source of truth that makes forged notifications harmless. Mirrors the
+    lookup the poll cron already performs. Returns None on misconfiguration,
+    timeout, or lookup error; the caller then does nothing and the poll cron
+    retries the row later.
+    """
+    try:
+        _configure_sdk()
+    except ValueError:
+        return None
+    try:
+        yk = gevent.with_timeout(_YK_CALL_TIMEOUT_S, yookassa.Payment.find_one, payment.yookassa_id)
+    except gevent.Timeout:
+        logger.warning("fetch_remote_status: find_one timed out payment=%s", payment.id)
+        return None
+    except Exception as exc:
+        logger.info("fetch_remote_status: find_one failed payment=%s err=%s", payment.id, exc)
+        return None
+    return yk.status
+
+
 def apply_payment(payment: Payment) -> None:
     """Provision the user and mark the payment succeeded. Idempotent.
 
