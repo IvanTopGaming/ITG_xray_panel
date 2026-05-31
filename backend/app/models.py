@@ -125,6 +125,7 @@ class TrafficSnapshot(db.Model):
         db.UniqueConstraint("entity_type", "entity_id", "inbound_tag", "bucket", name="uq_ts"),
         db.Index("ix_ts_bucket", "bucket"),
         db.Index("ix_ts_entity", "entity_type", "entity_id", "inbound_tag"),
+        db.Index("ix_ts_type_bucket", "entity_type", "bucket"),
     )
 
 
@@ -184,6 +185,7 @@ class DomainStat(db.Model):
         db.UniqueConstraint("date", "domain", "client_email", "inbound_tag", name="uq_ds"),
         db.Index("ix_ds_date", "date"),
         db.Index("ix_ds_domain", "domain"),
+        db.Index("ix_ds_date_domain", "date", "domain"),
     )
 
 

@@ -3,7 +3,7 @@ import os
 import sqlite3
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 16
+CURRENT_DB_VERSION = 17
 CURRENT_BOT_TEXTS_VERSION = 16
 
 # Keys removed from bot_texts_defaults.yaml in a past cleanup — purge orphan
@@ -48,6 +48,14 @@ def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> List[str]:
 
 def _column_exists(cursor: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
     return column_name in _table_columns(cursor, table_name)
+
+
+def _index_exists(cursor: sqlite3.Cursor, index_name: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ? LIMIT 1",
+        (index_name,),
+    )
+    return cursor.fetchone() is not None
 
 
 def _add_column_if_missing(
@@ -155,6 +163,30 @@ def _ensure_stats_tables(cursor: sqlite3.Cursor) -> int:
         cursor.execute("CREATE INDEX IF NOT EXISTS ix_ds_domain ON domain_stat (domain)")
         created += 1
 
+    return created
+
+
+def _ensure_stats_indexes(cursor: sqlite3.Cursor) -> int:
+    created = 0
+    composite_indexes = [
+        (
+            "traffic_snapshot",
+            "ix_ts_type_bucket",
+            "CREATE INDEX IF NOT EXISTS ix_ts_type_bucket ON traffic_snapshot (entity_type, bucket)",
+        ),
+        (
+            "domain_stat",
+            "ix_ds_date_domain",
+            "CREATE INDEX IF NOT EXISTS ix_ds_date_domain ON domain_stat (date, domain)",
+        ),
+    ]
+    for table_name, index_name, sql in composite_indexes:
+        if not _table_exists(cursor, table_name):
+            continue
+        already = _index_exists(cursor, index_name)
+        cursor.execute(sql)
+        if not already:
+            created += 1
     return created
 
 
@@ -687,6 +719,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         old_version = _get_db_version(cursor)
 
         stats_tables = _ensure_stats_tables(cursor)
+        stats_indexes = _ensure_stats_indexes(cursor)
         linked_panel_table = _ensure_linked_panel_table(cursor)
         federation_config_table = _ensure_federation_config_table(cursor)
         client_device_table = _ensure_client_device_table(cursor)
@@ -707,6 +740,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "old_version": old_version,
             "new_version": CURRENT_DB_VERSION,
             "stats_tables_created": stats_tables,
+            "stats_indexes_created": stats_indexes,
             "linked_panel_table_created": linked_panel_table,
             "federation_config_table_created": federation_config_table,
             "client_device_table_created": client_device_table,
@@ -721,6 +755,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         }
         changed = (
             stats_tables > 0
+            or stats_indexes > 0
             or linked_panel_table > 0
             or federation_config_table > 0
             or client_device_table > 0
