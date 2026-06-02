@@ -118,14 +118,29 @@ export function TariffsTab() {
   const saveMutation = useMutation({
     mutationFn: async (payload: TariffWritePayload) => {
       if (editingTariff) {
-        await updateTariff(editingTariff.id, payload);
-      } else {
-        await createTariff(payload);
+        return await updateTariff(editingTariff.id, payload);
       }
+      await createTariff(payload);
+      return null;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['bot', 'tariffs'] });
-      toast.success(editingTariff ? 'Tariff updated' : 'Tariff created');
+      const backfill = result?.backfill;
+      if (backfill && (backfill.panels_unreachable.length > 0 || backfill.provision_failures > 0)) {
+        toast.warn(
+          `Tariff saved. Keys created: ${backfill.created_local + backfill.created_remote}. ` +
+            (backfill.panels_unreachable.length > 0
+              ? `Skipped panels: ${backfill.panels_unreachable.join(', ')}. `
+              : '') +
+            (backfill.provision_failures > 0 ? `Failures: ${backfill.provision_failures}.` : '')
+        );
+      } else if (backfill && backfill.created_local + backfill.created_remote > 0) {
+        toast.success(
+          `Tariff updated. Backfilled ${backfill.created_local + backfill.created_remote} key(s).`
+        );
+      } else {
+        toast.success(editingTariff ? 'Tariff updated' : 'Tariff created');
+      }
     },
   });
 

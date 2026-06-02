@@ -256,11 +256,12 @@ All checks must pass before code reaches `main`. Run locally before pushing:
 | ESLint | `cd frontend && npm run lint` |
 | Prettier | `cd frontend && npm run format:check` |
 | Frontend build | `cd frontend && npm run build` |
+| Backend pytest | `cd backend && pytest tests/ -q` |
 | Dockerfile lint | hadolint (runs in CI only) |
 
 `ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails.
 
-CI does **not** run pytest. Backend tests are still useful locally and should be added when behavior changes — see `backend/tests/` for patterns.
+CI **runs pytest** (the `Backend pytest` job runs `pytest tests/ -q`) — a test failure turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
 
 ## Git Workflow
 

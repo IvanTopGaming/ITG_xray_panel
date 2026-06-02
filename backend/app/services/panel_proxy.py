@@ -284,3 +284,15 @@ def proxy_provision(
     result = client.provision(telegram_id, inbound_tag, params)
     _refresh_panel_cache(panel)
     return result
+
+
+def fetch_panel_snapshot_live(panel_id: int) -> dict:
+    """Fetch a child panel's snapshot directly (no Redis cache).
+
+    Raises ValueError if the panel is missing/disabled/offline and propagates
+    any HTTP error from FederationClient — callers treat a raise as
+    "panel unreachable".
+    """
+    panel = _get_panel_or_raise(panel_id)
+    client = FederationClient(panel.url, panel.federation_token)
+    return client.snapshot()

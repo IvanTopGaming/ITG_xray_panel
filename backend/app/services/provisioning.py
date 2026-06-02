@@ -7,8 +7,9 @@ import uuid
 from typing import TYPE_CHECKING
 
 from app.extensions import db
-from app.models import Client, Inbound, NotificationLog
+from app.models import Client, Inbound, LinkedPanel, NotificationLog
 from app.services import sub_cache
+from app.services.panel_proxy import fetch_panel_snapshot_live
 from app.services.stats import _api_add_user_grpc
 from app.services.xray import generate_config_file, restart_xray_container
 
@@ -276,86 +277,134 @@ def apply_tariff_for_user(
     }
 
 
-def backfill_tariff_item(tariff: "Tariff", item: "TariffItem") -> int:
-    """Create a Client on `item.inbound_tag` for every active holder of `tariff`
-    who lacks one. Inherits each holder's expiry; never modifies existing keys.
+def _collect_tariff_holders(tariff: "Tariff", now_ms: int):
+    """Discover active holders of `tariff` across the master and every child
+    panel its items route to. Returns (holders, unreachable_ids).
 
-    Active holder: a telegram_id with an enabled, non-expired Client whose
-    tariff_id == tariff.id. Inherited expiry is 0 (unlimited) if any of the
-    holder's tariff keys is unlimited, else max(expiry_time).
+    holders: {telegram_id: {"expiry_ms": int, "have": set[(panel_id|None, inbound_tag)]}}
+      - inherited expiry: 0 if any active tariff client is unlimited, else max.
+      - have: every (panel_id, inbound_tag) the holder already has a key on (any tariff).
+    unreachable_ids: set of child panel_ids whose snapshot could not be fetched.
+    """
+    records = []
+    for c in Client.query.filter(Client.telegram_id.isnot(None)).all():
+        active = bool(c.enable) and (c.expiry_time == 0 or c.expiry_time > now_ms)
+        records.append((c.telegram_id, None, c.inbound_tag, c.tariff_id, active, c.expiry_time or 0))
 
-    Federation items (item.panel_id set) are proxied to the linked panel.
-    Federation provisioning is best-effort: a failing linked panel is logged
-    and skipped, not fatal to the batch.
-    Returns the count of locally-created keys.
+    unreachable_ids: set[int] = set()
+    child_panel_ids = {it.panel_id for it in tariff.items if it.panel_id is not None}
+    for pid in child_panel_ids:
+        try:
+            snap = fetch_panel_snapshot_live(pid)
+        except Exception as exc:
+            logger.warning("backfill: snapshot fetch failed for panel=%s: %s", pid, exc)
+            unreachable_ids.add(pid)
+            continue
+        for ib in snap.get("inbounds", []):
+            tag = ib.get("tag")
+            for cl in ib.get("clients", []):
+                tg = cl.get("telegram_id")
+                if tg is None:
+                    continue
+                exp = cl.get("expiry_time") or 0
+                active = bool(cl.get("enable")) and (exp == 0 or exp > now_ms)
+                records.append((tg, pid, tag, cl.get("tariff_id"), active, exp))
+
+    holders: dict[int, dict] = {}
+    for tg, _panel_id, _tag, tid, active, exp in records:
+        if tid == tariff.id and active:
+            h = holders.get(tg)
+            if h is None:
+                holders[tg] = {"expiry_ms": exp, "have": set()}
+            else:
+                prev = h["expiry_ms"]
+                h["expiry_ms"] = 0 if (prev == 0 or exp == 0) else max(prev, exp)
+
+    for tg, panel_id, tag, _tid, _active, _exp in records:
+        if tg in holders:
+            holders[tg]["have"].add((panel_id, tag))
+
+    return holders, unreachable_ids
+
+
+def backfill_tariff(tariff: "Tariff") -> dict:
+    """Idempotently ensure every active holder of `tariff` has a key on every
+    tariff inbound, across the master and its child panels. Never modifies
+    existing keys. Returns a summary; unreachable panels are reported, not fatal.
+    Failures are counted in `provision_failures`, not raised — re-run (re-save the
+    tariff) to retry them.
     """
     now_ms = int(time.time() * 1000)
-    limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
 
-    holder_clients = Client.query.filter(
-        Client.tariff_id == tariff.id,
-        Client.enable.is_(True),
-        Client.telegram_id.isnot(None),
-    ).all()
+    panel_names: dict[int, str] = {}
+    panel_ids = {it.panel_id for it in tariff.items if it.panel_id is not None}
+    if panel_ids:
+        for p in LinkedPanel.query.filter(LinkedPanel.id.in_(panel_ids)).all():
+            panel_names[p.id] = p.name
 
-    inherited_expiry: dict[int, int] = {}
-    for c in holder_clients:
-        if c.expiry_time != 0 and c.expiry_time <= now_ms:
+    holders, unreachable_ids = _collect_tariff_holders(tariff, now_ms)
+
+    summary = {
+        "holders": len(holders),
+        "created_local": 0,
+        "created_remote": 0,
+        "skipped_existing": 0,
+        "provision_failures": 0,
+        "panels_unreachable": sorted(panel_names.get(pid, str(pid)) for pid in unreachable_ids),
+    }
+
+    new_local_clients: list[Client] = []
+    for item in tariff.items:
+        if item.panel_id is not None and item.panel_id in unreachable_ids:
             continue
-        tg = c.telegram_id
-        prev = inherited_expiry.get(tg)
-        if prev is None:
-            inherited_expiry[tg] = c.expiry_time
-        elif prev == 0 or c.expiry_time == 0:
-            inherited_expiry[tg] = 0
-        else:
-            inherited_expiry[tg] = max(prev, c.expiry_time)
-
-    if not inherited_expiry:
-        return 0
-
-    new_clients: list[Client] = []
-    for tg, expiry_ms in inherited_expiry.items():
-        if item.panel_id is not None:
-            from app.services.panel_proxy import proxy_provision
-
+        limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
+        for tg, info in holders.items():
+            if (item.panel_id, item.inbound_tag) in info["have"]:
+                summary["skipped_existing"] += 1
+                continue
             try:
-                proxy_provision(
-                    item.panel_id,
-                    tg,
-                    item.inbound_tag,
-                    {"expiry_ms": expiry_ms, "limit_bytes": limit_bytes, "tariff_id": tariff.id},
-                )
+                if item.panel_id is None:
+                    new_local_clients.append(
+                        _create_client_for_item(
+                            telegram_id=tg,
+                            tariff=tariff,
+                            item=item,
+                            expiry_ms=info["expiry_ms"],
+                            limit_bytes=limit_bytes,
+                        )
+                    )
+                    summary["created_local"] += 1
+                else:
+                    from app.services.panel_proxy import proxy_provision
+
+                    proxy_provision(
+                        item.panel_id,
+                        tg,
+                        item.inbound_tag,
+                        {"expiry_ms": info["expiry_ms"], "limit_bytes": limit_bytes, "tariff_id": tariff.id},
+                    )
+                    summary["created_remote"] += 1
             except Exception as exc:
                 logger.error(
-                    "backfill proxy_provision failed panel=%s tag=%s tg=%s: %s",
+                    "backfill provision failed tariff=%s panel=%s tag=%s tg=%s: %s",
+                    tariff.id,
                     item.panel_id,
                     item.inbound_tag,
                     tg,
                     exc,
                 )
-            continue
-
-        if Client.query.filter_by(telegram_id=tg, inbound_tag=item.inbound_tag).first():
-            continue
-
-        new_clients.append(
-            _create_client_for_item(
-                telegram_id=tg,
-                tariff=tariff,
-                item=item,
-                expiry_ms=expiry_ms,
-                limit_bytes=limit_bytes,
-            )
-        )
+                summary["provision_failures"] += 1
 
     db.session.commit()
-    _sync_after_provision(new_clients, [])
+    _sync_after_provision(new_local_clients, [])
     logger.info(
-        "backfill tariff=%s item=%s created=%d holders=%d",
+        "backfill_tariff tariff=%s holders=%d created_local=%d created_remote=%d skipped=%d failures=%d unreachable=%s",
         tariff.id,
-        item.inbound_tag,
-        len(new_clients),
-        len(inherited_expiry),
+        summary["holders"],
+        summary["created_local"],
+        summary["created_remote"],
+        summary["skipped_existing"],
+        summary["provision_failures"],
+        summary["panels_unreachable"],
     )
-    return len(new_clients)
+    return summary

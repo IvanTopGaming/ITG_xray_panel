@@ -14,6 +14,7 @@ from app.models import LinkedPanel
 from app.services.panel_proxy import (
     FederationClient,
     _get_panel_or_raise,
+    fetch_panel_snapshot_live,
     get_panel_snapshot,
     proxy_create_user,
     proxy_delete_user,
@@ -266,3 +267,26 @@ class TestProxyDeleteUser:
 
         instance.delete_user.assert_called_once_with("vless-in", "alice@panel")
         assert result == expected
+
+
+# ─── fetch_panel_snapshot_live ──────────────────────────────────────────────────
+
+
+class TestFetchPanelSnapshotLive:
+    def test_returns_snapshot(self, app, db):
+        panel = _make_panel(db, name="snapshot-live")
+        expected = {"inbounds": [{"tag": "x", "clients": []}]}
+
+        with patch("app.services.panel_proxy.FederationClient") as MockClient:
+            instance = MockClient.return_value
+            instance.snapshot.return_value = expected
+
+            result = fetch_panel_snapshot_live(panel.id)
+
+        MockClient.assert_called_with(panel.url, panel.federation_token)
+        assert result == expected
+
+    def test_raises_when_offline(self, app, db):
+        panel = _make_panel(db, name="snapshot-live-offline", status="offline")
+        with pytest.raises(ValueError, match="offline"):
+            fetch_panel_snapshot_live(panel.id)

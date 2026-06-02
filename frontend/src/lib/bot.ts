@@ -13,6 +13,7 @@ import type {
   PaymentListResponse,
   BotSettings,
   BotSettingsUpdate,
+  BackfillSummary,
 } from './types';
 
 export async function listTariffs(): Promise<Tariff[]> {
@@ -25,8 +26,14 @@ export async function createTariff(payload: TariffWritePayload): Promise<Tariff>
   return data;
 }
 
-export async function updateTariff(id: number, payload: TariffWritePayload): Promise<Tariff> {
-  const { data } = await api.put<Tariff>(`/bot/tariffs/${id}`, payload);
+export async function updateTariff(
+  id: number,
+  payload: TariffWritePayload
+): Promise<Tariff & { backfill?: BackfillSummary | null }> {
+  const { data } = await api.put<Tariff & { backfill?: BackfillSummary | null }>(
+    `/bot/tariffs/${id}`,
+    payload
+  );
   return data;
 }
 

@@ -199,6 +199,15 @@ export type TariffWritePayload = Omit<Tariff, 'id' | 'created_at' | 'updated_at'
   items: Omit<TariffItem, 'id'>[];
 };
 
+export interface BackfillSummary {
+  holders: number;
+  created_local: number;
+  created_remote: number;
+  skipped_existing: number;
+  provision_failures: number;
+  panels_unreachable: string[];
+}
+
 export interface TariffStats {
   active_subs: number;
   revenue_30d: number;

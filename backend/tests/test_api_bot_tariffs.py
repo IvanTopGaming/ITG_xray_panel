@@ -384,7 +384,7 @@ def test_duplicate_nonexistent_returns_404(app_with_bot_api, db, client, auth_he
     assert resp.status_code == 404
 
 
-def test_update_tariff_backfills_new_item_to_active_holders(app_with_bot_api, db, client, auth_headers):
+def test_update_tariff_returns_backfill_summary_and_backfills_local_holder(app_with_bot_api, db, client, auth_headers):
     import uuid
 
     from app.models import Client, Inbound
@@ -431,6 +431,11 @@ def test_update_tariff_backfills_new_item_to_active_holders(app_with_bot_api, db
         resp = client.put(f"/api/bot/tariffs/{t.id}", json=payload, headers=auth_headers)
 
     assert resp.status_code == 200
+    body = resp.get_json()
+    assert "backfill" in body
+    assert body["backfill"]["created_local"] == 1
+    assert body["backfill"]["panels_unreachable"] == []
+
     new = Client.query.filter_by(telegram_id=42, inbound_tag="MSK-vless").first()
     assert new is not None
     assert new.expiry_time == expiry
