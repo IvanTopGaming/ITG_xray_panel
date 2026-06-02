@@ -122,9 +122,9 @@ def test_list_payments_filters_by_tg_id(app, client, admin_token, tariff):
 
 
 def test_list_payments_stats_count_this_month(app, client, admin_token, tariff):
-    _seed(app, tariff, "succeeded", tg_id=42, days_ago=2)
-    _seed(app, tariff, "succeeded", tg_id=43, days_ago=2)
-    _seed(app, tariff, "pending", tg_id=44, days_ago=2)  # not counted
+    _seed(app, tariff, "succeeded", tg_id=42)
+    _seed(app, tariff, "succeeded", tg_id=43)
+    _seed(app, tariff, "pending", tg_id=44)  # not counted
     resp = client.get("/api/bot/payments", headers={"Authorization": f"Bearer {admin_token}"})
     body = resp.get_json()
     assert body["stats"]["month_count"] == 2

@@ -114,6 +114,7 @@ def _create_client_for_item(
         tariff_id=tariff.id,
         limit_bytes=limit_bytes,
         expiry_time=expiry_ms,
+        last_reset_time=int(time.time() * 1000),
         up=0,
         down=0,
         enable=True,
@@ -273,3 +274,88 @@ def apply_tariff_for_user(
         "expires_at_ms": new_expiry_ms,
         "source": source,
     }
+
+
+def backfill_tariff_item(tariff: "Tariff", item: "TariffItem") -> int:
+    """Create a Client on `item.inbound_tag` for every active holder of `tariff`
+    who lacks one. Inherits each holder's expiry; never modifies existing keys.
+
+    Active holder: a telegram_id with an enabled, non-expired Client whose
+    tariff_id == tariff.id. Inherited expiry is 0 (unlimited) if any of the
+    holder's tariff keys is unlimited, else max(expiry_time).
+
+    Federation items (item.panel_id set) are proxied to the linked panel.
+    Federation provisioning is best-effort: a failing linked panel is logged
+    and skipped, not fatal to the batch.
+    Returns the count of locally-created keys.
+    """
+    now_ms = int(time.time() * 1000)
+    limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
+
+    holder_clients = Client.query.filter(
+        Client.tariff_id == tariff.id,
+        Client.enable.is_(True),
+        Client.telegram_id.isnot(None),
+    ).all()
+
+    inherited_expiry: dict[int, int] = {}
+    for c in holder_clients:
+        if c.expiry_time != 0 and c.expiry_time <= now_ms:
+            continue
+        tg = c.telegram_id
+        prev = inherited_expiry.get(tg)
+        if prev is None:
+            inherited_expiry[tg] = c.expiry_time
+        elif prev == 0 or c.expiry_time == 0:
+            inherited_expiry[tg] = 0
+        else:
+            inherited_expiry[tg] = max(prev, c.expiry_time)
+
+    if not inherited_expiry:
+        return 0
+
+    new_clients: list[Client] = []
+    for tg, expiry_ms in inherited_expiry.items():
+        if item.panel_id is not None:
+            from app.services.panel_proxy import proxy_provision
+
+            try:
+                proxy_provision(
+                    item.panel_id,
+                    tg,
+                    item.inbound_tag,
+                    {"expiry_ms": expiry_ms, "limit_bytes": limit_bytes, "tariff_id": tariff.id},
+                )
+            except Exception as exc:
+                logger.error(
+                    "backfill proxy_provision failed panel=%s tag=%s tg=%s: %s",
+                    item.panel_id,
+                    item.inbound_tag,
+                    tg,
+                    exc,
+                )
+            continue
+
+        if Client.query.filter_by(telegram_id=tg, inbound_tag=item.inbound_tag).first():
+            continue
+
+        new_clients.append(
+            _create_client_for_item(
+                telegram_id=tg,
+                tariff=tariff,
+                item=item,
+                expiry_ms=expiry_ms,
+                limit_bytes=limit_bytes,
+            )
+        )
+
+    db.session.commit()
+    _sync_after_provision(new_clients, [])
+    logger.info(
+        "backfill tariff=%s item=%s created=%d holders=%d",
+        tariff.id,
+        item.inbound_tag,
+        len(new_clients),
+        len(inherited_expiry),
+    )
+    return len(new_clients)

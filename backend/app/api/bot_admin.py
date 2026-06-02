@@ -25,7 +25,7 @@ from app.models import (
 )
 from app.services import bot_events
 from app.services.panel_proxy import get_panel_snapshot
-from app.services.provisioning import apply_tariff_for_user
+from app.services.provisioning import apply_tariff_for_user, backfill_tariff_item
 from app.services.stats import _api_remove_user_grpc
 from app.services.xray import generate_config_file, restart_xray_container
 from app.utils import token_required
@@ -223,6 +223,8 @@ def update_tariff(tariff_id):
         if other_trial is not None:
             return jsonify({"error": "a trial tariff already exists"}), 400
 
+    old_item_keys = {(it.inbound_tag, it.panel_id) for it in t.items}
+
     t.name = payload["name"].strip()
     t.price_rub = payload["price_rub"]
     t.period_days = payload["period_days"]
@@ -232,6 +234,14 @@ def update_tariff(tariff_id):
     t.sort_order = payload.get("sort_order", 0)
     _apply_items(t, payload.get("items", []))
     db.session.commit()
+
+    items_by_key = {(it.inbound_tag, it.panel_id): it for it in t.items}
+    for key in set(items_by_key) - old_item_keys:
+        try:
+            backfill_tariff_item(t, items_by_key[key])
+        except Exception:
+            logger.exception("backfill failed for tariff=%s item=%s", t.id, key)
+
     return jsonify(_serialize_tariff(t))
 
 

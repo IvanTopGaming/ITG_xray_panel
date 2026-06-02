@@ -1,6 +1,7 @@
 """Integration tests for /api/bot/tariffs endpoints."""
 
 import time
+from unittest.mock import patch
 
 import jwt
 import pytest
@@ -381,3 +382,56 @@ def test_duplicate_trial_does_not_propagate_trial_flag(app_with_bot_api, db, cli
 def test_duplicate_nonexistent_returns_404(app_with_bot_api, db, client, auth_headers):
     resp = client.post("/api/bot/tariffs/9999/duplicate", headers=auth_headers)
     assert resp.status_code == 404
+
+
+def test_update_tariff_backfills_new_item_to_active_holders(app_with_bot_api, db, client, auth_headers):
+    import uuid
+
+    from app.models import Client, Inbound
+
+    db.session.add_all(
+        [
+            Inbound(tag="DE-vless", protocol="vless", port=20001, stream_settings="{}"),
+            Inbound(tag="MSK-vless", protocol="vless", port=20002, stream_settings="{}"),
+        ]
+    )
+    db.session.flush()
+    t = Tariff(name="Standard", price_rub=150, period_days=30)
+    db.session.add(t)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE-vless", traffic_gb=0, sort_order=0))
+    db.session.commit()
+
+    now = int(time.time() * 1000)
+    expiry = now + 10 * 86400_000
+    db.session.add(
+        Client(
+            id=str(uuid.uuid4()),
+            email="holder_DE",
+            inbound_tag="DE-vless",
+            telegram_id=42,
+            tariff_id=t.id,
+            limit_bytes=0,
+            expiry_time=expiry,
+            enable=True,
+        )
+    )
+    db.session.commit()
+
+    payload = {
+        "name": "Standard",
+        "price_rub": 150,
+        "period_days": 30,
+        "items": [
+            {"inbound_tag": "DE-vless", "traffic_gb": 0},
+            {"inbound_tag": "MSK-vless", "traffic_gb": 70},
+        ],
+    }
+    with patch("app.services.provisioning._sync_after_provision"):
+        resp = client.put(f"/api/bot/tariffs/{t.id}", json=payload, headers=auth_headers)
+
+    assert resp.status_code == 200
+    new = Client.query.filter_by(telegram_id=42, inbound_tag="MSK-vless").first()
+    assert new is not None
+    assert new.expiry_time == expiry
+    assert new.limit_bytes == 70 * (1024**3)
