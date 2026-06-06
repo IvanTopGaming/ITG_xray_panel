@@ -214,8 +214,8 @@ def create_outbound():
     data = request.get_json(silent=True) or {}
     try:
         tag = normalize_tag(data.get("tag"))
-        if tag == "api":
-            raise ValueError("Tag 'api' is reserved")
+        if tag in ["api", "direct", "block"]:
+            raise ValueError(f"Tag '{tag}' is reserved")
         protocol = _normalize_protocol(data.get("protocol"))
         enabled = _parse_bool(data.get("enable"), True)
         if Outbound.query.filter_by(tag=tag).first():
@@ -240,11 +240,12 @@ def create_outbound():
             mux=json.dumps(mux),
         )
         db.session.add(new_ob)
-        db.session.commit()
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"tag": new_ob.tag}), 201
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -257,6 +258,8 @@ def update_outbound(tag):
         ob = Outbound.query.filter_by(tag=tag).first()
         if not ob:
             return jsonify({"error": "Not found"}), 404
+        if tag in ["direct", "block"]:
+            raise ValueError("System outbound cannot be modified")
         data = request.get_json(silent=True) or {}
         if "protocol" in data:
             ob.protocol = _normalize_protocol(data.get("protocol"))
@@ -273,15 +276,13 @@ def update_outbound(tag):
                 raise ValueError("mux must be an object")
             ob.mux = json.dumps(data["mux"])
         if "enable" in data:
-            enabled = _parse_bool(data.get("enable"), bool(getattr(ob, "enable", True)))
-            if tag in ["direct", "block"] and not enabled:
-                raise ValueError("System outbound cannot be disabled")
-            ob.enable = enabled
-        db.session.commit()
+            ob.enable = _parse_bool(data.get("enable"), bool(getattr(ob, "enable", True)))
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"status": "updated"}), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -319,11 +320,12 @@ def delete_outbound(tag):
             client.preferred_outbound = None
 
         db.session.delete(ob)
-        db.session.commit()
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"status": "deleted"}), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -379,11 +381,12 @@ def create_balancer():
             fallback_tag=fallback_tag,
         )
         db.session.add(new_bal)
-        db.session.commit()
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"tag": new_bal.tag}), 201
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -428,11 +431,12 @@ def update_balancer(tag):
             bal.fallback_tag = _validate_fallback_tag(data.get("fallback_tag"), selector)
         if "enable" in data:
             bal.enable = _parse_bool(data.get("enable"), bool(getattr(bal, "enable", True)))
-        db.session.commit()
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"status": "updated"}), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -451,9 +455,12 @@ def delete_balancer(tag):
             client.preferred_outbound = None
 
         db.session.delete(bal)
-        db.session.commit()
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"status": "deleted"}), 200
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500

@@ -321,6 +321,38 @@ class TestUpdateInbound:
         assert resp.status_code == 200
         assert Inbound.query.filter_by(tag="dl").first().device_limit == 5
 
+    def test_switching_transport_to_xhttp_clears_client_flow(self, app, client, auth_headers):
+        """XTLS Vision is invalid on xhttp — switching transport must clear users' flow."""
+        ib = Inbound(
+            tag="flow-xhttp",
+            port=8101,
+            protocol="vless",
+            stream_settings=json.dumps({"network": "tcp", "security": "tls"}),
+        )
+        db.session.add(ib)
+        db.session.commit()
+        _make_client(inbound_tag="flow-xhttp", email="u1", flow="xtls-rprx-vision")
+
+        resp = client.put("/api/inbounds/flow-xhttp", headers=auth_headers, json={"network": "xhttp"})
+        assert resp.status_code == 200
+        assert Client.query.filter_by(inbound_tag="flow-xhttp", email="u1").first().flow == ""
+
+    def test_unrelated_update_keeps_compatible_flow(self, app, client, auth_headers):
+        """A change that leaves the inbound on raw-TCP + TLS must preserve flow."""
+        ib = Inbound(
+            tag="flow-keep",
+            port=8102,
+            protocol="vless",
+            stream_settings=json.dumps({"network": "tcp", "security": "tls"}),
+        )
+        db.session.add(ib)
+        db.session.commit()
+        _make_client(inbound_tag="flow-keep", email="u1", flow="xtls-rprx-vision")
+
+        resp = client.put("/api/inbounds/flow-keep", headers=auth_headers, json={"label": "x"})
+        assert resp.status_code == 200
+        assert Client.query.filter_by(inbound_tag="flow-keep", email="u1").first().flow == "xtls-rprx-vision"
+
     def test_switching_to_non_panel_protocol_removes_clients(self, app, client, auth_headers):
         """When switching a vless inbound to socks, existing clients should be deleted."""
         _make_inbound(tag="switch", port=6100, protocol="vless")
@@ -847,3 +879,349 @@ class TestResetInboundTraffic:
     def test_reset_inbound_traffic_no_token(self, client):
         resp = client.post("/api/inbounds/x/reset-traffic")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Cross-panel bulk routing — selected users from a linked panel are proxied
+# to that panel instead of silently no-op'd against the local DB.
+# ---------------------------------------------------------------------------
+
+
+class TestBulkCrossPanelRouting:
+    def test_bulk_delete_routes_remote_group_and_keeps_local(self, app, client, auth_headers):
+        _make_inbound(tag="xp-local", port=2101)
+        _make_client(inbound_tag="xp-local", email="loc1")
+
+        with (
+            patch("app.api.inbound.bulk_delete_users", return_value=1) as mock_local,
+            patch(
+                "app.services.panel_proxy.proxy_bulk_delete_users",
+                return_value={"status": "deleted", "count": 2},
+            ) as mock_remote,
+        ):
+            resp = client.post(
+                "/api/users/bulk-delete",
+                headers=auth_headers,
+                json={
+                    "users": [
+                        {"tag": "xp-local", "email": "loc1"},
+                        {"tag": "rem-in", "email": "r1", "panel_id": 7},
+                        {"tag": "rem-in", "email": "r2", "panel_id": 7},
+                    ]
+                },
+            )
+
+        assert resp.status_code == 200
+        # local (1) + remote (2) aggregated
+        assert resp.get_json()["count"] == 3
+        # local op only saw the local user
+        mock_local.assert_called_once_with([{"tag": "xp-local", "email": "loc1"}])
+        # remote proxied to panel 7 with panel_id stripped from each entry
+        mock_remote.assert_called_once_with(7, [{"tag": "rem-in", "email": "r1"}, {"tag": "rem-in", "email": "r2"}])
+
+    def test_bulk_delete_remote_failure_is_best_effort(self, app, client, auth_headers):
+        _make_inbound(tag="xp-local2", port=2102)
+        _make_client(inbound_tag="xp-local2", email="keep")
+
+        with (
+            patch("app.api.inbound.bulk_delete_users", return_value=1),
+            patch(
+                "app.services.panel_proxy.proxy_bulk_delete_users",
+                side_effect=ValueError("Panel 'child' is offline"),
+            ),
+        ):
+            resp = client.post(
+                "/api/users/bulk-delete",
+                headers=auth_headers,
+                json={
+                    "users": [
+                        {"tag": "xp-local2", "email": "keep"},
+                        {"tag": "rem-in", "email": "r1", "panel_id": 9},
+                    ]
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["count"] == 1  # local still deleted
+        assert "errors" in body and any("offline" in e for e in body["errors"])
+
+    def test_bulk_enable_routes_remote_group(self, app, client, auth_headers):
+        _make_inbound(tag="xp-en", port=2103)
+        _make_client(inbound_tag="xp-en", email="e1", enable=False)
+
+        with patch(
+            "app.services.panel_proxy.proxy_bulk_enable_users",
+            return_value={"status": "ok", "count": 3},
+        ) as mock_remote:
+            resp = client.post(
+                "/api/users/bulk-enable",
+                headers=auth_headers,
+                json={
+                    "users": [
+                        {"tag": "xp-en", "email": "e1"},
+                        {"tag": "rem-in", "email": "r1", "panel_id": 4},
+                    ],
+                    "enable": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.get_json()["count"] == 4  # 1 local + 3 remote
+        mock_remote.assert_called_once_with(4, [{"tag": "rem-in", "email": "r1"}], True)
+        assert Client.query.filter_by(inbound_tag="xp-en", email="e1").first().enable is True
+
+    def test_bulk_adjust_days_routes_remote_group(self, app, client, auth_headers):
+        _make_inbound(tag="xp-adj", port=2104)
+        now_ms = int(time.time() * 1000)
+        _make_client(inbound_tag="xp-adj", email="a1", expiry_time=now_ms)
+
+        with patch(
+            "app.services.panel_proxy.proxy_bulk_adjust_days",
+            return_value={"status": "ok", "updated": 2, "skipped": 1},
+        ) as mock_remote:
+            resp = client.post(
+                "/api/users/bulk-adjust-days",
+                headers=auth_headers,
+                json={
+                    "users": [
+                        {"tag": "xp-adj", "email": "a1"},
+                        {"tag": "rem-in", "email": "r1", "panel_id": 5},
+                    ],
+                    "days": 7,
+                    "mode": "add",
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["updated"] == 3  # 1 local + 2 remote
+        assert body["skipped"] == 1  # from remote
+        mock_remote.assert_called_once_with(5, [{"tag": "rem-in", "email": "r1"}], 7, "add")
+
+    def test_bulk_adjust_traffic_routes_remote_group(self, app, client, auth_headers):
+        _make_inbound(tag="xp-tr", port=2105)
+        _make_client(inbound_tag="xp-tr", email="t1", limit_bytes=1024**3)
+
+        with patch(
+            "app.services.panel_proxy.proxy_bulk_adjust_traffic",
+            return_value={"status": "ok", "updated": 1, "skipped": 0},
+        ) as mock_remote:
+            resp = client.post(
+                "/api/users/bulk-adjust-traffic",
+                headers=auth_headers,
+                json={
+                    "users": [
+                        {"tag": "xp-tr", "email": "t1"},
+                        {"tag": "rem-in", "email": "r1", "panel_id": 6},
+                    ],
+                    "gb": 5,
+                    "mode": "add",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.get_json()["updated"] == 2  # 1 local + 1 remote
+        mock_remote.assert_called_once_with(6, [{"tag": "rem-in", "email": "r1"}], 5, "add")
+
+    @patch("app.api.inbound.reset_user_traffic")
+    def test_bulk_reset_routes_remote_group(self, mock_local, app, client, auth_headers):
+        _make_inbound(tag="xp-rst", port=2106)
+        _make_client(inbound_tag="xp-rst", email="rs1")
+
+        with patch(
+            "app.services.panel_proxy.proxy_bulk_reset_traffic",
+            return_value={"status": "reset"},
+        ) as mock_remote:
+            resp = client.post(
+                "/api/users/reset-traffic",
+                headers=auth_headers,
+                json={
+                    "users": [
+                        {"tag": "xp-rst", "email": "rs1"},
+                        {"tag": "rem-in", "email": "r1", "panel_id": 3},
+                    ]
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_local.assert_called_once_with("xp-rst", "rs1")
+        mock_remote.assert_called_once_with(3, [{"tag": "rem-in", "email": "r1"}])
+
+    @patch("app.api.inbound.reset_user_traffic")
+    def test_single_reset_with_panel_id_proxies(self, mock_local, app, client, auth_headers):
+        with patch(
+            "app.services.panel_proxy.proxy_bulk_reset_traffic",
+            return_value={"status": "reset"},
+        ) as mock_remote:
+            resp = client.post(
+                "/api/users/reset-traffic?panel_id=8",
+                headers=auth_headers,
+                json={"tag": "rem-in", "email": "solo"},
+            )
+
+        assert resp.status_code == 200
+        mock_local.assert_not_called()
+        mock_remote.assert_called_once_with(8, [{"tag": "rem-in", "email": "solo"}])
+
+
+# ---------------------------------------------------------------------------
+# POST /users/bulk-set-flow — enable/disable VLESS flow in bulk
+# ---------------------------------------------------------------------------
+
+
+class TestBulkSetFlow:
+    def test_enable_flow_on_vless(self, app, client, auth_headers):
+        ib = Inbound(
+            tag="fl-en",
+            port=2201,
+            protocol="vless",
+            stream_settings=json.dumps({"network": "tcp", "security": "tls"}),
+        )
+        db.session.add(ib)
+        db.session.commit()
+        _make_client(inbound_tag="fl-en", email="f1", flow="")
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "fl-en", "email": "f1"}], "flow": "xtls-rprx-vision"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["updated"] == 1
+        assert Client.query.filter_by(inbound_tag="fl-en", email="f1").first().flow == "xtls-rprx-vision"
+
+    def test_disable_flow_on_vless(self, app, client, auth_headers):
+        _make_inbound(tag="fl-dis", port=2202, protocol="vless")
+        _make_client(inbound_tag="fl-dis", email="f1", flow="xtls-rprx-vision")
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "fl-dis", "email": "f1"}], "flow": ""},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["updated"] == 1
+        assert Client.query.filter_by(inbound_tag="fl-dis", email="f1").first().flow == ""
+
+    def test_skip_non_vless(self, app, client, auth_headers):
+        _make_inbound(tag="fl-tr", port=2203, protocol="trojan")
+        _make_client(inbound_tag="fl-tr", email="f1", flow="")
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "fl-tr", "email": "f1"}], "flow": "xtls-rprx-vision"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["updated"] == 0
+        assert body["skipped"] == 1
+
+    def test_skip_noop_when_already_on_target(self, app, client, auth_headers):
+        _make_inbound(tag="fl-noop", port=2204, protocol="vless")
+        _make_client(inbound_tag="fl-noop", email="f1", flow="xtls-rprx-vision")
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "fl-noop", "email": "f1"}], "flow": "xtls-rprx-vision"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["skipped"] == 1
+
+    def test_invalid_flow_returns_400(self, app, client, auth_headers):
+        _make_inbound(tag="fl-bad", port=2205, protocol="vless")
+        _make_client(inbound_tag="fl-bad", email="f1")
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "fl-bad", "email": "f1"}], "flow": "bogus-flow"},
+        )
+        assert resp.status_code == 400
+
+    def test_missing_flow_returns_400(self, client, auth_headers):
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "x", "email": "y"}]},
+        )
+        assert resp.status_code == 400
+        assert "flow" in resp.get_json()["error"].lower()
+
+    def test_no_token(self, client):
+        resp = client.post("/api/users/bulk-set-flow", json={"users": [], "flow": ""})
+        assert resp.status_code == 401
+
+    def test_routes_remote_group(self, app, client, auth_headers):
+        ib = Inbound(
+            tag="fl-loc",
+            port=2206,
+            protocol="vless",
+            stream_settings=json.dumps({"network": "tcp", "security": "tls"}),
+        )
+        db.session.add(ib)
+        db.session.commit()
+        _make_client(inbound_tag="fl-loc", email="f1", flow="")
+
+        with patch(
+            "app.services.panel_proxy.proxy_bulk_set_flow",
+            return_value={"status": "ok", "updated": 2, "skipped": 1},
+        ) as mock_remote:
+            resp = client.post(
+                "/api/users/bulk-set-flow",
+                headers=auth_headers,
+                json={
+                    "users": [
+                        {"tag": "fl-loc", "email": "f1"},
+                        {"tag": "rem-in", "email": "r1", "panel_id": 5},
+                    ],
+                    "flow": "xtls-rprx-vision",
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["updated"] == 3  # 1 local + 2 remote
+        assert body["skipped"] == 1  # from remote
+        mock_remote.assert_called_once_with(5, [{"tag": "rem-in", "email": "r1"}], "xtls-rprx-vision")
+
+    def test_enable_flow_skips_incompatible_transport(self, app, client, auth_headers):
+        """Enabling Vision on an xhttp inbound is skipped — flow can't carry there."""
+        ib = Inbound(
+            tag="fl-xhttp",
+            port=2210,
+            protocol="vless",
+            stream_settings=json.dumps({"network": "xhttp", "security": "tls"}),
+        )
+        db.session.add(ib)
+        db.session.commit()
+        _make_client(inbound_tag="fl-xhttp", email="f1", flow="")
+
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "fl-xhttp", "email": "f1"}], "flow": "xtls-rprx-vision"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["updated"] == 0
+        assert body["skipped"] == 1
+        assert Client.query.filter_by(inbound_tag="fl-xhttp", email="f1").first().flow == ""
+
+    def test_disable_flow_allowed_on_incompatible_transport(self, app, client, auth_headers):
+        """Disabling (clearing) flow is always allowed, even on xhttp."""
+        ib = Inbound(
+            tag="fl-xhttp2",
+            port=2211,
+            protocol="vless",
+            stream_settings=json.dumps({"network": "xhttp", "security": "tls"}),
+        )
+        db.session.add(ib)
+        db.session.commit()
+        _make_client(inbound_tag="fl-xhttp2", email="f1", flow="xtls-rprx-vision")
+
+        resp = client.post(
+            "/api/users/bulk-set-flow",
+            headers=auth_headers,
+            json={"users": [{"tag": "fl-xhttp2", "email": "f1"}], "flow": ""},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["updated"] == 1
+        assert Client.query.filter_by(inbound_tag="fl-xhttp2", email="f1").first().flow == ""

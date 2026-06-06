@@ -26,6 +26,7 @@ from .jobs.notifications import (
 )
 from .jobs.payments import cleanup_old_payments, poll_pending_payments
 from .jobs.panels import poll_linked_panels
+from .services.version_check import fetch_latest
 
 grpc_gevent.init_gevent()
 LOCAL_DEV_ORIGINS = [
@@ -182,8 +183,16 @@ def create_app():
     _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
     _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
+    _ensure_scheduler_job("check_latest_version", fetch_latest, 21600)  # 6 hours
     if not scheduler.running:
         scheduler.start()
+
+    try:
+        import gevent
+
+        gevent.spawn(fetch_latest)
+    except Exception:
+        pass
 
     from .api import (
         auth,
@@ -259,7 +268,7 @@ def create_app():
                 block_ob.enable = True
             db.session.commit()
 
-            generate_config_file()
+            generate_config_file(validate=False)
 
             if not Admin.query.first():
                 user, pw = _resolve_admin_bootstrap_credentials(panel_host)

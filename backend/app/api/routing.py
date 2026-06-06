@@ -11,6 +11,10 @@ MAX_PROFILE_NAME_LEN = 50
 MAX_RULE_TEXT_LEN = 128
 MAX_RULE_COMMENT_LEN = 255
 LIST_FIELDS = {"domain", "ip", "source", "protocol", "user", "inboundTag"}
+IP_ONLY_PREFIXES = ("geoip:",)
+DOMAIN_ONLY_PREFIXES = ("geosite:", "domain:", "regexp:", "keyword:", "full:", "dotless:")
+ALLOWED_PROTOCOLS = ("http", "tls", "quic", "bittorrent")
+ALLOWED_NETWORKS = ("tcp", "udp")
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 FALSY_VALUES = {"0", "false", "no", "off"}
 
@@ -59,6 +63,30 @@ def _normalize_list(raw_value):
     return result
 
 
+def _has_prefix(entry, prefixes):
+    value = entry[1:] if entry.startswith("!") else entry
+    return value.lower().startswith(prefixes)
+
+
+def _validate_rule_field_prefixes(rule, idx):
+    for entry in rule.get("domain", []):
+        if _has_prefix(entry, IP_ONLY_PREFIXES):
+            raise ValueError(f'Rule #{idx}: "{entry}" is an IP category — move it to the IPS field, not Domains')
+    for field, label in (("ip", "IPS"), ("source", "Source IP")):
+        for entry in rule.get(field, []):
+            if _has_prefix(entry, DOMAIN_ONLY_PREFIXES):
+                raise ValueError(
+                    f'Rule #{idx}: "{entry}" is a domain matcher — move it to the Domains field, not {label}'
+                )
+    for entry in rule.get("protocol", []):
+        if entry.lower() not in ALLOWED_PROTOCOLS:
+            raise ValueError(f'Rule #{idx}: unknown protocol "{entry}" — allowed: {", ".join(ALLOWED_PROTOCOLS)}')
+    for token in rule.get("network", "").split(","):
+        token = token.strip().lower()
+        if token and token not in ALLOWED_NETWORKS:
+            raise ValueError(f'Rule #{idx}: unknown network "{token}" — allowed: {", ".join(ALLOWED_NETWORKS)}')
+
+
 def _normalize_rules(raw_rules):
     if raw_rules is None:
         return []
@@ -96,6 +124,7 @@ def _normalize_rules(raw_rules):
 
         rule["outboundTag"] = target
 
+        _validate_rule_field_prefixes(rule, idx + 1)
         normalized_rules.append(rule)
 
     return normalized_rules
@@ -185,11 +214,12 @@ def update_profile(pid):
             _ensure_rule_targets_exist(rules)
             p.rules = json.dumps(rules, ensure_ascii=False)
 
-        db.session.commit()
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"status": "updated"}), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -205,9 +235,12 @@ def delete_profile(pid):
         for ib in p.inbounds:
             ib.routing_profile_id = None
         db.session.delete(p)
-        db.session.commit()
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"status": "deleted"}), 200
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500

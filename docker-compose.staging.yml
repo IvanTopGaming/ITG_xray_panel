@@ -45,7 +45,7 @@ services:
       - TASKS=0
       - VOLUMES=0
     networks:
-      - control-net
+      - dockersock-net
 
   redis:
     image: ${REDIS_IMAGE:?REDIS_IMAGE is required}
@@ -59,7 +59,7 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - control-net
+      - redis-net
 
   backend:
     image: ghcr.io/ivantopgaming/panel-backend:dev-latest
@@ -102,7 +102,8 @@ services:
         condition: service_healthy
     networks:
       - panel-net
-      - control-net
+      - redis-net
+      - dockersock-net
 
   frontend:
     image: ghcr.io/ivantopgaming/panel-frontend:dev-latest
@@ -173,13 +174,17 @@ services:
         condition: service_healthy
     networks:
       - panel-net
-      - control-net
+      - redis-net
 
 networks:
   panel-net:
     driver: bridge
-  control-net:
+  redis-net:
     driver: bridge
+    internal: true
+  dockersock-net:
+    driver: bridge
+    internal: true
 
 volumes:
   caddy_data:

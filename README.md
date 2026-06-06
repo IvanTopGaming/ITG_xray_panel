@@ -19,17 +19,18 @@ YooKassa payments.
 ## Highlights
 
 ### Proxy panel
-- **Multi-protocol** — VLESS (XTLS · Reality · WebSocket · gRPC · TCP), VMess, Trojan, Shadowsocks 2022, WireGuard, SOCKS5, HTTP
+- **Multi-protocol** — VLESS (XTLS Vision · Reality · TCP · WebSocket · gRPC · XHTTP · HTTPUpgrade), VMess, Trojan, Shadowsocks 2022, WireGuard, SOCKS5, HTTP. Vision flow is kept consistent with the transport — it's only allowed on raw-TCP + TLS/REALITY, and switching an inbound to e.g. XHTTP clears it from that inbound's users automatically
 - **Panel Federation** — one master panel manages linked remote panels: proxy user/inbound CRUD to specific panels via `TariffItem.panel_id` routing, health polling, mutual federation-token auth
 - **Aggregated subscriptions** — a single URL returns merged entries from the master and linked panels (Redis-cached, configurable refresh interval)
 - **Traffic statistics** — hourly snapshots kept indefinitely, charts, period filtering (1h → all-time), top destination domains, per-panel breakdown
 - **Live user status** — online/offline/expired/over-limit/disabled with filtering, last-seen and source-IP tracking
+- **Bulk actions** — select users across inbounds *and* linked panels, then delete / enable / disable / reset traffic / shift expiry / adjust traffic cap / toggle VLESS flow in one shot; cross-panel batches proxy to the owning panel and report any unreachable one without aborting the rest
 - **Routing** — outbound servers, weighted balancers with fallback, per-user route overrides
 - **Device tracking** — optional per-client / per-inbound device limit; HWID-aware subscription delivery
 - **Display labels** — admin-friendly inbound names shown to end users (separate from the technical `tag`)
 
 ### Telegram billing bot
-- **YooKassa payments** — full checkout flow inside Telegram, idempotent webhook + 30-second poll fallback, double-provision protection
+- **YooKassa payments** — full checkout flow inside Telegram; the unsigned webhook is re-validated against YooKassa's API before provisioning, with a 30-second poll fallback and atomic double-provision protection
 - **Tariffs** — flexible plans with multiple inbound items (e.g. "EU 100 GB + RU 50 GB / 30 days"), public/private/archived visibility, optional per-item panel routing
 - **Subscription lifecycle** — auto-renewal for free tiers, manual grants by admin (paid · gift · free), revocation
 - **Trial** — one-time per-user trial that consumes a dedicated trial tariff
@@ -133,7 +134,7 @@ Admin panel UI (under **Bot** in the side nav):
 - **Tariffs** — CRUD with items (one inbound per item, traffic cap in GB, optional panel routing), visibility (`public` / `private` / `archived`), trial flag, drag-sort, archive/restore/duplicate, permanent delete (refused while payments reference it)
 - **Users** — every Telegram user the bot has seen, with grants and active clients; per-user `block` / `unblock` (cancels grants, removes from Xray runtime, disables clients, propagates to linked panels)
 - **Granted** — `UserTariffAccess` records (the "whitelist" of free / paid / gift grants), revoke per tariff (`vless`/`vmess` removed via gRPC immediately, others trigger config regen + restart)
-- **Texts** — every bot string is editable inline, with RU/EN tabs. The bundled `bot_texts_defaults.yaml` ships > 300 keys covering the entire user journey. Versioned via `CURRENT_BOT_TEXTS_VERSION`: bumping it triggers a one-shot force-reseed at startup that pushes the new default set
+- **Texts** — every bot string is editable inline, with RU/EN tabs. The bundled `bot_texts_defaults.yaml` ships ~74 keys (RU + EN each) covering the entire user journey. Versioned via `CURRENT_BOT_TEXTS_VERSION`: bumping it triggers a one-shot force-reseed at startup that pushes the new default set
 - **Payments** — searchable history (status: pending / processing / succeeded / failed / cancelled), one-click open in YooKassa
 - **Settings** — bot token (eye-toggle), admin IDs, bot service token (rotate button), YooKassa credentials, timezone
 
@@ -186,7 +187,7 @@ Admin panel UI (under **Bot** in the side nav):
 | `socket-proxy` | Locked-down Docker socket (only the ops `backend` needs) |
 | `bot` | Aiogram-based Telegram bot, runs on the master only |
 
-Two Docker networks: `panel-net` (frontend/backend/caddy + Xray) and `control-net` (backend ↔ socket-proxy ↔ redis ↔ bot).
+Three Docker networks: `panel-net` (frontend/backend/caddy + Xray + bot — the only network with internet egress) and two `internal: true` segments — `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy). Splitting the old `control-net` this way means the Docker-socket proxy is reachable only by `backend`, and neither it nor `redis` can reach the internet.
 
 ### Background jobs (APScheduler, all in the `backend` container)
 
@@ -204,10 +205,11 @@ Two Docker networks: `panel-net` (frontend/backend/caddy + Xray) and `control-ne
 | `send_traffic_notifications` | 15m | Emits 80% / 95% / exhausted warnings (deduped, re-armed on monthly reset and on tariff renewal) |
 | `replay_undelivered_bot_events` | 60s | Re-publishes any `bot_event` row with `delivered_at IS NULL` and `created_at < now - 30s` so a transient Redis outage doesn't lose events |
 | `cleanup_bot_events` | 24h | Prunes delivered events > 7d, undelivered > 30d |
+| `check_latest_version` | 6h | Fetches the published `versions.json` from GitHub and caches it to power the "update available" indicator on **System → About** |
 
 ### Database
 
-SQLite at `./db_data/panel.db`, custom in-app migration system (`backend/db_migration.py`) keyed off `PRAGMA user_version` — current schema **v15**, currently includes 20 tables. Migrations are idempotent and run on every backend startup.
+SQLite at `./db_data/panel.db`, custom in-app migration system (`backend/db_migration.py`) keyed off `PRAGMA user_version` — current schema **v17**, 20 tables. Migrations are idempotent and run on every backend startup.
 
 **Storage budget:**
 - `traffic_snapshot` ≈ 100 bytes × entities × 8760 hours/year — negligible for typical deployments
@@ -291,7 +293,7 @@ docker logs --tail 50 panel-backend | grep "DB migration complete"
 
 | Protocol | Notes |
 |---|---|
-| VLESS | XTLS, Reality, WebSocket, gRPC, TCP, etc. — the default modern choice |
+| VLESS | XTLS Vision, Reality, TCP, WebSocket, gRPC, XHTTP, HTTPUpgrade — the default modern choice. Vision flow requires raw-TCP + TLS/REALITY |
 | VMess | Full stream-settings support |
 | Trojan | TLS required |
 | Shadowsocks 2022 | AES-128-GCM · AES-256-GCM · ChaCha20-Poly1305 (base64 keys of the right byte length) |
@@ -310,7 +312,7 @@ Stream settings (TLS, Reality, WS path, etc.) are stored as a single JSON blob p
 - Rate limiting on auth endpoints via Redis
 - JWT tokens expire after 2 hours
 - Bot service token uses constant-time comparison (`secrets.compare_digest`)
-- YooKassa webhook is IP-whitelisted and reads the *rightmost* `X-Forwarded-For` entry (the one Caddy added) — leftmost spoofing is rejected
+- YooKassa webhook is **unsigned**, so the body is only a trigger: the handler re-fetches the authoritative payment status from YooKassa's API before provisioning, making forged notifications harmless (no IP whitelist needed)
 - `/api/backup` and `/api/restore` require an admin JWT — the bot service token is **not** accepted there
 
 ---
@@ -351,7 +353,7 @@ docker compose build bot      && docker compose up -d bot
 ```bash
 cd backend
 pip install pytest
-pytest tests/                  # 260+ unit + API tests
+pytest tests/                  # 760+ unit + API tests
 pytest tests/test_provisioning.py -q
 ```
 

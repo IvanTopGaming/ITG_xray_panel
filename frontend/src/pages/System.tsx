@@ -29,6 +29,7 @@ import { formatDateForPicker, formatTime } from '@/lib/datetime';
 import { Modal } from '@/components/ui/Modal';
 import { useLogStore } from '@/stores/logStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useVersionStatus } from '@/hooks/useVersionStatus';
 
 const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_RESTORE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
@@ -47,6 +48,7 @@ export default function System() {
   const { logs, isStreaming, toggleStream } = useLogStore();
   const { logout } = useAuthStore();
   const queryClient = useQueryClient();
+  const { services, hasUpdates } = useVersionStatus();
 
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState(false);
@@ -347,6 +349,12 @@ export default function System() {
                 />
               )}
               <span className="relative z-10">{tab.label}</span>
+              {hasUpdates && tab.id === 'about' && (
+                <span
+                  title="Update available"
+                  className="absolute right-2 top-1.5 z-20 h-2 w-2 rounded-full bg-primary shadow-[0_0_8px_rgba(208,188,255,0.8)]"
+                />
+              )}
             </button>
           ))}
         </div>
@@ -525,10 +533,14 @@ export default function System() {
                   </div>
 
                   <div className="w-full grid grid-cols-2 gap-2 text-[11px] font-mono">
-                    <VersionPill label="backend" value={__APP_VERSIONS__.backend} />
-                    <VersionPill label="frontend" value={__APP_VERSIONS__.frontend} />
-                    <VersionPill label="bot" value={__APP_VERSIONS__.bot} />
-                    <VersionPill label="xray" value={__APP_VERSIONS__.xray_core_ref} />
+                    {services.map((s) => (
+                      <VersionPill
+                        key={s.key}
+                        label={s.label}
+                        value={s.current}
+                        latest={s.updateAvailable ? s.latest : null}
+                      />
+                    ))}
                   </div>
 
                   <div className="text-sm text-gray-400">
@@ -649,11 +661,33 @@ function SettingsCard({
   );
 }
 
-function VersionPill({ label, value }: { label: string; value: string }) {
+function VersionPill({
+  label,
+  value,
+  latest,
+}: {
+  label: string;
+  value: string;
+  latest?: string | null;
+}) {
   return (
-    <div className="flex items-center justify-between gap-2 px-3 py-2 bg-black/20 rounded-lg border border-white/5">
-      <span className="text-gray-500 uppercase tracking-wider">{label}</span>
-      <span className="text-gray-200 truncate">{value}</span>
+    <div
+      className={`flex items-center justify-between gap-3 px-3 py-2 bg-black/20 rounded-lg border ${
+        latest ? 'col-span-2 border-primary/25' : 'border-white/5'
+      }`}
+    >
+      <span className="shrink-0 text-gray-500 uppercase tracking-wider">{label}</span>
+      <span className="flex items-center gap-2">
+        <span className="whitespace-nowrap text-gray-200">{value}</span>
+        {latest && (
+          <span
+            title={`Update available: ${latest}`}
+            className="shrink-0 whitespace-nowrap rounded border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold text-primary"
+          >
+            ↑ {latest}
+          </span>
+        )}
+      </span>
     </div>
   );
 }

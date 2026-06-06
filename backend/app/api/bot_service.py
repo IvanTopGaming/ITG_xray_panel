@@ -18,6 +18,7 @@ from app.models import (
     UserTariffAccess,
 )
 from app.services import bot_events
+from app.services.bot_status import record_bot_version
 from app.services.provisioning import apply_tariff_for_user
 from app.utils import bot_service_token_required
 
@@ -48,6 +49,7 @@ def _parse_admin_ids_csv(raw: str) -> list[int]:
 @bot_service_token_required
 def get_runtime_config():
     """Bot settings — empty values until bot_token is configured (bot bootstrap-loops on its side)."""
+    record_bot_version(request.headers.get("X-Bot-Version"))
     return jsonify(
         {
             "version": int(_setting("bot_config_version") or "0"),

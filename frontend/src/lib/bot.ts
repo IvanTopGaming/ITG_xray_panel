@@ -56,14 +56,29 @@ export async function getTariffStats(): Promise<TariffStatsMap> {
   return data.stats;
 }
 
-export async function blockBotUser(
-  tgId: number
-): Promise<{ ok: boolean; cancelled_grants: number; disabled_clients: number }> {
+export interface PanelFailure {
+  panel_id: number;
+  panel_name?: string | null;
+  error: string;
+}
+
+export async function blockBotUser(tgId: number): Promise<{
+  ok: boolean;
+  cancelled_grants: number;
+  disabled_clients: number;
+  remote_disabled: number;
+  panel_failures: PanelFailure[];
+}> {
   const { data } = await api.post(`/bot/users/${tgId}/block`);
   return data;
 }
 
-export async function unblockBotUser(tgId: number): Promise<{ ok: boolean }> {
+export async function unblockBotUser(tgId: number): Promise<{
+  ok: boolean;
+  re_enabled: number;
+  remote_re_enabled: number;
+  panel_failures: PanelFailure[];
+}> {
   const { data } = await api.post(`/bot/users/${tgId}/unblock`);
   return data;
 }

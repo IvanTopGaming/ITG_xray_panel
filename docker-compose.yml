@@ -45,7 +45,7 @@ services:
       - TASKS=0
       - VOLUMES=0
     networks:
-      - control-net
+      - dockersock-net
 
   redis:
     image: ${REDIS_IMAGE:?REDIS_IMAGE is required}
@@ -59,13 +59,16 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - control-net
+      - redis-net
 
   backend:
     build:
       context: ./backend
+      additional_contexts:
+        project: ./
       args:
         XRAY_CORE_REF: ${XRAY_CORE_REF:?XRAY_CORE_REF is required}
+        XRAY_IMAGE: ${XRAY_IMAGE}
     container_name: panel-backend
     restart: always
     volumes:
@@ -105,7 +108,8 @@ services:
         condition: service_healthy
     networks:
       - panel-net
-      - control-net
+      - redis-net
+      - dockersock-net
 
   frontend:
     build:
@@ -160,7 +164,10 @@ services:
       - panel-net
 
   bot:
-    build: ./tg_bot
+    build:
+      context: ./tg_bot
+      additional_contexts:
+        project: ./
     container_name: panel-bot
     restart: always
     environment:
@@ -178,13 +185,17 @@ services:
         condition: service_healthy
     networks:
       - panel-net
-      - control-net
+      - redis-net
 
 networks:
   panel-net:
     driver: bridge
-  control-net:
+  redis-net:
     driver: bridge
+    internal: true
+  dockersock-net:
+    driver: bridge
+    internal: true
 
 volumes:
   caddy_data:

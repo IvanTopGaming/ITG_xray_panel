@@ -16,6 +16,7 @@ from app.services.panel_proxy import (
     _get_panel_or_raise,
     fetch_panel_snapshot_live,
     get_panel_snapshot,
+    proxy_bulk_set_flow,
     proxy_create_user,
     proxy_delete_user,
 )
@@ -151,6 +152,17 @@ class TestFederationClient:
             timeout=8,
         )
 
+    def test_bulk_set_flow_posts_users_and_flow(self):
+        users = [{"tag": "vless-in", "email": "a"}]
+        with patch.object(self.client._session, "post", return_value=_mock_response({"updated": 1})) as mock_post:
+            result = self.client.bulk_set_flow(users, "xtls-rprx-vision")
+        mock_post.assert_called_once_with(
+            "https://child.example.com/api/users/bulk-set-flow",
+            json={"users": users, "flow": "xtls-rprx-vision"},
+            timeout=30,
+        )
+        assert result == {"updated": 1}
+
 
 # ─── _get_panel_or_raise ──────────────────────────────────────────────────────
 
@@ -266,6 +278,31 @@ class TestProxyDeleteUser:
             result = proxy_delete_user(panel.id, "vless-in", "alice@panel")
 
         instance.delete_user.assert_called_once_with("vless-in", "alice@panel")
+        assert result == expected
+
+
+# ─── proxy_bulk_set_flow ──────────────────────────────────────────────────────
+
+
+class TestProxyBulkSetFlow:
+    def test_raises_on_offline_panel(self, app, db):
+        panel = _make_panel(db, name="offline-for-flow", status="offline")
+        with pytest.raises(ValueError, match="offline"):
+            proxy_bulk_set_flow(panel.id, [{"tag": "vless-in", "email": "a"}], "xtls-rprx-vision")
+
+    def test_calls_client_bulk_set_flow(self, app, db):
+        panel = _make_panel(db, name="proxy-set-flow")
+        users = [{"tag": "vless-in", "email": "a"}]
+        expected = {"status": "ok", "updated": 1, "skipped": 0}
+
+        with patch("app.services.panel_proxy.FederationClient") as MockClient:
+            instance = MockClient.return_value
+            instance.bulk_set_flow.return_value = expected
+            instance.snapshot.return_value = {}
+
+            result = proxy_bulk_set_flow(panel.id, users, "xtls-rprx-vision")
+
+        instance.bulk_set_flow.assert_called_once_with(users, "xtls-rprx-vision")
         assert result == expected
 
 

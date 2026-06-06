@@ -32,7 +32,7 @@ ruff check backend/
 ruff format backend/           # auto-fix formatting
 ruff format --check backend/   # CI mode — no changes, exit 1 if dirty
 
-pytest tests/                  # 260+ unit + integration tests
+pytest tests/                  # 760+ unit + integration tests
 ```
 
 `backend/tests/conftest.py` stubs gRPC modules in `sys.modules` before importing the app so tests run on a dev checkout without needing the protobuf bundle that ships only inside the Docker image.
@@ -73,7 +73,7 @@ ruff format --check tg_bot/
 | `socket-proxy` | Restricts Docker socket access to specific API ops |
 | `bot` | Telegram bot (Aiogram, asyncio) |
 
-Two networks: `panel-net` (frontend/backend/caddy + xray) and `control-net` (backend ↔ socket-proxy ↔ redis ↔ bot). Key volumes: `shared_config:/etc/xray`, `xray_logs:/var/log/xray`, `./db_data:/app/db`.
+Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only one with internet egress) plus two `internal: true` segments: `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy). The split (formerly a single `control-net`) keeps the Docker-socket proxy reachable only by `backend` and denies internet to both `socket-proxy` and `redis`. Key volumes: `shared_config:/etc/xray`, `xray_logs:/var/log/xray`, `./db_data:/app/db`.
 
 ### Backend (`backend/`)
 - `app/__init__.py` — Flask app factory; registers blueprints, extensions, ProxyFix, APScheduler jobs
@@ -83,7 +83,7 @@ Two networks: `panel-net` (frontend/backend/caddy + xray) and `control-net` (bac
 - `app/api/`
   - `auth` — login / logout
   - `inbound`, `outbound`, `routing`, `panels`, `federation`, `subscription`, `statistics`, `system` — core panel
-  - `billing` — YooKassa checkout + IP-whitelisted webhook
+  - `billing` — YooKassa checkout + webhook. The webhook is **unsigned**, so the body is treated only as a trigger: the handler re-fetches the authoritative status from YooKassa (`fetch_remote_status`) before provisioning, so a forged notification does nothing
   - `bot_admin` — admin UI endpoints (tariffs, texts, users, grants, payments, settings) — JWT-protected
   - `bot_service` — endpoints the bot itself calls (runtime-config, texts, users, trial, tariffs, payments) — bot service token only
 - `app/services/`
@@ -96,10 +96,13 @@ Two networks: `panel-net` (frontend/backend/caddy + xray) and `control-net` (bac
   - `billing.py` — YooKassa SDK wrapper, `create_checkout`, `apply_payment` (atomic claim via `UPDATE … WHERE status='pending'` to prevent double-provision)
   - `provisioning.py` — single gateway for tariff grants: extends an existing `Client` for the same (telegram_id, inbound_tag) or creates one; resets counters; clears `traffic_*` `NotificationLog`; proxies to linked panels via `panel_proxy`
   - `bot_events.py` — `publish(event_type, telegram_id, payload)`: dual-write to `bot_event` table and Redis pubsub channel `bot:events`. Marks `delivered_at` on successful Redis publish.
+  - `version_check.py` — `fetch_latest` (6h cron): pulls the published `versions.json` from GitHub and caches it in a `SystemSetting`, powering the "update available" indicator on the System → About tab
+  - `bot_status.py` — small cache for the bot's reported version/health surfaced in the UI
 - `app/jobs/`
   - `billing.py` — `auto_renew_free_users` (free-tier renewal, pause+notify on archive/disable)
   - `payments.py` — `poll_pending_payments` (30s webhook fallback), `cleanup_old_payments` (24h, cancels stuck pending + publishes notification)
   - `notifications.py` — `send_expiry_notifications`, `send_traffic_notifications`, `cleanup_bot_events`, `replay_undelivered_bot_events`
+  - `panels.py` — `poll_linked_panels` (10s linked-panel health poll)
 
 ### Frontend (`frontend/src/`)
 - `pages/` — `Dashboard` (inbound/outbound management), `Statistics` (traffic analytics), `Routing`, `Panels` (federation management), `Bot` (billing UI), `System` (settings + logs + backup + about), `Login`
@@ -148,6 +151,7 @@ The bot is **backend-client** (not standalone) — it has no local SQLite. All s
 | `send_expiry_notifications` | 15m | 3d/1d/1h/expired warnings (dedup via `notification_log`, renew button shown only when tariff is still purchasable) |
 | `send_traffic_notifications` | 15m | 80%/95%/exhausted warnings (dedup + per-cycle re-arm) |
 | `replay_undelivered_bot_events` | 60s | Re-publishes any `bot_event` row with `delivered_at IS NULL` and `created_at < now - 30s` |
+| `check_latest_version` | 6h | Fetches the published `versions.json` from GitHub, caches it in a `SystemSetting` to drive the "update available" indicator on System → About |
 | `cleanup_bot_events` | 24h | Prunes delivered events > 7d, undelivered > 30d |
 
 ### Backend error handling pattern
@@ -159,7 +163,7 @@ Five decorators in `app/utils.py`:
 - `bot_service_token_required` — fixed token from `SystemSetting('bot_service_token')`, compared in constant time. Used on all `bot_service.py` endpoints + `/billing/checkout`.
 - `admin_or_bot_token_required` — accepts either. Used on `/api/panels`, parts of `/api/system` (e.g. `/api/restart`, `/api/stats/system`) — needed because the bot legitimately needs to create/update/delete users.
 - `federation_token_required` — validates the `federation_token` from a linked panel's `FederationConfig`. Used on federation endpoints that remote panels call.
-- `admin_or_federation_token_required` — accepts admin JWT or federation token. Used on `/api/inbound` user/inbound CRUD endpoints so linked panels can proxy operations.
+- `admin_or_federation_token_required` — accepts admin JWT or federation token. Used on `/api/inbound` user/inbound CRUD **and the `/users/bulk-*` + `/users/reset-traffic` batch endpoints**, so linked panels can proxy operations (and the master can fan a batch out to children).
 
 JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.password_changed_at` — changing the admin password instantly invalidates all existing tokens. The axios interceptor in `lib/api.ts` auto-logs out on any 401.
 
@@ -168,8 +172,8 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
 1. Bot → `POST /api/billing/checkout` with `{telegram_id, tariff_id, lang}` (bot service token)
 2. `services/billing.create_checkout` creates a `Payment` row (status='pending', placeholder yookassa_id), calls `yookassa.Payment.create` with a `gevent.with_timeout(8s)` + 1 retry on the same idempotence key, then persists `yookassa_id` + `confirmation_url`
 3. Bot opens the YooKassa URL in the user's Telegram chat
-4. User pays → YooKassa POSTs `/api/billing/yookassa/webhook` from one of their whitelisted IPs (rightmost XFF entry, set by Caddy)
-5. Webhook → `services/billing.apply_payment(payment)`:
+4. User pays → YooKassa POSTs `/api/billing/yookassa/webhook`. The webhook is **unsigned**, so the body is only a trigger — the handler re-fetches the authoritative status via `billing.fetch_remote_status(payment)`; a forged notification re-validates to nothing. (There is no IP whitelist — re-validation replaced it.)
+5. On a confirmed `succeeded` status → `services/billing.apply_payment(payment)`:
    - Idempotency fast-path: `if payment.status == 'succeeded': return`
    - **Atomic claim**: `UPDATE payment SET status='processing' WHERE id=:id AND status='pending'`; if rowcount=0, the poll cron already grabbed it — return
    - Re-validate tariff (still purchasable, items not removed, private+no-grant → fail)
@@ -196,6 +200,18 @@ The master proxies user/inbound CRUD to linked panels via `services/panel_proxy.
 The `poll_linked_panels` job (10s) pings each enabled `LinkedPanel` and updates `status`/`last_poll`/`last_error`. Subscription links (`api/subscription.py`) can merge entries from linked panels visible to the requesting client, cached in Redis.
 
 Inbound CRUD endpoints (`api/inbound.py`) accept both admin JWT and federation tokens via `admin_or_federation_token_required`, so linked panels can proxy operations back through the master.
+
+### Bulk user operations (cross-panel)
+
+The Dashboard selection toolbar drives a set of batch endpoints in `api/inbound.py`, all `@admin_or_federation_token_required`: `POST /users/bulk-delete`, `/users/bulk-enable`, `/users/bulk-adjust-days`, `/users/bulk-adjust-traffic`, `/users/reset-traffic`, `/users/bulk-set-flow`.
+
+Each request carries `users: [{tag, email, panel_id?}]`. `_split_users_by_panel` splits the batch into a local group and per-panel remote groups. Remote groups are forwarded to the owning linked panel's **identical** endpoint via `panel_proxy` (with `panel_id` stripped, so the child runs them purely locally — no recursion). Proxying is **best-effort**: an offline/erroring child is collected into an `errors[]` field in the response instead of failing the whole batch, and counts (`deleted`/`updated`/`skipped`) are summed across local + remote. The single-user reset path also honours `?panel_id=` for child routing.
+
+### VLESS flow ↔ transport compatibility
+
+XTLS Vision (`xtls-rprx-vision`) is only valid on raw-TCP with TLS or REALITY — it is incompatible with xhttp/ws/grpc/httpupgrade/splithttp/kcp/quic and with `security: none`. `_stream_supports_vless_flow(stream)` in `api/inbound.py` encodes that rule (`network == "tcp" and security in {tls, reality}`). Two call sites keep `Client.flow` consistent:
+- `bulk-set-flow` toggles flow `""` ↔ `xtls-rprx-vision` (whitelisted by `ALLOWED_VLESS_FLOWS`); enabling on an incompatible inbound is **skipped** (counted in `skipped`), disabling is always allowed.
+- `update_inbound` clears now-invalid `flow` on every client of an inbound when its transport/protocol is switched to something flow can't carry (e.g. to xhttp), before the config is regenerated.
 
 ### Bot event recovery buffer
 
@@ -224,9 +240,9 @@ Protocol details live in `frontend/lib/protocols.ts` (UI-facing) and are seriali
 On startup, `direct` (freedom) and `block` (blackhole) outbounds are auto-created if missing. These are always re-enabled if disabled — do not delete them.
 
 ### Database migrations
-`db_migration.py` is a custom migration system (not Flask-Migrate). Current schema version is **`15`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count.
+`db_migration.py` is a custom migration system (not Flask-Migrate). Current schema version is **`17`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count.
 
-Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 15`. Bumping it triggers a one-shot force-reseed at next startup — every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` is upserted. **This overwrites admin-edited texts** if their key is in the YAML.
+Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 16`. Bumping it triggers a one-shot force-reseed at next startup — every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` (~74 keys × RU/EN) is upserted. **This overwrites admin-edited texts** if their key is in the YAML.
 
 When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
 
@@ -240,7 +256,7 @@ The frontend is served under `PANEL_SECRET_PATH`. At container startup, `fronten
 `grpc_gevent.init_gevent()` is called at app startup before any gRPC usage. The backend runs under gunicorn+gevent (single worker), so gRPC calls must be gevent-compatible. Current pin: `grpcio==1.66.2` on Python 3.12.
 
 ### ProxyFix
-Configured in `app/__init__.py` as `ProxyFix(app.wsgi_app, x_for=2, …)`. **Heads-up:** with Caddy as the only reverse proxy this should arguably be `x_for=1`; the higher value means `request.remote_addr` can be influenced by an attacker-supplied left-most XFF entry through Caddy. The YooKassa webhook works around this by *not* trusting `remote_addr` — it parses the rightmost XFF entry directly. If you touch other webhook-style endpoints, do the same.
+Configured in `app/__init__.py` as `ProxyFix(app.wsgi_app, x_for=2, x_proto=1, x_host=1, x_prefix=1)`. **Heads-up:** with Caddy as the only reverse proxy this should arguably be `x_for=1`; the higher value means `request.remote_addr` can be influenced by an attacker-supplied left-most XFF entry through Caddy. The YooKassa webhook sidesteps this entirely — it does **not** rely on `remote_addr` or any XFF parsing, instead re-validating each notification against YooKassa's API (see Bot billing flow), so a spoofed source IP buys nothing. Prefer that same re-validation pattern for any new webhook-style endpoint.
 
 ### Frontend tab/slider style
 All horizontal tab bars use a consistent pill style: container `bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05]`, active item is an absolutely-positioned `motion.div` with `layoutId` and `bg-gradient-to-br from-primary/25 to-violet-600/20 rounded-xl border border-white/[0.1] shadow-[0_0_12px_rgba(208,188,255,0.12)]`, spring transition `stiffness: 500, damping: 35`. Do not use plain CSS active classes for tab bars.
@@ -292,7 +308,7 @@ git branch -D feat/my-feature   # -D because squash means the branch is "unmerge
 Release is **driven entirely by `versions.json`**. You decide what to ship by editing the file yourself — nothing auto-bumps.
 
 1. Bump the service(s) you want to release in `versions.json` (e.g. `"bot": "2.0.0"` → `"2.0.1"`).
-2. Update the matching line in `.env.example` so deployers pin the new tag. `scripts/bump_version.py patch bot` does both at once; alternatively edit by hand.
+2. Update the matching line in `.env.example` so deployers pin the new tag (edit by hand to match the `versions.json` change).
 3. Merge to `main`. The release workflow triggers only when `versions.json` changes on `main`.
 4. CI diffs the new `versions.json` against the previous commit and builds/pushes **only the services whose version string changed**. If only `xray_core_ref` changed it's a no-op; bump `backend` too to force a rebuild.
 5. CI does **not** commit anything back to `main`. There is no auto-bump commit.

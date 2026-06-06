@@ -11,6 +11,7 @@ import {
   blockBotUser,
   unblockBotUser,
 } from '@/lib/bot';
+import type { PanelFailure } from '@/lib/bot';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
 import { Select } from '@/components/ui/Select';
 import { cn } from '@/lib/utils';
@@ -108,12 +109,20 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
     },
   });
 
+  const warnPanelFailures = (failures?: PanelFailure[]) => {
+    if (failures && failures.length) {
+      const names = failures.map((f) => f.panel_name || `#${f.panel_id}`).join(', ');
+      toast.warning(`Не удалось применить на панелях: ${names}`);
+    }
+  };
+
   const blockMutation = useMutation({
     mutationFn: () => blockBotUser(telegramId!),
     onSuccess: (data) => {
       toast.success(
         `Blocked. Cancelled ${data.cancelled_grants} grant(s), disabled ${data.disabled_clients} client(s).`
       );
+      warnPanelFailures(data.panel_failures);
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'grants'] });
@@ -123,8 +132,11 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
 
   const unblockMutation = useMutation({
     mutationFn: () => unblockBotUser(telegramId!),
-    onSuccess: () => {
-      toast.success('User unblocked');
+    onSuccess: (data) => {
+      toast.success(
+        `Разблокирован. Восстановлено клиентов: ${data.re_enabled + data.remote_re_enabled}.`
+      );
+      warnPanelFailures(data.panel_failures);
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
     },
@@ -355,70 +367,53 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                   {detail.clients.length === 0 ? (
                     <p className="text-sm italic text-white/40">No clients</p>
                   ) : (
-                    <div className="overflow-hidden rounded-xl border border-white/[0.05] bg-white/[0.02]">
-                      <table className="w-full text-sm">
-                        <thead className="bg-white/[0.02]">
-                          <tr className="text-xs uppercase tracking-wider text-white/50">
-                            <th className="px-3 py-2.5 text-left font-semibold">Inbound</th>
-                            <th className="px-3 py-2.5 text-left font-semibold">Panel</th>
-                            <th className="px-3 py-2.5 text-left font-semibold">Email</th>
-                            <th className="px-3 py-2.5 text-right font-semibold">Up / Down</th>
-                            <th className="px-3 py-2.5 text-right font-semibold">Limit</th>
-                            <th className="px-3 py-2.5 text-right font-semibold">Expires</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {detail.clients.map((c: Client) => (
-                            <tr
-                              key={
-                                c.panel_id != null ? `panel-${c.panel_id}-${c.id}` : `local-${c.id}`
-                              }
-                              className={cn(
-                                'border-t border-white/[0.04]',
-                                !c.enable && 'opacity-50'
-                              )}
-                            >
-                              <td
+                    <div className="flex flex-col gap-2">
+                      {detail.clients.map((c: Client) => (
+                        <div
+                          key={c.panel_id != null ? `panel-${c.panel_id}-${c.id}` : `local-${c.id}`}
+                          className={cn(
+                            'flex items-start justify-between gap-3 rounded-xl border border-white/[0.05] bg-white/[0.03] px-4 py-3',
+                            !c.enable && 'opacity-50'
+                          )}
+                        >
+                          <div className="flex min-w-0 flex-1 flex-col gap-1">
+                            <span className="flex items-center gap-2">
+                              <span
                                 className={cn(
-                                  'px-3 py-2.5 text-white/85',
+                                  'truncate text-sm font-semibold text-white/90',
                                   !c.enable && 'line-through'
                                 )}
                               >
                                 {c.inbound_tag}
-                              </td>
-                              <td className="px-3 py-2.5 text-white/70">
-                                {c.panel_name ? (
-                                  <span className="inline-flex items-center rounded-md border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-violet-300">
-                                    {c.panel_name}
-                                  </span>
-                                ) : (
-                                  <span className="text-white/35">—</span>
-                                )}
-                              </td>
-                              <td
-                                className={cn(
-                                  'px-3 py-2.5 font-mono text-white/85',
-                                  !c.enable && 'line-through'
-                                )}
-                              >
-                                {c.email}
-                              </td>
-                              <td className="px-3 py-2.5 text-right font-mono text-white/70">
-                                <div className="flex flex-col items-end leading-tight">
-                                  <span className="whitespace-nowrap">↑ {bytes(c.up)}</span>
-                                  <span className="whitespace-nowrap">↓ {bytes(c.down)}</span>
-                                </div>
-                              </td>
-                              <td className="px-3 py-2.5 text-right font-mono text-white/70">
-                                {bytes(c.limit_bytes)}
-                              </td>
-                              <td className="px-3 py-2.5 text-right text-white/70">
-                                {c.expiry_time ? formatDateOnly(c.expiry_time) : '—'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                              </span>
+                              {c.panel_name && (
+                                <span className="inline-flex shrink-0 items-center rounded-md border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-violet-300">
+                                  {c.panel_name}
+                                </span>
+                              )}
+                            </span>
+                            <span
+                              className={cn(
+                                'truncate font-mono text-xs text-white/45',
+                                !c.enable && 'line-through'
+                              )}
+                            >
+                              {c.email}
+                            </span>
+                            <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-white/50">
+                              <span>Limit {bytes(c.limit_bytes)}</span>
+                              <span className="text-white/20">·</span>
+                              <span>
+                                Expires {c.expiry_time ? formatDateOnly(c.expiry_time) : '—'}
+                              </span>
+                            </span>
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-0.5 font-mono text-xs text-white/70">
+                            <span className="whitespace-nowrap">↑ {bytes(c.up)}</span>
+                            <span className="whitespace-nowrap">↓ {bytes(c.down)}</span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </section>

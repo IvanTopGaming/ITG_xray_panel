@@ -20,6 +20,9 @@ from app.services.xray import (
     normalize_geo_data_url,
     normalize_xray_log_level,
 )
+from app.version import get_app_version
+from app.services.bot_status import get_bot_status
+from app.services.version_check import get_latest
 
 bp = Blueprint("system", __name__)
 MAX_RESTORE_DB_BYTES = 50 * 1024 * 1024
@@ -108,6 +111,24 @@ def restart():
         return jsonify({"status": "restarted"}), 200
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/system/version", methods=["GET"])
+@token_required
+def system_version():
+    bot = get_bot_status()
+    latest = get_latest()
+    return jsonify(
+        {
+            "running": {
+                "backend": get_app_version(),
+                "bot": bot["version"],
+                "bot_reported_at": bot["reported_at"],
+            },
+            "latest": latest["latest"],
+            "latest_checked_at": latest["checked_at"],
+        }
+    )
 
 
 @bp.route("/logs", methods=["GET"])

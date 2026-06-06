@@ -114,6 +114,66 @@ class FederationClient:
         resp.raise_for_status()
         return resp.json()
 
+    def bulk_delete_users(self, users: list) -> dict:
+        """POST /api/users/bulk-delete — delete a batch of users."""
+        resp = self._session.post(
+            f"{self.base_url}/api/users/bulk-delete",
+            json={"users": users},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def bulk_enable_users(self, users: list, enable: bool) -> dict:
+        """POST /api/users/bulk-enable — enable/disable a batch of users."""
+        resp = self._session.post(
+            f"{self.base_url}/api/users/bulk-enable",
+            json={"users": users, "enable": enable},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def bulk_adjust_days(self, users: list, days: int, mode: str) -> dict:
+        """POST /api/users/bulk-adjust-days — add/subtract expiry days."""
+        resp = self._session.post(
+            f"{self.base_url}/api/users/bulk-adjust-days",
+            json={"users": users, "days": days, "mode": mode},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def bulk_adjust_traffic(self, users: list, gb: int, mode: str) -> dict:
+        """POST /api/users/bulk-adjust-traffic — add/subtract traffic limit."""
+        resp = self._session.post(
+            f"{self.base_url}/api/users/bulk-adjust-traffic",
+            json={"users": users, "gb": gb, "mode": mode},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def reset_traffic(self, users: list) -> dict:
+        """POST /api/users/reset-traffic — zero up/down counters for a batch."""
+        resp = self._session.post(
+            f"{self.base_url}/api/users/reset-traffic",
+            json={"users": users},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def bulk_set_flow(self, users: list, flow: str) -> dict:
+        """POST /api/users/bulk-set-flow — set the VLESS flow for a batch."""
+        resp = self._session.post(
+            f"{self.base_url}/api/users/bulk-set-flow",
+            json={"users": users, "flow": flow},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ── provisioning ──────────────────────────────────────────────────────
 
     def provision(self, telegram_id: int, inbound_tag: str, params: dict) -> dict:
@@ -241,6 +301,60 @@ def proxy_delete_user(panel_id: int, inbound_tag: str, email: str) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.delete_user(inbound_tag, email)
+    _refresh_panel_cache(panel)
+    return result
+
+
+def proxy_bulk_delete_users(panel_id: int, users: list) -> dict:
+    """Delete a batch of users on the given child panel and refresh the cache."""
+    panel = _get_panel_or_raise(panel_id)
+    client = FederationClient(panel.url, panel.federation_token)
+    result = client.bulk_delete_users(users)
+    _refresh_panel_cache(panel)
+    return result
+
+
+def proxy_bulk_enable_users(panel_id: int, users: list, enable: bool) -> dict:
+    """Enable/disable a batch of users on the given child panel and refresh the cache."""
+    panel = _get_panel_or_raise(panel_id)
+    client = FederationClient(panel.url, panel.federation_token)
+    result = client.bulk_enable_users(users, enable)
+    _refresh_panel_cache(panel)
+    return result
+
+
+def proxy_bulk_adjust_days(panel_id: int, users: list, days: int, mode: str) -> dict:
+    """Adjust expiry days for a batch of users on the child panel and refresh the cache."""
+    panel = _get_panel_or_raise(panel_id)
+    client = FederationClient(panel.url, panel.federation_token)
+    result = client.bulk_adjust_days(users, days, mode)
+    _refresh_panel_cache(panel)
+    return result
+
+
+def proxy_bulk_adjust_traffic(panel_id: int, users: list, gb: int, mode: str) -> dict:
+    """Adjust traffic limit for a batch of users on the child panel and refresh the cache."""
+    panel = _get_panel_or_raise(panel_id)
+    client = FederationClient(panel.url, panel.federation_token)
+    result = client.bulk_adjust_traffic(users, gb, mode)
+    _refresh_panel_cache(panel)
+    return result
+
+
+def proxy_bulk_reset_traffic(panel_id: int, users: list) -> dict:
+    """Reset traffic counters for a batch of users on the child panel and refresh the cache."""
+    panel = _get_panel_or_raise(panel_id)
+    client = FederationClient(panel.url, panel.federation_token)
+    result = client.reset_traffic(users)
+    _refresh_panel_cache(panel)
+    return result
+
+
+def proxy_bulk_set_flow(panel_id: int, users: list, flow: str) -> dict:
+    """Set the VLESS flow for a batch of users on the child panel and refresh the cache."""
+    panel = _get_panel_or_raise(panel_id)
+    client = FederationClient(panel.url, panel.federation_token)
+    result = client.bulk_set_flow(users, flow)
     _refresh_panel_cache(panel)
     return result
 

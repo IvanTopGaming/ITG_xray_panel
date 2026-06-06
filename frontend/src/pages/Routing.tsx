@@ -29,8 +29,10 @@ import {
   Play,
   Pause,
   ChevronDown,
+  Lock,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
+import { validateRuleFieldPrefixes } from '@/lib/routing-validation';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const csvToList = (value?: string): string[] =>
@@ -325,6 +327,7 @@ function ProfileEditor({
       toast.success('Saved');
       onClose();
     },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Failed to save profile'),
   });
 
   const addRule = () => {
@@ -388,6 +391,8 @@ function ProfileEditor({
 
   const handleSave = () => {
     if (!name.trim()) return toast.error('Profile Name is required');
+    const violation = validateRuleFieldPrefixes(rules);
+    if (violation) return toast.error(violation);
     mutation.mutate({
       name: name.trim(),
       enable: profileEnabled,
@@ -728,6 +733,7 @@ function OutboundsView() {
         <AnimatePresence>
           {outbounds?.map((o) => {
             const enabled = o.enable !== false;
+            const isSystem = o.tag === 'direct' || o.tag === 'block';
             return (
               <motion.div
                 layout
@@ -764,35 +770,40 @@ function OutboundsView() {
                 </div>
 
                 <div className="flex gap-2 flex-wrap">
-                  <Button className="flex-1" variant="secondary" onClick={() => openEdit(o)}>
-                    Configure
-                  </Button>
-                  {o.tag !== 'direct' && o.tag !== 'block' && (
-                    <Button
-                      variant="secondary"
-                      className="h-10"
-                      onClick={() =>
-                        toggleOutboundMutation.mutate({ tag: o.tag, enable: !enabled })
-                      }
-                      isLoading={toggleOutboundMutation.isPending}
-                    >
-                      {enabled ? (
-                        <Pause size={14} className="mr-1" />
-                      ) : (
-                        <Play size={14} className="mr-1" />
-                      )}
-                      {enabled ? 'Disable' : 'Enable'}
-                    </Button>
-                  )}
-                  {o.tag !== 'direct' && o.tag !== 'block' && (
-                    <Button
-                      variant="icon"
-                      size="icon"
-                      className="text-error"
-                      onClick={() => setDeleteTag(o.tag)}
-                    >
-                      <Trash2 size={18} />
-                    </Button>
+                  {isSystem ? (
+                    <div className="flex-1 flex items-center justify-center gap-1.5 h-10 rounded-lg bg-white/[0.03] border border-white/[0.05] text-[10px] uppercase font-bold text-gray-500">
+                      <Lock size={12} />
+                      System default · locked
+                    </div>
+                  ) : (
+                    <>
+                      <Button className="flex-1" variant="secondary" onClick={() => openEdit(o)}>
+                        Configure
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="h-10"
+                        onClick={() =>
+                          toggleOutboundMutation.mutate({ tag: o.tag, enable: !enabled })
+                        }
+                        isLoading={toggleOutboundMutation.isPending}
+                      >
+                        {enabled ? (
+                          <Pause size={14} className="mr-1" />
+                        ) : (
+                          <Play size={14} className="mr-1" />
+                        )}
+                        {enabled ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button
+                        variant="icon"
+                        size="icon"
+                        className="text-error"
+                        onClick={() => setDeleteTag(o.tag)}
+                      >
+                        <Trash2 size={18} />
+                      </Button>
+                    </>
                   )}
                 </div>
               </motion.div>

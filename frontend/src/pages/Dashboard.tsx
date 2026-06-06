@@ -47,11 +47,30 @@ import {
   Loader2,
   Calendar,
   HardDrive,
+  Waypoints,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { QRCodeCanvas } from 'qrcode.react';
 import { motion, AnimatePresence, animate, useMotionValue } from 'framer-motion';
 import { Select } from '@/components/ui/Select';
+
+// ─── Bulk-selection keys ─────────────────────────────────────────────────────
+// A selected user is keyed by panel + inbound tag + email so bulk operations
+// can route each user back to its owning panel (master = panel_id null).
+
+const KEY_SEP = '\0';
+
+const makeUserKey = (panelId: number | null | undefined, tag: string, email: string) =>
+  `${panelId ?? ''}${KEY_SEP}${tag}${KEY_SEP}${email}`;
+
+const parseUserKey = (key: string) => {
+  const [panelStr, tag, ...rest] = key.split(KEY_SEP);
+  return {
+    panel_id: panelStr === '' ? null : Number(panelStr),
+    tag,
+    email: rest.join(KEY_SEP),
+  };
+};
 
 // ─── User status ─────────────────────────────────────────────────────────────
 
@@ -223,33 +242,42 @@ export default function Dashboard() {
   const hasShownInboundsRef = useRef(false);
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
 
-  const toggleUser = useCallback((tag: string, email: string) => {
-    const key = `${tag}\0${email}`;
-    setSelectedUsers((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
+  const toggleUser = useCallback(
+    (panelId: number | null | undefined, tag: string, email: string) => {
+      const key = makeUserKey(panelId, tag, email);
+      setSelectedUsers((prev) => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+    },
+    []
+  );
 
   const clearSelection = useCallback(() => setSelectedUsers(new Set()), []);
 
-  const selectAllInInbound = useCallback((tag: string, emails: string[]) => {
-    setSelectedUsers((prev) => {
-      const next = new Set(prev);
-      emails.forEach((e) => next.add(`${tag}\0${e}`));
-      return next;
-    });
-  }, []);
+  const selectAllInInbound = useCallback(
+    (panelId: number | null | undefined, tag: string, emails: string[]) => {
+      setSelectedUsers((prev) => {
+        const next = new Set(prev);
+        emails.forEach((e) => next.add(makeUserKey(panelId, tag, e)));
+        return next;
+      });
+    },
+    []
+  );
 
-  const deselectAllInInbound = useCallback((tag: string, emails: string[]) => {
-    setSelectedUsers((prev) => {
-      const next = new Set(prev);
-      emails.forEach((e) => next.delete(`${tag}\0${e}`));
-      return next;
-    });
-  }, []);
+  const deselectAllInInbound = useCallback(
+    (panelId: number | null | undefined, tag: string, emails: string[]) => {
+      setSelectedUsers((prev) => {
+        const next = new Set(prev);
+        emails.forEach((e) => next.delete(makeUserKey(panelId, tag, e)));
+        return next;
+      });
+    },
+    []
+  );
 
   const {
     data: inbounds,
@@ -712,16 +740,14 @@ function BulkToolbar({
   const [confirmBulkReset, setConfirmBulkReset] = useState(false);
   const [daysModal, setDaysModal] = useState(false);
   const [trafficModal, setTrafficModal] = useState(false);
+  const [flowModal, setFlowModal] = useState(false);
   const [draftDays, setDraftDays] = useState(30);
   const [draftDaysMode, setDraftDaysMode] = useState<AdjustMode>('add');
   const [draftGB, setDraftGB] = useState(10);
   const [draftTrafficMode, setDraftTrafficMode] = useState<AdjustMode>('add');
+  const [draftFlow, setDraftFlow] = useState<'' | 'xtls-rprx-vision'>('xtls-rprx-vision');
 
-  const parseUsers = () =>
-    [...selectedUsers].map((k) => {
-      const idx = k.indexOf('\0');
-      return { tag: k.slice(0, idx), email: k.slice(idx + 1) };
-    });
+  const parseUsers = () => [...selectedUsers].map(parseUserKey);
 
   const onSuccess = (msg: string) => {
     queryClient.invalidateQueries({ queryKey: ['inbounds'] });
@@ -729,10 +755,19 @@ function BulkToolbar({
     toast.success(msg);
   };
 
+  // Backend bulk ops are best-effort across linked panels: an offline child is
+  // skipped and reported in `errors` rather than failing the whole batch.
+  const warnErrors = (errs?: string[]) => {
+    if (Array.isArray(errs) && errs.length) {
+      toast.error(`Some linked panels failed: ${errs.join('; ')}`);
+    }
+  };
+
   const bulkDeleteMutation = useMutation({
     mutationFn: () => api.post('/users/bulk-delete', { users: parseUsers() }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       onSuccess(`${selectedUsers.size} user(s) deleted`);
+      warnErrors(res.data?.errors);
       setConfirmBulkDelete(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk delete failed'),
@@ -750,8 +785,9 @@ function BulkToolbar({
   const bulkEnableMutation = useMutation({
     mutationFn: (enable: boolean) =>
       api.post('/users/bulk-enable', { users: parseUsers(), enable }),
-    onSuccess: (_data, enable) => {
+    onSuccess: (res, enable) => {
       onSuccess(`${selectedUsers.size} user(s) ${enable ? 'enabled' : 'disabled'}`);
+      warnErrors(res.data?.errors);
       setConfirmBulkEnable(false);
       setConfirmBulkDisable(false);
     },
@@ -768,6 +804,7 @@ function BulkToolbar({
           ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
           : `${verb} ${data.updated} user(s)`;
       onSuccess(msg);
+      warnErrors(data.errors);
       setDaysModal(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk adjust days failed'),
@@ -783,9 +820,26 @@ function BulkToolbar({
           ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
           : `${verb} ${data.updated} user(s)`;
       onSuccess(msg);
+      warnErrors(data.errors);
       setTrafficModal(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk adjust traffic failed'),
+  });
+
+  const bulkSetFlowMutation = useMutation({
+    mutationFn: (flow: '' | 'xtls-rprx-vision') =>
+      api.post('/users/bulk-set-flow', { users: parseUsers(), flow }),
+    onSuccess: ({ data }, flow) => {
+      const verb = flow ? 'Enabled flow on' : 'Disabled flow on';
+      const msg =
+        data.skipped > 0
+          ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
+          : `${verb} ${data.updated} user(s)`;
+      onSuccess(msg);
+      warnErrors(data.errors);
+      setFlowModal(false);
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk set flow failed'),
   });
 
   return (
@@ -851,6 +905,17 @@ function BulkToolbar({
                 className="text-blue-400 hover:bg-blue-500/10"
               >
                 <HardDrive size={13} className="mr-1" /> Traffic
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setDraftFlow('xtls-rprx-vision');
+                  setFlowModal(true);
+                }}
+                className="text-cyan-400 hover:bg-cyan-500/10"
+              >
+                <Waypoints size={13} className="mr-1" /> Flow
               </Button>
               <Button
                 variant="secondary"
@@ -1012,6 +1077,45 @@ function BulkToolbar({
           </div>
         </div>
       </Modal>
+      <Modal isOpen={flowModal} onClose={() => setFlowModal(false)} title="Set Flow">
+        <div className="space-y-4 pt-2">
+          <p className="text-sm text-gray-400">
+            Enable or disable the VLESS flow (xtls-rprx-vision) for {selectedUsers.size} selected
+            user(s). Non-VLESS users and users already on the chosen flow are skipped.
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant={draftFlow === 'xtls-rprx-vision' ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => setDraftFlow('xtls-rprx-vision')}
+            >
+              Enable (Vision)
+            </Button>
+            <Button
+              variant={draftFlow === '' ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => setDraftFlow('')}
+              className={
+                draftFlow === '' ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30' : ''
+              }
+            >
+              Disable (None)
+            </Button>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setFlowModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => bulkSetFlowMutation.mutate(draftFlow)}
+              isLoading={bulkSetFlowMutation.isPending}
+              className={draftFlow === '' ? 'bg-amber-500 hover:bg-amber-600' : ''}
+            >
+              {draftFlow ? 'Enable Flow' : 'Disable Flow'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }
@@ -1032,9 +1136,9 @@ function InboundCard({
   now: number;
   routeOptions: any[];
   selectedUsers: Set<string>;
-  onToggleUser: (tag: string, email: string) => void;
-  onSelectAll: (tag: string, emails: string[]) => void;
-  onDeselectAll: (tag: string, emails: string[]) => void;
+  onToggleUser: (panelId: number | null | undefined, tag: string, email: string) => void;
+  onSelectAll: (panelId: number | null | undefined, tag: string, emails: string[]) => void;
+  onDeselectAll: (panelId: number | null | undefined, tag: string, emails: string[]) => void;
   panels?: LinkedPanel[];
 }) {
   const [editModal, setEditModal] = useState(false);
@@ -1094,14 +1198,16 @@ function InboundCard({
             inbound.settings.clients.length > 0 &&
             (() => {
               const emails = inbound.settings.clients.map((c) => c.email);
-              const keys = emails.map((e) => `${inbound.tag}\0${e}`);
+              const keys = emails.map((e) => makeUserKey(inbound.panel_id, inbound.tag, e));
               const allSel = keys.every((k) => selectedUsers.has(k));
               const someSel = keys.some((k) => selectedUsers.has(k));
               const Icon = allSel ? CheckSquare : someSel ? Minus : Square;
               return (
                 <button
                   onClick={() =>
-                    allSel ? onDeselectAll(inbound.tag, emails) : onSelectAll(inbound.tag, emails)
+                    allSel
+                      ? onDeselectAll(inbound.panel_id, inbound.tag, emails)
+                      : onSelectAll(inbound.panel_id, inbound.tag, emails)
                   }
                   className="shrink-0 text-gray-500 hover:text-primary transition-colors"
                   title={allSel ? 'Deselect all' : 'Select all'}
@@ -1199,8 +1305,10 @@ function InboundCard({
                       inbound={inbound}
                       now={now}
                       routeOptions={routeOptions}
-                      isSelected={selectedUsers.has(`${inbound.tag}\0${c.email}`)}
-                      onToggleSelect={() => onToggleUser(inbound.tag, c.email)}
+                      isSelected={selectedUsers.has(
+                        makeUserKey(inbound.panel_id, inbound.tag, c.email)
+                      )}
+                      onToggleSelect={() => onToggleUser(inbound.panel_id, inbound.tag, c.email)}
                       panelQs={panelQs}
                       panelOffline={panelOffline}
                       panels={panels}

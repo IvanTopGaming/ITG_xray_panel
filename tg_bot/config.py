@@ -21,9 +21,3 @@ BOT_LOG_LEVEL = (os.environ.get("BOT_LOG_LEVEL") or "INFO").upper()
 if not BACKEND_API_URL:
     logging.error("BACKEND_API_URL env var is required (e.g. http://backend:5000/api).")
     sys.exit(1)
-
-if not BOT_SERVICE_TOKEN:
-    logging.error(
-        "BOT_SERVICE_TOKEN env var is required. Generate one via the panel UI (Bot → Settings → Rotate token)."
-    )
-    sys.exit(1)

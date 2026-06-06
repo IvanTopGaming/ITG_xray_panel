@@ -255,7 +255,7 @@ class TestCreateOutbound:
         resp = client.post(
             "/api/outbounds",
             headers=auth_headers,
-            json={"tag": "direct", "protocol": "freedom"},
+            json={"tag": "proxy-de", "protocol": "socks"},
         )
         assert resp.status_code == 400
         assert "exists" in resp.get_json()["error"].lower()
@@ -265,6 +265,24 @@ class TestCreateOutbound:
             "/api/outbounds",
             headers=auth_headers,
             json={"tag": "api", "protocol": "freedom"},
+        )
+        assert resp.status_code == 400
+        assert "reserved" in resp.get_json()["error"].lower()
+
+    def test_reserved_tag_direct(self, client, auth_headers, admin):
+        resp = client.post(
+            "/api/outbounds",
+            headers=auth_headers,
+            json={"tag": "direct", "protocol": "freedom"},
+        )
+        assert resp.status_code == 400
+        assert "reserved" in resp.get_json()["error"].lower()
+
+    def test_reserved_tag_block(self, client, auth_headers, admin):
+        resp = client.post(
+            "/api/outbounds",
+            headers=auth_headers,
+            json={"tag": "block", "protocol": "blackhole"},
         )
         assert resp.status_code == 400
         assert "reserved" in resp.get_json()["error"].lower()
@@ -309,6 +327,48 @@ class TestCreateOutbound:
             json={"tag": "x", "protocol": "freedom", "mux": 42},
         )
         assert resp.status_code == 400
+
+
+# ===========================================================================
+# Config-validation gate: validate before persisting to the DB
+# ===========================================================================
+
+
+class TestCreateOutboundValidationGate:
+    """generate_config_file() runs before db.session.commit(); a rejected config
+    must return 400 and leave NO row committed (no poisoned rows)."""
+
+    def test_rejected_config_does_not_persist(self, client, auth_headers, admin):
+        with patch(
+            "app.api.outbound.generate_config_file",
+            side_effect=ValueError("Xray rejected the config: boom"),
+        ):
+            resp = client.post(
+                "/api/outbounds",
+                headers=auth_headers,
+                json={
+                    "tag": "test-reject",
+                    "protocol": "socks",
+                    "settings": {"servers": [{"address": "1.2.3.4", "port": 1080}]},
+                },
+            )
+        assert resp.status_code == 400
+        assert "rejected" in resp.get_json()["error"].lower()
+        assert Outbound.query.filter_by(tag="test-reject").first() is None
+
+    def test_accepted_config_persists(self, client, auth_headers, admin):
+        with patch("app.api.outbound.generate_config_file"):
+            resp = client.post(
+                "/api/outbounds",
+                headers=auth_headers,
+                json={
+                    "tag": "test-reject",
+                    "protocol": "socks",
+                    "settings": {"servers": [{"address": "1.2.3.4", "port": 1080}]},
+                },
+            )
+        assert resp.status_code == 201
+        assert Outbound.query.filter_by(tag="test-reject").first() is not None
 
 
 # ===========================================================================
@@ -369,13 +429,48 @@ class TestUpdateOutbound:
             json={"enable": False},
         )
         assert resp.status_code == 400
-        assert "cannot be disabled" in resp.get_json()["error"].lower()
+        assert "cannot be modified" in resp.get_json()["error"].lower()
 
     def test_cannot_disable_system_outbound_block(self, client, auth_headers, admin, seed_outbounds):
         resp = client.put(
             "/api/outbounds/block",
             headers=auth_headers,
             json={"enable": False},
+        )
+        assert resp.status_code == 400
+
+    def test_cannot_change_protocol_of_direct(self, client, auth_headers, admin, seed_outbounds):
+        resp = client.put(
+            "/api/outbounds/direct",
+            headers=auth_headers,
+            json={"protocol": "blackhole"},
+        )
+        assert resp.status_code == 400
+        assert "cannot be modified" in resp.get_json()["error"].lower()
+        assert Outbound.query.filter_by(tag="direct").first().protocol == "freedom"
+
+    def test_cannot_change_settings_of_block(self, client, auth_headers, admin, seed_outbounds):
+        resp = client.put(
+            "/api/outbounds/block",
+            headers=auth_headers,
+            json={"settings": {"servers": [{"address": "1.2.3.4", "port": 443}]}},
+        )
+        assert resp.status_code == 400
+        assert json.loads(Outbound.query.filter_by(tag="block").first().settings) == {}
+
+    def test_cannot_change_stream_settings_of_direct(self, client, auth_headers, admin, seed_outbounds):
+        resp = client.put(
+            "/api/outbounds/direct",
+            headers=auth_headers,
+            json={"streamSettings": {"network": "ws"}},
+        )
+        assert resp.status_code == 400
+
+    def test_cannot_change_mux_of_direct(self, client, auth_headers, admin, seed_outbounds):
+        resp = client.put(
+            "/api/outbounds/direct",
+            headers=auth_headers,
+            json={"mux": {"enabled": True}},
         )
         assert resp.status_code == 400
 

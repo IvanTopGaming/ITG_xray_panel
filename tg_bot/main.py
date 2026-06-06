@@ -9,7 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-import config  # noqa: F401 — module import validates required ENV
+import config
 from api_service import panel_api
 from backend_client import BackendClient
 from bot_events_consumer import run_consumer
@@ -41,6 +41,15 @@ async def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    if not config.BOT_SERVICE_TOKEN:
+        logger.warning(
+            "BOT_SERVICE_TOKEN is not set — idling. Generate one via the panel UI "
+            "(Bot → Settings → Rotate token), put it in the bot's .env, then "
+            "restart the bot service. Sleeping until then."
+        )
+        while True:
+            await asyncio.sleep(3600)
+
     await runtime_config.bootstrap()
     await panel_api.reload_from_runtime()
 
@@ -58,7 +67,6 @@ async def main() -> None:
     dp.include_router(user.router)
     dp.include_router(catalog.router)
 
-    # Holder so on_runtime_change can swap the Bot under the consumer's feet.
     state: dict[str, object] = {"bot": bot}
 
     async def on_runtime_change(session_changed: bool) -> None:
@@ -90,7 +98,6 @@ async def main() -> None:
 
     runtime_config.set_change_listener(on_runtime_change)
     refresh_task = asyncio.create_task(runtime_config.refresh_loop())
-    # Accessor, not the Bot itself — hot-swap replaces state["bot"] under us.
     consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware))
 
     logger.info("bot started, polling Telegram")

@@ -1,6 +1,7 @@
 import json
 import os
 import docker
+import subprocess
 import base64
 import binascii
 import re
@@ -27,6 +28,11 @@ from app.services.runtime_identity import build_runtime_email, parse_runtime_ema
 CONFIG_PATH = "/etc/xray/config.json"
 LOCK_PATH = "/etc/xray/config.lock"
 XRAY_CONTAINER_NAME = "xray-core"
+XRAY_BIN = "/usr/local/bin/xray"
+VALIDATE_TIMEOUT_S = 30
+VALIDATE_ATTEMPTS = 2
+_CONFIG_BASE, _CONFIG_EXT = os.path.splitext(CONFIG_PATH)
+CANDIDATE_PATH = f"{_CONFIG_BASE}.candidate{_CONFIG_EXT}"
 ACCESS_LOG_PATH = "/var/log/xray/access.log"
 ERROR_LOG_PATH = "/var/log/xray/error.log"
 LOG_TAIL_LINES = 300
@@ -81,6 +87,19 @@ VALID_STREAM_NETWORKS = {
     "xhttp",
 }
 VALID_PACKET_NETWORKS = {"tcp", "udp", "tcp,udp"}
+VALID_TLS_ALPN = {"h2", "http/1.1", "http/1.0", "h3"}
+VALID_UTLS_FINGERPRINTS = {
+    "chrome",
+    "firefox",
+    "safari",
+    "ios",
+    "android",
+    "edge",
+    "360",
+    "qq",
+    "random",
+    "randomized",
+}
 PACKET_NETWORK_ALIASES = {"udp,tcp": "tcp,udp"}
 
 if DEFAULT_LOG_LEVEL not in ALLOWED_LOG_LEVELS:
@@ -155,6 +174,60 @@ def get_system_settings():
         "geoipUrl": geoip_url,
         "geositeUrl": geosite_url,
     }
+
+
+def _extract_reason(output):
+    text = output.decode("utf-8", "replace") if isinstance(output, (bytes, bytearray)) else str(output or "")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        low = ln.lower()
+        if "failed to start" in low or "failed to" in low or "infra/conf" in low:
+            return (ln.split(" > ")[-1].strip() if " > " in ln else ln)[:300]
+    if lines:
+        return lines[-1][:300]
+    return "Xray could not parse the configuration"
+
+
+def _validate_xray_config(candidate_path):
+    """Run `xray run -test` on the candidate config via the bundled xray binary.
+
+    Skips silently when the binary is absent (dev / CI / any environment without
+    the bundled validator). Fail-closed (raises ValueError) when the test rejects
+    the config.
+
+    A genuine `-test` is fast (~1s), but on a CPU-starved host (e.g. a concurrent
+    image build pegging the box) it can transiently exceed the wall-clock timeout.
+    A timeout is retried once before failing closed so transient contention does
+    not strand a legitimate change; a real reject still fails immediately.
+    """
+    if not os.path.exists(XRAY_BIN):
+        logger.warning("Config validation skipped — xray binary not bundled at %s", XRAY_BIN)
+        return
+
+    last_timeout = None
+    for attempt in range(1, VALIDATE_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                [XRAY_BIN, "run", "-test", "-c", candidate_path],
+                capture_output=True,
+                timeout=VALIDATE_TIMEOUT_S,
+                env={**os.environ, "XRAY_LOCATION_ASSET": "/etc/xray"},
+            )
+        except subprocess.TimeoutExpired as e:
+            last_timeout = e
+            logger.warning(
+                "Xray config validation timed out after %ss (attempt %d/%d)",
+                VALIDATE_TIMEOUT_S,
+                attempt,
+                VALIDATE_ATTEMPTS,
+            )
+            continue
+
+        if result.returncode == 0:
+            return
+        raise ValueError("Xray rejected the config: " + _extract_reason(result.stderr or result.stdout))
+
+    raise ValueError("Could not validate the config (Xray validation timed out)") from last_timeout
 
 
 def restart_xray_container():
@@ -579,6 +652,14 @@ def _build_stream_settings(settings_dict):
         else:
             tls_alpn = [item.strip() for item in str(raw_tls_alpn or "").split(",") if item.strip()]
 
+        for alpn in tls_alpn:
+            if alpn.lower() not in VALID_TLS_ALPN:
+                raise ValueError(f'Invalid ALPN "{alpn}" — allowed: {", ".join(sorted(VALID_TLS_ALPN))}')
+        if tls_utls_fingerprint and tls_utls_fingerprint.lower() not in VALID_UTLS_FINGERPRINTS:
+            raise ValueError(
+                f'Invalid TLS fingerprint "{tls_utls_fingerprint}" — allowed: {", ".join(sorted(VALID_UTLS_FINGERPRINTS))}'
+            )
+
         tls_settings = {}
         if tls_server_name:
             tls_settings["serverName"] = tls_server_name
@@ -616,6 +697,12 @@ def _build_stream_settings(settings_dict):
         else:
             public_key = _derive_reality_pubkey(pk)
 
+        reality_fp = str(settings_dict.get("realityFingerprint", "chrome") or "chrome").strip()
+        if reality_fp.lower() not in VALID_UTLS_FINGERPRINTS:
+            raise ValueError(
+                f'Invalid REALITY fingerprint "{reality_fp}" — allowed: {", ".join(sorted(VALID_UTLS_FINGERPRINTS))}'
+            )
+
         stream["realitySettings"] = {
             "show": False,
             "dest": settings_dict.get("realityDest", "www.google.com:443"),
@@ -624,7 +711,7 @@ def _build_stream_settings(settings_dict):
             "privateKey": pk,
             "shortIds": sids,
             "publicKey": public_key,
-            "fingerprint": settings_dict.get("realityFingerprint", "chrome"),
+            "fingerprint": reality_fp,
             "spiderX": settings_dict.get("realitySpiderX", ""),
         }
 
@@ -689,7 +776,7 @@ def _build_stream_settings(settings_dict):
     return stream
 
 
-def generate_config_file():
+def generate_config_file(validate=True):
     lock = FileLock(LOCK_PATH, timeout=5)
     try:
         with lock:
@@ -1074,9 +1161,18 @@ def generate_config_file():
                 "observatory": observatory,
             }
 
-            temp = CONFIG_PATH + ".tmp"
-            with open(temp, "w", encoding="utf-8") as f:
+            candidate = CANDIDATE_PATH
+            with open(candidate, "w", encoding="utf-8") as f:
                 json.dump(full_config, f, indent=2)
-            os.rename(temp, CONFIG_PATH)
+            try:
+                if validate:
+                    _validate_xray_config(candidate)
+                os.rename(candidate, CONFIG_PATH)
+            finally:
+                if os.path.exists(candidate):
+                    try:
+                        os.remove(candidate)
+                    except OSError:
+                        pass
     except Timeout:
         raise Exception("Could not acquire lock")

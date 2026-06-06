@@ -3,6 +3,7 @@
 import logging
 import os
 import secrets
+import time
 from datetime import datetime, timedelta
 
 import yaml
@@ -24,9 +25,9 @@ from app.models import (
     UserTariffAccess,
 )
 from app.services import bot_events
-from app.services.panel_proxy import get_panel_snapshot
+from app.services.panel_proxy import get_panel_snapshot, proxy_update_user
 from app.services.provisioning import apply_tariff_for_user, backfill_tariff
-from app.services.stats import _api_remove_user_grpc
+from app.services.stats import _api_remove_user_grpc, _api_add_user_grpc
 from app.services.xray import generate_config_file, restart_xray_container
 from app.utils import token_required
 
@@ -442,11 +443,13 @@ def _serialize_grant(g):
 
 
 def _remote_clients_by_telegram_id() -> dict[int, list[dict]]:
-    """Bucket all enabled linked-panel clients by telegram_id from cached snapshots.
+    """Bucket all linked-panel clients by telegram_id from cached snapshots.
 
-    Each client dict mirrors Client.to_dict() so frontend code can treat local
-    and remote rows uniformly, with extra ``panel_id`` / ``panel_name`` fields
-    so the UI can show where the client lives.
+    Includes both enabled and disabled clients (each dict carries its own
+    ``enable`` flag) — callers like unblock_user rely on seeing disabled remote
+    clients. Each client dict mirrors Client.to_dict() so frontend code can treat
+    local and remote rows uniformly, with extra ``panel_id`` / ``panel_name``
+    fields so the UI can show where the client lives.
 
     Returns {} if no panels are linked or all snapshots are missing — callers
     should handle this gracefully (it's the steady-state on a standalone panel).
@@ -684,6 +687,23 @@ def block_user(tg_id):
         else:
             restart_required = True
 
+    try:
+        remote_clients = _remote_clients_by_telegram_id().get(tg_id, [])
+    except Exception as exc:
+        logger.warning("block: could not enumerate remote clients for tg=%s: %s", tg_id, exc)
+        remote_clients = []
+    panel_failures = []
+    remote_disabled = 0
+    for rc in remote_clients:
+        if not rc.get("enable", True):
+            continue
+        try:
+            proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": False})
+            remote_disabled += 1
+        except Exception as exc:
+            logger.warning("block: remote disable failed panel=%s tag=%s: %s", rc["panel_id"], rc["inbound_tag"], exc)
+            panel_failures.append({"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)})
+
     # ── Phase: single short write transaction ────────────────────────────
     user.blocked = True
     for c in active_clients:
@@ -707,6 +727,8 @@ def block_user(tg_id):
             "telegram_id": tg_id,
             "cancelled_grants": int(cancelled_grants or 0),
             "disabled_clients": len(active_clients),
+            "remote_disabled": remote_disabled,
+            "panel_failures": panel_failures,
         }
     )
 
@@ -714,17 +736,84 @@ def block_user(tg_id):
 @bp.route("/bot/users/<int:tg_id>/unblock", methods=["POST"])
 @token_required
 def unblock_user(tg_id):
-    """Lift the block flag only — cancelled tariffs and disabled clients stay; admin re-grants if needed."""
+    """Unblock: clear the flag and re-enable clients whose tariff time still
+    remains (local + linked panels). Grants are NOT restored — admin re-grants
+    to resume renewal.
+
+    Remote re-enable runs before the commit (best-effort, mirroring block_user),
+    while the local gRPC hot-add runs AFTER the commit — matching provisioning —
+    so a DB/runtime mismatch fails safe: clients are committed enabled before the
+    live Xray runtime starts serving them."""
     user = db.session.get(TelegramUser, tg_id)
     if user is None:
         return jsonify({"error": "user not found"}), 404
+
+    now_ms = int(time.time() * 1000)
+
+    def _has_time(expiry):
+        return not expiry or expiry > now_ms
+
+    disabled = Client.query.filter_by(telegram_id=tg_id, enable=False).all()
+    to_enable = [c for c in disabled if _has_time(c.expiry_time)]
+    inbound_tags = {c.inbound_tag for c in to_enable}
+    inbounds_by_tag = (
+        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
+    )
+
+    try:
+        remote_clients = _remote_clients_by_telegram_id().get(tg_id, [])
+    except Exception as exc:
+        logger.warning("unblock: could not enumerate remote clients for tg=%s: %s", tg_id, exc)
+        remote_clients = []
+    panel_failures = []
+    remote_re_enabled = 0
+    for rc in remote_clients:
+        if rc.get("enable", True) or not _has_time(rc.get("expiry_time", 0)):
+            continue
+        try:
+            proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": True})
+            remote_re_enabled += 1
+        except Exception as exc:
+            logger.warning(
+                "unblock: remote re-enable failed panel=%s tag=%s: %s", rc["panel_id"], rc["inbound_tag"], exc
+            )
+            panel_failures.append({"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)})
+
     user.blocked = False
+    for c in to_enable:
+        c.enable = True
     db.session.commit()
+
+    if to_enable:
+        restart_required = False
+        for c in to_enable:
+            ib = inbounds_by_tag.get(c.inbound_tag)
+            if ib and ib.protocol in ("vless", "vmess"):
+                try:
+                    if not _api_add_user_grpc(c.inbound_tag, c):
+                        restart_required = True
+                except Exception:
+                    restart_required = True
+            else:
+                restart_required = True
+        generate_config_file()
+        if restart_required:
+            restart_xray_container()
+
     try:
         bot_events.publish("user_unblocked", telegram_id=tg_id, payload={})
     except Exception:
         pass
-    return jsonify({"ok": True, "telegram_id": tg_id})
+
+    return jsonify(
+        {
+            "ok": True,
+            "telegram_id": tg_id,
+            "re_enabled": len(to_enable),
+            "remote_re_enabled": remote_re_enabled,
+            "panel_failures": panel_failures,
+        }
+    )
 
 
 @bp.route("/bot/users/<int:tg_id>/tariffs/<int:tariff_id>", methods=["DELETE"])

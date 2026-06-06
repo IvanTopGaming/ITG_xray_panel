@@ -19,6 +19,8 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
+from version import get_bot_version
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,10 @@ class RuntimeConfig:
                 raise RuntimeError("BACKEND_API_URL and BOT_SERVICE_TOKEN env vars are required")
             self._client = httpx.AsyncClient(
                 base_url=self._backend_url,
-                headers={"Authorization": f"Bearer {self._service_token}"},
+                headers={
+                    "Authorization": f"Bearer {self._service_token}",
+                    "X-Bot-Version": get_bot_version(),
+                },
                 timeout=10.0,
             )
         return self._client

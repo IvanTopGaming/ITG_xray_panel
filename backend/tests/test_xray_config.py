@@ -78,6 +78,51 @@ class TestBuildStreamSettings:
         assert rs["privateKey"]
         assert rs["publicKey"]
 
+    def test_invalid_reality_fingerprint_rejected(self):
+        import pytest
+        from app.services.xray import _build_stream_settings
+
+        pk, pub = _reality_keys()
+        inp = {
+            "protocol": "vless",
+            "network": "tcp",
+            "security": "reality",
+            "realityPrivateKey": pk,
+            "realityPublicKey": pub,
+            "realityFingerprint": "fake-fp-999",
+        }
+        with pytest.raises(ValueError, match="REALITY fingerprint"):
+            _build_stream_settings(inp)
+
+    def test_invalid_alpn_rejected(self):
+        import pytest
+        from app.services.xray import _build_stream_settings
+
+        with pytest.raises(ValueError, match="Invalid ALPN"):
+            _build_stream_settings({"protocol": "vless", "network": "tcp", "security": "tls", "tlsAlpn": "bogusalpn"})
+
+    def test_valid_alpn_accepted(self):
+        from app.services.xray import _build_stream_settings
+
+        result = _build_stream_settings(
+            {"protocol": "vless", "network": "tcp", "security": "tls", "tlsAlpn": "h2,http/1.1"}
+        )
+        assert result["tlsSettings"]["alpn"] == ["h2", "http/1.1"]
+
+    def test_invalid_utls_fingerprint_rejected(self):
+        import pytest
+        from app.services.xray import _build_stream_settings
+
+        with pytest.raises(ValueError, match="TLS fingerprint"):
+            _build_stream_settings(
+                {
+                    "protocol": "vless",
+                    "network": "tcp",
+                    "security": "tls",
+                    "tlsUTLSFingerprint": "bogus-fp",
+                }
+            )
+
     def test_websocket_transport(self):
         from app.services.xray import _build_stream_settings
 
@@ -236,6 +281,8 @@ class TestGenerateConfigFile:
         self._patches = [
             patch("app.services.xray.LOCK_PATH", str(tmp_path / "config.lock")),
             patch("app.services.xray.CONFIG_PATH", str(tmp_path / "config.json")),
+            patch("app.services.xray.CANDIDATE_PATH", str(tmp_path / "config.json.candidate")),
+            patch("app.services.xray._validate_xray_config"),
             patch("app.services.xray.restart_xray_container"),
         ]
         for p in self._patches:
@@ -787,3 +834,71 @@ class TestNormalisationHelpers:
         assert _flag_enabled("0") is False
         assert _flag_enabled(None) is True  # default=True
         assert _flag_enabled(None, default=False) is False
+
+
+class TestValidateXrayConfig:
+    """_validate_xray_config subprocess gate — skip / accept / reject / timeout-retry."""
+
+    def test_skips_when_binary_absent(self):
+        from app.services import xray
+
+        with (
+            patch("app.services.xray.os.path.exists", return_value=False),
+            patch("app.services.xray.subprocess.run") as run,
+        ):
+            xray._validate_xray_config("/tmp/cfg.json")
+            run.assert_not_called()
+
+    def test_accepts_valid_config(self):
+        from unittest.mock import MagicMock
+
+        from app.services import xray
+
+        ok = MagicMock(returncode=0, stderr=b"", stdout=b"Configuration OK.")
+        with (
+            patch("app.services.xray.os.path.exists", return_value=True),
+            patch("app.services.xray.subprocess.run", return_value=ok) as run,
+        ):
+            xray._validate_xray_config("/tmp/cfg.json")
+            assert run.call_count == 1
+
+    def test_rejects_bad_config_fail_closed(self):
+        from unittest.mock import MagicMock
+
+        from app.services import xray
+
+        bad = MagicMock(returncode=1, stderr=b"infra/conf: something broke", stdout=b"")
+        with (
+            patch("app.services.xray.os.path.exists", return_value=True),
+            patch("app.services.xray.subprocess.run", return_value=bad),
+        ):
+            with pytest.raises(ValueError, match="Xray rejected the config"):
+                xray._validate_xray_config("/tmp/cfg.json")
+
+    def test_retries_once_on_transient_timeout(self):
+        import subprocess as sp
+        from unittest.mock import MagicMock
+
+        from app.services import xray
+
+        ok = MagicMock(returncode=0, stderr=b"", stdout=b"Configuration OK.")
+        side = [sp.TimeoutExpired(cmd="xray", timeout=xray.VALIDATE_TIMEOUT_S), ok]
+        with (
+            patch("app.services.xray.os.path.exists", return_value=True),
+            patch("app.services.xray.subprocess.run", side_effect=side) as run,
+        ):
+            xray._validate_xray_config("/tmp/cfg.json")
+            assert run.call_count == 2
+
+    def test_fails_closed_on_persistent_timeout(self):
+        import subprocess as sp
+
+        from app.services import xray
+
+        side = sp.TimeoutExpired(cmd="xray", timeout=xray.VALIDATE_TIMEOUT_S)
+        with (
+            patch("app.services.xray.os.path.exists", return_value=True),
+            patch("app.services.xray.subprocess.run", side_effect=side),
+        ):
+            with pytest.raises(ValueError, match="timed out"):
+                xray._validate_xray_config("/tmp/cfg.json")

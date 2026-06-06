@@ -12,11 +12,13 @@ import {
 import { cn } from '@/lib/utils';
 import { useAuthStore, AuthState } from '@/stores/authStore';
 import { motion } from 'framer-motion';
+import { useVersionStatus } from '@/hooks/useVersionStatus';
 
 export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
   const logout = useAuthStore((state: AuthState) => state.logout);
+  const { hasUpdates } = useVersionStatus();
 
   const navItems = [
     { icon: LayoutDashboard, label: 'Panel', path: '/' },
@@ -86,6 +88,13 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
                   />
                   <span className="text-[10px] font-bold tracking-wide">{item.label}</span>
                 </button>
+
+                {hasUpdates && item.path === '/system' && (
+                  <span
+                    title="Update available"
+                    className="absolute top-2 right-2 z-20 h-2.5 w-2.5 rounded-full bg-primary shadow-[0_0_8px_rgba(208,188,255,0.8)]"
+                  />
+                )}
               </div>
             );
           })}

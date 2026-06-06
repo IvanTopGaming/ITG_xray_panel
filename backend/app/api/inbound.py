@@ -47,6 +47,7 @@ ALLOWED_INBOUND_PROTOCOLS = {
     "http",
 }
 PANEL_USER_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks", "wireguard"}
+ALLOWED_VLESS_FLOWS = {"", "xtls-rprx-vision"}
 
 
 def _parse_bool(value, default=False):
@@ -64,6 +65,19 @@ def _parse_optional_int(value, field):
     if value is None or value == "":
         return None
     return parse_int(value, field, min_value=0)
+
+
+def _stream_supports_vless_flow(stream):
+    """Whether XTLS Vision (xtls-rprx-vision) is valid on this transport.
+
+    Vision flow only works on raw-TCP with TLS or REALITY. It is incompatible
+    with xhttp, ws, grpc, httpupgrade, splithttp, kcp and quic, and with
+    security 'none'. Used to keep client flow consistent with the inbound's
+    transport (e.g. clear flow when an inbound is switched to xhttp).
+    """
+    if not isinstance(stream, dict):
+        return False
+    return stream.get("network") == "tcp" and stream.get("security") in ("tls", "reality")
 
 
 def _normalize_client_id(value, protocol):
@@ -245,12 +259,13 @@ def create_inbound():
             label=label,
         )
         db.session.add(new_ib)
-        db.session.commit()
 
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"tag": tag, "port": port}), 201
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -424,6 +439,18 @@ def update_inbound(tag):
         if ib.protocol not in PANEL_USER_PROTOCOLS:
             Client.query.filter_by(inbound_tag=ib.tag).delete()
 
+        # Keep client flow consistent with the transport. XTLS Vision only works
+        # on raw-TCP + TLS/REALITY, so if this inbound was switched to an
+        # incompatible transport (e.g. xhttp) or away from VLESS, clear the
+        # now-invalid flow on its users before the config is regenerated.
+        if ib.protocol in PANEL_USER_PROTOCOLS and not (
+            ib.protocol == "vless" and _stream_supports_vless_flow(built_stream_settings)
+        ):
+            for c in ib.clients:
+                if c.flow:
+                    c.flow = ""
+
+        generate_config_file()
         db.session.commit()
 
         try:
@@ -431,10 +458,10 @@ def update_inbound(tag):
         except Exception:
             pass
 
-        generate_config_file()
         restart_xray_container()
         return jsonify({"status": "updated"}), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -464,12 +491,13 @@ def delete_inbound(tag):
         except Exception:
             pass
         db.session.delete(ib)
-        db.session.commit()
 
         generate_config_file()
+        db.session.commit()
         restart_xray_container()
         return jsonify({"status": "deleted"}), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -544,14 +572,14 @@ def add_user(tag):
             device_limit=_parse_optional_int(data.get("device_limit", None), "device_limit"),
         )
         db.session.add(new_client)
+
+        generate_config_file()
         db.session.commit()
 
         try:
             sub_cache.invalidate_user(provided_id)
         except Exception:
             pass
-
-        generate_config_file()
 
         if ib.protocol in ["vless", "vmess"]:
             grpc_added = _api_add_user_grpc(tag, new_client)
@@ -562,6 +590,7 @@ def add_user(tag):
 
         return jsonify(new_client.to_dict()), 201
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -634,6 +663,7 @@ def update_user(tag):
         if "device_limit" in data:
             client.device_limit = _parse_optional_int(data.get("device_limit"), "device_limit")
 
+        generate_config_file()
         db.session.commit()
 
         try:
@@ -642,8 +672,6 @@ def update_user(tag):
                 sub_cache.invalidate_user(new_id)
         except Exception:
             pass
-
-        generate_config_file()
 
         if ib.protocol in ["vless", "vmess"]:
             grpc_failed = False
@@ -662,6 +690,7 @@ def update_user(tag):
 
         return jsonify(client.to_dict()), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
@@ -695,6 +724,8 @@ def delete_user_route(tag):
         was_enabled = bool(client.enable)
         deleted_client_id = client.id
         db.session.delete(client)
+
+        generate_config_file()
         db.session.commit()
 
         try:
@@ -702,7 +733,6 @@ def delete_user_route(tag):
         except Exception:
             pass
 
-        generate_config_file()
         if ib and ib.protocol in ["vless", "vmess"] and was_enabled:
             grpc_removed = _api_remove_user_grpc(tag, email)
             if not grpc_removed:
@@ -711,48 +741,82 @@ def delete_user_route(tag):
             restart_xray_container()
         return jsonify({"status": "deleted"}), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
 
 
+def _split_users_by_panel(users):
+    """Split a bulk-op ``users`` payload into local and per-panel remote groups.
+
+    Each user dict may carry an optional ``panel_id`` naming the linked panel
+    that owns the client. Entries without one (None/0/"") are local (master)
+    users. Returns ``(local, {panel_id: [entries]})`` where every entry is
+    normalized to ``{"tag", "email"}`` — panel_id is stripped so a child panel
+    runs the op purely against its own DB and never re-proxies.
+    """
+    if not isinstance(users, list) or not users:
+        raise ValueError("users array required")
+    local = []
+    remote = {}
+    for user in users:
+        if not isinstance(user, dict):
+            raise ValueError("each user must be an object")
+        entry = {
+            "tag": normalize_tag(user.get("tag")),
+            "email": normalize_email(user.get("email")),
+        }
+        pid = user.get("panel_id")
+        if pid in (None, "", 0, "0"):
+            local.append(entry)
+        else:
+            remote.setdefault(int(pid), []).append(entry)
+    return local, remote
+
+
 @bp.route("/users/bulk-delete", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 def bulk_delete_users_route():
     try:
+        from app.services.panel_proxy import proxy_bulk_delete_users
+
         data = request.get_json(silent=True) or {}
-        users = data.get("users")
-        if not isinstance(users, list) or not users:
-            raise ValueError("users array required")
+        local, remote = _split_users_by_panel(data.get("users"))
 
-        normalized = []
-        for user in users:
-            if not isinstance(user, dict):
-                raise ValueError("each user must be an object")
-            normalized.append(
-                {
-                    "tag": normalize_tag(user.get("tag")),
-                    "email": normalize_email(user.get("email")),
-                }
-            )
+        deleted_count = 0
+        errors = []
 
-        # Capture client ids BEFORE delegating to bulk_delete_users so we can
-        # invalidate their cached subscriptions afterwards.
-        doomed_ids = []
-        for u in normalized:
-            row = Client.query.with_entities(Client.id).filter_by(inbound_tag=u["tag"], email=u["email"]).first()
-            if row and row[0]:
-                doomed_ids.append(row[0])
+        # Remote panels first — best-effort: a single offline/failing child
+        # must not abort the deletion on the master or other reachable panels.
+        for panel_id, group in remote.items():
+            try:
+                res = proxy_bulk_delete_users(panel_id, group)
+                deleted_count += int(res.get("count", 0) or 0)
+            except Exception as exc:
+                errors.append(str(exc))
 
-        deleted_count = bulk_delete_users(normalized)
+        if local:
+            # Capture client ids BEFORE delegating to bulk_delete_users so we
+            # can invalidate their cached subscriptions afterwards.
+            doomed_ids = []
+            for u in local:
+                row = Client.query.with_entities(Client.id).filter_by(inbound_tag=u["tag"], email=u["email"]).first()
+                if row and row[0]:
+                    doomed_ids.append(row[0])
 
-        try:
-            for cid in doomed_ids:
-                sub_cache.invalidate_user(cid)
-        except Exception:
-            pass
+            deleted_count += bulk_delete_users(local)
 
-        return jsonify({"status": "deleted", "count": deleted_count}), 200
+            try:
+                for cid in doomed_ids:
+                    sub_cache.invalidate_user(cid)
+            except Exception:
+                pass
+
+        resp = {"status": "deleted", "count": deleted_count}
+        if errors:
+            resp["errors"] = errors
+        return jsonify(resp), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
@@ -760,19 +824,27 @@ def bulk_delete_users_route():
 
 
 @bp.route("/users/reset-traffic", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 def reset_user_traffic_route():
     try:
+        from app.services.panel_proxy import proxy_bulk_reset_traffic
+
         data = request.get_json(silent=True) or {}
         if "users" in data:
-            if not isinstance(data["users"], list):
-                raise ValueError("users must be an array")
-            for u in data["users"]:
-                if not isinstance(u, dict):
-                    raise ValueError("each user must be an object")
-                reset_user_traffic(normalize_tag(u.get("tag")), normalize_email(u.get("email")))
+            local, remote = _split_users_by_panel(data["users"])
+            for panel_id, group in remote.items():
+                proxy_bulk_reset_traffic(panel_id, group)
+            for u in local:
+                reset_user_traffic(u["tag"], u["email"])
         else:
-            reset_user_traffic(normalize_tag(data.get("tag")), normalize_email(data.get("email")))
+            # Single-user reset — the UserRow sends panel_id as a query param.
+            panel_id = request.args.get("panel_id", type=int)
+            tag = normalize_tag(data.get("tag"))
+            email = normalize_email(data.get("email"))
+            if panel_id:
+                proxy_bulk_reset_traffic(panel_id, [{"tag": tag, "email": email}])
+            else:
+                reset_user_traffic(tag, email)
         return jsonify({"status": "reset"}), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -781,30 +853,28 @@ def reset_user_traffic_route():
 
 
 @bp.route("/users/bulk-enable", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 def bulk_enable_users_route():
     try:
+        from app.services.panel_proxy import proxy_bulk_enable_users
+
         data = request.get_json(silent=True) or {}
-        users = data.get("users")
-        if not isinstance(users, list) or not users:
-            raise ValueError("users array required")
         if "enable" not in data:
             raise ValueError("enable field required")
         enable = _parse_bool(data["enable"])
+        local, remote = _split_users_by_panel(data.get("users"))
 
-        normalized = []
-        for user in users:
-            if not isinstance(user, dict):
-                raise ValueError("each user must be an object")
-            normalized.append(
-                {
-                    "tag": normalize_tag(user.get("tag")),
-                    "email": normalize_email(user.get("email")),
-                }
-            )
+        count = 0
+        errors = []
+        for panel_id, group in remote.items():
+            try:
+                res = proxy_bulk_enable_users(panel_id, group, enable)
+                count += int(res.get("count", 0) or 0)
+            except Exception as exc:
+                errors.append(str(exc))
 
         updated = []
-        for u in normalized:
+        for u in local:
             client = Client.query.filter_by(inbound_tag=u["tag"], email=u["email"]).first()
             if not client:
                 continue
@@ -821,8 +891,12 @@ def bulk_enable_users_route():
             client.enable = enable
 
         if not updated:
-            return jsonify({"status": "ok", "count": 0}), 200
+            resp = {"status": "ok", "count": count}
+            if errors:
+                resp["errors"] = errors
+            return jsonify(resp), 200
 
+        generate_config_file()
         db.session.commit()
 
         for item in updated:
@@ -831,8 +905,6 @@ def bulk_enable_users_route():
                 sub_cache.invalidate_user(client.id)
             except Exception:
                 pass
-
-        generate_config_file()
 
         grpc_failed = False
         for item in updated:
@@ -852,43 +924,47 @@ def bulk_enable_users_route():
         if needs_restart:
             restart_xray_container()
 
-        return jsonify({"status": "ok", "count": len(updated)}), 200
+        count += len(updated)
+        resp = {"status": "ok", "count": count}
+        if errors:
+            resp["errors"] = errors
+        return jsonify(resp), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
 
 
 @bp.route("/users/bulk-adjust-days", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 def bulk_adjust_days_route():
     try:
+        from app.services.panel_proxy import proxy_bulk_adjust_days
+
         data = request.get_json(silent=True) or {}
-        users = data.get("users")
-        if not isinstance(users, list) or not users:
-            raise ValueError("users array required")
         days = parse_int(data.get("days"), "days", min_value=1)
         mode = str(data.get("mode") or "add").strip().lower()
         if mode not in ("add", "subtract"):
             raise ValueError("mode must be 'add' or 'subtract'")
+        local, remote = _split_users_by_panel(data.get("users"))
 
-        normalized = []
-        for user in users:
-            if not isinstance(user, dict):
-                raise ValueError("each user must be an object")
-            normalized.append(
-                {
-                    "tag": normalize_tag(user.get("tag")),
-                    "email": normalize_email(user.get("email")),
-                }
-            )
+        updated = 0
+        skipped = 0
+        errors = []
+        for panel_id, group in remote.items():
+            try:
+                res = proxy_bulk_adjust_days(panel_id, group, days, mode)
+                updated += int(res.get("updated", 0) or 0)
+                skipped += int(res.get("skipped", 0) or 0)
+            except Exception as exc:
+                errors.append(str(exc))
 
         now_ms = int(datetime.now().timestamp() * 1000)
         delta_ms = days * 86_400_000
         updated_clients = []
-        skipped = 0
 
-        for u in normalized:
+        for u in local:
             client = Client.query.filter_by(inbound_tag=u["tag"], email=u["email"]).first()
             if not client or client.expiry_time == 0:
                 skipped += 1
@@ -901,6 +977,7 @@ def bulk_adjust_days_route():
             updated_clients.append(client)
 
         if updated_clients:
+            generate_config_file()
             db.session.commit()
 
             for client in updated_clients:
@@ -909,44 +986,46 @@ def bulk_adjust_days_route():
                 except Exception:
                     pass
 
-            generate_config_file()
-
-        return jsonify({"status": "ok", "updated": len(updated_clients), "skipped": skipped}), 200
+        updated += len(updated_clients)
+        resp = {"status": "ok", "updated": updated, "skipped": skipped}
+        if errors:
+            resp["errors"] = errors
+        return jsonify(resp), 200
     except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
 
 
 @bp.route("/users/bulk-adjust-traffic", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 def bulk_adjust_traffic_route():
     try:
+        from app.services.panel_proxy import proxy_bulk_adjust_traffic
+
         data = request.get_json(silent=True) or {}
-        users = data.get("users")
-        if not isinstance(users, list) or not users:
-            raise ValueError("users array required")
         gb = parse_int(data.get("gb"), "gb", min_value=1)
         mode = str(data.get("mode") or "add").strip().lower()
         if mode not in ("add", "subtract"):
             raise ValueError("mode must be 'add' or 'subtract'")
+        local, remote = _split_users_by_panel(data.get("users"))
 
-        normalized = []
-        for user in users:
-            if not isinstance(user, dict):
-                raise ValueError("each user must be an object")
-            normalized.append(
-                {
-                    "tag": normalize_tag(user.get("tag")),
-                    "email": normalize_email(user.get("email")),
-                }
-            )
+        updated = 0
+        skipped = 0
+        errors = []
+        for panel_id, group in remote.items():
+            try:
+                res = proxy_bulk_adjust_traffic(panel_id, group, gb, mode)
+                updated += int(res.get("updated", 0) or 0)
+                skipped += int(res.get("skipped", 0) or 0)
+            except Exception as exc:
+                errors.append(str(exc))
 
         delta_bytes = gb * (1024**3)
         updated_clients = []
-        skipped = 0
 
-        for u in normalized:
+        for u in local:
             client = Client.query.filter_by(inbound_tag=u["tag"], email=u["email"]).first()
             if not client or client.limit_bytes == 0:
                 skipped += 1
@@ -962,6 +1041,7 @@ def bulk_adjust_traffic_route():
             updated_clients.append(client)
 
         if updated_clients:
+            generate_config_file()
             db.session.commit()
 
             for client in updated_clients:
@@ -970,10 +1050,103 @@ def bulk_adjust_traffic_route():
                 except Exception:
                     pass
 
-            generate_config_file()
-
-        return jsonify({"status": "ok", "updated": len(updated_clients), "skipped": skipped}), 200
+        updated += len(updated_clients)
+        resp = {"status": "ok", "updated": updated, "skipped": skipped}
+        if errors:
+            resp["errors"] = errors
+        return jsonify(resp), 200
     except ValueError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/users/bulk-set-flow", methods=["POST"])
+@admin_or_federation_token_required
+def bulk_set_flow_route():
+    """Enable/disable the VLESS flow for a batch of users.
+
+    ``flow`` is an explicit value ("" to disable, "xtls-rprx-vision" to enable).
+    Non-VLESS users and users already on the target flow are skipped. The change
+    is applied at runtime via gRPC remove+re-add (the flow is baked into the
+    VLESS account on add), falling back to a container restart if gRPC fails.
+    """
+    try:
+        from app.services.panel_proxy import proxy_bulk_set_flow
+
+        data = request.get_json(silent=True) or {}
+        if "flow" not in data:
+            raise ValueError("flow field required")
+        flow = str(data.get("flow") or "").strip()
+        if flow not in ALLOWED_VLESS_FLOWS:
+            raise ValueError("flow must be '' or 'xtls-rprx-vision'")
+        local, remote = _split_users_by_panel(data.get("users"))
+
+        updated = 0
+        skipped = 0
+        errors = []
+        for panel_id, group in remote.items():
+            try:
+                res = proxy_bulk_set_flow(panel_id, group, flow)
+                updated += int(res.get("updated", 0) or 0)
+                skipped += int(res.get("skipped", 0) or 0)
+            except Exception as exc:
+                errors.append(str(exc))
+
+        changed = []
+        for u in local:
+            client = Client.query.filter_by(inbound_tag=u["tag"], email=u["email"]).first()
+            if not client:
+                skipped += 1
+                continue
+            ib = Inbound.query.filter_by(tag=u["tag"]).first()
+            if not ib or ib.protocol != "vless":
+                skipped += 1
+                continue
+            # Enabling Vision on a transport that can't carry it (xhttp/ws/grpc/…)
+            # would produce a broken config — skip those inbounds.
+            if flow and not _stream_supports_vless_flow(json.loads(ib.stream_settings or "{}")):
+                skipped += 1
+                continue
+            if (client.flow or "") == flow:
+                skipped += 1
+                continue
+            changed.append({"client": client, "old_email": client.email, "was_enabled": bool(client.enable)})
+            client.flow = flow
+
+        if changed:
+            generate_config_file()
+            db.session.commit()
+
+            for item in changed:
+                try:
+                    sub_cache.invalidate_user(item["client"].id)
+                except Exception:
+                    pass
+
+            # Apply the new flow at runtime: re-add each enabled VLESS user so
+            # Xray picks up the changed account. Disabled users aren't in the
+            # runtime, so a DB change is enough until they're next enabled.
+            grpc_failed = False
+            for item in changed:
+                if not item["was_enabled"]:
+                    continue
+                client = item["client"]
+                if not _api_remove_user_grpc(client.inbound_tag, item["old_email"]):
+                    grpc_failed = True
+                if not _api_add_user_grpc(client.inbound_tag, client):
+                    grpc_failed = True
+            if grpc_failed:
+                restart_xray_container()
+
+        updated += len(changed)
+        resp = {"status": "ok", "updated": updated, "skipped": skipped}
+        if errors:
+            resp["errors"] = errors
+        return jsonify(resp), 200
+    except ValueError as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500

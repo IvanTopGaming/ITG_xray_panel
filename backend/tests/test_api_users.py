@@ -705,3 +705,338 @@ def test_revoke_tariff_grpc_calls_precede_all_sql_writes(
         f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
         f"This holds the SQLite write lock across gRPC, blocking concurrent writers. Order: {order}"
     )
+
+
+# === block_user — cross-panel disable ===
+
+
+def test_block_user_disables_remote_clients(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+    tariff = two_inbounds_and_tariff
+    _make_user_with_active_clients(db, tariff)
+    db.session.commit()
+
+    remote = {
+        42: [
+            {
+                "panel_id": 7,
+                "panel_name": "Child-A",
+                "inbound_tag": "FR",
+                "email": "tg42_FR",
+                "enable": True,
+                "expiry_time": 0,
+            },
+            {
+                "panel_id": 7,
+                "panel_name": "Child-A",
+                "inbound_tag": "NL",
+                "email": "tg42_NL",
+                "enable": False,
+                "expiry_time": 0,
+            },
+        ]
+    }
+    with (
+        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value=remote),
+        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+    ):
+        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    body = resp.get_json()
+    assert body["disabled_clients"] == 2
+    assert body["remote_disabled"] == 1
+    assert body["panel_failures"] == []
+    prox.assert_called_once_with(7, "FR", {"old_email": "tg42_FR", "enable": False})
+
+
+def test_block_user_remote_failure_is_best_effort(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+    tariff = two_inbounds_and_tariff
+    _make_user_with_active_clients(db, tariff)
+    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
+    db.session.commit()
+
+    remote = {
+        42: [
+            {
+                "panel_id": 9,
+                "panel_name": "Child-B",
+                "inbound_tag": "FR",
+                "email": "tg42_FR",
+                "enable": True,
+                "expiry_time": 0,
+            }
+        ]
+    }
+    with (
+        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value=remote),
+        patch("app.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
+    ):
+        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["disabled_clients"] == 2
+    assert body["remote_disabled"] == 0
+    assert body["panel_failures"] == [{"panel_id": 9, "panel_name": "Child-B", "error": "panel offline"}]
+    assert UserTariffAccess.query.filter_by(telegram_id=42).count() == 0
+
+
+def test_block_user_remote_partial_success(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+    tariff = two_inbounds_and_tariff
+    _make_user_with_active_clients(db, tariff)
+    db.session.commit()
+
+    remote = {
+        42: [
+            {
+                "panel_id": 7,
+                "panel_name": "Child-A",
+                "inbound_tag": "FR",
+                "email": "tg42_FR",
+                "enable": True,
+                "expiry_time": 0,
+            },
+            {
+                "panel_id": 8,
+                "panel_name": "Child-B",
+                "inbound_tag": "NL",
+                "email": "tg42_NL",
+                "enable": True,
+                "expiry_time": 0,
+            },
+        ]
+    }
+
+    def _proxy(panel_id, inbound_tag, body):
+        if panel_id == 8:
+            raise ValueError("panel offline")
+        return {}
+
+    with (
+        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value=remote),
+        patch("app.api.bot_admin.proxy_update_user", side_effect=_proxy),
+    ):
+        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    body = resp.get_json()
+    assert body["disabled_clients"] == 2
+    assert body["remote_disabled"] == 1
+    assert body["panel_failures"] == [{"panel_id": 8, "panel_name": "Child-B", "error": "panel offline"}]
+
+
+# === unblock_user — re-enable clients with tariff time remaining ===
+
+
+def _add_disabled_client(db, *, cid, tag, email, expiry, tg=42):
+    db.session.add(Client(id=cid, inbound_tag=tag, email=email, telegram_id=tg, enable=False, expiry_time=expiry))
+
+
+def test_unblock_re_enables_clients_with_time_left(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
+    db.session.flush()
+    future = int(time.time() * 1000) + 86_400_000
+    _add_disabled_client(db, cid="11111111-1111-1111-1111-111111111111", tag="DE", email="tg42_DE", expiry=future)
+    _add_disabled_client(db, cid="22222222-2222-2222-2222-222222222222", tag="MSK", email="tg42_MSK", expiry=0)
+    _add_disabled_client(db, cid="33333333-3333-3333-3333-333333333333", tag="DE", email="tg42_DE_old", expiry=1)
+    db.session.commit()
+
+    with (
+        patch("app.api.bot_admin._api_add_user_grpc", return_value=True) as add,
+        patch("app.api.bot_admin.generate_config_file") as regen,
+        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value={}),
+    ):
+        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    body = resp.get_json()
+    assert body["re_enabled"] == 2
+    states = {c.email: c.enable for c in Client.query.filter_by(telegram_id=42)}
+    assert states["tg42_DE"] is True
+    assert states["tg42_MSK"] is True
+    assert states["tg42_DE_old"] is False
+    assert db.session.get(TelegramUser, 42).blocked is False
+    assert add.call_count == 2
+    regen.assert_called_once()
+    restart.assert_not_called()
+
+
+def test_unblock_does_not_restore_grants(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
+    db.session.flush()
+    _add_disabled_client(db, cid="11111111-1111-1111-1111-111111111111", tag="DE", email="tg42_DE", expiry=0)
+    db.session.commit()
+
+    with (
+        patch("app.api.bot_admin._api_add_user_grpc", return_value=True),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value={}),
+    ):
+        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
+
+    assert resp.status_code == 200
+    assert UserTariffAccess.query.filter_by(telegram_id=42).count() == 0
+
+
+def test_unblock_restarts_for_non_vless(app_with_admin, db, client, admin_headers):
+    db.session.add(Inbound(tag="TR", protocol="trojan", port=10003, stream_settings="{}"))
+    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
+    db.session.flush()
+    _add_disabled_client(db, cid="44444444-4444-4444-4444-444444444444", tag="TR", email="tg42_TR", expiry=0)
+    db.session.commit()
+
+    with (
+        patch("app.api.bot_admin._api_add_user_grpc") as add,
+        patch("app.api.bot_admin.generate_config_file") as regen,
+        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value={}),
+    ):
+        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
+
+    assert resp.status_code == 200
+    assert resp.get_json()["re_enabled"] == 1
+    add.assert_not_called()
+    regen.assert_called_once()
+    restart.assert_called_once()
+
+
+def test_unblock_re_enables_remote_clients_with_time(app_with_admin, db, client, admin_headers):
+    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
+    db.session.commit()
+    future = int(time.time() * 1000) + 86_400_000
+    remote = {
+        42: [
+            {
+                "panel_id": 7,
+                "panel_name": "A",
+                "inbound_tag": "FR",
+                "email": "tg42_FR",
+                "enable": False,
+                "expiry_time": future,
+            },
+            {
+                "panel_id": 7,
+                "panel_name": "A",
+                "inbound_tag": "NL",
+                "email": "tg42_NL",
+                "enable": False,
+                "expiry_time": 1,
+            },
+            {
+                "panel_id": 7,
+                "panel_name": "A",
+                "inbound_tag": "BE",
+                "email": "tg42_BE",
+                "enable": True,
+                "expiry_time": 0,
+            },
+        ]
+    }
+    with (
+        patch("app.api.bot_admin._api_add_user_grpc", return_value=True),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value=remote),
+        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+    ):
+        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["re_enabled"] == 0
+    assert body["remote_re_enabled"] == 1
+    prox.assert_called_once_with(7, "FR", {"old_email": "tg42_FR", "enable": True})
+
+
+def test_unblock_no_clients_is_idempotent(app_with_admin, db, client, admin_headers):
+    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
+    db.session.commit()
+
+    with (
+        patch("app.api.bot_admin._api_add_user_grpc") as add,
+        patch("app.api.bot_admin.generate_config_file") as regen,
+        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value={}),
+    ):
+        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
+
+    assert resp.status_code == 200
+    assert resp.get_json()["re_enabled"] == 0
+    assert db.session.get(TelegramUser, 42).blocked is False
+    add.assert_not_called()
+    regen.assert_not_called()
+    restart.assert_not_called()
+
+
+def test_unblock_remote_failure_is_best_effort(app_with_admin, db, client, admin_headers):
+    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
+    db.session.commit()
+    future = int(time.time() * 1000) + 86_400_000
+    remote = {
+        42: [
+            {
+                "panel_id": 9,
+                "panel_name": "Child-B",
+                "inbound_tag": "FR",
+                "email": "tg42_FR",
+                "enable": False,
+                "expiry_time": future,
+            }
+        ]
+    }
+    with (
+        patch("app.api.bot_admin._api_add_user_grpc", return_value=True),
+        patch("app.api.bot_admin.generate_config_file"),
+        patch("app.api.bot_admin.restart_xray_container"),
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value=remote),
+        patch("app.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
+    ):
+        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["remote_re_enabled"] == 0
+    assert body["panel_failures"] == [{"panel_id": 9, "panel_name": "Child-B", "error": "panel offline"}]
+    assert db.session.get(TelegramUser, 42).blocked is False
+
+
+def test_unblock_restarts_when_grpc_add_fails(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
+    db.session.flush()
+    _add_disabled_client(db, cid="11111111-1111-1111-1111-111111111111", tag="DE", email="tg42_DE", expiry=0)
+    db.session.commit()
+
+    with (
+        patch("app.api.bot_admin._api_add_user_grpc", return_value=False) as add,
+        patch("app.api.bot_admin.generate_config_file") as regen,
+        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("app.api.bot_admin.bot_events.publish"),
+        patch("app.api.bot_admin._remote_clients_by_telegram_id", return_value={}),
+    ):
+        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
+
+    assert resp.status_code == 200
+    assert resp.get_json()["re_enabled"] == 1
+    add.assert_called_once()
+    regen.assert_called_once()
+    restart.assert_called_once()

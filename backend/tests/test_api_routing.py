@@ -7,6 +7,7 @@ from unittest.mock import patch
 import jwt
 import pytest
 
+from app.api.routing import _normalize_rules
 from app.extensions import db
 from app.models import Admin, RoutingProfile, Outbound, Balancer, Inbound
 from app.utils import SECRET_KEY
@@ -521,3 +522,79 @@ class TestNormalization:
         rules = _normalize_rules([{"balancerTag": "my-bal"}])
         # balancerTag is mapped to outboundTag in the normalized output
         assert rules[0]["outboundTag"] == "my-bal"
+
+
+class TestRuleFieldPrefixes:
+    def test_geoip_in_domain_raises(self):
+        with pytest.raises(ValueError, match="IPS field"):
+            _normalize_rules([{"domain": ["geoip:cn"], "outboundTag": "direct"}])
+
+    def test_geoip_in_domain_case_insensitive(self):
+        with pytest.raises(ValueError, match="IPS field"):
+            _normalize_rules([{"domain": ["GeoIP:CN"], "outboundTag": "direct"}])
+
+    def test_geosite_in_ip_raises(self):
+        with pytest.raises(ValueError, match="Domains field"):
+            _normalize_rules([{"ip": ["geosite:google"], "outboundTag": "direct"}])
+
+    def test_domain_matcher_in_source_raises(self):
+        with pytest.raises(ValueError, match="Domains field"):
+            _normalize_rules([{"source": ["regexp:.*"], "outboundTag": "direct"}])
+
+    def test_all_domain_prefixes_rejected_in_ip(self):
+        for prefix in ("geosite:", "domain:", "regexp:", "keyword:", "full:"):
+            with pytest.raises(ValueError, match="Domains field"):
+                _normalize_rules([{"ip": [f"{prefix}x"], "outboundTag": "direct"}])
+
+    def test_valid_prefixes_pass(self):
+        rules = _normalize_rules(
+            [
+                {
+                    "domain": ["geosite:google", "example.com"],
+                    "ip": ["geoip:cn", "8.8.8.8", "ext:geoip.dat:cn"],
+                    "source": ["10.0.0.0/24"],
+                    "outboundTag": "direct",
+                }
+            ]
+        )
+        assert rules[0]["domain"] == ["geosite:google", "example.com"]
+        assert rules[0]["ip"] == ["geoip:cn", "8.8.8.8", "ext:geoip.dat:cn"]
+
+    def test_unknown_protocol_rejected(self):
+        with pytest.raises(ValueError, match="unknown protocol"):
+            _normalize_rules([{"protocol": ["randomxyz"], "outboundTag": "direct"}])
+
+    def test_valid_protocols_pass(self):
+        rules = _normalize_rules([{"protocol": ["http", "TLS", "quic", "bittorrent"], "outboundTag": "direct"}])
+        assert rules[0]["protocol"] == ["http", "TLS", "quic", "bittorrent"]
+
+    def test_dotless_domain_matcher_rejected_in_ip(self):
+        with pytest.raises(ValueError, match="Domains field"):
+            _normalize_rules([{"ip": ["dotless:x"], "outboundTag": "direct"}])
+
+    def test_negated_domain_matcher_rejected_in_ip(self):
+        with pytest.raises(ValueError, match="Domains field"):
+            _normalize_rules([{"ip": ["!geosite:google"], "outboundTag": "direct"}])
+
+    def test_negated_geoip_in_ip_passes(self):
+        rules = _normalize_rules([{"ip": ["!geoip:cn"], "outboundTag": "direct"}])
+        assert rules[0]["ip"] == ["!geoip:cn"]
+
+    def test_unknown_network_rejected(self):
+        with pytest.raises(ValueError, match="unknown network"):
+            _normalize_rules([{"network": "tcp,randomnet", "outboundTag": "direct"}])
+
+    def test_valid_networks_pass(self):
+        rules = _normalize_rules([{"network": "TCP,udp", "outboundTag": "direct"}])
+        assert rules[0]["network"] == "TCP,udp"
+
+    @patch("app.api.routing.restart_xray_container")
+    @patch("app.api.routing.generate_config_file")
+    def test_api_create_rejects_geoip_in_domain(self, mock_gen, mock_restart, client, auth_headers):
+        resp = client.post(
+            "/api/routing-profiles",
+            headers=auth_headers,
+            json={"name": "p-bad", "rules": [{"domain": ["geoip:cn"], "outboundTag": "direct"}]},
+        )
+        assert resp.status_code == 400
+        assert "IPS" in resp.get_json()["error"]
