@@ -1444,7 +1444,7 @@ function UserRow({
         })()
       : undefined;
   const link = generateLink(inbound, client, panelHost);
-  const subscriptionUrl = generateSubscriptionUrl(client);
+  const subscriptionUrl = client.sub_url || generateSubscriptionUrl(client);
 
   const resetMutation = useMutation({
     mutationFn: () =>

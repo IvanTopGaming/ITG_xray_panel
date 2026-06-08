@@ -37,6 +37,27 @@ common.cancel:
   en: "❌ Cancel"
 
 # Keys / subscription views
+sub.page.title:
+  ru: "🔐 <b>Моя подписка</b>"
+  en: "🔐 <b>My subscription</b>"
+sub.page.link_header:
+  ru: "🔗 <b>Ссылка подписки</b>"
+  en: "🔗 <b>Subscription link</b>"
+sub.page.copy_hint:
+  ru: "<i>👆 Нажми на ссылку, чтобы скопировать</i>"
+  en: "<i>👆 Tap the link to copy</i>"
+sub.page.url_helper:
+  ru: "📲 <b>Куда вставить:</b> Happ · v2RayTun · Streisand · Hiddify\n\n♻️ Конфиги обновляются сами — переимпортировать ничего не надо."
+  en: "📲 <b>Where to paste:</b> Happ · v2RayTun · Streisand · Hiddify\n\n♻️ Configs refresh themselves — no re-import needed."
+sub.page.no_url:
+  ru: "Ссылка подписки пока недоступна. Нажми «Показать ключи», чтобы получить конфиги вручную."
+  en: 'The subscription link is not available yet. Tap "Show keys" to get configs manually.'
+sub.actions.open_page:
+  ru: "🌐 Открыть страницу"
+  en: "🌐 Open page"
+sub.actions.show_keys:
+  ru: "🔑 Показать ключи"
+  en: "🔑 Show keys"
 sub.actions.show_qr:
   ru: "📱 Показать QR-код"
   en: "📱 Show QR code"

@@ -5,7 +5,8 @@ import secrets
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from app.extensions import db
-from app.models import Inbound, Client, ClientDevice
+from app.models import Inbound, Client, ClientDevice, TelegramUser
+from app.api.subscription import build_aggregate_sub_url
 from app.utils import (
     token_required,
     admin_or_bot_token_required,
@@ -138,6 +139,14 @@ def get_inbounds():
         db.session.query(ClientDevice.client_id, func.count(ClientDevice.id)).group_by(ClientDevice.client_id).all()
     )
 
+    # Map telegram_id → sub_token once so each client can expose its real
+    # (aggregated) subscription URL.
+    _tok_map = dict(
+        db.session.query(TelegramUser.telegram_id, TelegramUser.sub_token)
+        .filter(TelegramUser.sub_token.isnot(None))
+        .all()
+    )
+
     result = []
     for ib in inbounds:
         stream = json.loads(ib.stream_settings)
@@ -159,6 +168,7 @@ def get_inbounds():
             for c in ib.clients:
                 d = c.to_dict()
                 d["device_count"] = int(counts.get(c.id, 0))
+                d["sub_url"] = build_aggregate_sub_url(_tok_map.get(c.telegram_id)) if c.telegram_id else None
                 clients_data.append(d)
         else:
             clients_data = []
@@ -455,6 +465,11 @@ def update_inbound(tag):
 
         try:
             sub_cache.invalidate_all_for_inbound(ib.tag)
+            for (tg_id,) in (
+                Client.query.filter_by(inbound_tag=ib.tag).with_entities(Client.telegram_id).distinct().all()
+            ):
+                if tg_id:
+                    sub_cache.invalidate_user_aggregate(tg_id)
         except Exception:
             pass
 

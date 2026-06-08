@@ -94,6 +94,25 @@ def qr_back_kb(*, back_label: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def user_sub_page_kb(
+    *,
+    open_label: str,
+    keys_label: str,
+    help_label: str,
+    back_label: str,
+    sub_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Subscription screen: open-page URL button (only when sub_url is set),
+    show-keys fallback, help, back."""
+    buttons = []
+    if sub_url:
+        buttons.append([InlineKeyboardButton(text=open_label, url=sub_url)])
+    buttons.append([InlineKeyboardButton(text=keys_label, callback_data="show_keys")])
+    buttons.append([InlineKeyboardButton(text=help_label, callback_data="user_help")])
+    buttons.append([InlineKeyboardButton(text=back_label, callback_data="user_home")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def back_to_main_kb(*, back_label: str) -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(text=back_label, callback_data="user_home")]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)

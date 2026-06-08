@@ -4,6 +4,7 @@ import { Eye, EyeOff, Copy, Check, RefreshCw } from 'lucide-react';
 import { getBotSettings, updateBotSettings, rotateBotServiceToken } from '../../lib/bot';
 import type { BotSettingsUpdate } from '../../lib/types';
 import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
+import { Switch } from '@/components/ui/Switch';
 
 export function SettingsTab() {
   const qc = useQueryClient();
@@ -19,8 +20,10 @@ export function SettingsTab() {
     admin_ids_text: '',
     display_timezone: '',
   });
+  const [deviceDraft, setDeviceDraft] = useState({ enabled: false, perUser: 0 });
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [botSavedAt, setBotSavedAt] = useState<number | null>(null);
+  const [deviceSavedAt, setDeviceSavedAt] = useState<number | null>(null);
   const [rotatedAt, setRotatedAt] = useState<number | null>(null);
   const [rotateConfirmOpen, setRotateConfirmOpen] = useState(false);
 
@@ -38,6 +41,10 @@ export function SettingsTab() {
       telegram_proxy_url: data.telegram_proxy_url || '',
       admin_ids_text: data.admin_ids?.join(', ') ?? '',
       display_timezone: data.display_timezone || 'Europe/Moscow',
+    });
+    setDeviceDraft({
+      enabled: !!data.device_limit_enabled,
+      perUser: Number(data.device_limit_per_user ?? 0),
     });
   }, [data?.bot_config_version, data]);
 
@@ -74,6 +81,18 @@ export function SettingsTab() {
     },
   });
 
+  const saveDevices = useMutation({
+    mutationFn: () =>
+      updateBotSettings({
+        device_limit_enabled: deviceDraft.enabled,
+        device_limit_per_user: Number(deviceDraft.perUser) || 0,
+      }),
+    onSuccess: () => {
+      setDeviceSavedAt(Date.now());
+      qc.invalidateQueries({ queryKey: ['bot-settings'] });
+    },
+  });
+
   const rotate = useMutation({
     mutationFn: rotateBotServiceToken,
     onSuccess: () => {
@@ -86,135 +105,178 @@ export function SettingsTab() {
   if (!data) return <div className="text-white/50">Loading…</div>;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-      <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-4">
-        <div className="flex items-baseline justify-between gap-3">
-          <h3 className="text-white font-semibold">Telegram Bot</h3>
-          <span className="text-xs text-white/40">
-            v{data.bot_config_version} ·{' '}
-            {data.has_bot_token ? (
-              <span className="text-emerald-300">configured</span>
-            ) : (
-              <span className="text-amber-300">not set — bot waits for token</span>
-            )}
-          </span>
-        </div>
-        <p className="text-white/60 text-xs">
-          Bot fetches these on startup and re-polls every 30s. Changing the bot token or proxy
-          gracefully restarts the polling session in-place — no container restart needed.
-        </p>
-        <div className="space-y-3">
-          <SecretField
-            label="Bot token"
-            value={botDraft.bot_token}
-            placeholder="123456789:ABCdef…"
-            onChange={(v) => setBotDraft({ ...botDraft, bot_token: v })}
-          />
-          <Field
-            label="Admin Telegram IDs (comma-separated)"
-            value={botDraft.admin_ids_text}
-            placeholder="123456789, 987654321"
-            onChange={(v) => setBotDraft({ ...botDraft, admin_ids_text: v })}
-          />
-          <Field
-            label="Telegram proxy URL (optional)"
-            value={botDraft.telegram_proxy_url}
-            placeholder="socks5://user:pass@host:1080"
-            onChange={(v) => setBotDraft({ ...botDraft, telegram_proxy_url: v })}
-          />
-          <Field
-            label="Display timezone (IANA, e.g. Europe/Moscow)"
-            value={botDraft.display_timezone}
-            placeholder="Europe/Moscow"
-            onChange={(v) => setBotDraft({ ...botDraft, display_timezone: v })}
-          />
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => saveBot.mutate()}
-            disabled={saveBot.isPending}
-            className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
-          >
-            {saveBot.isPending ? 'Saving…' : 'Save'}
-          </button>
-          {botSavedAt && Date.now() - botSavedAt < 3000 && (
-            <span className="text-emerald-300 text-sm">Saved.</span>
-          )}
-        </div>
-      </section>
+    <>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+        <div className="space-y-6">
+          <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-4">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-white font-semibold">Telegram Bot</h3>
+              <span className="text-xs text-white/40">
+                v{data.bot_config_version} ·{' '}
+                {data.has_bot_token ? (
+                  <span className="text-emerald-300">configured</span>
+                ) : (
+                  <span className="text-amber-300">not set — bot waits for token</span>
+                )}
+              </span>
+            </div>
+            <p className="text-white/60 text-xs">
+              Bot fetches these on startup and re-polls every 30s. Changing the bot token or proxy
+              gracefully restarts the polling session in-place — no container restart needed.
+            </p>
+            <div className="space-y-3">
+              <SecretField
+                label="Bot token"
+                value={botDraft.bot_token}
+                placeholder="123456789:ABCdef…"
+                onChange={(v) => setBotDraft({ ...botDraft, bot_token: v })}
+              />
+              <Field
+                label="Admin Telegram IDs (comma-separated)"
+                value={botDraft.admin_ids_text}
+                placeholder="123456789, 987654321"
+                onChange={(v) => setBotDraft({ ...botDraft, admin_ids_text: v })}
+              />
+              <Field
+                label="Telegram proxy URL (optional)"
+                value={botDraft.telegram_proxy_url}
+                placeholder="socks5://user:pass@host:1080"
+                onChange={(v) => setBotDraft({ ...botDraft, telegram_proxy_url: v })}
+              />
+              <Field
+                label="Display timezone (IANA, e.g. Europe/Moscow)"
+                value={botDraft.display_timezone}
+                placeholder="Europe/Moscow"
+                onChange={(v) => setBotDraft({ ...botDraft, display_timezone: v })}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => saveBot.mutate()}
+                disabled={saveBot.isPending}
+                className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+              >
+                {saveBot.isPending ? 'Saving…' : 'Save'}
+              </button>
+              {botSavedAt && Date.now() - botSavedAt < 3000 && (
+                <span className="text-emerald-300 text-sm">Saved.</span>
+              )}
+            </div>
+          </section>
 
-      <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-4">
-        <h3 className="text-white font-semibold">YooKassa</h3>
-        <div className="space-y-3">
-          <Field
-            label="Shop ID"
-            value={draft.yookassa_shop_id}
-            onChange={(v) => setDraft({ ...draft, yookassa_shop_id: v })}
-          />
-          <SecretField
-            label="Secret key"
-            value={draft.yookassa_secret_key}
-            onChange={(v) => setDraft({ ...draft, yookassa_secret_key: v })}
-          />
-          <Field
-            label="Return URL"
-            value={draft.yookassa_return_url}
-            placeholder="https://t.me/your_bot?start=paid"
-            onChange={(v) => setDraft({ ...draft, yookassa_return_url: v })}
-          />
+          <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-4">
+            <h3 className="text-white font-semibold">Subscriptions · devices</h3>
+            <p className="text-white/60 text-xs">
+              Per-subscription device limit, counted by unique HWIDs across the user's whole
+              subscription. Off by default — devices aren't limited and the device card on the
+              subscription page is hidden.
+            </p>
+            <div className="space-y-3">
+              <Switch
+                checked={deviceDraft.enabled}
+                onChange={(e) => setDeviceDraft((d) => ({ ...d, enabled: e.target.checked }))}
+                label="Limit devices per subscription"
+              />
+              {deviceDraft.enabled && (
+                <Field
+                  label="Device limit (0 = unlimited)"
+                  value={String(deviceDraft.perUser)}
+                  onChange={(v) =>
+                    setDeviceDraft((d) => ({ ...d, perUser: Number(v.replace(/\D/g, '')) || 0 }))
+                  }
+                />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => saveDevices.mutate()}
+                disabled={saveDevices.isPending}
+                className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+              >
+                {saveDevices.isPending ? 'Saving…' : 'Save'}
+              </button>
+              {deviceSavedAt && Date.now() - deviceSavedAt < 3000 && (
+                <span className="text-emerald-300 text-sm">Saved.</span>
+              )}
+            </div>
+          </section>
         </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => save.mutate()}
-            disabled={save.isPending}
-            className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
-          >
-            {save.isPending ? 'Saving…' : 'Save'}
-          </button>
-          {savedAt && Date.now() - savedAt < 3000 && (
-            <span className="text-emerald-300 text-sm">Saved.</span>
-          )}
-        </div>
-      </section>
+        <div className="space-y-6">
+          <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-4">
+            <h3 className="text-white font-semibold">YooKassa</h3>
+            <div className="space-y-3">
+              <Field
+                label="Shop ID"
+                value={draft.yookassa_shop_id}
+                onChange={(v) => setDraft({ ...draft, yookassa_shop_id: v })}
+              />
+              <SecretField
+                label="Secret key"
+                value={draft.yookassa_secret_key}
+                onChange={(v) => setDraft({ ...draft, yookassa_secret_key: v })}
+              />
+              <Field
+                label="Return URL"
+                value={draft.yookassa_return_url}
+                placeholder="https://t.me/your_bot?start=paid"
+                onChange={(v) => setDraft({ ...draft, yookassa_return_url: v })}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => save.mutate()}
+                disabled={save.isPending}
+                className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+              >
+                {save.isPending ? 'Saving…' : 'Save'}
+              </button>
+              {savedAt && Date.now() - savedAt < 3000 && (
+                <span className="text-emerald-300 text-sm">Saved.</span>
+              )}
+            </div>
+          </section>
 
-      <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-3">
-        <div className="flex items-baseline justify-between gap-3">
-          <h3 className="text-white font-semibold">Bot service token</h3>
-          <span className="text-xs text-white/40">
-            {data.has_bot_service_token ? (
-              <span className="text-emerald-300">configured</span>
-            ) : (
-              <span className="text-amber-300">not set</span>
-            )}
-          </span>
+          <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-white font-semibold">Bot service token</h3>
+              <span className="text-xs text-white/40">
+                {data.has_bot_service_token ? (
+                  <span className="text-emerald-300">configured</span>
+                ) : (
+                  <span className="text-amber-300">not set</span>
+                )}
+              </span>
+            </div>
+            <p className="text-white/60 text-sm">
+              The bot uses this token to call backend endpoints. Regenerating invalidates the old
+              one immediately — update <code>BOT_SERVICE_TOKEN</code> in the bot config after
+              rotation.
+            </p>
+            <SecretView value={data.bot_service_token || ''} placeholder="not set" />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() =>
+                  data.has_bot_service_token ? setRotateConfirmOpen(true) : rotate.mutate()
+                }
+                disabled={rotate.isPending}
+                className="inline-flex items-center gap-2 rounded-xl bg-rose-500/20 px-4 py-2.5 text-sm font-medium text-rose-200 transition-colors hover:bg-rose-500/30 focus:outline-none focus:ring-2 focus:ring-rose-500/50 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4 ${rotate.isPending ? 'animate-spin' : ''}`} />
+                {rotate.isPending
+                  ? 'Regenerating…'
+                  : data.has_bot_service_token
+                    ? 'Regenerate token'
+                    : 'Generate token'}
+              </button>
+              {rotatedAt && Date.now() - rotatedAt < 5000 && (
+                <span className="text-emerald-300 text-sm">
+                  New token generated — copy it and update the bot config.
+                </span>
+              )}
+            </div>
+          </section>
         </div>
-        <p className="text-white/60 text-sm">
-          The bot uses this token to call backend endpoints. Regenerating invalidates the old one
-          immediately — update <code>BOT_SERVICE_TOKEN</code> in the bot config after rotation.
-        </p>
-        <SecretView value={data.bot_service_token || ''} placeholder="not set" />
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() =>
-              data.has_bot_service_token ? setRotateConfirmOpen(true) : rotate.mutate()
-            }
-            disabled={rotate.isPending}
-            className="inline-flex items-center gap-2 rounded-xl bg-rose-500/20 px-4 py-2.5 text-sm font-medium text-rose-200 transition-colors hover:bg-rose-500/30 focus:outline-none focus:ring-2 focus:ring-rose-500/50 disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${rotate.isPending ? 'animate-spin' : ''}`} />
-            {rotate.isPending
-              ? 'Regenerating…'
-              : data.has_bot_service_token
-                ? 'Regenerate token'
-                : 'Generate token'}
-          </button>
-          {rotatedAt && Date.now() - rotatedAt < 5000 && (
-            <span className="text-emerald-300 text-sm">
-              New token generated — copy it and update the bot config.
-            </span>
-          )}
-        </div>
-      </section>
+      </div>
 
       <ConfirmationModal
         isOpen={rotateConfirmOpen}
@@ -226,7 +288,7 @@ export function SettingsTab() {
         confirmVariant="danger"
         isLoading={rotate.isPending}
       />
-    </div>
+    </>
   );
 }
 

@@ -13,6 +13,7 @@ from app.models import Client
 logger = logging.getLogger(__name__)
 
 KINDS = ("v2ray", "clash", "singbox")
+AGG_KINDS = ("u-v2ray", "u-clash", "u-singbox")
 TTL = int(os.getenv("SUB_CACHE_TTL_SECONDS", "60") or "60")
 _warned = False
 
@@ -90,5 +91,24 @@ def invalidate_all_for_inbound(inbound_tag):
                 chunk = []
         if chunk:
             r.delete(*chunk)
+    except Exception as e:
+        _warn_once(e)
+
+
+def invalidate_user_aggregate(telegram_id):
+    """Drop cached aggregated subscription for a telegram user (by their sub_token)."""
+    if not telegram_id:
+        return
+    from app.models import TelegramUser
+
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        row = TelegramUser.query.filter_by(telegram_id=telegram_id).with_entities(TelegramUser.sub_token).first()
+        token = row[0] if row else None
+        if not token:
+            return
+        r.delete(*[_key(k, token) for k in AGG_KINDS])
     except Exception as e:
         _warn_once(e)

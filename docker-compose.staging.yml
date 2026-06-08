@@ -75,6 +75,7 @@ services:
       - GRPC_DNS_RESOLVER=native
       - PYTHONUNBUFFERED=1
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - SUB_DOMAIN=${SUB_DOMAIN:-}
       - PANEL_USER=${PANEL_ADMIN_USER:-admin}
       - PANEL_PASSWORD=${PANEL_ADMIN_PASSWORD:?PANEL_ADMIN_PASSWORD is required}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
@@ -136,9 +137,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"
     volumes:
-      - ./caddy/caddy.json:/etc/caddy/caddy.json:ro
+      - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
       - ./certs:/root/cert:ro
       - caddy_data:/data
       - caddy_config:/config
@@ -146,6 +146,7 @@ services:
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
       - PROXY_DOMAIN=${PROXY_DOMAIN:?PROXY_DOMAIN is required}
+      - SUB_DOMAIN=${SUB_DOMAIN:-}
     env_file:
       - .env
     depends_on:

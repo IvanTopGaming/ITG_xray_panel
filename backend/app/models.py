@@ -1,4 +1,6 @@
 import json
+import uuid
+
 from .extensions import db
 
 
@@ -373,6 +375,13 @@ class TelegramUser(db.Model):
         onupdate=db.func.current_timestamp(),
     )
     note = db.Column(db.String(255), nullable=True)
+    sub_token = db.Column(
+        db.String(36),
+        unique=True,
+        nullable=True,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
 
 
 class NotificationLog(db.Model):

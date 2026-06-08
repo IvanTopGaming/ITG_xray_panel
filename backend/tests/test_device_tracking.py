@@ -8,8 +8,8 @@ from app.models import Client, ClientDevice, Inbound
 from app.services.device_tracking import device_gate, list_devices, revoke_device
 
 
-def _make_inbound(db, *, tag="DE-vless", device_limit=0):
-    inbound = Inbound(tag=tag, protocol="vless", port=10001, stream_settings="{}", device_limit=device_limit)
+def _make_inbound(db, *, tag="DE-vless", device_limit=0, port=10001):
+    inbound = Inbound(tag=tag, protocol="vless", port=port, stream_settings="{}", device_limit=device_limit)
     db.session.add(inbound)
     db.session.flush()
     return inbound
@@ -219,3 +219,95 @@ def test_device_gate_no_hwid_unlimited_returns_ok(app, db):
 
     assert state == "ok"
     assert headers == {}
+
+
+# ---------- user_device_gate ----------
+
+
+def _enable_user_device_limit(db, limit):
+    from app.models import SystemSetting
+
+    db.session.add(SystemSetting(key="device_limit_enabled", value="true"))
+    db.session.add(SystemSetting(key="device_limit_per_user", value=str(limit)))
+    db.session.commit()
+
+
+def test_user_gate_off_passes(app, db):
+    from app.services.device_tracking import user_device_gate
+
+    _make_inbound(db)
+    _make_client(db, telegram_id=70)
+    db.session.commit()
+    state, _ = user_device_gate(70, {"x-hwid": "dev1"})
+    assert state == "ok"
+
+
+def test_user_gate_no_hwid_with_limit_unsupported(app, db):
+    from app.services.device_tracking import user_device_gate
+
+    _make_inbound(db)
+    _make_client(db, telegram_id=71)
+    _enable_user_device_limit(db, 2)
+    state, hdrs = user_device_gate(71, {"x-hwid": ""})
+    assert state == "unsupported"
+    assert hdrs.get("x-hwid-not-supported") == "true"
+
+
+def test_user_gate_registers_then_touches(app, db):
+    from app.models import ClientDevice
+    from app.services.device_tracking import user_device_gate
+
+    _make_inbound(db)
+    c = _make_client(db, telegram_id=72)
+    _enable_user_device_limit(db, 2)
+    s1, _ = user_device_gate(72, {"x-hwid": "devA"})
+    assert s1 == "ok"
+    assert ClientDevice.query.filter_by(client_id=c.id, hwid="devA").count() == 1
+    s2, _ = user_device_gate(72, {"x-hwid": "devA"})
+    assert s2 == "ok"
+    assert ClientDevice.query.filter_by(hwid="devA").count() == 1
+
+
+def test_user_gate_blocks_over_limit(app, db):
+    from app.services.device_tracking import user_device_gate
+
+    _make_inbound(db)
+    _make_client(db, telegram_id=73)
+    _enable_user_device_limit(db, 1)
+    assert user_device_gate(73, {"x-hwid": "devA"})[0] == "ok"
+    state, hdrs = user_device_gate(73, {"x-hwid": "devB"})
+    assert state == "limit"
+    assert hdrs.get("x-hwid-max-devices-reached") == "true"
+
+
+def test_user_gate_counts_across_multiple_keys(app, db):
+    from app.services.device_tracking import user_device_gate
+
+    _make_inbound(db, tag="DE-vless")
+    _make_inbound(db, tag="NL-vless", port=10002)
+    _make_client(db, inbound_tag="DE-vless", telegram_id=74)
+    _make_client(db, inbound_tag="NL-vless", telegram_id=74)
+    _enable_user_device_limit(db, 1)
+    assert user_device_gate(74, {"x-hwid": "devA"})[0] == "ok"
+    assert user_device_gate(74, {"x-hwid": "devB"})[0] == "limit"
+
+
+# ---------- subscription_device_settings ----------
+
+
+def test_subscription_device_settings_defaults(app, db):
+    from app.services.device_tracking import subscription_device_settings
+
+    enabled, limit = subscription_device_settings()
+    assert enabled is False and limit == 0
+
+
+def test_subscription_device_settings_reads_values(app, db):
+    from app.models import SystemSetting
+    from app.services.device_tracking import subscription_device_settings
+
+    db.session.add(SystemSetting(key="device_limit_enabled", value="true"))
+    db.session.add(SystemSetting(key="device_limit_per_user", value="4"))
+    db.session.commit()
+    enabled, limit = subscription_device_settings()
+    assert enabled is True and limit == 4

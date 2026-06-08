@@ -140,6 +140,7 @@ def _make_client(inbound_tag="vless-in", email="alice", client_id=None, **kwargs
         enable=kwargs.get("enable", True),
         reset_day=kwargs.get("reset_day", 0),
         flow=kwargs.get("flow", "xtls-rprx-vision"),
+        telegram_id=kwargs.get("telegram_id"),
     )
     db.session.add(c)
     db.session.commit()
@@ -185,6 +186,28 @@ class TestGetInbounds:
         _make_inbound(tag="labeled", port=9999, label="Germany VPN")
         resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
         assert resp.get_json()[0]["label"] == "Germany VPN"
+
+    def test_client_sub_url_exposed(self, app, client, auth_headers, monkeypatch):
+        """A client with a telegram_id whose TelegramUser has a sub_token gets a
+        sub_url pointing at the aggregated /api/sub/u/<token> endpoint; a client
+        without a telegram_id gets sub_url=None."""
+        from app.models import TelegramUser
+
+        monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
+        monkeypatch.delenv("SUB_DOMAIN", raising=False)
+
+        ib = _make_inbound()
+        _make_client(inbound_tag=ib.tag, email="with-tg", telegram_id=555)
+        _make_client(inbound_tag=ib.tag, email="no-tg")
+        db.session.add(TelegramUser(telegram_id=555, sub_token="someToken"))
+        db.session.commit()
+
+        resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
+        assert resp.status_code == 200
+        clients = resp.get_json()[0]["settings"]["clients"]
+        by_email = {c["email"]: c for c in clients}
+        assert by_email["with-tg"]["sub_url"].endswith("/api/sub/u/someToken")
+        assert by_email["no-tg"]["sub_url"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ export interface Client {
   tariff_id?: number | null; // set when client was provisioned via a tariff
   panel_id?: number | null; // set on the bot user drawer when client lives on a linked panel
   panel_name?: string;
+  sub_url?: string | null; // aggregated subscription URL when tied to a Telegram user; null otherwise
 }
 
 export interface ClientDevice {
@@ -38,7 +39,7 @@ export interface ClientDevice {
   model: string;
   first_seen: number;
   last_seen: number;
-  // Admin-only — present on /api/clients/<id>/devices, absent on /api/sub/<id>/devices
+  // Admin-only — present on /api/clients/<id>/devices
   hwid?: string;
   user_agent?: string;
   request_ip?: string;
@@ -321,6 +322,8 @@ export interface BotSettings {
   telegram_proxy_url: string;
   display_timezone: string;
   bot_config_version: number;
+  device_limit_enabled: boolean;
+  device_limit_per_user: number;
 }
 
 export interface BotSettingsUpdate {
@@ -331,4 +334,6 @@ export interface BotSettingsUpdate {
   admin_ids?: number[];
   telegram_proxy_url?: string;
   display_timezone?: string;
+  device_limit_enabled?: boolean;
+  device_limit_per_user?: number;
 }

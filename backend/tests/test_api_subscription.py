@@ -256,42 +256,28 @@ class TestContentDisposition:
 # ── Tests: browser landing page ──────────────────────────────────────────
 
 
-class TestBrowserLandingPage:
-    """When User-Agent looks like a browser, render an HTML landing page."""
+class TestBrowserGetsConfig:
+    """Variant A: the per-client endpoint serves config to everyone (no HTML page)."""
 
-    def test_returns_html_for_browser_ua(self, client, seed_vless):
+    def test_browser_ua_gets_config_not_page(self, client, seed_vless):
         with (
             patch(_PATCH_PANEL, return_value=None),
-            patch("app.services.device_tracking.effective_device_limit", return_value=0),
-            patch("app.services.device_tracking.list_devices", return_value=[]),
+            patch(_PATCH_DEVICE_GATE, side_effect=_device_gate_ok),
+            patch(_PATCH_SUB_CACHE_GET, return_value=None),
+            patch(_PATCH_SUB_CACHE_SET),
         ):
             resp = client.get(f"/api/sub/{seed_vless}", headers=_browser_ua())
-
         assert resp.status_code == 200
-        assert "text/html" in resp.content_type
-        body = resp.data.decode("utf-8")
-        assert "<html" in body
-        assert "alice" in body  # client email shown on the page
+        assert "text/html" not in resp.content_type
+        import base64 as _b64
 
-    def test_browser_returns_404_for_unknown_uuid(self, client):
+        assert "vless://" in _b64.b64decode(resp.data).decode("utf-8")
+
+    def test_browser_unknown_uuid_404(self, client):
         unknown = "99999999-9999-9999-9999-999999999999"
         with patch(_PATCH_PANEL, return_value=None):
             resp = client.get(f"/api/sub/{unknown}", headers=_browser_ua())
-
         assert resp.status_code == 404
-
-    def test_browser_shows_disabled_client(self, client, seed_disabled):
-        """Disabled clients still render a page (with a Disabled badge)."""
-        with (
-            patch(_PATCH_PANEL, return_value=None),
-            patch("app.services.device_tracking.effective_device_limit", return_value=0),
-            patch("app.services.device_tracking.list_devices", return_value=[]),
-        ):
-            resp = client.get(f"/api/sub/{seed_disabled}", headers=_browser_ua())
-
-        assert resp.status_code == 200
-        body = resp.data.decode("utf-8")
-        assert "Disabled" in body
 
 
 # ── Tests: Clash format ──────────────────────────────────────────────────

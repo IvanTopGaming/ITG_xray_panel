@@ -24,3 +24,26 @@ def test_lang_picker_button_keys_seeded():
     ru_btn = data.get("lang_picker.button.ru", {}).get("ru", "")
     assert "English" in en_btn
     assert "Русский" in ru_btn
+
+
+def test_new_subscription_page_keys_present_both_langs():
+    data = _load_defaults()
+    required = [
+        "sub.page.title",
+        "sub.page.link_header",
+        "sub.page.copy_hint",
+        "sub.page.url_helper",
+        "sub.page.no_url",
+        "sub.actions.open_page",
+        "sub.actions.show_keys",
+    ]
+    for key in required:
+        assert key in data, f"missing key {key}"
+        assert data[key].get("ru"), f"{key} missing ru"
+        assert data[key].get("en"), f"{key} missing en"
+
+
+def test_bot_texts_version_bumped_to_17():
+    from db_migration import CURRENT_BOT_TEXTS_VERSION
+
+    assert CURRENT_BOT_TEXTS_VERSION == 17

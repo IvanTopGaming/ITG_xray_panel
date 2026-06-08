@@ -137,3 +137,47 @@ def test_put_settings_does_not_overwrite_secret_with_empty_string(app, client, a
     with app.app_context():
         row = SystemSetting.query.filter_by(key="yookassa_secret_key").first()
         assert row.value == "keep-me"
+
+
+def test_device_settings_round_trip(app, client, admin_token):
+    resp = client.put(
+        "/api/bot/settings",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"device_limit_enabled": True, "device_limit_per_user": 3},
+    )
+    assert resp.status_code == 200
+    got = client.get("/api/bot/settings", headers={"Authorization": f"Bearer {admin_token}"}).get_json()
+    assert got["device_limit_enabled"] is True
+    assert got["device_limit_per_user"] == 3
+
+
+def test_device_settings_disable_and_zero_persist(app, client, admin_token):
+    client.put(
+        "/api/bot/settings",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"device_limit_enabled": True, "device_limit_per_user": 5},
+    )
+    resp = client.put(
+        "/api/bot/settings",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"device_limit_enabled": False, "device_limit_per_user": 0},
+    )
+    assert resp.status_code == 200
+    got = client.get("/api/bot/settings", headers={"Authorization": f"Bearer {admin_token}"}).get_json()
+    assert got["device_limit_enabled"] is False
+    assert got["device_limit_per_user"] == 0
+
+
+def test_device_limit_per_user_rejects_negative(app, client, admin_token):
+    resp = client.put(
+        "/api/bot/settings",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"device_limit_per_user": -1},
+    )
+    assert resp.status_code == 400
+
+
+def test_device_settings_defaults_when_unset(app, client, admin_token):
+    got = client.get("/api/bot/settings", headers={"Authorization": f"Bearer {admin_token}"}).get_json()
+    assert got["device_limit_enabled"] is False
+    assert got["device_limit_per_user"] == 0

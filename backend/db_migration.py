@@ -1,10 +1,11 @@
 import json
 import os
 import sqlite3
+import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 17
-CURRENT_BOT_TEXTS_VERSION = 16
+CURRENT_DB_VERSION = 18
+CURRENT_BOT_TEXTS_VERSION = 17
 
 # Keys removed from bot_texts_defaults.yaml in a past cleanup — purge orphan
 # bot_text rows on the next force-reseed so they stop appearing in the panel's
@@ -25,6 +26,7 @@ _REMOVED_BOT_TEXT_KEYS = (
     "menu.settings",
     "settings.language",
     "settings.language_changed",
+    "sub.page.url_label",
     "tariff.button.buy",
     "tariff.button.renew",
     "tariff.unlimited_label",
@@ -572,6 +574,8 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("payment", "message_id", "INTEGER"),
         # Panel Federation — tariff item linked to a specific remote panel
         ("tariff_item", "panel_id", "INTEGER REFERENCES linked_panel(id)"),
+        # Subscription token — keys the aggregated /api/sub/u/<token> endpoint
+        ("telegram_user", "sub_token", "VARCHAR(36)"),
     ]
 
     for table_name, column_name, spec in schema_patches:
@@ -579,6 +583,26 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
             changed += 1
 
     return changed
+
+
+def _backfill_sub_tokens(cursor: sqlite3.Cursor) -> int:
+    """Generate a unique sub_token for every telegram_user row missing one,
+    and ensure the unique index. Idempotent — only NULL/empty tokens are filled."""
+    if not _table_exists(cursor, "telegram_user"):
+        return 0
+    if not _column_exists(cursor, "telegram_user", "sub_token"):
+        return 0
+
+    cursor.execute("SELECT telegram_id FROM telegram_user WHERE sub_token IS NULL OR sub_token = ''")
+    rows = [r[0] for r in cursor.fetchall()]
+    for tg_id in rows:
+        cursor.execute(
+            "UPDATE telegram_user SET sub_token = ? WHERE telegram_id = ?",
+            (str(uuid.uuid4()), tg_id),
+        )
+
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_telegram_user_sub_token ON telegram_user(sub_token)")
+    return len(rows)
 
 
 def _cleanup_legacy_inbounds(cursor: sqlite3.Cursor) -> Tuple[int, int]:
@@ -728,6 +752,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         bot_texts_seeded = _seed_bot_texts(cursor)
         bot_texts_force_reseeded = _maybe_force_reseed_bot_texts(cursor)
         schema_changes = _ensure_schema_columns(cursor)
+        sub_tokens_backfilled = _backfill_sub_tokens(cursor)
         removed_legacy_inbounds, normalized_streams = _cleanup_legacy_inbounds(cursor)
         fixed_rows = _apply_data_fixups(cursor)
 
@@ -749,6 +774,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "bot_texts_seeded": bot_texts_seeded,
             "bot_texts_force_reseeded": bot_texts_force_reseeded,
             "schema_changes": schema_changes,
+            "sub_tokens_backfilled": sub_tokens_backfilled,
             "removed_legacy_inbounds": removed_legacy_inbounds,
             "normalized_streams": normalized_streams,
             "fixed_rows": fixed_rows,
@@ -764,6 +790,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             or bot_texts_seeded > 0
             or bot_texts_force_reseeded
             or schema_changes > 0
+            or sub_tokens_backfilled > 0
             or removed_legacy_inbounds > 0
             or normalized_streams > 0
             or fixed_rows > 0

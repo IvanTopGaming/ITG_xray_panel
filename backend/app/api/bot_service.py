@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import time
+import uuid
 
 from flask import Blueprint, jsonify, request
 
@@ -139,6 +140,8 @@ def upsert_user():
         # Refresh username but never overwrite stored language preference.
         user.username = username
         user.last_seen_at = datetime.utcnow()
+    if not getattr(user, "sub_token", None):
+        user.sub_token = str(uuid.uuid4())
     db.session.commit()
     return jsonify(_serialize_telegram_user(user))
 
@@ -221,6 +224,12 @@ def get_user_state(tg_id):
     else:
         expires_at_ms = None
 
+    # Single source of truth — identical to the URL the admin Dashboard shows and
+    # the bot's "My subscription" screen opens (SUB_DOMAIN, else PANEL_DOMAIN+secret).
+    from app.api.subscription import build_aggregate_sub_url
+
+    sub_url = build_aggregate_sub_url(user.sub_token) if user else None
+
     return jsonify(
         {
             "telegram_id": tg_id,
@@ -231,6 +240,7 @@ def get_user_state(tg_id):
             "blocked": user.blocked if user else False,
             "clients": clients_data,
             "expires_at_ms": expires_at_ms,
+            "sub_url": sub_url,
         }
     )
 

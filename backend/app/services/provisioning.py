@@ -260,6 +260,7 @@ def apply_tariff_for_user(
 
     db.session.commit()
     _sync_after_provision(new_clients, extended_clients_with_state)
+    sub_cache.invalidate_user_aggregate(telegram_id)
     logger.info(
         "provisioned tg=%s tariff=%s source=%s new=%d extended=%d",
         telegram_id,

@@ -39,7 +39,7 @@ gen_secret() {
 
 echo "Downloading deployment files..."
 download_file "docker-compose.prod.yml" "docker-compose.yml"
-download_file "caddy/caddy.json" "caddy/caddy.json"
+download_file "caddy/routes.yaml" "caddy/routes.yaml"
 download_file "scripts/generate_certs.sh" "scripts/generate_certs.sh"
 download_file ".env.example" ".env.example"
 chmod +x scripts/generate_certs.sh
@@ -70,15 +70,17 @@ fi
 cat <<EOM
 
 ${GREEN}Done.${NC} Next steps:
-  1. Edit .env — set PANEL_DOMAIN and CORS_ORIGINS to your real domain.
+  1. Edit .env — set PANEL_DOMAIN, SUB_DOMAIN and CORS_ORIGINS, and point their DNS here.
   2. docker compose pull
-  3. docker compose up -d backend frontend caddy redis xray socket-proxy
-       (everything except the bot — it needs BOT_SERVICE_TOKEN first)
-  4. Open https://<PANEL_DOMAIN>/<PANEL_SECRET_PATH>/, log in as admin.
-  5. Panel → Bot → Settings:
+  3. docker compose up -d backend frontend redis xray socket-proxy
+       (everything except caddy and the bot)
+  4. bash scripts/generate_certs.sh
+       Issues the TLS cert on :80 and starts caddy. Needs certbot + DNS pointing here.
+  5. Open https://<PANEL_DOMAIN>/<PANEL_SECRET_PATH>/, log in as admin.
+  6. Panel → Bot → Settings:
        · Rotate BOT_SERVICE_TOKEN → copy the new value into .env
        · Set bot_token, admin Telegram IDs, timezone
        · (Optional) Set YooKassa shop_id + secret_key for paid checkout
-  6. docker compose up -d bot
-  7. docker compose logs -f backend bot
+  7. docker compose up -d bot
+  8. docker compose logs -f backend bot
 EOM

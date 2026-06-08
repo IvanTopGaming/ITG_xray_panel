@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ITG Xray Panel is a full-stack VPN/proxy management panel for the [Xray-core](https://github.com/XTLS/Xray-core) proxy platform. It manages inbound/outbound proxy configurations, user accounts with traffic limits, routing rules, real-time traffic statistics, and a **YooKassa-backed billing system** with a fully customisable Telegram bot.
+ITG Xray Panel is a full-stack VPN/proxy management panel for the [Xray-core](https://github.com/XTLS/Xray-core) proxy platform. It manages inbound/outbound proxy configurations, user accounts with traffic limits, routing rules, real-time traffic statistics, and a **YooKassa-backed billing system** with a fully customisable Telegram bot. A master panel can **federate** any number of remote panels.
 
-**Stack:** Python 3.12 · Flask · gunicorn+gevent · SQLAlchemy · SQLite · Xray-core via gRPC · React + TypeScript + Vite · Aiogram 3 · Redis · Caddy · Docker Compose
+**Stack:** Python 3.12 · Flask · gunicorn+gevent · SQLAlchemy · SQLite · Xray-core via gRPC · React + TypeScript + Vite · Aiogram 3 · Redis · Caddy (caddy-l4 SNI routing) · Docker Compose
 
 ## Commands
 
@@ -19,6 +19,7 @@ docker compose -f docker-compose.prod.yml up   # Production
 docker compose build frontend && docker compose up -d frontend
 docker compose build backend  && docker compose up -d backend
 docker compose build bot      && docker compose up -d bot
+docker compose build caddy    && docker compose up -d caddy
 ```
 
 ### Backend (Python/Flask)
@@ -32,7 +33,7 @@ ruff check backend/
 ruff format backend/           # auto-fix formatting
 ruff format --check backend/   # CI mode — no changes, exit 1 if dirty
 
-pytest tests/                  # 760+ unit + integration tests
+pytest tests/                  # 835+ unit + integration tests
 ```
 
 `backend/tests/conftest.py` stubs gRPC modules in `sys.modules` before importing the app so tests run on a dev checkout without needing the protobuf bundle that ships only inside the Docker image.
@@ -60,6 +61,18 @@ ruff format tg_bot/
 ruff format --check tg_bot/
 ```
 
+### Caddy / caddygen (Go)
+```bash
+cd caddy/caddygen && go test ./...   # tests for the routes.yaml → Caddy-JSON generator
+```
+
+### Certificates & demo data
+```bash
+bash scripts/generate_certs.sh        # issue/renew the LE SAN cert (stops caddy, certbot --standalone, installs into ./certs, restarts caddy)
+bash scripts/generate_local_cert.sh   # self-signed cert for local domains
+```
+`scripts/seed_demo.py` + `scripts/seed_bot_demo.py` populate realistic demo inbounds/users/tariffs/payments/traffic (run them where the app is importable — e.g. copied into the backend container; idempotent, tagged `[demo]`). Handy for screenshots and manual testing.
+
 ## Architecture
 
 ### Docker Services
@@ -68,17 +81,17 @@ ruff format --check tg_bot/
 | `xray` | Xray-core proxy engine |
 | `backend` | Flask API + APScheduler crons (gunicorn + gevent, single worker) |
 | `frontend` | React app served by Nginx |
-| `caddy` | Reverse proxy (ports 80/443), automatic TLS, decoy masquerade |
+| `caddy` | Reverse proxy — caddygen-built native JSON, SNI routing on `:443` (caddy-l4), `:80→:443` redirect, TLS from mounted certs, decoy masquerade |
 | `redis` | Rate limiting + sub-cache + bot pubsub channel |
 | `socket-proxy` | Restricts Docker socket access to specific API ops |
-| `bot` | Telegram bot (Aiogram, asyncio) |
+| `bot` | Telegram bot (Aiogram, asyncio) — runs on the master only |
 
-Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only one with internet egress) plus two `internal: true` segments: `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy). The split (formerly a single `control-net`) keeps the Docker-socket proxy reachable only by `backend` and denies internet to both `socket-proxy` and `redis`. Key volumes: `shared_config:/etc/xray`, `xray_logs:/var/log/xray`, `./db_data:/app/db`.
+Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only one with internet egress) plus two `internal: true` segments: `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy). The split (formerly a single `control-net`) keeps the Docker-socket proxy reachable only by `backend` and denies internet to both `socket-proxy` and `redis`. Key volumes: `shared_config:/etc/xray`, `xray_logs:/var/log/xray`, `./db_data:/app/db`, `./certs:/root/cert:ro`. Published ports on `caddy`: `80:80`, `443:443` (TCP only — there is no `443/udp` / HTTP-3).
 
 ### Backend (`backend/`)
 - `app/__init__.py` — Flask app factory; registers blueprints, extensions, ProxyFix, APScheduler jobs
-- `app/models.py` — SQLAlchemy models (20 total). Core: `Admin`, `Inbound`, `Client`, `Outbound`, `RoutingProfile`, `Balancer`, `SystemSetting`, `TrafficSnapshot`, `DomainStat`, `LinkedPanel`, `FederationConfig`, `ClientDevice`. Billing/bot: `Tariff`, `TariffItem`, `UserTariffAccess`, `Payment`, `BotText`, `BotEvent`, `TelegramUser`, `NotificationLog`
-- `app/extensions.py` — Shared Flask extensions (db, migrate, APScheduler, Flask-Limiter)
+- `app/models.py` — SQLAlchemy models (20 total). Core: `Admin`, `Inbound`, `Client`, `Outbound`, `RoutingProfile`, `Balancer`, `SystemSetting`, `TrafficSnapshot`, `DomainStat`, `LinkedPanel`, `FederationConfig`, `ClientDevice`. Billing/bot: `Tariff`, `TariffItem`, `UserTariffAccess`, `Payment`, `BotText`, `BotEvent`, `TelegramUser`, `NotificationLog`. **FK enforcement is OFF** — `extensions.py` sets WAL/synchronous/busy_timeout/temp_store but **not** `PRAGMA foreign_keys=ON`, so FK constraints are advisory (deleting a parent leaves dangling child refs rather than cascading/erroring; e.g. `delete_tariff_permanent` can orphan `Client.tariff_id`).
+- `app/extensions.py` — Shared Flask extensions (db, migrate, APScheduler, Flask-Limiter, SQLite PRAGMAs)
 - `app/utils.py` — JWT helpers + auth decorators: `token_required` (admin JWT only), `bot_service_token_required` (bot service token only), `admin_or_bot_token_required` (accepts either), `federation_token_required` (validates federation token from linked panels), `admin_or_federation_token_required` (accepts admin JWT or federation token). The latter two support the Panel Federation system. `admin_or_bot_token_required` is used on `/api/inbound`, `/api/panels`, and most `/api/system` endpoints — **but NOT on `/api/backup` and `/api/restore`** which take admin-only after the ultrareview hardening.
 - `app/api/`
   - `auth` — login / logout
@@ -89,7 +102,7 @@ Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only on
 - `app/services/`
   - `xray.py` — generates Xray JSON config, gRPC user add/remove, traffic stats, log tailing. File lock `/etc/xray/config.lock` serializes concurrent writes
   - `stats.py` — traffic collection, limit enforcement, monthly counter reset (clears `traffic_*` `NotificationLog` rows so warnings re-arm)
-  - `panel_proxy.py` — Panel Federation HTTP client: `FederationClient` talks to linked panels, proxies user/inbound CRUD operations to remote panels based on `TariffItem.panel_id` routing
+  - `panel_proxy.py` — Panel Federation HTTP client: `FederationClient` talks to linked panels, proxies user/inbound CRUD operations to remote panels based on `TariffItem.panel_id` routing. `get_panel_snapshot` (cached, 60s TTL) vs `fetch_panel_snapshot_live` (live, no cache)
   - `sub_cache.py` — Redis-backed subscription response cache
   - `runtime_identity.py` — generates UUIDs / keys for protocols
   - `device_tracking.py` — HWID-aware device limit enforcement
@@ -114,24 +127,36 @@ Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only on
 - `lib/protocols.ts` — protocol + stream-settings definitions
 - `stores/` — Zustand stores for auth + log state
 
+### Caddy (`caddy/`)
+- `routes.yaml` — declarative per-SNI routes (the only hand-edited Caddy config). Fields: `match` (SNI host, `${ENV}` interpolated), `upstream` (`host:port`), `tls` (terminate vs raw passthrough), `only_paths` (path-prefix allowlist → 404, implies `tls`). A route whose `match` is empty after interpolation is **dropped** (so an empty `SUB_DOMAIN` drops the subscription route).
+- `caddygen/` — small Go program that reads `routes.yaml` + env and emits Caddy's **native JSON** (entrypoint runs `caddygen → caddy validate → caddy run`). See "TLS, Caddy & certificates" below.
+
 ### Telegram Bot (`tg_bot/`)
 - `main.py` — aiogram entry: bootstraps `runtime_config` → builds `Bot` → starts polling + bot-events consumer; on runtime change (token/proxy hot-swap) it stops polling, closes the old aiohttp session, builds a new `Bot`, and restarts polling **without** restarting the consumer (consumer holds a Bot-accessor closure, not a fixed ref)
 - `runtime_config.py` — polls `GET /api/bot/runtime-config` every 60s; emits a change event when bot_token / telegram_proxy_url shift
 - `backend_client.py` — thin async HTTP wrapper around `/bot-service/*` endpoints
 - `api_service.py` — multi-panel manager (`MultiPanelManager`); connects to the master panel via `BACKEND_API_URL`, routes user CRUD and subscription queries through the single master entry
 - `bot_events_consumer.py` — subscribes to Redis `bot:events`, dispatches `payment_*` / `access_*` / `expiry_notification` / `traffic_notification` / `texts_changed` / `user_*` events
-- `i18n.py` — `BotText` cache, `t(key, lang, **kwargs)` formatter
+- `i18n.py` — `BotText` cache, `t(key, lang, **kwargs)` formatter (missing key → `⟨key⟩`, falling back to the other language first)
 - `middleware.py` — `LangMiddleware`: per-user language lookup, cache, invalidation on `user_language_changed`
 - `handlers/admin.py`, `handlers/user.py`, `handlers/catalog.py` — message + callback handlers
 - `keyboards.py`, `states.py`, `utils.py` — UI builders, FSM states, helpers
 - `config.py` — env validation: `BACKEND_API_URL`, `BOT_SERVICE_TOKEN`, `BOT_LOG_LEVEL`
 
-The bot is **backend-client** (not standalone) — it has no local SQLite. All state (users, languages, notifications, payments) lives in the panel's `panel.db`.
+The bot is **backend-client** (not standalone) — it has no local SQLite. All state (users, languages, notifications, payments) lives in the panel's `panel.db`. **One Telegram token may only long-poll once**, so run the `bot` service against a single master; never start a second poller with the same token (it would 409 the first).
 
 ## Key Concepts
 
 ### Xray integration
 `xray.py` both writes the full JSON config to `/etc/xray/config.json` and manages live users via the Xray Handler/Stats gRPC API. Config regeneration and Xray restart happen together when inbounds/outbounds change. The file lock `/etc/xray/config.lock` serializes concurrent writers (request handlers + the scheduler). gRPC requires gevent-compatible setup: `grpc_gevent.init_gevent()` runs at app startup before any gRPC import; current pin `grpcio==1.66.2` on Python 3.12.
+
+### TLS, Caddy & certificates
+Caddy does **not** use automatic ACME. `caddy/caddygen/` generates Caddy's native JSON from `caddy/routes.yaml` at container start (`caddy validate` runs before `caddy run`, so a bad config fails fast). The generated config uses the **caddy-l4** layer4 app listening on `:443`, routing by **TLS SNI**:
+- `PROXY_DOMAIN` (decoy) → raw-TCP passthrough with PROXY-protocol to `xray:443`, so Xray sees the real TLS/REALITY handshake (masquerade).
+- `PANEL_DOMAIN` / `SUB_DOMAIN` → TLS terminated at Caddy, PROXY-protocol'd to a per-route loopback HTTP server (security headers + CSP, optional path filter) → `frontend:80` / `backend:5000`.
+- caddygen also emits a plain `:80` server that 308-redirects everything to https.
+
+Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted from `./certs`) for **all** terminated SNIs — a multi-domain deploy therefore needs a single **SAN** cert covering panel + sub. Issue/renew with `scripts/generate_certs.sh`: it stops Caddy (to free `:80`, which Caddy otherwise holds via the published port), runs `certbot certonly --standalone --expand` for `PANEL_DOMAIN` (+ `SUB_DOMAIN`), copies `fullchain.pem`/`privkey.pem` into `./certs`, and brings Caddy back (trap, even on failure). **Renewal is the same command, run manually** — there is no cron, and certbot's own timer can't bind `:80` while Caddy runs (and wouldn't propagate into `./certs` anyway). `scripts/generate_local_cert.sh` writes a self-signed cert for local domains. Both installers (`scripts/install_{dev,prod}.sh`) run a cert step **before** bringing Caddy up — Caddy won't start without `./certs/fullchain.pem`.
 
 ### Traffic enforcement
 `stats.py` polls per-user up/down via Xray gRPC every 10s, writes to `Client.up`/`down` and upserts hourly `TrafficSnapshot` rows. `check_limits` (60s) removes users that exceed limit or expiry. Monthly resets (per-client `reset_day`) zero the counters **and** delete that client's `traffic_*` `NotificationLog` rows so the next cycle's warnings can fire.
@@ -145,7 +170,7 @@ The bot is **backend-client** (not standalone) — it has no local SQLite. All s
 | `parse_logs` | 15s | Tails Xray access logs into `DomainStat` (skips bare IPs) |
 | `cleanup_stats` | 24h | Deletes `DomainStat` rows > 90d |
 | `poll_linked_panels` | 10s | Pings each enabled `LinkedPanel`, updates `status`/`last_poll`/`last_error` |
-| `auto_renew_free_users` | 15m | Re-provisions due `billing='free'` grants; pauses + emits `access_paused` on tariff archive/disable |
+| `auto_renew_free_users` | 15m | Re-provisions due `billing='free'` grants; pauses + emits `access_paused` on tariff archive/disable (does **not** force-disable clients — they lapse via their own `expiry_time`) |
 | `poll_pending_payments` | 30s | Webhook fallback; reconciles pending YooKassa payments older than 30s, younger than 24h |
 | `cleanup_old_payments` | 24h | Cancels `pending > 24h` (and publishes `payment_cancelled` so users find out); deletes terminal records `> 90d` |
 | `send_expiry_notifications` | 15m | 3d/1d/1h/expired warnings (dedup via `notification_log`, renew button shown only when tariff is still purchasable) |
@@ -186,20 +211,17 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
 ### Provisioning (`services/provisioning.py`)
 
 `apply_tariff_for_user(telegram_id, tariff, source)` is the **single gateway** for every grant path (admin grant, trial, paid webhook, free auto-renew). For each `TariffItem`:
-- If a `Client` already exists for the same (telegram_id, inbound_tag): extend it — bump `expiry_time`, reset `up/down/last_reset_time`, refresh `limit_bytes`, set `enable=True`, clear `traffic_*` `NotificationLog` rows (so the new cycle's warnings can fire)
-- Otherwise create a new `Client` with a unique email (`tg<id>_<inbound_tag>` or `_<hex6>` on collision)
+- If `item.panel_id` is set → `proxy_provision` to that linked panel (the user is created/extended remotely, not locally).
+- Else if a `Client` already exists for the same (telegram_id, inbound_tag): extend it — bump `expiry_time`, reset `up/down/last_reset_time`, refresh `limit_bytes`, set `enable=True`, clear `traffic_*` `NotificationLog` rows (so the new cycle's warnings can fire).
+- Otherwise create a new `Client` with a unique email (`tg<id>_<inbound_tag>` or `_<hex6>` on collision).
 
-Single `_sync_after_provision` call after the loop: regenerates Xray config, restarts container if needed, proxies the change to linked panels via `panel_proxy`, invalidates the Redis sub-cache.
+Single `_sync_after_provision` call after the loop: regenerates Xray config (or gRPC-patches for vless/vmess fast-path), restarts container if needed, and invalidates the Redis sub-cache. `backfill_tariff` idempotently ensures every active holder has a key on every tariff inbound (local + remote) without touching existing keys.
 
 ### Panel Federation
 
-The panel supports a *federation* model where a master panel manages remote *linked panels*. `LinkedPanel` rows store URL and a `federation_token` for mutual authentication. `FederationConfig` is a singleton row on the child side that stores the master link credentials.
+A master panel manages remote *linked panels*. `LinkedPanel` rows store URL + a `federation_token`; `FederationConfig` is a singleton on the child storing the master's credentials. The master proxies user/inbound CRUD to linked panels via `services/panel_proxy.py` (`FederationClient`). `TariffItem.panel_id` optionally routes a tariff item to a specific linked panel — provisioning then creates the user there instead of locally. `poll_linked_panels` (10s) health-polls each panel. Subscription links (`api/subscription.py`) can merge entries from linked panels visible to the requesting client (Redis-cached). Inbound CRUD endpoints accept admin JWT **and** federation tokens (`admin_or_federation_token_required`) so children can proxy operations back through the master.
 
-The master proxies user/inbound CRUD to linked panels via `services/panel_proxy.py` (`FederationClient`). `TariffItem.panel_id` optionally routes a tariff item to a specific linked panel — when set, provisioning creates the user on that remote panel instead of locally.
-
-The `poll_linked_panels` job (10s) pings each enabled `LinkedPanel` and updates `status`/`last_poll`/`last_error`. Subscription links (`api/subscription.py`) can merge entries from linked panels visible to the requesting client, cached in Redis.
-
-Inbound CRUD endpoints (`api/inbound.py`) accept both admin JWT and federation tokens via `admin_or_federation_token_required`, so linked panels can proxy operations back through the master.
+**Destructive user ops read a LIVE snapshot.** `block_user` / `unblock_user` / `revoke_tariff_from_user` in `bot_admin.py` enumerate the user's remote clients via `_remote_clients_by_telegram_id_live()` (which calls `fetch_panel_snapshot_live` per enabled panel), **not** the cached `get_panel_snapshot` — a stale/missing cache must never let a remote disable silently no-op. Panels that can't be reached are surfaced in the response's `panel_failures` (not skipped). `revoke_tariff_from_user` matches remote clients by the tariff's `(panel_id, inbound_tag)` items **and** `tariff_id` (mirroring the local match by `tariff_id`), so two tariffs sharing a remote inbound don't cross-disable. The read-only users UI still uses the cached `_remote_clients_by_telegram_id()`.
 
 ### Bulk user operations (cross-panel)
 
@@ -215,13 +237,13 @@ XTLS Vision (`xtls-rprx-vision`) is only valid on raw-TCP with TLS or REALITY �
 
 ### Bot event recovery buffer
 
-`services/bot_events.publish` writes a `BotEvent` row to SQLite *first*, then attempts `redis.publish('bot:events', …)`. On successful publish it sets `delivered_at = now`. The `replay_undelivered_bot_events` cron (60s) re-publishes any row older than 30 seconds with `delivered_at IS NULL`. Caveat: Redis `PUBLISH` succeeding with `subscriber_count=0` (e.g. bot is down) still marks `delivered_at` because we don't check the return code — this means the recovery buffer protects against Redis outages but not consumer outages. The current behavior is intentional (a temporary bot stop is the supported way to suppress a wave of grant notifications during bulk operations) but is worth keeping in mind.
+`services/bot_events.publish` writes a `BotEvent` row to SQLite *first*, then attempts `redis.publish('bot:events', …)`. On successful publish it sets `delivered_at = now`. The `replay_undelivered_bot_events` cron (60s) re-publishes any row older than 30 seconds with `delivered_at IS NULL`. Caveat: Redis `PUBLISH` succeeding with `subscriber_count=0` (e.g. bot is down) still marks `delivered_at` because we don't check the return code — the recovery buffer protects against Redis outages but **not** consumer outages. This is intentional (a temporary bot stop is the supported way to suppress a wave of grant notifications during bulk operations).
 
 ### Telegram user lifecycle
 
 - `TelegramUser` row is upserted on each `/start` via `POST /bot-service/users` (created with `language='ru'`, `language_chosen=False`, `blocked=False` by default)
 - User chooses RU/EN on first start → `language_chosen=True`
-- Admin can `block` a user (`POST /bot/users/<id>/block`): cancels all `UserTariffAccess` grants, disables all `Client` rows, **removes them from Xray runtime via gRPC for vless/vmess (otherwise triggers config regen + restart)**, and propagates the deletion to linked panels via `panel_proxy`. `unblock` only clears the flag — does **not** restore cancelled tariffs or re-enable clients.
+- Admin can `block` a user (`POST /bot/users/<id>/block`): cancels all `UserTariffAccess` grants, disables all local `Client` rows, **removes them from Xray runtime via gRPC for vless/vmess (otherwise triggers config regen + restart)**, and disables the user's remote clients on linked panels (via the live snapshot — see Panel Federation). `unblock` re-enables clients that still have tariff time (local + remote) but does **not** restore cancelled tariffs.
 - `client.telegram_id` is the link between Telegram users and Xray accounts; admin grants find the matching client by `(telegram_id, inbound_tag)` and extend in place, preserving UUIDs.
 
 ### Stream settings storage
@@ -231,7 +253,7 @@ Inbound stream settings are stored as a single JSON blob in `Inbound.stream_sett
 Protocol details live in `frontend/lib/protocols.ts` (UI-facing) and are serialized to JSON in backend models. Client IDs must be valid UUIDs for VLESS/VMess/Trojan, valid WireGuard private keys for WireGuard. Shadowsocks 2022 server/user passwords must be base64-encoded keys of the correct byte length (16 bytes for AES-128, 32 bytes for AES-256 and ChaCha20).
 
 ### Subscription links
-`api/subscription.py` serves `GET /api/sub/<uuid_str>` — UUID-keyed, so renaming `Client.email` does NOT break a user's existing app config. The response can merge entries from linked panels visible to the user. Cached in Redis with a configurable TTL (`subscription_update_interval_hours` SystemSetting).
+`api/subscription.py` serves `GET /api/sub/<uuid_str>` — UUID-keyed, so renaming `Client.email` does NOT break a user's existing app config. The response can merge entries from linked panels visible to the user. Cached in Redis with a configurable TTL (`subscription_update_interval_hours` SystemSetting). `build_aggregate_sub_url(token)` builds the link the bot/dashboard show: it **prefers `SUB_DOMAIN`** (`https://<SUB_DOMAIN>/api/sub/u/<token>`) and falls back to `PANEL_DOMAIN` + `PANEL_SECRET_PATH` when `SUB_DOMAIN` is empty. The env var must be present on the **backend** container for this to take effect.
 
 ### Custom Select component
 `components/ui/Select.tsx` renders a portal-based dropdown instead of a native `<select>`. It synthesizes a `React.ChangeEvent<HTMLSelectElement>` in its `onChange`. When used with react-hook-form, always spread `{...register('fieldName')}` so the `name` prop is passed — react-hook-form looks up the field by `event.target.name` and silently ignores the change if `name` is missing or empty.
@@ -240,23 +262,27 @@ Protocol details live in `frontend/lib/protocols.ts` (UI-facing) and are seriali
 On startup, `direct` (freedom) and `block` (blackhole) outbounds are auto-created if missing. These are always re-enabled if disabled — do not delete them.
 
 ### Database migrations
-`db_migration.py` is a custom migration system (not Flask-Migrate). Current schema version is **`17`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count.
+`db_migration.py` is a custom migration system (not Flask-Migrate). Current schema version is **`18`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count. When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
 
-Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 16`. Bumping it triggers a one-shot force-reseed at next startup — every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` (~74 keys × RU/EN) is upserted. **This overwrites admin-edited texts** if their key is in the YAML.
+Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 17`. A bump triggers a one-shot **force-reseed** (only when `stored < CURRENT`): it DELETEs the `_REMOVED_BOT_TEXT_KEYS` tuple (purging orphan rows for keys dropped from the YAML) and then upserts every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` (~74 keys × RU/EN), **overwriting admin-edited texts**. When you remove a key from the YAML, append it to `_REMOVED_BOT_TEXT_KEYS`.
 
-When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
+> **Reseed gotcha:** the purge/overwrite only fires when `stored < CURRENT`. An install already **at** the current number but with older content (e.g. a dev box that ran an unreleased build at the same version) is skipped — new keys still appear via the non-force `INSERT OR IGNORE` seed, but removed/changed keys don't. Coming from a real release baseline it's always clean; to force a clean reseed on such a dev box, set `system_setting.bot_texts_seeded_version` below CURRENT and restart the backend. To guarantee a reseed on *every* install regardless of prior unreleased numbers, bump strictly above the highest number any box has stored.
 
 ### Statistics storage
 `TrafficSnapshot` stores hourly traffic deltas per entity (user or inbound) **forever** — space is ~100 bytes × entities × 8760 hours/year, negligible for typical deployments. `DomainStat` stores daily domain hit counts and is pruned to 90 days. Both use SQLite `ON CONFLICT DO UPDATE` upserts via `literal_column()` + raw `text()` SQL — do not replace with ORM insert, it breaks atomicity.
 
 ### Secret path injection
-The frontend is served under `PANEL_SECRET_PATH`. At container startup, `frontend/entrypoint.sh` injects `window.__PANEL_BASE_URL__` into `index.html` and generates `nginx.conf` from `nginx.conf.template`. All traffic outside the secret path returns 404.
+The frontend is served under `PANEL_SECRET_PATH`. At container startup, `frontend/entrypoint.sh` injects `window.__PANEL_BASE_URL__` into `index.html` and generates `nginx.conf` from `nginx.conf.template` (which proxies `/<secret>/api/` to `backend:5000`). All traffic outside the secret path returns 404.
 
 ### gevent + gRPC
 `grpc_gevent.init_gevent()` is called at app startup before any gRPC usage. The backend runs under gunicorn+gevent (single worker), so gRPC calls must be gevent-compatible. Current pin: `grpcio==1.66.2` on Python 3.12.
 
 ### ProxyFix
-Configured in `app/__init__.py` as `ProxyFix(app.wsgi_app, x_for=2, x_proto=1, x_host=1, x_prefix=1)`. **Heads-up:** with Caddy as the only reverse proxy this should arguably be `x_for=1`; the higher value means `request.remote_addr` can be influenced by an attacker-supplied left-most XFF entry through Caddy. The YooKassa webhook sidesteps this entirely — it does **not** rely on `remote_addr` or any XFF parsing, instead re-validating each notification against YooKassa's API (see Bot billing flow), so a spoofed source IP buys nothing. Prefer that same re-validation pattern for any new webhook-style endpoint.
+Configured in `app/__init__.py` as `ProxyFix(app.wsgi_app, x_for=2, x_proto=1, x_host=1, x_prefix=1)`. **`x_for=2` is NOT a clean candidate to drop to `x_for=1`** — the trusted-proxy hop count differs by path:
+- Panel API: client → Caddy → **Nginx** (`frontend`, which appends `X-Forwarded-For`) → backend = **2 hops**.
+- Subscription domain: client → Caddy → backend = **1 hop**.
+
+So `x_for=2` is correct for the panel path but lets the sub path's `remote_addr` (used by Flask-Limiter) be spoofed via a left-most XFF; flipping to `x_for=1` fixes the sub path but collapses every panel/admin `remote_addr` to Caddy's internal IP (one shared rate-limit bucket → a self-DoS vector). **The real fix is architectural:** route `/<secret>/api/*` straight to `backend` in caddygen (like the sub route) so every API path is 1 hop, then `x_for=1` is correct everywhere. Until then, leave `x_for=2`. The YooKassa webhook sidesteps the issue entirely — it re-validates against YooKassa's API rather than trusting `remote_addr`; prefer that pattern for any new webhook-style endpoint.
 
 ### Frontend tab/slider style
 All horizontal tab bars use a consistent pill style: container `bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05]`, active item is an absolutely-positioned `motion.div` with `layoutId` and `bg-gradient-to-br from-primary/25 to-violet-600/20 rounded-xl border border-white/[0.1] shadow-[0_0_12px_rgba(208,188,255,0.12)]`, spring transition `stiffness: 500, damping: 35`. Do not use plain CSS active classes for tab bars.
@@ -275,14 +301,14 @@ All checks must pass before code reaches `main`. Run locally before pushing:
 | Backend pytest | `cd backend && pytest tests/ -q` |
 | Dockerfile lint | hadolint (runs in CI only) |
 
-`ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails.
+`ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. The `caddygen` Go tests (`cd caddy/caddygen && go test ./...`) are not in CI but should pass after caddygen changes. markdownlint is **not** run in CI.
 
 CI **runs pytest** (the `Backend pytest` job runs `pytest tests/ -q`) — a test failure turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
 
 ## Git Workflow
 
 ### Feature branches — always
-All work on service code (`backend/`, `frontend/`, `tg_bot/`, `caddy/`) goes in a feature branch, never directly on `main`.
+All work on service code (`backend/`, `frontend/`, `tg_bot/`, `caddy/`) goes in a feature branch (or the long-running `dev` integration branch), never directly on `main`.
 
 ```bash
 git checkout -b feat/my-feature
@@ -296,7 +322,7 @@ git branch -D feat/my-feature   # -D because squash means the branch is "unmerge
 
 `--squash` collapses all branch commits into one staged diff. Write one clean commit message, push once — CI runs once, one commit appears in `main`.
 
-**Committing directly to `main` is only acceptable for CI/config-only changes** (`.github/`, `scripts/`, `CLAUDE.md`, `docker-compose*.yml`) that don't touch service source files and therefore don't trigger a release.
+**Committing directly to `main` is only acceptable for CI/config-only changes** (`.github/`, `scripts/`, `CLAUDE.md`, `README.md`, `docker-compose*.yml`) that don't touch service source files and therefore don't trigger a release.
 
 ### CI/CD skip tags
 | Tag | Effect |
@@ -305,10 +331,10 @@ git branch -D feat/my-feature   # -D because squash means the branch is "unmerge
 | `[skip release]` | Release job is skipped even if `versions.json` was bumped — use when restoring `versions.json` or intentionally editing it without rebuilding |
 
 ### How the release pipeline works
-Release is **driven entirely by `versions.json`**. You decide what to ship by editing the file yourself — nothing auto-bumps.
+Release is **driven entirely by `versions.json`** on `main`. You decide what to ship by editing the file yourself — nothing auto-bumps.
 
-1. Bump the service(s) you want to release in `versions.json` (e.g. `"bot": "2.0.0"` → `"2.0.1"`).
-2. Update the matching line in `.env.example` so deployers pin the new tag (edit by hand to match the `versions.json` change).
+1. Bump the service(s) you want to release in `versions.json` (e.g. `"bot": "2.1.4"` → `"2.2.0"`).
+2. Update the matching line in `.env.example` so deployers pin the new tag (edit by hand to match the `versions.json` change; `.env.example` uses the `v`-prefixed tag, `versions.json` does not).
 3. Merge to `main`. The release workflow triggers only when `versions.json` changes on `main`.
 4. CI diffs the new `versions.json` against the previous commit and builds/pushes **only the services whose version string changed**. If only `xray_core_ref` changed it's a no-op; bump `backend` too to force a rebuild.
 5. CI does **not** commit anything back to `main`. There is no auto-bump commit.
@@ -321,10 +347,12 @@ When the schema bumps (any `CURRENT_DB_VERSION` change), **deploy master and all
 ## Configuration
 
 Copy `.env.example` to `.env`. Key variables:
-- `PANEL_DOMAIN`, `PROXY_DOMAIN`, `PANEL_SECRET_PATH` — routing/TLS
-- `SECRET_KEY`, `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`
-- `XRAY_CORE_REF` — Xray-core version to compile into the Docker image (build-time only)
-- `RATELIMIT_STORAGE_URI` — Redis URI for rate limiting
+- `PANEL_DOMAIN`, `PROXY_DOMAIN`, `PANEL_SECRET_PATH` — routing/TLS/decoy.
+- `SUB_DOMAIN` *(optional)* — dedicated subscription domain. When set, subscription links are served as `https://<SUB_DOMAIN>/api/sub/u/<token>` (clean, no secret path) and `build_aggregate_sub_url` prefers it. Empty → subscriptions fall back to `PANEL_DOMAIN` + secret path. Must be in the cert's SAN and in the backend container's env.
+- `SECRET_KEY`, `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`.
+- `XRAY_CORE_REF` — Xray-core version to compile into the Docker image (build-time only).
+- `RATELIMIT_STORAGE_URI` — Redis URI for rate limiting.
+- `*_IMAGE` — per-service image pins (mirrors `versions.json`).
 
 Bot configuration is **not** in `.env`. It lives in `SystemSetting` rows managed via **Bot → Settings** in the panel UI: `bot_token`, `admin_telegram_ids`, `bot_service_token`, YooKassa `shop_id` / `secret_key`, `display_timezone`. The bot container only needs two env vars: `BACKEND_API_URL` and `BOT_SERVICE_TOKEN`. Changes take effect within ~60s without restarting the bot.
 

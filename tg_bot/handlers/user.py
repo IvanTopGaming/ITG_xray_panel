@@ -348,48 +348,116 @@ async def user_sub(
 ):
     try:
         state_data = await backend.get_user_state(callback.from_user.id)
+    except Exception as exc:
+        logger.info("get_user_state failed: %s", exc)
+        state_data = {}
+    clients = list((state_data or {}).get("clients") or [])
+    sub_url = (state_data or {}).get("sub_url")
+    if not clients:
+        await _render_no_subscription(callback, lang=lang, i18n=i18n, backend=backend)
+        return
+
+    await state.clear()
+    title = await i18n.t("sub.page.title", lang)
+    open_label = await i18n.t("sub.actions.open_page", lang)
+    keys_label = await i18n.t("sub.actions.show_keys", lang)
+    help_label = await i18n.t("menu.help", lang)
+    back_label = await i18n.t("common.back_to_main", lang)
+    if sub_url:
+        link_header = await i18n.t("sub.page.link_header", lang)
+        copy_hint = await i18n.t("sub.page.copy_hint", lang)
+        helper = await i18n.t("sub.page.url_helper", lang)
+        body = f"{title}\n\n{link_header}\n\n<code>{h(sub_url)}</code>\n{copy_hint}\n\n{helper}"
+    else:
+        body = f"{title}\n\n" + await i18n.t("sub.page.no_url", lang)
+    await safe_edit(
+        callback.message,
+        body,
+        reply_markup=kb.user_sub_page_kb(
+            open_label=open_label,
+            keys_label=keys_label,
+            help_label=help_label,
+            back_label=back_label,
+            sub_url=sub_url,
+        ),
+    )
+
+
+async def _render_no_subscription(
+    callback: types.CallbackQuery,
+    *,
+    lang: str,
+    i18n: I18n,
+    backend: BackendClient,
+):
+    """Show the no-subscription alert and re-render the welcome menu in place."""
+    msg = await i18n.t("home.no_subscription", lang)
+    await callback.answer(msg, show_alert=True)
+    # User saw the "My subscription" button but actually has no clients
+    # (admin revoked, or natural expiry+cleanup since the menu was sent).
+    # Re-render the welcome in place — it picks the no-clients keyboard
+    # automatically, so the stale subscription button disappears.
+    try:
+        user_name = (
+            callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
+        )
+        await _render_welcome(
+            callback.message,
+            telegram_id=callback.from_user.id,
+            user_name=user_name,
+            lang=lang,
+            i18n=i18n,
+            backend=backend,
+            edit=True,
+        )
+    except Exception as exc:
+        logger.debug("re-render welcome skipped: %s", exc)
+
+
+async def _render_keys_picker(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    *,
+    i18n: I18n,
+    lang: str,
+    clients: list,
+):
+    """Render the multi-key picker list."""
+    await state.clear()
+    title = await i18n.t("keys.picker.title", lang)
+    entry = await i18n.t("keys.list.entry", lang)
+    back = await i18n.t("common.back_to_main", lang)
+    await safe_edit(
+        callback.message,
+        title,
+        reply_markup=kb.user_keys_list_kb(
+            clients,
+            entry_template=entry,
+            back_label=back,
+        ),
+    )
+
+
+@router.callback_query(F.data == "show_keys")
+async def show_keys(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    i18n: I18n,
+    lang: str,
+    backend: BackendClient,
+):
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
         users_records = list((state_data or {}).get("clients") or [])
     except Exception as exc:
         logger.info("get_user_state failed: %s", exc)
         users_records = []
     if not users_records:
-        msg = await i18n.t("home.no_subscription", lang)
-        await callback.answer(msg, show_alert=True)
-        # User saw the "My subscription" button but actually has no clients
-        # (admin revoked, or natural expiry+cleanup since the menu was sent).
-        # Re-render the welcome in place — it picks the no-clients keyboard
-        # automatically, so the stale subscription button disappears.
-        try:
-            user_name = (
-                callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
-            )
-            await _render_welcome(
-                callback.message,
-                telegram_id=callback.from_user.id,
-                user_name=user_name,
-                lang=lang,
-                i18n=i18n,
-                backend=backend,
-                edit=True,
-            )
-        except Exception as exc:
-            logger.debug("user_sub: re-render welcome skipped: %s", exc)
+        await _render_no_subscription(callback, lang=lang, i18n=i18n, backend=backend)
         return
 
     if len(users_records) > 1:
-        await state.clear()
-        title = await i18n.t("keys.picker.title", lang)
-        entry = await i18n.t("keys.list.entry", lang)
-        back = await i18n.t("common.back_to_main", lang)
-        await safe_edit(
-            callback.message,
-            title,
-            reply_markup=kb.user_keys_list_kb(
-                users_records,
-                entry_template=entry,
-                back_label=back,
-            ),
-        )
+        await _render_keys_picker(callback, state, i18n=i18n, lang=lang, clients=users_records)
         return
 
     await show_key_details(callback, state, users_records[0], i18n=i18n, lang=lang)
@@ -673,19 +741,7 @@ async def back_to_keys_picker(
             await user_home(callback, state, i18n=i18n, lang=lang, backend=backend)
         return
 
-    await state.clear()
-    title = await i18n.t("keys.picker.title", lang)
-    entry = await i18n.t("keys.list.entry", lang)
-    back = await i18n.t("common.back_to_main", lang)
-    await safe_edit(
-        callback.message,
-        title,
-        reply_markup=kb.user_keys_list_kb(
-            users_records,
-            entry_template=entry,
-            back_label=back,
-        ),
-    )
+    await _render_keys_picker(callback, state, i18n=i18n, lang=lang, clients=users_records)
 
 
 @router.callback_query(F.data == "qr_select_server")

@@ -1,38 +1,32 @@
 #!/bin/bash
-set -e
+# Generate a self-signed certificate for local/dev use and install it where
+# Caddy reads it — ./certs/{fullchain,key}.pem. Use this instead of
+# generate_certs.sh when PANEL_DOMAIN is a local name Let's Encrypt can't sign.
+set -euo pipefail
 
+cd "$(dirname "$0")/.."
 
 if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
+    set -a
+    source .env
+    set +a
 fi
-
 PANEL_DOMAIN="${PANEL_DOMAIN:-panel.local}"
 
-WORK_DIR="$(mktemp -d)"
-CERT_DIR="$(pwd)/certs"
+cert_dir="$PWD/certs"
+work_dir="$(mktemp -d)"
+trap 'rm -rf "$work_dir"' EXIT
+mkdir -p "$cert_dir"
 
-cleanup() {
-    rm -rf "$WORK_DIR"
-}
-trap cleanup EXIT INT TERM
-
-echo "Generating local certificate for: $PANEL_DOMAIN"
-
-mkdir -p "$CERT_DIR"
-
-cat > "$WORK_DIR/openssl.cnf" <<EOF
+cat > "$work_dir/openssl.cnf" <<EOF
 [req]
 default_bits       = 2048
 distinguished_name = req_distinguished_name
-req_extensions     = req_ext
 x509_extensions    = v3_req
 prompt             = no
 
 [req_distinguished_name]
 CN = $PANEL_DOMAIN
-
-[req_ext]
-subjectAltName = @alt_names
 
 [v3_req]
 keyUsage = keyEncipherment, dataEncipherment
@@ -42,19 +36,14 @@ subjectAltName = @alt_names
 [alt_names]
 DNS.1 = $PANEL_DOMAIN
 DNS.2 = localhost
+DNS.3 = ${SUB_DOMAIN:-sub.$PANEL_DOMAIN}
 IP.1  = 127.0.0.1
 EOF
 
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout "$CERT_DIR/key.pem" \
-    -out "$CERT_DIR/cert.pem" \
-    -config "$WORK_DIR/openssl.cnf" \
-    -extensions 'v3_req'
+    -keyout "$cert_dir/key.pem" \
+    -out "$cert_dir/fullchain.pem" \
+    -config "$work_dir/openssl.cnf" \
+    -extensions v3_req
 
-cp "$CERT_DIR/cert.pem" "$CERT_DIR/fullchain.pem"
-
-echo "Done!"
-echo "Files created in: $CERT_DIR"
-echo "  - key.pem"
-echo "  - cert.pem"
-echo "  - fullchain.pem"
+echo "Self-signed certificate for $PANEL_DOMAIN written to $cert_dir (fullchain.pem, key.pem)."

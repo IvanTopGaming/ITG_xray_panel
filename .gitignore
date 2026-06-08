@@ -13,7 +13,8 @@ certs/
 
 # Local compose overrides
 docker-compose.override.yml
-docs/
+docs/*
+!docs/shot-*.webp
 
 # Python — single venv at repo root for backend + tg_bot
 .venv/

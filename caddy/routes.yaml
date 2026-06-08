@@ -1,0 +1,29 @@
+# Declarative SNI routes for caddygen. Only the variable parts live here;
+# the static base (security headers/CSP, listener wrappers, TLS cert load)
+# is built by caddygen. A route whose `match` is empty after ${ENV}
+# interpolation is skipped — so an unset SUB_DOMAIN drops the sub route.
+#
+# Fields:
+#   match     SNI hostname (supports ${ENV})
+#   upstream  dial target (host:port)
+#   tls       true -> terminate TLS at Caddy (alpn http/1.1) and route via an
+#             auto-generated HTTP security layer; false/omitted -> raw TCP
+#             passthrough with PROXY protocol v2
+#   only_paths optional list of path prefixes; non-matching paths return 404
+#             (implies tls: true)
+sni_routes:
+  - name: proxy
+    match: "${PROXY_DOMAIN}"
+    upstream: "xray:443"
+
+  - name: panel
+    match: "${PANEL_DOMAIN}"
+    upstream: "frontend:80"
+    tls: true
+
+  - name: sub
+    match: "${SUB_DOMAIN}"
+    upstream: "backend:5000"
+    tls: true
+    only_paths:
+      - "/api/sub/"

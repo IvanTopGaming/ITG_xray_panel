@@ -25,7 +25,7 @@ from app.models import (
     UserTariffAccess,
 )
 from app.services import bot_events
-from app.services.panel_proxy import get_panel_snapshot, proxy_update_user
+from app.services.panel_proxy import fetch_panel_snapshot_live, get_panel_snapshot, proxy_update_user
 from app.services.provisioning import apply_tariff_for_user, backfill_tariff
 from app.services.stats import _api_remove_user_grpc, _api_add_user_grpc
 from app.services.xray import generate_config_file, restart_xray_container
@@ -453,44 +453,87 @@ def _remote_clients_by_telegram_id() -> dict[int, list[dict]]:
 
     Returns {} if no panels are linked or all snapshots are missing — callers
     should handle this gracefully (it's the steady-state on a standalone panel).
+
+    NOTE: this reads the *cached* (poll-refreshed, 60s TTL) snapshot and is fine
+    for read-only UI rendering. Destructive operations (block/unblock/revoke)
+    must use `_remote_clients_by_telegram_id_live` instead, so a stale/missing
+    cache can't make a remote disable silently no-op.
     """
     bucket: dict[int, list[dict]] = {}
     for panel in LinkedPanel.query.filter_by(enable=True).all():
         snapshot = get_panel_snapshot(panel.id)
         if not snapshot:
             continue
-        for ib_data in snapshot.get("inbounds", []):
-            inbound_tag = ib_data.get("tag", "")
-            inbound_label = ib_data.get("label") or inbound_tag
-            for c in ib_data.get("clients", []):
-                tg_id = c.get("telegram_id")
-                if not tg_id:
-                    continue
-                bucket.setdefault(tg_id, []).append(
-                    {
-                        "id": c.get("id", ""),
-                        "email": c.get("email", ""),
-                        "inbound_tag": inbound_tag,
-                        "inbound_label": inbound_label,
-                        "limit_bytes": c.get("limit_bytes", 0),
-                        "expiry_time": c.get("expiry_time", 0),
-                        "up": c.get("up", 0),
-                        "down": c.get("down", 0),
-                        "enable": bool(c.get("enable", True)),
-                        "reset_day": c.get("reset_day", 0),
-                        "last_reset_time": 0,
-                        "last_seen": c.get("last_seen", 0),
-                        "source_ips": [],
-                        "flow": c.get("flow", ""),
-                        "preferred_outbound": "",
-                        "device_limit": None,
-                        "telegram_id": tg_id,
-                        "tariff_id": c.get("tariff_id"),
-                        "panel_id": panel.id,
-                        "panel_name": panel.name,
-                    }
-                )
+        _bucket_panel_clients(bucket, snapshot, panel)
     return bucket
+
+
+def _bucket_panel_clients(bucket: dict[int, list[dict]], snapshot: dict, panel) -> None:
+    """Append every telegram-linked client in `panel`'s `snapshot` into `bucket`."""
+    for ib_data in snapshot.get("inbounds", []):
+        inbound_tag = ib_data.get("tag", "")
+        inbound_label = ib_data.get("label") or inbound_tag
+        for c in ib_data.get("clients", []):
+            tg_id = c.get("telegram_id")
+            if not tg_id:
+                continue
+            bucket.setdefault(tg_id, []).append(
+                {
+                    "id": c.get("id", ""),
+                    "email": c.get("email", ""),
+                    "inbound_tag": inbound_tag,
+                    "inbound_label": inbound_label,
+                    "limit_bytes": c.get("limit_bytes", 0),
+                    "expiry_time": c.get("expiry_time", 0),
+                    "up": c.get("up", 0),
+                    "down": c.get("down", 0),
+                    "enable": bool(c.get("enable", True)),
+                    "reset_day": c.get("reset_day", 0),
+                    "last_reset_time": 0,
+                    "last_seen": c.get("last_seen", 0),
+                    "source_ips": [],
+                    "flow": c.get("flow", ""),
+                    "preferred_outbound": "",
+                    "device_limit": None,
+                    "telegram_id": tg_id,
+                    "tariff_id": c.get("tariff_id"),
+                    "panel_id": panel.id,
+                    "panel_name": panel.name,
+                }
+            )
+
+
+def _remote_clients_by_telegram_id_live(
+    panel_ids: set[int] | None = None,
+) -> tuple[dict[int, list[dict]], list[dict]]:
+    """Like `_remote_clients_by_telegram_id` but fetches LIVE snapshots so a
+    destructive op never acts on a stale picture.
+
+    Returns ``(bucket, unreachable)`` where `unreachable` is a list of
+    ``{panel_id, panel_name, error}`` for every queried panel whose live
+    snapshot could not be fetched. Callers fold these into ``panel_failures`` so
+    a remote effect we *couldn't apply* is reported instead of silently passing
+    as success (the bug class: "revoked the grant, only local clients dropped").
+
+    `panel_ids`: when given, only those linked panels are queried (used by the
+    tariff-scoped revoke path); None means every enabled panel.
+    """
+    bucket: dict[int, list[dict]] = {}
+    unreachable: list[dict] = []
+    query = LinkedPanel.query.filter_by(enable=True)
+    if panel_ids is not None:
+        if not panel_ids:
+            return bucket, unreachable
+        query = query.filter(LinkedPanel.id.in_(panel_ids))
+    for panel in query.all():
+        try:
+            snapshot = fetch_panel_snapshot_live(panel.id)
+        except Exception as exc:
+            logger.warning("remote enumerate (live) failed for panel=%s: %s", panel.id, exc)
+            unreachable.append({"panel_id": panel.id, "panel_name": panel.name, "error": str(exc)})
+            continue
+        _bucket_panel_clients(bucket, snapshot, panel)
+    return bucket, unreachable
 
 
 def _serialize_user_summary(u, remote_clients_by_tg: dict[int, list[dict]] | None = None):
@@ -643,17 +686,6 @@ def create_grant(tg_id):
     return jsonify(_serialize_grant(grant)), 201
 
 
-@bp.route("/bot/users/<int:tg_id>/grants/<int:grant_id>", methods=["DELETE"])
-@token_required
-def revoke_grant(tg_id, grant_id):
-    grant = UserTariffAccess.query.filter_by(id=grant_id, telegram_id=tg_id).first()
-    if grant is None:
-        return jsonify({"error": "grant not found"}), 404
-    db.session.delete(grant)
-    db.session.commit()
-    return jsonify({"ok": True})
-
-
 @bp.route("/bot/users/<int:tg_id>/block", methods=["POST"])
 @token_required
 def block_user(tg_id):
@@ -687,12 +719,11 @@ def block_user(tg_id):
         else:
             restart_required = True
 
-    try:
-        remote_clients = _remote_clients_by_telegram_id().get(tg_id, [])
-    except Exception as exc:
-        logger.warning("block: could not enumerate remote clients for tg=%s: %s", tg_id, exc)
-        remote_clients = []
-    panel_failures = []
+    # Live snapshot, not the cached one: a stale/missing cache must never let a
+    # block silently leave the user enabled on a child panel. Panels we can't
+    # reach are surfaced in panel_failures rather than skipped.
+    remote_by_tg, panel_failures = _remote_clients_by_telegram_id_live()
+    remote_clients = remote_by_tg.get(tg_id, [])
     remote_disabled = 0
     for rc in remote_clients:
         if not rc.get("enable", True):
@@ -760,12 +791,10 @@ def unblock_user(tg_id):
         {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
     )
 
-    try:
-        remote_clients = _remote_clients_by_telegram_id().get(tg_id, [])
-    except Exception as exc:
-        logger.warning("unblock: could not enumerate remote clients for tg=%s: %s", tg_id, exc)
-        remote_clients = []
-    panel_failures = []
+    # Live snapshot, mirroring block_user — an unreachable panel is reported,
+    # not silently treated as "nothing to re-enable here".
+    remote_by_tg, panel_failures = _remote_clients_by_telegram_id_live()
+    remote_clients = remote_by_tg.get(tg_id, [])
     remote_re_enabled = 0
     for rc in remote_clients:
         if rc.get("enable", True) or not _has_time(rc.get("expiry_time", 0)):
@@ -843,6 +872,46 @@ def revoke_tariff_from_user(tg_id, tariff_id):
         else:
             restart_required = True
 
+    # ── Phase: disable this tariff's clients on linked panels (best-effort, no DB writes) ──
+    # The tariff's remote footprint is defined by its TariffItems that route to a linked
+    # panel (panel_id set). Disable the user's remote clients sitting on those
+    # (panel_id, inbound_tag) pairs — mirrors block_user, but scoped to this tariff.
+    panel_failures: list[dict] = []
+    remote_disabled = 0
+    remote_items = (
+        TariffItem.query.filter_by(tariff_id=tariff_id)
+        .filter(TariffItem.panel_id.isnot(None))
+        .with_entities(TariffItem.panel_id, TariffItem.inbound_tag)
+        .all()
+    )
+    wanted = {(pid, tag) for pid, tag in remote_items}
+    if wanted:
+        # Live snapshot, scoped to the panels this tariff routes to. Panels we
+        # can't reach go to panel_failures so a missed remote disable is visible.
+        panel_ids = {pid for pid, _tag in remote_items}
+        remote_by_tg, unreachable = _remote_clients_by_telegram_id_live(panel_ids=panel_ids)
+        panel_failures.extend(unreachable)
+        for rc in remote_by_tg.get(tg_id, []):
+            # Mirror the local match (tariff_id): only touch THIS tariff's remote
+            # clients — not another tariff sharing the same (panel_id, inbound_tag).
+            if rc.get("tariff_id") != tariff_id:
+                continue
+            if (rc.get("panel_id"), rc.get("inbound_tag")) not in wanted or not rc.get("enable", True):
+                continue
+            try:
+                proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": False})
+                remote_disabled += 1
+            except Exception as exc:
+                logger.warning(
+                    "revoke_tariff: remote disable failed panel=%s tag=%s: %s",
+                    rc["panel_id"],
+                    rc["inbound_tag"],
+                    exc,
+                )
+                panel_failures.append(
+                    {"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)}
+                )
+
     # ── Phase: single short write transaction ────────────────────────────
     for c in active_clients:
         c.enable = False
@@ -864,6 +933,8 @@ def revoke_tariff_from_user(tg_id, tariff_id):
             "tariff_id": tariff_id,
             "disabled_clients": len(active_clients),
             "revoked_grants": int(revoked_grants or 0),
+            "remote_disabled": remote_disabled,
+            "panel_failures": panel_failures,
         }
     )
 
@@ -1061,6 +1132,8 @@ def get_bot_settings():
             "admin_ids": _parse_admin_ids(_read_setting("admin_ids")),
             "telegram_proxy_url": _read_setting("telegram_proxy_url"),
             "display_timezone": _read_setting("display_timezone") or "Europe/Moscow",
+            "device_limit_enabled": _read_setting("device_limit_enabled") == "true",
+            "device_limit_per_user": int(_read_setting("device_limit_per_user") or "0"),
             "bot_config_version": int(_read_setting("bot_config_version") or "0"),
         }
     )
@@ -1096,6 +1169,31 @@ def update_bot_settings():
         elif setting.value != new_value:
             setting.value = new_value
             changed = True
+
+    def _upsert(key, new_value):
+        nonlocal changed
+        row = SystemSetting.query.filter_by(key=key).first()
+        if row is None:
+            db.session.add(SystemSetting(key=key, value=new_value))
+            changed = True
+        elif row.value != new_value:
+            row.value = new_value
+            changed = True
+
+    if "device_limit_enabled" in payload:
+        _upsert(
+            "device_limit_enabled",
+            "true" if payload["device_limit_enabled"] in (True, "true", "True", 1, "1") else "false",
+        )
+    if "device_limit_per_user" in payload:
+        try:
+            n = int(payload["device_limit_per_user"])
+            if n < 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            return jsonify({"error": "device_limit_per_user must be a non-negative integer"}), 400
+        _upsert("device_limit_per_user", str(n))
+
     if changed:
         new_version = _bump_bot_config_version()
     else:

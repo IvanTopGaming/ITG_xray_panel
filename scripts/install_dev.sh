@@ -34,10 +34,11 @@ gen_secret() {
 
 echo "Downloading deployment files..."
 download_file "docker-compose.staging.yml" "docker-compose.yml"
-download_file "caddy/caddy.json" "caddy/caddy.json"
+download_file "caddy/routes.yaml" "caddy/routes.yaml"
 download_file "scripts/generate_certs.sh" "scripts/generate_certs.sh"
+download_file "scripts/generate_local_cert.sh" "scripts/generate_local_cert.sh"
 download_file ".env.example" ".env.example"
-chmod +x scripts/generate_certs.sh
+chmod +x scripts/generate_certs.sh scripts/generate_local_cert.sh
 
 if [ -f .env ]; then
     echo -e "${YELLOW}.env exists — keeping it.${NC}"
@@ -67,10 +68,13 @@ fi
 
 echo
 echo -e "${GREEN}Done.${NC} Next steps:"
-echo "  1. Edit .env                     — set PANEL_DOMAIN, PROXY_DOMAIN."
+echo "  1. Edit .env                     — set PANEL_DOMAIN, PROXY_DOMAIN (and SUB_DOMAIN)."
 echo "  2. docker compose pull"
-echo "  3. docker compose up -d backend  — bring up the panel first."
-echo "  4. Open panel → Bot → Settings   — rotate BOT_SERVICE_TOKEN, save it back into .env."
-echo "  5. Set bot_token, admin_ids, telegram_proxy_url, panel_admin_user/password in the UI."
-echo "  6. docker compose up -d          — bot picks up settings from the panel automatically."
-echo "  7. docker compose logs -f backend bot"
+echo "  3. Generate a TLS cert into ./certs (Caddy won't start without one):"
+echo "       · local domain → bash scripts/generate_local_cert.sh   (self-signed)"
+echo "       · real domain  → bash scripts/generate_certs.sh        (Let's Encrypt; needs certbot + DNS)"
+echo "  4. docker compose up -d backend  — bring up the panel first."
+echo "  5. Open panel → Bot → Settings   — rotate BOT_SERVICE_TOKEN, save it back into .env."
+echo "  6. Set bot_token, admin_ids, telegram_proxy_url, panel_admin_user/password in the UI."
+echo "  7. docker compose up -d          — bot + caddy pick up settings/certs automatically."
+echo "  8. docker compose logs -f backend bot"
