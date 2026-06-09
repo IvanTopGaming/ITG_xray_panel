@@ -504,3 +504,329 @@ class TestSubCacheHit:
 
         assert resp.status_code == 200
         assert resp.data.decode() == cached_blob
+
+
+# ── Regression: XHTTP transport host/path in generated subscription links ────
+# Stored stream_settings is NESTED (xhttpSettings/wsSettings/... built by
+# _build_stream_settings). The federation REMOTE link builder never emitted the
+# transport host/path, so xhttp/ws subscriptions from linked panels were broken
+# (the real bug). _extract_transport_path_host also accepts the flat wsPath/
+# wsHost keys defensively (legacy/import blobs).
+
+
+def test_extract_transport_path_host_reads_nested_and_flat():
+    from app.api.subscription import _extract_transport_path_host
+
+    # real storage shape: nested xhttpSettings (what _build_stream_settings emits)
+    assert _extract_transport_path_host(
+        {"network": "xhttp", "xhttpSettings": {"path": "/realpath", "host": "edge.example.com"}}
+    ) == ("/realpath", "edge.example.com")
+    # defensive: flat wsPath/wsHost (legacy/import blobs) still work
+    assert _extract_transport_path_host({"network": "xhttp", "wsPath": "/flat", "wsHost": "cdn.example.com"}) == (
+        "/flat",
+        "cdn.example.com",
+    )
+    # leading slash is normalized
+    assert _extract_transport_path_host({"network": "ws", "wsPath": "noslash"}) == ("/noslash", "")
+    # tcp / grpc carry no transport path/host
+    assert _extract_transport_path_host({"network": "tcp"}) == ("", "")
+    assert _extract_transport_path_host({"network": "grpc"}) == ("", "")
+
+
+def test_local_xhttp_link_includes_path_and_host(app):
+    """Guard: a locally-stored (nested) xhttp inbound surfaces host+path."""
+    from urllib.parse import urlparse, parse_qs
+    from app.api.subscription import _get_local_subscription_content
+
+    with app.app_context():
+        ib = Inbound(
+            tag="xhttp-tls",
+            port=443,
+            protocol="vless",
+            stream_settings=json.dumps(
+                {
+                    "network": "xhttp",
+                    "security": "tls",
+                    "xhttpSettings": {"path": "/throne", "host": "edge.example.com"},
+                    "tlsSettings": {"serverName": "edge.example.com"},
+                }
+            ),
+            label="XHTTP",
+        )
+        db.session.add(ib)
+        db.session.flush()
+        uid = "33333333-3333-3333-3333-333333333333"
+        db.session.add(Client(id=uid, email="x", inbound_tag="xhttp-tls", enable=True, expiry_time=0))
+        db.session.commit()
+        links = _get_local_subscription_content(uid)
+
+    assert links and len(links) == 1
+    q = parse_qs(urlparse(links[0]).query)
+    assert q.get("type") == ["xhttp"]
+    assert q.get("path") == ["/throne"]
+    assert q.get("host") == ["edge.example.com"]
+
+
+def test_remote_xhttp_link_includes_path_and_host():
+    """The real bug: federation remote builder must emit xhttp host+path
+    (child snapshots store the nested xhttpSettings blob)."""
+    from urllib.parse import urlparse, parse_qs
+    from app.api.subscription import _build_remote_link
+
+    ib_data = {
+        "protocol": "vless",
+        "port": 443,
+        "tag": "child-xhttp",
+        "label": "Child XHTTP",
+        "stream_settings": {
+            "network": "xhttp",
+            "security": "tls",
+            "xhttpSettings": {"path": "/childpath", "host": "child.example.com"},
+            "tlsSettings": {"serverName": "child.example.com"},
+        },
+    }
+    links = _build_remote_link("child.example.com", ib_data, {"id": "00000000-0000-0000-0000-0000000000aa", "flow": ""})
+    assert len(links) == 1
+    q = parse_qs(urlparse(links[0]).query)
+    assert q.get("type") == ["xhttp"]
+    assert q.get("path") == ["/childpath"]
+    assert q.get("host") == ["child.example.com"]
+    # remote grpc serviceName must come from the child's real grpcSettings too
+    grpc_ib = {
+        "protocol": "vless",
+        "port": 443,
+        "tag": "child-grpc",
+        "label": "gRPC",
+        "stream_settings": {"network": "grpc", "security": "tls", "grpcSettings": {"serviceName": "mygrpc"}},
+    }
+    g = parse_qs(urlparse(_build_remote_link("c", grpc_ib, {"id": "x", "flow": ""})[0]).query)
+    assert g.get("serviceName") == ["mygrpc"]
+
+
+def test_local_and_remote_builders_are_unified():
+    """Unification guard: both paths go through _build_share_links, so the same
+    inbound+client must yield byte-identical links (they can no longer drift)."""
+    from app.api.subscription import _build_share_links, _build_remote_link
+
+    stream = {
+        "network": "xhttp",
+        "security": "tls",
+        "xhttpSettings": {"path": "/p", "host": "h.example.com"},
+        "tlsSettings": {"serverName": "h.example.com"},
+    }
+    for proto in ("vless", "vmess", "trojan"):
+        ib_data = {"protocol": proto, "port": 443, "tag": "t", "label": "L", "stream_settings": stream}
+        remote = _build_remote_link("host.example.com", ib_data, {"id": "uuid-9", "flow": ""})
+        direct = _build_share_links("host.example.com", proto, 443, stream, "uuid-9", "", "L")
+        assert remote == direct, f"local/remote diverge for {proto}"
+
+
+# ── Full matrix: protocol × transport × security → link generation ───────────
+# Covers every share-link shape through the real storage path
+# (_build_stream_settings → nested blob) and asserts local == remote and that
+# each link carries the right transport + security params.
+
+import pytest as _pytest
+from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+
+_REALITY_PRIV = "UDpHHj1ZCyLcFk4ZG6zKS2B8YLPNPtdQzADuJf_vTXY"  # valid x25519 key; pubkey is derived
+
+_MATRIX = [
+    ("vless", "tcp", "reality"),
+    ("vless", "tcp", "tls"),
+    ("vless", "ws", "tls"),
+    ("vless", "ws", "none"),
+    ("vless", "xhttp", "tls"),
+    ("vless", "xhttp", "reality"),
+    ("vless", "grpc", "tls"),
+    ("vless", "grpc", "reality"),
+    ("vless", "httpupgrade", "tls"),
+    ("vless", "splithttp", "tls"),
+    ("vmess", "tcp", "none"),
+    ("vmess", "ws", "tls"),
+    ("vmess", "xhttp", "tls"),
+    ("vmess", "grpc", "tls"),
+    ("trojan", "tcp", "tls"),
+    ("trojan", "ws", "tls"),
+    ("trojan", "xhttp", "tls"),
+    ("trojan", "grpc", "tls"),
+    ("trojan", "tcp", "reality"),
+]
+
+
+def _matrix_payload(proto, net, sec):
+    p = {
+        "protocol": proto,
+        "network": net,
+        "security": sec,
+        "wsPath": "/mypath",
+        "wsHost": "h.example.com",
+        "grpcServiceName": "mysvc",
+        "tlsServerName": "tls.example.com",
+        "tlsAlpn": "h2,http/1.1",
+        "tlsUTLSFingerprint": "chrome",
+    }
+    if sec == "reality":
+        p.update(
+            {
+                "realitySNI": "rl.example.com",
+                "realityShortIds": "abcd1234",
+                "realityFingerprint": "chrome",
+                "realityPrivateKey": _REALITY_PRIV,
+                "realityDest": "google.com:443",
+            }
+        )
+    return p
+
+
+@_pytest.mark.parametrize("proto,net,sec", _MATRIX, ids=lambda v: v if isinstance(v, str) else "")
+def test_link_matrix(proto, net, sec):
+    from app.services.xray import _build_stream_settings
+    from app.api.subscription import (
+        _build_share_links,
+        _build_remote_link,
+        _apply_clash_transport,
+        _apply_singbox_transport,
+    )
+
+    stream = _build_stream_settings(_matrix_payload(proto, net, sec))
+    flow = "xtls-rprx-vision" if (proto == "vless" and net == "tcp" and sec in ("reality", "tls")) else ""
+    uuid = "11111111-1111-1111-1111-111111111111"
+
+    local = _build_share_links("host.example.com", proto, 443, stream, uuid, flow, "Lbl")
+    remote = _build_remote_link(
+        "host.example.com",
+        {"protocol": proto, "port": 443, "label": "Lbl", "stream_settings": stream},
+        {"id": uuid, "flow": flow},
+    )
+    assert local and remote, f"{proto}/{net}/{sec}: empty link"
+    assert local == remote, f"{proto}/{net}/{sec}: local != remote"
+
+    link = local[0]
+    if proto in ("vless", "trojan"):
+        q = _parse_qs(_urlparse(link).query)
+        assert q.get("type") == [net]
+        assert q.get("security") == [sec]
+        if net in ("ws", "xhttp", "httpupgrade", "splithttp"):
+            assert q.get("path") == ["/mypath"], f"{proto}/{net}: missing path"
+            assert q.get("host") == ["h.example.com"], f"{proto}/{net}: missing host"
+        elif net == "grpc":
+            assert q.get("serviceName") == ["mysvc"], f"{proto}/{net}: missing serviceName"
+        if sec == "reality":
+            assert q.get("pbk") and q.get("sni") == ["rl.example.com"] and q.get("sid") == ["abcd1234"]
+        elif sec == "tls":
+            assert q.get("sni") == ["tls.example.com"]
+        if flow:
+            assert q.get("flow") == [flow]
+    elif proto == "vmess":
+        conf = json.loads(base64.b64decode(link[len("vmess://") :]))
+        assert conf["net"] == net
+        if net in ("ws", "xhttp", "httpupgrade", "splithttp"):
+            assert conf["path"] == "/mypath" and conf["host"] == "h.example.com"
+        elif net == "grpc":
+            assert conf["path"] == "mysvc"
+        if sec == "tls":
+            assert conf.get("sni") == "tls.example.com"
+
+    # Clash + sing-box transport appliers must produce well-formed structure
+    cnode = {}
+    _apply_clash_transport(cnode, stream)
+    sob = {}
+    _apply_singbox_transport(sob, stream)
+    if net in ("ws", "httpupgrade"):
+        assert cnode.get("network") == "ws" and cnode.get("ws-opts", {}).get("path") == "/mypath"
+        assert sob["transport"]["path"] == "/mypath"
+    elif net in ("xhttp", "splithttp"):
+        assert cnode.get("network") == "http" and cnode.get("http-opts", {}).get("path") == ["/mypath"]
+        assert sob["transport"]["type"] == "http"
+    elif net == "grpc":
+        assert cnode.get("grpc-opts", {}).get("grpc-service-name") == "mysvc"
+        assert sob["transport"]["service_name"] == "mysvc"
+
+
+def test_clash_and_singbox_for_user_merge_federation_nodes(app):
+    """The aggregated Clash + sing-box configs must include child-panel (remote)
+    nodes, not just local keys (regression for the federation-merge gap)."""
+    import yaml as _yaml
+    from unittest.mock import patch
+    from app.models import LinkedPanel
+    from app.api.subscription import generate_clash_config_for_user, generate_singbox_config_for_user
+
+    TG = 880017
+    remote_snapshot = {
+        "inbounds": [
+            {
+                "tag": "child-xhttp",
+                "port": 443,
+                "protocol": "vless",
+                "label": "Child XHTTP",
+                "stream_settings": json.dumps(
+                    {
+                        "network": "xhttp",
+                        "security": "tls",
+                        "xhttpSettings": {"path": "/childp", "host": "child.example.com"},
+                        "tlsSettings": {"serverName": "child.example.com"},
+                    }
+                ),
+                "clients": [
+                    {
+                        "id": "aaaaaaaa-0000-0000-0000-000000000001",
+                        "email": "ru",
+                        "enable": True,
+                        "telegram_id": TG,
+                        "flow": "",
+                    }
+                ],
+            }
+        ]
+    }
+    with app.app_context():
+        db.session.add(
+            LinkedPanel(
+                name="child", url="https://child.example.com/x", federation_token="t", enable=True, created_at=0
+            )
+        )
+        ib = Inbound(
+            tag="loc-vless-ws",
+            port=443,
+            protocol="vless",
+            stream_settings=json.dumps(
+                {
+                    "network": "ws",
+                    "security": "tls",
+                    "wsSettings": {"path": "/loc"},
+                    "tlsSettings": {"serverName": "loc.example.com"},
+                }
+            ),
+            label="Local WS",
+        )
+        db.session.add(ib)
+        db.session.flush()
+        db.session.add(
+            Client(
+                id="bbbbbbbb-0000-0000-0000-000000000002",
+                email="loc",
+                inbound_tag="loc-vless-ws",
+                enable=True,
+                telegram_id=TG,
+                expiry_time=0,
+            )
+        )
+        db.session.commit()
+
+        with patch("app.services.panel_proxy.get_panel_snapshot", return_value=remote_snapshot):
+            clash = generate_clash_config_for_user(TG)
+            singbox = generate_singbox_config_for_user(TG)
+
+    cproxies = _yaml.safe_load(clash)["proxies"]
+    cnames = [p["name"] for p in cproxies]
+    assert len(cproxies) == 2, cnames
+    assert any("Child XHTTP" in n for n in cnames), cnames  # remote node present
+    child = next(p for p in cproxies if "Child XHTTP" in p["name"])
+    assert child["server"] == "child.example.com" and child["network"] == "http"
+    assert child["http-opts"]["path"] == ["/childp"]
+
+    sout = [o for o in json.loads(singbox)["outbounds"] if o.get("type") == "vless"]
+    assert len(sout) == 2, [o["tag"] for o in sout]
+    schild = next(o for o in sout if "Child XHTTP" in o["tag"])
+    assert schild["server"] == "child.example.com" and schild["transport"]["type"] == "http"
