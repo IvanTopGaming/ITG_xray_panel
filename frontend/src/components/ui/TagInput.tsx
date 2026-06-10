@@ -18,8 +18,6 @@ interface TagInputProps {
 
 const TAG_RE = /^[A-Za-z0-9_-]+$/;
 
-// Distinct pill palettes — picked deterministically per tag so the same tag
-// always renders in the same color across the app.
 const TAG_PALETTES = [
   'bg-primary/15 border-primary/40 text-primary',
   'bg-violet-500/15 border-violet-400/40 text-violet-200',

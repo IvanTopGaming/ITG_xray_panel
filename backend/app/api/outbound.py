@@ -3,7 +3,7 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Blueprint, request, jsonify
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models import Outbound, Balancer, Client
 from app.utils import token_required, normalize_tag
 from app.services.xray import generate_config_file, restart_xray_container
@@ -50,11 +50,7 @@ def _normalize_selector(raw_selector):
 
 
 def _validate_fallback_tag(value, selector_tags):
-    """Returns normalized fallback_tag or None. Raises ValueError on invalid input.
 
-    selector_tags must be a list/set of the balancer's selector entries (already
-    normalized). Empty / None / blank input returns None — fallback is optional.
-    """
     if value in [None, ""]:
         return None
     tag = str(value).strip()
@@ -210,6 +206,7 @@ def get_outbounds_health():
 
 @bp.route("/outbounds", methods=["POST"])
 @token_required
+@limiter.limit("30 per minute")
 def create_outbound():
     data = request.get_json(silent=True) or {}
     try:
@@ -253,6 +250,7 @@ def create_outbound():
 
 @bp.route("/outbounds/<tag>", methods=["PUT"])
 @token_required
+@limiter.limit("30 per minute")
 def update_outbound(tag):
     try:
         ob = Outbound.query.filter_by(tag=tag).first()
@@ -290,6 +288,7 @@ def update_outbound(tag):
 
 @bp.route("/outbounds/<tag>", methods=["DELETE"])
 @token_required
+@limiter.limit("30 per minute")
 def delete_outbound(tag):
     try:
         if tag in ["direct", "block"]:
@@ -351,6 +350,7 @@ def get_balancers():
 
 @bp.route("/balancers", methods=["POST"])
 @token_required
+@limiter.limit("30 per minute")
 def create_balancer():
     data = request.get_json(silent=True) or {}
     try:
@@ -394,6 +394,7 @@ def create_balancer():
 
 @bp.route("/balancers/<tag>", methods=["PUT"])
 @token_required
+@limiter.limit("30 per minute")
 def update_balancer(tag):
     try:
         bal = Balancer.query.filter_by(tag=tag).first()
@@ -444,6 +445,7 @@ def update_balancer(tag):
 
 @bp.route("/balancers/<tag>", methods=["DELETE"])
 @token_required
+@limiter.limit("30 per minute")
 def delete_balancer(tag):
     try:
         bal = Balancer.query.filter_by(tag=tag).first()

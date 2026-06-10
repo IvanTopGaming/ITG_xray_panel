@@ -1,5 +1,3 @@
-"""Aggregated subscription: all of a user's keys via /api/sub/u/<token>."""
-
 import base64
 import json
 
@@ -40,7 +38,7 @@ def client(app):
 
 @pytest.fixture
 def user_with_two_keys(app):
-    """A TelegramUser with two enabled clients on two inbounds. Returns sub_token."""
+
     with app.app_context():
         for i, tag in enumerate(("de-reality", "nl-reality"), start=1):
             db.session.add(
@@ -95,7 +93,7 @@ def test_aggregate_clash_merges_proxies(app, user_with_two_keys):
         names = [p["name"] for p in parsed["proxies"]]
         assert parsed["proxy-groups"][0]["proxies"] == names
         assert parsed["proxy-groups"][0]["type"] == "url-test"
-        # skeleton preserved: rules carried over from the per-client base doc
+
         assert "rules" in parsed
 
 
@@ -113,13 +111,13 @@ def test_aggregate_singbox_merges_outbounds(app, user_with_two_keys):
             if o.get("type") not in ("selector", "urltest", "direct", "block", "dns")
         ]
         assert len([t for t in tags if t]) >= 2
-        # skeleton preserved: tun inbounds + dns carried over from the base doc
+
         assert parsed.get("inbounds")
         assert "dns" in parsed
-        # no dangling refs to the old hardcoded per-client "proxy" tag
+
         assert all(s.get("detour") != "proxy" for s in parsed.get("dns", {}).get("servers", []) if isinstance(s, dict))
         assert parsed.get("route", {}).get("final") != "proxy"
-        # the merged PROXY selector exists
+
         assert any(o.get("tag") == "PROXY" and o.get("type") == "selector" for o in parsed["outbounds"])
 
 
@@ -127,7 +125,6 @@ def test_aggregate_headers_pick_nearest_to_exhaustion(app):
     from app.api.subscription import _aggregate_user_headers
     from app.models import Client
 
-    # key A: 90/100 GB used (10 left) ; key B: 10/100 GB used (90 left) -> A is nearest
     gb = 1024**3
     a = Client(
         id="a",
@@ -152,8 +149,8 @@ def test_aggregate_headers_pick_nearest_to_exhaustion(app):
     headers = _aggregate_user_headers([a, b])
     info = headers["subscription-userinfo"]
     assert f"total={100 * gb}" in info
-    assert f"upload={90 * gb}" in info  # from key A (nearest to exhaustion)
-    assert "expire=1000" in info  # nearest expiry (1000_000 ms -> 1000 s)
+    assert f"upload={90 * gb}" in info
+    assert "expire=1000" in info
 
 
 def test_aggregate_headers_all_unlimited(app):
@@ -180,19 +177,14 @@ def test_endpoint_unknown_token_404(client):
 
 
 def test_endpoint_does_not_collide_with_per_client_route(client, user_with_two_keys):
-    # /sub/u/<token> must hit the aggregate handler, not /sub/<path:uuid_str>
+
     token = user_with_two_keys
     resp = client.get(f"/api/sub/u/{token}", headers={"User-Agent": "v2rayng"})
-    assert resp.status_code == 200  # aggregate, not "User not found"
+    assert resp.status_code == 200
 
 
 def test_aggregate_header_counts_remote_child_panel_key(client, app, user_with_two_keys, monkeypatch):
-    """The aggregated subscription-userinfo header must count a user's child-panel keys.
 
-    Local keys for telegram_id 700 are unlimited (no limit_bytes). A remote child-panel
-    key is 95/100 GB used (nearest to exhaustion) with an earlier expiry, so the header
-    must reflect the remote key's upload/total/expire — not just the local unlimited keys.
-    """
     from app.models import LinkedPanel
     from app.services import panel_proxy
 
@@ -242,9 +234,9 @@ def test_aggregate_header_counts_remote_child_panel_key(client, app, user_with_t
     resp = client.get(f"/api/sub/u/{token}", headers={"User-Agent": "v2rayng"})
     assert resp.status_code == 200
     info = resp.headers["subscription-userinfo"]
-    assert f"upload={95 * gb}" in info  # from the remote key (nearest to exhaustion)
-    assert f"total={100 * gb}" in info  # remote key's limit, not local total=0
-    assert "expire=500" in info  # remote key's nearer expiry (500_000 ms -> 500 s)
+    assert f"upload={95 * gb}" in info
+    assert f"total={100 * gb}" in info
+    assert "expire=500" in info
 
 
 def test_invalidate_user_aggregate_clears_token_keys(app, user_with_two_keys, monkeypatch):
@@ -278,7 +270,7 @@ def test_aggregate_header_profile_title_default(app):
 
     c = Client(id="x", email="x", inbound_tag="t", enable=True, up=0, down=0, limit_bytes=0, expiry_time=0)
     headers = _aggregate_user_headers([c])
-    # default title when no brand_name SystemSetting is set
+
     assert headers.get("profile-title") == "Subscription"
 
 
@@ -291,7 +283,7 @@ def test_aggregate_header_profile_title_ascii_brand(app):
     db.session.commit()
     c = Client(id="x", email="x", inbound_tag="t", enable=True, up=0, down=0, limit_bytes=0, expiry_time=0)
     headers = _aggregate_user_headers([c])
-    assert headers.get("profile-title") == "ACME VPN"  # ASCII -> plain
+    assert headers.get("profile-title") == "ACME VPN"
 
 
 def test_aggregate_header_profile_title_unicode_brand_is_base64(app):
@@ -306,15 +298,14 @@ def test_aggregate_header_profile_title_unicode_brand_is_base64(app):
     c = Client(id="x", email="x", inbound_tag="t", enable=True, up=0, down=0, limit_bytes=0, expiry_time=0)
     headers = _aggregate_user_headers([c])
     title = headers.get("profile-title")
-    assert title.startswith("base64:")  # non-ASCII -> base64-encoded, HTTP-safe
+    assert title.startswith("base64:")
     assert base64.b64decode(title[len("base64:") :]).decode("utf-8") == "МойВПН"
-    # header value must be latin-1 encodable (valid HTTP header)
+
     title.encode("latin-1")
 
 
 def test_aggregate_header_profile_title_accented_latin_is_base64(app):
-    # latin-1-but-non-ASCII (e.g. "é") must also be base64'd so UTF-8-decoding
-    # clients render it correctly instead of as mojibake.
+
     import base64
 
     from app.api.subscription import _aggregate_user_headers
@@ -328,7 +319,7 @@ def test_aggregate_header_profile_title_accented_latin_is_base64(app):
     title = headers.get("profile-title")
     assert title.startswith("base64:")
     assert base64.b64decode(title[len("base64:") :]).decode("utf-8") == "Café VPN"
-    title.encode("latin-1")  # still a valid HTTP header value
+    title.encode("latin-1")
 
 
 def test_aggregate_blocks_new_device_over_limit(client, app, user_with_two_keys):
@@ -348,7 +339,7 @@ def test_aggregate_blocks_new_device_over_limit(client, app, user_with_two_keys)
     r2 = client.get(f"/api/sub/u/{token}", headers={"User-Agent": "v2rayng", "x-hwid": "devB"})
     assert r2.status_code == 200
     decoded = base64.b64decode(r2.data).decode()
-    assert "127.0.0.1" in decoded  # warn placeholder, not the real nodes
+    assert "127.0.0.1" in decoded
 
 
 def test_aggregate_no_gate_when_toggle_off(client, user_with_two_keys):
@@ -368,9 +359,9 @@ def test_browser_never_gated_even_over_limit(client, app, user_with_two_keys):
         db.session.add(SystemSetting(key="device_limit_enabled", value="true"))
         db.session.add(SystemSetting(key="device_limit_per_user", value="1"))
         db.session.commit()
-    # fill the limit via a client UA
+
     client.get(f"/api/sub/u/{token}", headers={"User-Agent": "v2rayng", "x-hwid": "devA"})
-    # a browser sending a new over-limit hwid must STILL get the HTML page (never a warn config)
+
     resp = client.get(
         f"/api/sub/u/{token}",
         headers={"User-Agent": "Mozilla/5.0 AppleWebKit/537.36", "x-hwid": "devB"},

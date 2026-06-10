@@ -11,10 +11,7 @@ bp = Blueprint("panels", __name__)
 
 
 def _decode_link_token(raw: str) -> tuple[str, str]:
-    """Decode a composite link token (base64 of 'url|token') into (url, token).
 
-    Falls back to ('', raw) if the input is a plain token without embedded URL.
-    """
     import base64
 
     try:
@@ -27,6 +24,49 @@ def _decode_link_token(raw: str) -> tuple[str, str]:
     except Exception:
         pass
     return "", raw
+
+
+def _coerce_ip(host):
+
+    import ipaddress
+    import socket
+
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        return ipaddress.ip_address(socket.inet_aton(host))
+    except (OSError, ValueError):
+        return None
+
+
+def _validate_panel_url(url: str) -> str:
+
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Panel URL must use http or https")
+    host = (parsed.hostname or "").strip()
+    if not host:
+        raise ValueError("Panel URL has no host")
+    ip = _coerce_ip(host)
+    if ip is not None:
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise ValueError("Panel URL resolves to a non-routable address")
+    else:
+        low = host.lower()
+        if low == "localhost" or "." not in low or low.endswith((".local", ".internal", ".localhost")):
+            raise ValueError("Panel URL host is not a public domain")
+    return url
 
 
 @bp.route("/panels", methods=["GET"])
@@ -55,16 +95,15 @@ def create_panel():
             url = str(data.get("url", "") or "").strip().rstrip("/")
         if not url:
             raise ValueError("Could not determine panel URL from token")
+        _validate_panel_url(url)
 
         dup = LinkedPanel.query.filter_by(name=name).first()
         if dup:
             raise ValueError("Panel name already exists")
 
-        # Resolve master's own name from SystemSetting
         setting = SystemSetting.query.filter_by(key="panel_name").first()
         master_name = (setting.value if setting else None) or "Master"
 
-        # Perform handshake with child panel
         try:
             resp = requests.post(
                 f"{url}/api/federation/handshake",
@@ -74,6 +113,7 @@ def create_panel():
                     "master_name": master_name,
                 },
                 timeout=10,
+                allow_redirects=False,
             )
         except requests.ConnectionError:
             return jsonify({"error": "Cannot connect to child panel"}), 502
@@ -149,7 +189,6 @@ def delete_panel(panel_id):
         db.session.delete(panel)
         db.session.commit()
 
-        # Clean up Redis cache keys
         redis = get_redis()
         if redis:
             try:
@@ -174,6 +213,7 @@ def panel_system_stats(panel_id):
             f"{panel.url}/api/stats/system",
             headers={"X-Federation-Token": panel.federation_token},
             timeout=5,
+            allow_redirects=False,
         )
         return jsonify(resp.json()), resp.status_code
     except Exception as e:
@@ -191,6 +231,7 @@ def panel_restart(panel_id):
             f"{panel.url}/api/restart",
             headers={"X-Federation-Token": panel.federation_token},
             timeout=10,
+            allow_redirects=False,
         )
         return jsonify(resp.json()), resp.status_code
     except Exception as e:
@@ -209,6 +250,7 @@ def panel_backup(panel_id):
             headers={"X-Federation-Token": panel.federation_token},
             timeout=300,
             stream=True,
+            allow_redirects=False,
         )
         if resp.status_code != 200:
             return jsonify({"error": "Backup failed"}), resp.status_code
@@ -238,6 +280,7 @@ def panel_restore(panel_id):
             headers={"X-Federation-Token": panel.federation_token},
             files={"file": (f.filename, f.stream, f.content_type)},
             timeout=60,
+            allow_redirects=False,
         )
         return jsonify(resp.json()), resp.status_code
     except Exception as e:
@@ -258,6 +301,7 @@ def test_panel(panel_id):
                 f"{panel.url}/api/federation/snapshot",
                 headers={"X-Federation-Token": panel.federation_token},
                 timeout=10,
+                allow_redirects=False,
             )
         except requests.ConnectionError:
             panel.status = "offline"

@@ -22,7 +22,7 @@ _PERIOD_SECONDS = {
 
 
 def _since_bucket(period: str):
-    """Return (since_bucket_ts, since_date_str) or (None, None) for 'all'."""
+
     secs = _PERIOD_SECONDS.get(period)
     if secs is None:
         return None, None
@@ -33,15 +33,7 @@ def _since_bucket(period: str):
 
 
 def _resolve_range(args):
-    """Return (since_bucket, since_date, until_bucket, until_date).
 
-    If both 'from' and 'to' are present in the query they take precedence over
-    'period' and define an [inclusive, exclusive) hourly-aligned window.
-    Otherwise we fall through to the legacy 'period' preset and leave until_*
-    None (open-ended — interpreted as "up to now" by the caller).
-
-    Raises ValueError on malformed input.
-    """
     raw_from = args.get("from")
     raw_to = args.get("to")
     if raw_from is not None or raw_to is not None:
@@ -67,21 +59,21 @@ def _resolve_range(args):
 
 
 def _granularity_for_duration(secs: int) -> int:
-    """Bucket size in seconds for aggregating chart points, given a window duration."""
+
     if secs <= 3_600:
-        return 600  # 10-minute buckets → 6 points per hour
+        return 600
     if secs <= 86_400:
-        return 3_600  # hourly
+        return 3_600
     if secs <= 90 * 86_400:
-        return 86_400  # daily
-    return 7 * 86_400  # weekly
+        return 86_400
+    return 7 * 86_400
 
 
 def _granularity_seconds(period: str) -> int:
-    """Legacy preset-based granularity, retained for the no-custom-range path."""
+
     secs = _PERIOD_SECONDS.get(period)
     if secs is None:
-        return 7 * 86_400  # 'all' → weekly
+        return 7 * 86_400
     return _granularity_for_duration(secs)
 
 
@@ -97,11 +89,9 @@ def get_overview():
     inbounds = Inbound.query.all()
     ib_protocols = {ib.tag: ib.protocol for ib in inbounds}
 
-    # All-time totals straight from the models
     total_up_alltime = sum(c.up for c in clients)
     total_down_alltime = sum(c.down for c in clients)
 
-    # Period traffic from snapshots
     user_snaps_q = db.session.query(
         TrafficSnapshot.entity_id,
         TrafficSnapshot.inbound_tag,
@@ -158,7 +148,6 @@ def get_overview():
         reverse=True,
     )
 
-    # Top domains in period
     domain_q = db.session.query(
         DomainStat.domain,
         func.sum(DomainStat.hit_count).label("hits"),
@@ -189,14 +178,7 @@ def get_overview():
 @bp.get("/stats/traffic")
 @token_required
 def get_traffic():
-    """Time-series traffic chart data.
 
-    Query params:
-      period     – 1h|6h|24h|7d|30d|90d|365d|all  (default: 7d)
-      entity_type – inbound|user|all  (default: all)
-      entity_id   – tag or email (required when entity_type != all)
-      inbound_tag – inbound tag filter when entity_type == user
-    """
     period = request.args.get("period", "7d")
     entity_type = request.args.get("entity_type", "all")
     entity_id = request.args.get("entity_id", "")
@@ -231,7 +213,6 @@ def get_traffic():
         if inbound_tag:
             q = q.filter(TrafficSnapshot.inbound_tag == inbound_tag)
     else:
-        # all – aggregate everything (use user snapshots to avoid double counting)
         q = q.filter(TrafficSnapshot.entity_type == "user")
 
     if since_bucket is not None:
@@ -252,7 +233,7 @@ def get_traffic():
 @bp.get("/stats/domains")
 @token_required
 def get_domains():
-    """Top domains with optional filters."""
+
     limit = min(int(request.args.get("limit", 50)), 200)
     email_filter = request.args.get("email", "")
     tag_filter = request.args.get("inbound_tag", "")
@@ -294,7 +275,7 @@ def get_domains():
 @bp.get("/stats/domain-users")
 @token_required
 def get_domain_users():
-    """Per-user breakdown for a specific domain."""
+
     domain = request.args.get("domain", "").strip()
     if not domain:
         return jsonify({"error": "domain is required"}), 400
@@ -341,7 +322,7 @@ def get_domain_users():
 @bp.get("/stats/users-ranking")
 @token_required
 def get_users_ranking():
-    """Users ranked by traffic in the selected period."""
+
     try:
         since_bucket, _, until_bucket, _ = _resolve_range(request.args)
     except ValueError as e:
@@ -365,7 +346,6 @@ def get_users_ranking():
         .all()
     )
 
-    # Enrich with current DB status
     client_map = {(c.email, c.inbound_tag): c for c in Client.query.all()}
 
     result = []

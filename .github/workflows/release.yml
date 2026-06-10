@@ -1,8 +1,5 @@
 name: Release (versions.json-driven)
 
-# Triggers when versions.json is modified on main.
-# Only services whose version field changed vs. the previous commit are built.
-# No auto-commits: you edit versions.json, push, CI builds what changed.
 on:
   push:
     branches: [main]
@@ -23,7 +20,6 @@ jobs:
         with:
           fetch-depth: 2
 
-      # ── Honour [skip release] marker in commit message ───────────────────
       - name: Check [skip release] marker
         id: skip
         env:
@@ -36,17 +32,12 @@ jobs:
             echo "skip=0" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── Detect which services had their version changed ──────────────────
       - name: Detect bumped services
         id: changes
         if: steps.skip.outputs.skip == '0'
         env:
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # Recover the previous versions.json. Order of preference:
-          #   1. The `before` SHA from the push event (normal push).
-          #   2. HEAD~1 (force push / history rewrite).
-          #   3. Empty object (first commit, no history).
           if [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && \
              git cat-file -e "${BEFORE_SHA}:versions.json" 2>/dev/null; then
             git show "${BEFORE_SHA}:versions.json" > /tmp/old_versions.json
@@ -84,7 +75,6 @@ jobs:
         if: steps.skip.outputs.skip == '0' && steps.changes.outputs.services == ''
         run: echo "No service versions changed — skipping build."
 
-      # ── Log in to GHCR ───────────────────────────────────────────────────
       - name: Log in to GHCR
         if: steps.skip.outputs.skip == '0' && steps.changes.outputs.services != ''
         uses: docker/login-action@v3
@@ -97,7 +87,6 @@ jobs:
         if: steps.skip.outputs.skip == '0' && steps.changes.outputs.services != ''
         uses: docker/setup-buildx-action@v3
 
-      # ── Build & push each bumped service ─────────────────────────────────
       - name: Build and push images
         if: steps.skip.outputs.skip == '0' && steps.changes.outputs.services != ''
         env:

@@ -1,9 +1,3 @@
-"""Redis-backed cache for the subscription endpoint.
-
-Caches the rendered response body keyed by (ua_kind, uuid). Falls through silently
-when Redis is unreachable or RATELIMIT_STORAGE_URI does not point at Redis.
-"""
-
 import logging
 import os
 
@@ -70,7 +64,7 @@ def invalidate_user(uuid_str):
 
 
 def invalidate_all_for_inbound(inbound_tag):
-    """Drop every cached subscription belonging to clients of this inbound."""
+
     if not inbound_tag:
         return
     r = get_redis()
@@ -86,7 +80,7 @@ def invalidate_all_for_inbound(inbound_tag):
                 continue
             for k in KINDS:
                 chunk.append(_key(k, uuid_str))
-            if len(chunk) >= 1500:  # ~500 users × 3 kinds
+            if len(chunk) >= 1500:
                 r.delete(*chunk)
                 chunk = []
         if chunk:
@@ -96,7 +90,7 @@ def invalidate_all_for_inbound(inbound_tag):
 
 
 def invalidate_user_aggregate(telegram_id):
-    """Drop cached aggregated subscription for a telegram user (by their sub_token)."""
+
     if not telegram_id:
         return
     from app.models import TelegramUser

@@ -1,5 +1,3 @@
-"""Unit tests for app.services.provisioning.backfill_tariff (cross-panel)."""
-
 import time as _time
 import uuid as _uuid
 from unittest.mock import patch
@@ -13,7 +11,7 @@ _GB = 1024**3
 
 
 def _snap(clients_by_inbound):
-    """{inbound_tag: [client dict, ...]} -> federation snapshot shape."""
+
     return {"inbounds": [{"tag": tag, "clients": cls} for tag, cls in clients_by_inbound.items()]}
 
 
@@ -28,7 +26,7 @@ def now_ms():
 
 @pytest.fixture
 def fed_tariff(app, db):
-    """Federation-only tariff: gateway (panel 1) + hiks (panel 2), NO local inbound."""
+
     db.session.add_all(
         [
             LinkedPanel(id=1, name="gateway", url="https://gw", federation_token="t", status="online", created_at=1),
@@ -49,7 +47,7 @@ def fed_tariff(app, db):
 
 
 def test_federation_holder_without_local_client_gets_remote_key(app, db, fed_tariff, now_ms):
-    """Holder discovered only via the gateway snapshot is provisioned on hiks."""
+
     expiry = now_ms + 10 * 86400_000
     snaps = {
         1: _snap({"gateway": [_cl(42, fed_tariff.id, expiry_time=expiry)]}),
@@ -159,7 +157,7 @@ def test_inherits_max_expiry_across_panels_and_unlimited_wins(app, db, fed_tarif
 
 
 def test_local_holder_gets_local_key(app, db, now_ms):
-    """Mixed tariff: a local inbound + a federation inbound."""
+
     db.session.add(
         LinkedPanel(id=2, name="hiks", url="https://hk", federation_token="t", status="online", created_at=1)
     )
@@ -203,8 +201,7 @@ def test_local_holder_gets_local_key(app, db, now_ms):
 
 
 def test_provision_failure_counted_and_does_not_abort(app, db, fed_tariff, now_ms):
-    """A holder is missing the hiks key; proxy_provision raises -> counted in
-    provision_failures, batch does not abort, created_remote stays 0."""
+
     expiry = now_ms + 5 * 86400_000
     snaps = {
         1: _snap({"gateway": [_cl(42, fed_tariff.id, expiry_time=expiry)]}),

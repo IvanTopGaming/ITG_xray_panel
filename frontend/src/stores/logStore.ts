@@ -1,12 +1,11 @@
 import { create } from 'zustand';
 import { useAuthStore } from './authStore';
+import { panelBase } from '@/lib/panelBase';
 
 const MAX_LOG_LINES = 2000;
-const panelBase = window.__PANEL_BASE_URL__ || '/';
 const normalizedBase = panelBase.endsWith('/') ? panelBase : `${panelBase}/`;
 const LOGS_ENDPOINT = `${normalizedBase}api/logs`;
 
-// AbortController lives outside of Zustand state to avoid serialization issues
 let _abortController: AbortController | null = null;
 
 export interface LogEntry {

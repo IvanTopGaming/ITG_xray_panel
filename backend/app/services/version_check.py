@@ -1,9 +1,3 @@
-"""Fetch + cache the latest versions.json from the repo's main branch.
-
-Public repo, no auth. gevent-friendly (urllib with a short timeout). On any
-failure the last good value is kept.
-"""
-
 import json
 import logging
 import time
@@ -22,7 +16,7 @@ def _http_get_json(url, timeout=5):
 
 
 def fetch_latest():
-    """Refresh the cache. Never raises."""
+
     try:
         data = _http_get_json(LATEST_URL)
         if isinstance(data, dict):

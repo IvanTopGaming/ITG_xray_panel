@@ -1,5 +1,3 @@
-"""Tests for the auto_renew_free_users scheduler job."""
-
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -65,7 +63,7 @@ def test_future_grant_is_skipped(app, db, basic):
         auto_renew_free_users()
 
     db.session.refresh(grant)
-    # next_renewal_at unchanged within ±1 second tolerance for DB precision
+
     assert abs((grant.next_renewal_at - future).total_seconds()) < 1
     mock_sync.assert_not_called()
 
@@ -93,8 +91,7 @@ def test_paid_grant_is_skipped(app, db, basic):
 
 
 def test_archived_tariff_pauses_grant(app, db, basic):
-    """If the tariff is archived, the helper sets next_renewal_at=None
-    and publishes an access_paused event so the user is notified."""
+
     from app.jobs.billing import auto_renew_free_users
 
     tariff = basic
@@ -120,8 +117,7 @@ def test_archived_tariff_pauses_grant(app, db, basic):
 
     paused_calls = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "access_paused"]
     assert len(paused_calls) == 1
-    # auto_renew_free_users calls publish(event_type, telegram_id=..., payload=...)
-    # — event type is positional, the rest are keyword args.
+
     call = paused_calls[0]
     assert call.kwargs["telegram_id"] == 42
     payload = call.kwargs["payload"]
@@ -132,7 +128,7 @@ def test_archived_tariff_pauses_grant(app, db, basic):
 
 
 def test_disabled_tariff_pauses_with_reason_disabled(app, db, basic):
-    """When tariff is enabled=False, access_paused payload says reason='disabled'."""
+
     from app.jobs.billing import auto_renew_free_users
 
     tariff = basic
@@ -158,9 +154,7 @@ def test_disabled_tariff_pauses_with_reason_disabled(app, db, basic):
 
 
 def test_access_renewed_event_carries_user_lang(app, db, basic):
-    """When auto-renew fires for an English user, the access_renewed payload
-    must carry lang='en' so the consumer can fetch the localized text instead
-    of defaulting to Russian."""
+
     from app.jobs.billing import auto_renew_free_users
 
     tariff = basic
@@ -188,7 +182,7 @@ def test_access_renewed_event_carries_user_lang(app, db, basic):
 
 
 def test_per_row_error_is_isolated(app, db, basic):
-    """A single failing row doesn't kill the rest of the batch."""
+
     from app.jobs.billing import auto_renew_free_users
 
     tariff = basic

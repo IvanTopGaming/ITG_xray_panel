@@ -9,12 +9,6 @@ export interface ServiceStatus {
   updateAvailable: boolean;
 }
 
-/**
- * Per-service version status for the four shown services.
- * - backend / bot: live (from the API `running` block).
- * - frontend / xray: build-time constant (their own running build).
- * - bot row is included only when the bot reported recently (API nulls it otherwise).
- */
 export function useVersionStatus() {
   const query = useQuery({
     queryKey: ['system', 'version'],

@@ -106,7 +106,7 @@ def token_required(f):
 
 
 def bot_service_token_required(f):
-    """Bearer = SystemSetting('bot_service_token'). 401 on miss, 500 if the setting row is absent."""
+
     import secrets as _secrets
 
     @wraps(f)
@@ -121,8 +121,7 @@ def bot_service_token_required(f):
         setting = SystemSetting.query.filter_by(key="bot_service_token").first()
         if setting is None or not setting.value:
             return jsonify({"error": "bot_service_token not configured"}), 500
-        # Constant-time compare guards against timing attacks (internal-network
-        # only, but cheap to harden).
+
         if not _secrets.compare_digest(token, setting.value):
             return jsonify({"error": "invalid bot service token"}), 401
         return f(*args, **kwargs)
@@ -141,7 +140,6 @@ def _check_bot_service_token(token: str) -> bool:
 
 
 def admin_or_bot_token_required(f):
-    """Admin JWT OR bot service token. Used on admin endpoints the bot also needs (user CRUD, restart, stats)."""
 
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -215,14 +213,13 @@ def federation_token_required(f):
 
 
 def admin_or_federation_token_required(f):
-    """Admin JWT OR bot service token OR federation token."""
 
     @wraps(f)
     def decorated(*args, **kwargs):
         fed_token = request.headers.get("X-Federation-Token", "")
         if fed_token and _check_federation_token(fed_token):
             return f(*args, **kwargs)
-        # Fall through to existing admin_or_bot logic
+
         header = request.headers.get("Authorization", "")
         scheme, _, value = header.partition(" ")
         if scheme.lower() != "bearer" or not value.strip():

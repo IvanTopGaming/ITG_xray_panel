@@ -10,7 +10,7 @@ from app.models import SystemSetting, Tariff, TariffItem
 
 @pytest.fixture
 def app(app):
-    """Extend the base app fixture with the billing blueprint."""
+
     from app.api import billing as billing_api
 
     if not any(bp.name == "billing" for bp in app.blueprints.values()):
@@ -107,14 +107,10 @@ def test_checkout_validates_required_fields(client, bot_token):
     resp = client.post(
         "/api/billing/checkout",
         headers={"Authorization": f"Bearer {bot_token}"},
-        json={"telegram_id": 42},  # missing tariff_id, lang
+        json={"telegram_id": 42},
     )
     assert resp.status_code == 400
 
-
-# ---------------------------------------------------------------------------
-# Webhook tests (Task 5)
-# ---------------------------------------------------------------------------
 
 from app.models import Payment  # noqa: E402
 
@@ -168,7 +164,7 @@ def test_webhook_is_idempotent_on_repeat_delivery(client, public_tariff, app):
                 json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
             )
             assert resp.status_code == 200
-    # Provisioning called exactly once even though webhook hit twice.
+
     assert mock_provision.call_count == 1
 
 
@@ -199,9 +195,7 @@ def test_webhook_returns_200_for_unknown_payment(client, public_tariff):
 
 
 def test_webhook_does_nothing_when_status_lookup_unavailable(client, public_tariff, app):
-    """If YooKassa can't be reached (timeout/misconfig), fetch_remote_status
-    returns None. The webhook must not provision; the poll cron retries the
-    still-pending row later."""
+
     pid = _make_pending(app, public_tariff)
     with (
         patch("app.services.billing.fetch_remote_status", return_value=None),
@@ -219,22 +213,18 @@ def test_webhook_does_nothing_when_status_lookup_unavailable(client, public_tari
 
 
 def test_webhook_ignores_spoofed_succeeded_when_yookassa_says_pending(client, public_tariff, app):
-    """The webhook body is only a trigger, never proof of payment. An attacker
-    who knows a real pending yookassa_id can POST a forged
-    {"event": "payment.succeeded"} from any IP. The handler must re-verify the
-    authoritative status via yookassa.Payment.find_one and refuse to provision
-    when the real status is not 'succeeded'."""
+
     pid = _make_pending(app, public_tariff)
     with (
         patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
         patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
         patch("app.services.billing.bot_events.publish"),
     ):
-        mock_find.return_value = SimpleNamespace(status="pending")  # YooKassa: not paid
+        mock_find.return_value = SimpleNamespace(status="pending")
         resp = client.post(
             "/api/billing/yookassa/webhook",
             json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
-            environ_base={"REMOTE_ADDR": "1.2.3.4"},  # IP no longer gates anything
+            environ_base={"REMOTE_ADDR": "1.2.3.4"},
         )
     assert resp.status_code == 200
     mock_provision.assert_not_called()

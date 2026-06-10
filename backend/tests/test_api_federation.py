@@ -1,5 +1,3 @@
-"""Tests for /api/federation/* endpoints (child-side Federation API)."""
-
 import time
 
 import jwt as jwt_lib
@@ -51,7 +49,7 @@ def client(app_with_federation):
 
 @pytest.fixture
 def linked_config(db):
-    """Set up a fully-linked FederationConfig with a known federation_token."""
+
     cfg = db.session.get(FederationConfig, 1)
     cfg.federation_token = "test-federation-token-abc"
     cfg.master_url = "https://master.example.com"
@@ -65,13 +63,8 @@ def linked_config(db):
 
 @pytest.fixture
 def federation_headers(linked_config):
-    """Headers carrying the federation token for snapshot/provision endpoints."""
+
     return {"X-Federation-Token": linked_config.federation_token}
-
-
-# ============================================================
-# POST /api/federation/link-token
-# ============================================================
 
 
 class TestLinkToken:
@@ -82,7 +75,6 @@ class TestLinkToken:
         assert "link_token" in body
         assert len(body["link_token"]) > 20
 
-        # Raw token persisted in DB; response is base64(url|raw_token)
         import base64
 
         cfg = db.session.get(FederationConfig, 1)
@@ -102,7 +94,7 @@ class TestLinkToken:
         assert "already linked" in resp.get_json()["error"]
 
     def test_allows_regenerate_when_not_fully_linked(self, client, admin_headers, db):
-        """If federation_token is set but linked_at is None, allow regeneration."""
+
         cfg = db.session.get(FederationConfig, 1)
         cfg.federation_token = "partial"
         cfg.linked_at = None
@@ -116,18 +108,12 @@ class TestLinkToken:
         assert resp.status_code == 401
 
 
-# ============================================================
-# POST /api/federation/handshake
-# ============================================================
-
-
 class TestHandshake:
     def test_successful_handshake(self, client, admin_headers, db):
-        # First generate a link token
+
         resp = client.post("/api/federation/link-token", headers=admin_headers)
         link_token = resp.get_json()["link_token"]
 
-        # Now handshake
         resp = client.post(
             "/api/federation/handshake",
             json={
@@ -140,11 +126,10 @@ class TestHandshake:
         body = resp.get_json()
         assert "federation_token" in body
         assert len(body["federation_token"]) > 20
-        assert body["name"] == "Panel"  # default when no SystemSetting
+        assert body["name"] == "Panel"
         assert body["panel_version"] == 15
         assert isinstance(body["inbound_count"], int)
 
-        # DB state updated
         cfg = db.session.get(FederationConfig, 1)
         assert cfg.federation_token == body["federation_token"]
         assert cfg.master_url == "https://master.example.com"
@@ -191,7 +176,7 @@ class TestHandshake:
         assert resp.status_code == 401
 
     def test_handshake_no_pending_token(self, client, db):
-        """No link_token was ever generated."""
+
         resp = client.post(
             "/api/federation/handshake",
             json={"link_token": "anything"},
@@ -202,7 +187,6 @@ class TestHandshake:
         resp = client.post("/api/federation/link-token", headers=admin_headers)
         link_token = resp.get_json()["link_token"]
 
-        # First handshake succeeds
         resp = client.post(
             "/api/federation/handshake",
             json={
@@ -213,7 +197,6 @@ class TestHandshake:
         )
         assert resp.status_code == 200
 
-        # Second handshake with same token fails
         resp = client.post(
             "/api/federation/handshake",
             json={
@@ -224,11 +207,6 @@ class TestHandshake:
         )
         assert resp.status_code == 401
         assert "already used" in resp.get_json()["error"]
-
-
-# ============================================================
-# GET /api/federation/snapshot
-# ============================================================
 
 
 class TestSnapshot:
@@ -299,9 +277,7 @@ class TestSnapshot:
         assert cl["device_count"] == 0
 
     def test_snapshot_stream_settings_as_dict(self, client, federation_headers, db):
-        """stream_settings stored as a Python dict (not JSON string) is handled."""
-        # SQLAlchemy Text column stores strings, but the endpoint should
-        # gracefully handle the case where it's already parsed or invalid
+
         ib = Inbound(
             tag="ss-in",
             port=8388,
@@ -314,7 +290,7 @@ class TestSnapshot:
         resp = client.get("/api/federation/snapshot", headers=federation_headers)
         assert resp.status_code == 200
         body = resp.get_json()
-        # Invalid JSON falls back to empty dict
+
         assert body["inbounds"][0]["stream_settings"] == {}
 
     def test_snapshot_requires_federation_token(self, client):
@@ -329,11 +305,6 @@ class TestSnapshot:
         assert resp.status_code == 401
 
 
-# ============================================================
-# GET /api/federation/config
-# ============================================================
-
-
 class TestGetConfig:
     def test_config_when_linked(self, client, admin_headers, linked_config):
         resp = client.get("/api/federation/config", headers=admin_headers)
@@ -343,7 +314,7 @@ class TestGetConfig:
         assert body["master_url"] == "https://master.example.com"
         assert body["master_name"] == "Master"
         assert body["linked_at"] is not None
-        # link_token should be None because it was already used
+
         assert body["link_token"] is None
 
     def test_config_when_not_linked(self, client, admin_headers, db):
@@ -364,7 +335,7 @@ class TestGetConfig:
         resp = client.get("/api/federation/config", headers=admin_headers)
         assert resp.status_code == 200
         body = resp.get_json()
-        # link_token is returned as base64-encoded composite (url|raw_token)
+
         import base64
 
         decoded = base64.urlsafe_b64decode(body["link_token"] + "==").decode()
@@ -376,14 +347,9 @@ class TestGetConfig:
         assert resp.status_code == 401
 
 
-# ============================================================
-# POST /api/federation/provision
-# ============================================================
-
-
 class TestProvision:
     def test_provision_returns_501_when_not_implemented(self, client, federation_headers):
-        """provision_single_item may not exist yet — returns 501."""
+
         resp = client.post(
             "/api/federation/provision",
             headers=federation_headers,
@@ -395,7 +361,7 @@ class TestProvision:
                 "tariff_id": 1,
             },
         )
-        # Either 501 (function not implemented) or 200 (if it exists)
+
         assert resp.status_code in (200, 400, 501)
 
     def test_provision_requires_federation_token(self, client):

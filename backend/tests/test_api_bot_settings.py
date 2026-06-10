@@ -1,5 +1,3 @@
-"""Tests for GET/PUT /api/bot/settings admin endpoints."""
-
 import time
 
 import jwt
@@ -12,7 +10,7 @@ from app.utils import SECRET_KEY
 
 @pytest.fixture
 def app(app):
-    """Extend the base app fixture with bot_admin blueprint."""
+
     from app.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):

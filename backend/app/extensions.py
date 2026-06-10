@@ -36,12 +36,7 @@ _redis_client = None
 
 
 def get_redis():
-    """Lazy: returns a redis.Redis bound to RATELIMIT_STORAGE_URI, or None.
 
-    Reuses the limiter's storage URL on purpose: if the limiter has Redis, the
-    subscription cache (and any other consumer) has Redis. No separate env var.
-    Errors during construction are swallowed and the cached result becomes None.
-    """
     global _redis_client_cached, _redis_client
     if _redis_client_cached:
         return _redis_client

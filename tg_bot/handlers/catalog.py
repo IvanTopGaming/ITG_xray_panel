@@ -1,6 +1,5 @@
-"""Flow 3 — tariff catalog & purchase."""
-
 import logging
+from html import escape
 
 import httpx
 from aiogram import F, Router, types
@@ -14,17 +13,21 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def h(value):
+    return escape(str(value), quote=True)
+
+
 async def _tariff_card(tariff: dict, *, i18n: I18n, lang: str) -> str:
     header = await i18n.t(
         "catalog.tariff_card.header",
         lang,
-        name=tariff["name"],
+        name=h(tariff["name"]),
         price=tariff["price_rub"],
         days=tariff["period_days"],
     )
     lines = [header]
     for item in tariff["items"]:
-        display = item.get("label") or item.get("inbound_label") or item.get("inbound_tag", "")
+        display = h(item.get("label") or item.get("inbound_label") or item.get("inbound_tag", ""))
         if item["traffic_gb"]:
             amount = await i18n.t(
                 "catalog.tariff_card.item.gb_amount",
@@ -156,6 +159,7 @@ async def start_checkout(
             result["payment_id"],
             chat_id=msg.chat.id,
             message_id=msg.message_id,
+            telegram_id=callback.from_user.id,
         )
     except Exception as exc:
         logger.info("set_payment_chat_coords failed for payment=%s: %s", result["payment_id"], exc)
@@ -177,14 +181,11 @@ async def cancel_payment(
         return
     status = None
     try:
-        result = await backend.cancel_payment(payment_id)
+        result = await backend.cancel_payment(payment_id, telegram_id=callback.from_user.id)
         status = (result or {}).get("status")
     except Exception as exc:
         logger.info("catalog: cancel_payment failed: %s", exc)
 
-    # Race with the YooKassa webhook: if the payment already succeeded, the
-    # push notification has either already replaced this message or is about
-    # to. Don't lie to the user with a "cancelled" screen.
     if status == "succeeded":
         await callback.answer()
         return
@@ -200,5 +201,4 @@ async def cancel_payment(
     try:
         await callback.message.edit_text(message, reply_markup=home_kb)
     except TelegramBadRequest as exc:
-        # Push notification already deleted the checkout message — nothing to edit.
         logger.info("cancel_payment: edit_text skipped (message gone): %s", exc)

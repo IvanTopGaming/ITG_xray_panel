@@ -10,7 +10,6 @@ function startsWithAny(value: string, prefixes: string[]): boolean {
   return prefixes.some((p) => v.startsWith(p));
 }
 
-/** First cross-field prefix violation message, or null when all rules are valid. */
 export function validateRuleFieldPrefixes(rules: RoutingRule[]): string | null {
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i];

@@ -1,8 +1,3 @@
-"""Migration test: linked_panel.created_at was stored in seconds before
-commit 54b624b (May 27 2026) — the frontend treats numbers as Unix epoch
-ms, so legacy rows render as "01/21/1970". The migration multiplies any
-seconds value by 1000 to bring it to the ms convention."""
-
 import os
 import sqlite3
 import tempfile
@@ -52,10 +47,9 @@ def _created_at(cursor, name):
 
 
 def test_seconds_value_is_multiplied_to_ms(linked_panel_db):
-    """A legacy row written with int(time.time()) — e.g. 1748500000 — becomes
-    1748500000000 after the fixup."""
+
     conn, cursor = linked_panel_db
-    legacy_seconds = 1_748_500_000  # ~2025-05-29 in seconds
+    legacy_seconds = 1_748_500_000
     _insert(cursor, "old-gateway", legacy_seconds)
     conn.commit()
 
@@ -66,10 +60,9 @@ def test_seconds_value_is_multiplied_to_ms(linked_panel_db):
 
 
 def test_ms_value_is_left_alone(linked_panel_db):
-    """A correctly-stored ms value must NOT be touched (would push it into the
-    far future)."""
+
     conn, cursor = linked_panel_db
-    current_ms = 1_748_500_000_000  # ~2025-05-29 in ms
+    current_ms = 1_748_500_000_000
     _insert(cursor, "new-gateway", current_ms)
     conn.commit()
 
@@ -80,8 +73,7 @@ def test_ms_value_is_left_alone(linked_panel_db):
 
 
 def test_idempotent_does_not_double_multiply(linked_panel_db):
-    """Running the fixup twice on a row that was originally seconds must end
-    at the correct ms value, not seconds × 1_000_000."""
+
     conn, cursor = linked_panel_db
     legacy_seconds = 1_748_500_000
     _insert(cursor, "twice", legacy_seconds)
@@ -95,7 +87,7 @@ def test_idempotent_does_not_double_multiply(linked_panel_db):
 
 
 def test_mixed_rows_each_handled_independently(linked_panel_db):
-    """Old (seconds) and new (ms) rows can coexist; fixup touches only the legacy ones."""
+
     conn, cursor = linked_panel_db
     _insert(cursor, "legacy", 1_700_000_000)
     _insert(cursor, "modern", 1_748_500_000_000)
@@ -121,8 +113,7 @@ def _last_poll(cursor, name):
 
 
 def test_last_poll_seconds_value_is_multiplied_to_ms(linked_panel_db):
-    """A child panel running pre-fix code returns timestamp in seconds; the
-    master stored it verbatim into last_poll. Frontend shows "01/21/1970"."""
+
     conn, cursor = linked_panel_db
     _insert_with_last_poll(cursor, "old-last-poll", 1_748_500_000)
     conn.commit()
@@ -145,7 +136,7 @@ def test_last_poll_ms_value_is_left_alone(linked_panel_db):
 
 
 def test_last_poll_null_is_left_alone(linked_panel_db):
-    """last_poll is nullable — a panel that hasn't polled yet must stay NULL."""
+
     conn, cursor = linked_panel_db
     _insert_with_last_poll(cursor, "never-polled", None)
     conn.commit()

@@ -58,7 +58,6 @@ export default function Routing() {
 
   return (
     <div className="space-y-6 pb-10">
-      {/* Pill tab bar */}
       <div className="flex gap-1 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] w-fit overflow-x-auto">
         {ROUTING_TABS.map((t) => (
           <button
@@ -79,7 +78,6 @@ export default function Routing() {
         ))}
       </div>
 
-      {/* Animated content */}
       <AnimatePresence mode="wait">
         <motion.div
           key={tab}

@@ -1,9 +1,3 @@
-"""Bot i18n: fetches text strings from the backend, caches them in memory.
-
-Phase 2 uses a 60-second TTL for cache invalidation. Phase 4 will add a
-Redis subscriber that invalidates the cache instantly when admin saves.
-"""
-
 import asyncio
 import logging
 import time
@@ -18,7 +12,7 @@ _TTL_SECONDS = 60
 class I18n:
     def __init__(self, backend: BackendClient):
         self._backend = backend
-        self._cache: Dict[str, Dict[str, str]] = {}  # lang -> {key: text}
+        self._cache: Dict[str, Dict[str, str]] = {}
         self._loaded_at: Dict[str, float] = {}
         self._lock = asyncio.Lock()
 
@@ -27,7 +21,6 @@ class I18n:
         if self._cache.get(lang) and (time.time() - loaded) < _TTL_SECONDS:
             return
         async with self._lock:
-            # Double-check after lock
             loaded = self._loaded_at.get(lang, 0.0)
             if self._cache.get(lang) and (time.time() - loaded) < _TTL_SECONDS:
                 return
@@ -37,13 +30,11 @@ class I18n:
                 self._loaded_at[lang] = time.time()
             except Exception as exc:
                 logger.info("i18n.fetch failed for lang=%s: %s", lang, exc)
-                # Don't bump _loaded_at so we'll retry next call.
 
     async def t(self, key: str, lang: str = "ru", **vars: object) -> str:
         await self._ensure_loaded(lang)
         text: Optional[str] = self._cache.get(lang, {}).get(key)
         if text is None:
-            # Fallback: try the other lang
             other = "en" if lang == "ru" else "ru"
             await self._ensure_loaded(other)
             text = self._cache.get(other, {}).get(key)

@@ -35,17 +35,22 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 
 <div align="center">
 
-<img src="docs/shot-01-dashboard.webp" width="860" alt="Dashboard — inbounds, users, live status and traffic"><br/>
+<img src="docs/shot-01-dashboard.webp" width="760" alt="Dashboard — inbounds, users, live status and traffic"><br/>
 <sub><b>Dashboard</b> — inbounds, users, live status &amp; per-user traffic</sub>
 
 <br/><br/>
 
-<img src="docs/shot-02-statistics.webp" width="430" alt="Statistics"> <img src="docs/shot-03-bot.webp" width="430" alt="Telegram bot tariffs"><br/>
-<sub><b>Statistics</b> — traffic over time, top users &amp; sites&nbsp;&nbsp;·&nbsp;&nbsp;<b>Telegram bot</b> — tariffs &amp; plans</sub>
+<img src="docs/shot-02-statistics.webp" width="760" alt="Statistics — traffic over time, top users and sites"><br/>
+<sub><b>Statistics</b> — traffic over time, top users &amp; sites</sub>
 
 <br/><br/>
 
-<img src="docs/shot-04-payments.webp" width="600" alt="Payments — YooKassa billing history"><br/>
+<img src="docs/shot-03-bot.webp" width="760" alt="Telegram bot — tariffs and plans"><br/>
+<sub><b>Telegram bot</b> — tariffs &amp; plans</sub>
+
+<br/><br/>
+
+<img src="docs/shot-04-payments.webp" width="760" alt="Payments — YooKassa billing history"><br/>
 <sub><b>Payments</b> — YooKassa billing history</sub>
 
 </div>
@@ -287,10 +292,10 @@ Stream settings are stored as one JSON blob per inbound; UI-only keys (`ssMethod
 
 ```bash
 # Backend
-cd backend && pip install -r requirements.txt
-python run.py                  # dev server :5000
-ruff check backend/ tg_bot/    # lint     (CI uses ruff format --check)
-pytest tests/                  # 830+ unit + API tests
+cd backend && uv sync
+uv run python run.py           # dev server :5000
+uvx ruff check backend/ tg_bot/    # lint     (CI uses ruff format --check)
+uv run pytest tests/               # 830+ unit + API tests
 
 # Frontend
 cd frontend && npm install
@@ -299,8 +304,8 @@ npm run build                  # tsc + vite build
 npm run lint && npm run format:check
 
 # Bot
-cd tg_bot && pip install -r requirements.txt
-python main.py
+cd tg_bot && uv sync
+uv run python main.py
 ```
 
 Rebuild a single service after changes:

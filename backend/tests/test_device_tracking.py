@@ -1,5 +1,3 @@
-"""Unit tests for app.services.device_tracking."""
-
 import time
 import uuid
 
@@ -45,9 +43,6 @@ def _make_device(db, *, client_id, hwid, last_seen=None):
     return device
 
 
-# ---------- list_devices ----------
-
-
 def test_list_devices_returns_devices_ordered_by_last_seen_desc(app, db):
     _make_inbound(db)
     client = _make_client(db)
@@ -67,9 +62,6 @@ def test_list_devices_returns_empty_list_for_no_devices(app, db):
 
     devices = list_devices(client.id)
     assert devices == []
-
-
-# ---------- revoke_device ----------
 
 
 def test_revoke_device_deletes_and_returns_true(app, db):
@@ -98,11 +90,8 @@ def test_revoke_device_returns_false_for_wrong_client(app, db):
     db.session.commit()
 
     assert revoke_device(client_b.id, device.id) is False
-    # Device still exists on the original client.
+
     assert ClientDevice.query.filter_by(id=device.id).first() is not None
-
-
-# ---------- device_gate ----------
 
 
 def test_device_gate_first_access_creates_device_and_returns_ok(app, db):
@@ -144,7 +133,7 @@ def test_device_gate_new_hwid_at_limit_returns_blocked(app, db):
 
     assert state == "limit"
     assert headers.get("x-hwid-max-devices-reached") == "true"
-    # No new device row was created.
+
     assert ClientDevice.query.filter_by(client_id=client.id, hwid="d3").first() is None
 
 
@@ -162,7 +151,7 @@ def test_device_gate_unlimited_allows_any_number_of_devices(app, db):
 
 
 def test_device_gate_inherits_inbound_device_limit(app, db):
-    """When client.device_limit is None, the inbound's limit applies."""
+
     inbound = _make_inbound(db, device_limit=1)
     client = _make_client(db, device_limit=None)
     _make_device(db, client_id=client.id, hwid="sole-device")
@@ -174,20 +163,19 @@ def test_device_gate_inherits_inbound_device_limit(app, db):
 
 
 def test_device_gate_client_limit_overrides_inbound_limit(app, db):
-    """client.device_limit takes precedence over inbound.device_limit."""
+
     inbound = _make_inbound(db, device_limit=1)
     client = _make_client(db, device_limit=3)
     _make_device(db, client_id=client.id, hwid="d1")
     db.session.commit()
 
-    # Inbound says 1, but client says 3 — second device should be allowed.
     state, _ = device_gate(client, inbound, {"x-hwid": "d2"})
     assert state == "ok"
     assert ClientDevice.query.filter_by(client_id=client.id, hwid="d2").first() is not None
 
 
 def test_device_gate_client_limit_zero_overrides_inbound_limit(app, db):
-    """client.device_limit=0 means unlimited, even if inbound has a limit."""
+
     inbound = _make_inbound(db, device_limit=1)
     client = _make_client(db, device_limit=0)
     _make_device(db, client_id=client.id, hwid="d1")
@@ -198,7 +186,7 @@ def test_device_gate_client_limit_zero_overrides_inbound_limit(app, db):
 
 
 def test_device_gate_no_hwid_with_limit_returns_unsupported(app, db):
-    """Missing HWID + nonzero limit should return 'unsupported'."""
+
     inbound = _make_inbound(db, device_limit=2)
     client = _make_client(db)
     db.session.commit()
@@ -210,7 +198,7 @@ def test_device_gate_no_hwid_with_limit_returns_unsupported(app, db):
 
 
 def test_device_gate_no_hwid_unlimited_returns_ok(app, db):
-    """Missing HWID + no limit (0) should pass through silently."""
+
     inbound = _make_inbound(db, device_limit=0)
     client = _make_client(db)
     db.session.commit()
@@ -219,9 +207,6 @@ def test_device_gate_no_hwid_unlimited_returns_ok(app, db):
 
     assert state == "ok"
     assert headers == {}
-
-
-# ---------- user_device_gate ----------
 
 
 def _enable_user_device_limit(db, limit):
@@ -290,9 +275,6 @@ def test_user_gate_counts_across_multiple_keys(app, db):
     _enable_user_device_limit(db, 1)
     assert user_device_gate(74, {"x-hwid": "devA"})[0] == "ok"
     assert user_device_gate(74, {"x-hwid": "devB"})[0] == "limit"
-
-
-# ---------- subscription_device_settings ----------
 
 
 def test_subscription_device_settings_defaults(app, db):

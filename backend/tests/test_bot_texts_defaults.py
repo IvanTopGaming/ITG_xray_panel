@@ -1,5 +1,3 @@
-"""Ensure picker keys are seeded in bot_texts_defaults.yaml."""
-
 import os
 
 import yaml

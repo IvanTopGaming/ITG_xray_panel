@@ -1,5 +1,3 @@
-"""Aggregated subscription HTML page (Plan 2): node builder, device summary, renderer."""
-
 import json
 
 import pytest
@@ -75,7 +73,7 @@ def app(app):
 
 @pytest.fixture
 def user_three_keys(app):
-    """User 800: one online limited key, one disabled key, one unlimited key. Returns sub_token."""
+
     import time
 
     now_ms = int(time.time() * 1000)
@@ -174,7 +172,6 @@ def test_device_summary_hidden_without_limit(app, user_three_keys):
     from app.api.subscription import _user_device_summary
 
     with app.app_context():
-        # toggle OFF (default) -> card hidden regardless of per-client limits
         assert _user_device_summary(800) is None
 
 
@@ -202,7 +199,7 @@ def test_pick_lang_query_overrides_header(app):
 
     assert _pick_lang("ru", "en-US,en;q=0.9") == "ru"
     assert _pick_lang("EN", "ru") == "en"
-    assert _pick_lang("fr", "ru") == "en"  # unsupported -> default en
+    assert _pick_lang("fr", "ru") == "en"
 
 
 def test_pick_lang_accept_language_fallback(app):
@@ -302,13 +299,13 @@ def test_browser_with_ua_query_gets_config_not_html(http_client, user_three_keys
     import base64 as _b64
 
     token = user_three_keys
-    # A browser clicking the page's "Download v2ray" link: browser UA + ?ua=v2ray
+
     resp = http_client.get(
         f"/api/sub/u/{token}?ua=v2ray",
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36"},
     )
     assert resp.status_code == 200
-    assert resp.mimetype.startswith("text/plain")  # config, not HTML
+    assert resp.mimetype.startswith("text/plain")
     assert _b64.b64decode(resp.data).decode().count("vless://") >= 1
 
 
@@ -345,9 +342,9 @@ def test_page_days_left_rounds_up_and_localized_date(app, user_three_keys):
         user = TelegramUser.query.filter_by(telegram_id=800).first()
         html_doc = render_aggregate_subscription_page(user, "ru", "https://s/api/sub/u/x")
         m = re.search(r"осталось (\d+) дн", html_doc)
-        assert m and int(m.group(1)) == 12  # ceil of ~12d, not floor 11
-        assert "июн" in html_doc  # localized month name (июня)
-        assert not re.search(r"\d{4}-\d{2}-\d{2}", html_doc)  # no ISO dates leaked
+        assert m and int(m.group(1)) == 12
+        assert "июн" in html_doc
+        assert not re.search(r"\d{4}-\d{2}-\d{2}", html_doc)
 
 
 def test_render_page_escapes_brand_and_shows_offline_dot(app, user_three_keys):
@@ -359,9 +356,9 @@ def test_render_page_escapes_brand_and_shows_offline_dot(app, user_three_keys):
         db.session.commit()
         user = TelegramUser.query.filter_by(telegram_id=800).first()
         html_doc = render_aggregate_subscription_page(user, "en", "https://s/api/sub/u/x")
-        assert "<script>x</script>" not in html_doc  # brand is HTML-escaped
+        assert "<script>x</script>" not in html_doc
         assert "&lt;script&gt;" in html_doc
-        assert "dot off" in html_doc  # the disabled DE key renders an offline (non-glowing) dot
+        assert "dot off" in html_doc
 
 
 def test_render_page_expired_node(app):
@@ -391,4 +388,4 @@ def test_render_page_expired_node(app):
         )
         db.session.commit()
         html_doc = render_aggregate_subscription_page(u, "ru", "https://s/api/sub/u/x")
-        assert "истекла" in html_doc  # past expiry -> expired label
+        assert "истекла" in html_doc

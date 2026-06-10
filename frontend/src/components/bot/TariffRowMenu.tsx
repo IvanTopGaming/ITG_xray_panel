@@ -12,7 +12,6 @@ interface TariffRowMenuProps {
   onDelete: () => void;
 }
 
-// Approximate menu height (3 items + divider + paddings). Used to decide flip.
 const MENU_ESTIMATED_HEIGHT = 160;
 const MENU_WIDTH = 200;
 
@@ -28,8 +27,6 @@ export function TariffRowMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Position via fixed coords because the table wrapper has overflow-x-auto;
-  // absolute positioning would either clip the dropdown or force a scrollbar.
   const updatePosition = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;

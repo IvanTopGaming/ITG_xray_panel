@@ -1,12 +1,4 @@
-"""Populate the bot's billing tables with demo data.
 
-Run inside the backend container, AFTER scripts/seed_demo.py (which creates
-the panel-side inbounds and clients this script links against):
-
-    docker compose exec backend python /app/scripts/seed_bot_demo.py
-
-Idempotent: wipes anything tagged 'demo-' and re-creates.
-"""
 
 from __future__ import annotations
 
@@ -35,9 +27,9 @@ DEMO_TARIFF_NAME_PREFIX = "[demo] "
 DEMO_NOTE_PREFIX = "demo:"
 
 
-# ─── Tariff catalog ───────────────────────────────────────────────────────────
-# (name, price_rub, period_days, is_trial, visibility, items)
-# items: list of (inbound_tag, label, traffic_gb, allowed_node_groups)
+
+
+
 TARIFFS = [
     (
         "Free Trial",
@@ -100,9 +92,9 @@ TARIFFS = [
 ]
 
 
-# ─── Telegram users ───────────────────────────────────────────────────────────
+
 USERS = [
-    # (telegram_id, username, language, trial_used_days_ago, blocked)
+    
     (100001, "alice_vpn", "ru", None, False),
     (100002, "bob_proxy", "ru", 30, False),
     (100003, "carol", "en", 5, False),
@@ -207,8 +199,7 @@ def create_telegram_users() -> list[TelegramUser]:
 
 
 def link_clients_to_users(tg_users: list[TelegramUser]):
-    """Attach a TelegramUser to about 60% of the demo panel clients so the
-    bot user-drawer in the panel UI shows real subscription state."""
+    
     print("→ Linking existing demo Clients to Telegram users…")
     demo_clients = Client.query.filter(Client.inbound_tag.like(f"{DEMO_INBOUND_PREFIX}%")).all()
     available_users = [u.telegram_id for u in tg_users if not u.blocked]
@@ -217,7 +208,7 @@ def link_clients_to_users(tg_users: list[TelegramUser]):
     linked = 0
     for c in demo_clients:
         if random.random() < 0.4:
-            continue  # 40% of clients stay unlinked (manually-added in panel)
+            continue  
         if pool_index >= len(available_users):
             break
         c.telegram_id = available_users[pool_index]
@@ -228,7 +219,7 @@ def link_clients_to_users(tg_users: list[TelegramUser]):
 
 
 def create_access_grants(tariffs: list[Tariff], tg_users: list[TelegramUser]):
-    """Random mix of free grants (admin-issued) and paid grants (renewed)."""
+    
     print("→ Creating UserTariffAccess grants…")
     now = datetime.utcnow()
     paid_tariffs = [t for t in tariffs if not t.is_trial]
@@ -237,7 +228,7 @@ def create_access_grants(tariffs: list[Tariff], tg_users: list[TelegramUser]):
         if u.blocked:
             continue
         if random.random() < 0.35:
-            continue  # 35% never bought anything
+            continue  
         n_grants = random.choices([1, 2], weights=[0.8, 0.2])[0]
         chosen = random.sample(paid_tariffs, min(n_grants, len(paid_tariffs)))
         for t in chosen:
@@ -263,7 +254,7 @@ def create_access_grants(tariffs: list[Tariff], tg_users: list[TelegramUser]):
 
 
 def create_payments(tariffs: list[Tariff], tg_users: list[TelegramUser]):
-    """30 days of payment history with a realistic status mix."""
+    
     print("→ Creating Payments…")
     now = datetime.utcnow()
     paid_tariffs = [t for t in tariffs if not t.is_trial]
@@ -332,7 +323,7 @@ def main():
         print(f"  UserTariffAccess grants:  {UserTariffAccess.query.count()}")
         print(f"  Payments:                 {Payment.query.count()}")
 
-        # Payment status breakdown
+        
         from sqlalchemy import func
 
         by_status = (

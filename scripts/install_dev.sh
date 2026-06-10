@@ -1,8 +1,4 @@
 #!/bin/bash
-# Install/update an ITG Xray Panel test deployment from the `dev` branch.
-# Pulls dev-latest container images from GHCR; generates .env on first run,
-# leaves it alone on subsequent runs. All bot settings (token, admins,
-# proxy, panel credentials) live in the panel UI now — no YAML required.
 
 set -e
 

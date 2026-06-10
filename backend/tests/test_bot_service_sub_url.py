@@ -1,5 +1,3 @@
-"""sub_token is generated for new users and sub_url is exposed to the bot."""
-
 import pytest
 
 from app.extensions import db
@@ -50,7 +48,7 @@ def test_get_user_state_includes_sub_url(client, app, monkeypatch):
 
 
 def test_get_user_state_no_sub_domain_uses_panel_fallback(client, app, monkeypatch):
-    # No SUB_DOMAIN -> same fallback the admin Dashboard uses: PANEL_DOMAIN + secret path.
+
     monkeypatch.delenv("SUB_DOMAIN", raising=False)
     monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
     monkeypatch.setenv("PANEL_SECRET_PATH", "secret123")

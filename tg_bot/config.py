@@ -1,13 +1,3 @@
-"""Bot bootstrap environment.
-
-Everything except these three vars now lives in the panel DB (SystemSetting)
-and is fetched by `runtime_config.RuntimeConfig`:
-
-  BACKEND_API_URL    — required, e.g. http://backend:5000/api
-  BOT_SERVICE_TOKEN  — required, set via panel "Rotate token" button
-  BOT_LOG_LEVEL      — optional, defaults to INFO
-"""
-
 import logging
 import os
 import sys

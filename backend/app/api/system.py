@@ -259,12 +259,7 @@ def backup():
     if not os.path.exists(db_path):
         return jsonify({"error": "DB not found"}), 404
     db.session.commit()
-    # Use SQLite Backup API to create a consistent snapshot.
-    # send_file(db_path) would silently miss any committed data still
-    # in the WAL file (panel.db-wal); backup() goes through the SQLite
-    # engine and captures the full logical database regardless of WAL state.
-    # The snapshot is streamed from disk (not buffered in RAM) and deleted
-    # via after_this_request once Flask is done sending the response.
+
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".db", dir=os.path.dirname(db_path))
     os.close(tmp_fd)
     try:

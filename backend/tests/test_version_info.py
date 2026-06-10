@@ -29,7 +29,7 @@ def _make_token(admin):
 
 @pytest.fixture
 def app(app):
-    """Register the blueprints this file exercises (idempotent)."""
+
     from app.api import system as system_api
     from app.api import bot_service as bot_service_api
 
@@ -78,7 +78,7 @@ def test_missing_file_falls_back_to_dev(tmp_path):
 def test_bot_status_records_and_reads_fresh(monkeypatch):
     monkeypatch.setattr(bot_status.time, "time", lambda: 1000.0)
     bot_status.record_bot_version("2.1.3")
-    monkeypatch.setattr(bot_status.time, "time", lambda: 1010.0)  # 10s later
+    monkeypatch.setattr(bot_status.time, "time", lambda: 1010.0)
     s = bot_status.get_bot_status(freshness=180)
     assert s == {"version": "2.1.3", "reported_at": 1000.0}
 
@@ -86,7 +86,7 @@ def test_bot_status_records_and_reads_fresh(monkeypatch):
 def test_bot_status_stale_returns_none(monkeypatch):
     monkeypatch.setattr(bot_status.time, "time", lambda: 1000.0)
     bot_status.record_bot_version("2.1.3")
-    monkeypatch.setattr(bot_status.time, "time", lambda: 1300.0)  # 300s later
+    monkeypatch.setattr(bot_status.time, "time", lambda: 1300.0)
     assert bot_status.get_bot_status(freshness=180) == {"version": None, "reported_at": None}
 
 
@@ -138,7 +138,7 @@ def test_version_check_keeps_previous_on_failure(monkeypatch):
         raise OSError("network down")
 
     monkeypatch.setattr(version_check, "_http_get_json", boom)
-    version_check.fetch_latest()  # must not raise
+    version_check.fetch_latest()
     assert version_check.get_latest()["latest"] == {"backend": "1.1.1"}
 
 
@@ -155,6 +155,6 @@ def test_version_endpoint_shape(client, auth_headers, monkeypatch):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["running"]["backend"] == "2.1.10"
-    assert body["running"]["bot"] is None  # not reported
+    assert body["running"]["bot"] is None
     assert body["latest"]["backend"] == "2.1.11"
     assert body["latest_checked_at"] == 4242.0

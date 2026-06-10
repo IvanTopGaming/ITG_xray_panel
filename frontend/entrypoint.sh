@@ -26,6 +26,4 @@ envsubst '${PANEL_SECRET_PATH}' < /etc/nginx/templates/default.conf.template > /
 
 sed -i "s|<base href=\"/\"|<base href=\"/$PANEL_SECRET_PATH/\"|g" /usr/share/nginx/html/index.html
 
-sed -i "s|window.__PANEL_BASE_URL__ = '/'|window.__PANEL_BASE_URL__ = '/$PANEL_SECRET_PATH/'|g" /usr/share/nginx/html/index.html
-
 exec nginx -g "daemon off;"

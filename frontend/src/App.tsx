@@ -4,6 +4,7 @@ import { ToastContainer, Slide } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
 import { useAuthStore, AuthState } from '@/stores/authStore';
+import { panelBase } from '@/lib/panelBase';
 import { Layout } from '@/components/layout/Layout';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
@@ -28,7 +29,7 @@ function ProtectedRoute({ children }: { children: JSX.Element }) {
   return children;
 }
 
-const basename = window.__PANEL_BASE_URL__ || '/';
+const basename = panelBase;
 
 function App() {
   return (

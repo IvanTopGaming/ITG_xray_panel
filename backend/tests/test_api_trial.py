@@ -1,5 +1,3 @@
-"""Tests for POST /api/bot-service/trial/activate."""
-
 from datetime import datetime
 from unittest.mock import patch
 
@@ -109,7 +107,7 @@ def test_activate_trial_404_if_no_trial_tariff(app_with_service_api, db, client,
 def test_activate_trial_creates_telegram_user_if_missing(
     app_with_service_api, db, client, service_headers, trial_setup
 ):
-    """If no TelegramUser row exists, the endpoint creates one."""
+
     with patch("app.services.provisioning._sync_after_provision"):
         resp = client.post(
             "/api/bot-service/trial/activate",

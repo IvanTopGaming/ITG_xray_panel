@@ -1,10 +1,9 @@
-"""Bot-facing /bot-service/* endpoints (bot_service_token auth). bot_admin is the JWT-protected admin side."""
-
 from datetime import datetime
 import time
 import uuid
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy import update
 
 from app.extensions import db
 from app.models import (
@@ -49,7 +48,7 @@ def _parse_admin_ids_csv(raw: str) -> list[int]:
 @bp.route("/bot/runtime-config", methods=["GET"])
 @bot_service_token_required
 def get_runtime_config():
-    """Bot settings — empty values until bot_token is configured (bot bootstrap-loops on its side)."""
+
     record_bot_version(request.headers.get("X-Bot-Version"))
     return jsonify(
         {
@@ -77,7 +76,7 @@ def get_texts():
 
     rows = BotText.query.filter_by(lang=lang).all()
     texts = {row.key: row.text for row in rows}
-    # Version = epoch seconds from the latest updated_at (0 if no rows).
+
     if rows:
         latest = max((r.updated_at for r in rows if r.updated_at is not None), default=None)
         version = int(latest.timestamp()) if latest else 0
@@ -137,7 +136,6 @@ def upsert_user():
         )
         db.session.add(user)
     else:
-        # Refresh username but never overwrite stored language preference.
         user.username = username
         user.last_seen_at = datetime.utcnow()
     if not getattr(user, "sub_token", None):
@@ -156,7 +154,6 @@ def activate_trial():
 
     user = db.session.get(TelegramUser, tg_id)
     if user is None:
-        # Bot may hit /trial/activate before middleware has upserted the row.
         user = TelegramUser(telegram_id=tg_id, language="ru")
         db.session.add(user)
         db.session.flush()
@@ -168,10 +165,22 @@ def activate_trial():
     if trial_tariff is None:
         return jsonify({"error": "no trial tariff configured"}), 404
 
-    result = apply_tariff_for_user(tg_id, trial_tariff, source="trial")
-
-    user.trial_used_at = datetime.utcnow()
+    claimed = db.session.execute(
+        update(TelegramUser)
+        .where(TelegramUser.telegram_id == tg_id, TelegramUser.trial_used_at.is_(None))
+        .values(trial_used_at=datetime.utcnow())
+    )
     db.session.commit()
+    if claimed.rowcount == 0:
+        return jsonify({"error": "trial already used"}), 409
+
+    try:
+        result = apply_tariff_for_user(tg_id, trial_tariff, source="trial")
+    except Exception:
+        db.session.rollback()
+        db.session.execute(update(TelegramUser).where(TelegramUser.telegram_id == tg_id).values(trial_used_at=None))
+        db.session.commit()
+        raise
 
     bot_events.publish(
         "trial_activated",
@@ -189,7 +198,7 @@ def activate_trial():
 @bp.route("/bot-service/users/<int:tg_id>/state", methods=["GET"])
 @bot_service_token_required
 def get_user_state(tg_id):
-    """Everything the bot needs to render /start: user row, trial availability, active clients, soonest expiry."""
+
     user = db.session.get(TelegramUser, tg_id)
     trial_available = (user is None or user.trial_used_at is None) and Tariff.query.filter_by(
         is_trial=True, enabled=True
@@ -224,8 +233,6 @@ def get_user_state(tg_id):
     else:
         expires_at_ms = None
 
-    # Single source of truth — identical to the URL the admin Dashboard shows and
-    # the bot's "My subscription" screen opens (SUB_DOMAIN, else PANEL_DOMAIN+secret).
     from app.api.subscription import build_aggregate_sub_url
 
     sub_url = build_aggregate_sub_url(user.sub_token) if user else None
@@ -347,7 +354,11 @@ def list_tariffs_for_bot():
 @bp.route("/bot-service/payments/<int:payment_id>/cancel", methods=["POST"])
 @bot_service_token_required
 def cancel_payment_for_bot(payment_id):
-    p = db.session.get(Payment, payment_id)
+    payload = request.get_json(silent=True) or {}
+    tg_id = payload.get("telegram_id")
+    if not isinstance(tg_id, int) or isinstance(tg_id, bool):
+        return jsonify({"error": "telegram_id (integer) is required"}), 400
+    p = Payment.query.filter_by(id=payment_id, telegram_id=tg_id).first()
     if p is None:
         return jsonify({"error": "not_found"}), 404
     if p.status == "pending":
@@ -365,12 +376,15 @@ def set_payment_chat_coords(payment_id):
 
     chat_id = payload.get("chat_id")
     message_id = payload.get("message_id")
+    tg_id = payload.get("telegram_id")
     if not isinstance(chat_id, int) or isinstance(chat_id, bool):
         return jsonify({"error": "chat_id (integer) is required"}), 400
     if not isinstance(message_id, int) or isinstance(message_id, bool):
         return jsonify({"error": "message_id (integer) is required"}), 400
+    if not isinstance(tg_id, int) or isinstance(tg_id, bool):
+        return jsonify({"error": "telegram_id (integer) is required"}), 400
 
-    payment = db.session.get(Payment, payment_id)
+    payment = Payment.query.filter_by(id=payment_id, telegram_id=tg_id).first()
     if payment is None:
         return jsonify({"error": "payment not found"}), 404
 

@@ -1,5 +1,3 @@
-"""Redis subscriber: backend → bot push events."""
-
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +5,7 @@ import datetime as dt
 import json
 import logging
 import os
+from html import escape
 from typing import Any, Awaitable, Callable, Optional, Union
 
 import redis.asyncio as redis_async
@@ -20,7 +19,11 @@ from runtime_config import runtime_config
 logger = logging.getLogger(__name__)
 _CHANNEL = "bot:events"
 
-# Bot or callable returning one — accessor pattern so hot-swap can replace Bot under us.
+
+def h(value):
+    return escape(str(value), quote=True)
+
+
 BotSource = Union[Bot, Callable[[], Union[Bot, Awaitable[Bot]]]]
 
 
@@ -66,8 +69,6 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
     if tg_id is None:
         return
 
-    # Block/unblock/language-change: drop the cached entry so the next event
-    # from this user picks up the new state immediately, not after the 15 s TTL.
     if etype in ("user_blocked", "user_unblocked", "user_language_changed") and middleware is not None:
         try:
             middleware.invalidate(int(tg_id))
@@ -95,13 +96,18 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         tariffs_label = await i18n.t("menu.tariffs", lang)
         back_label = await i18n.t("common.back_to_main", lang)
         markup = kb.payment_retry_kb(tariffs_label=tariffs_label, back_label=back_label)
+    elif etype == "payment_refunded":
+        text = await i18n.t("notification.payment_refunded", lang)
+        tariffs_label = await i18n.t("menu.tariffs", lang)
+        back_label = await i18n.t("common.back_to_main", lang)
+        markup = kb.payment_retry_kb(tariffs_label=tariffs_label, back_label=back_label)
     elif etype == "access_renewed":
         text = await i18n.t("notification.access_renewed", lang)
     elif etype == "access_paused":
         text = await i18n.t(
             "notification.access_paused",
             lang,
-            tariff_name=payload.get("tariff_name", ""),
+            tariff_name=h(payload.get("tariff_name", "")),
         )
         subs_label = await i18n.t("menu.subscription", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -110,7 +116,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         text = await i18n.t(
             "notification.access_granted",
             lang,
-            tariff_name=payload.get("tariff_name", ""),
+            tariff_name=h(payload.get("tariff_name", "")),
             expires=_format_expires_at(payload.get("expires_at_ms")),
         )
         subs_label = await i18n.t("menu.subscription", lang)
@@ -120,7 +126,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         text = await i18n.t(
             "notification.access_granted_once",
             lang,
-            tariff_name=payload.get("tariff_name", ""),
+            tariff_name=h(payload.get("tariff_name", "")),
             expires=_format_expires_at(payload.get("expires_at_ms")),
         )
         subs_label = await i18n.t("menu.subscription", lang)
@@ -130,7 +136,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         text = await i18n.t(
             "notification.access_offered",
             lang,
-            tariff_name=payload.get("tariff_name", ""),
+            tariff_name=h(payload.get("tariff_name", "")),
         )
         tariffs_label = await i18n.t("menu.tariffs", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -151,10 +157,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             email=payload.get("email", ""),
             expires=_format_expires_at(payload.get("expiry_time_ms")),
         )
-        # Renew button shows only when the backend has pre-confirmed the tariff
-        # is still purchasable (not archived, not disabled, not trial, and for
-        # private — user has a grant). Otherwise we'd send the user to a button
-        # that just rejects with "tariff_not_available".
+
         rows = []
         tariff_id = payload.get("tariff_id")
         if payload.get("renewable") and tariff_id:

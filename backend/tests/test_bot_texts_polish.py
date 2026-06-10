@@ -1,5 +1,3 @@
-"""Tests for the polished bot_text defaults + force-reseed behavior."""
-
 import os
 import sqlite3
 import tempfile
@@ -12,8 +10,7 @@ from db_migration import CURRENT_BOT_TEXTS_VERSION, _maybe_force_reseed_bot_text
 
 @pytest.fixture
 def seeded_db():
-    """Fresh SQLite with a bot_text table and one pre-seeded row that has
-    been 'admin-customized' (text differs from any YAML default)."""
+
     fd, path = tempfile.mkstemp(suffix=".sqlite")
     os.close(fd)
     conn = sqlite3.connect(path)
@@ -24,6 +21,7 @@ def seeded_db():
             key VARCHAR(64) NOT NULL,
             lang VARCHAR(8) NOT NULL,
             text TEXT NOT NULL,
+            customized INTEGER NOT NULL DEFAULT 0,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (key, lang)
         )
@@ -45,7 +43,7 @@ def test_seed_without_force_skips_existing_row(seeded_db):
     conn.commit()
     cursor.execute("SELECT text FROM bot_text WHERE key='welcome.title' AND lang='ru'")
     assert cursor.fetchone()[0] == "OLD_CUSTOM_TEXT"
-    # New rows from YAML still get inserted; old row preserved.
+
     assert inserted >= 1
 
 
@@ -56,7 +54,7 @@ def test_seed_with_force_overwrites_existing_row(seeded_db):
     cursor.execute("SELECT text FROM bot_text WHERE key='welcome.title' AND lang='ru'")
     text = cursor.fetchone()[0]
     assert text != "OLD_CUSTOM_TEXT"
-    # The new welcome.title.ru carries the tech-vibe emoji
+
     assert text.startswith("🛡️")
     assert inserted >= 1
 
@@ -68,7 +66,6 @@ def _load_yaml():
         return yaml.safe_load(fh) or {}
 
 
-# Keys that intentionally exist in ru only (first-touch picker)
 _RU_ONLY_KEYS = {
     "lang_picker.title",
     "lang_picker.button.en",
@@ -102,8 +99,7 @@ def test_polished_emoji_spot_checks():
 
 @pytest.fixture
 def db_with_system_setting(seeded_db):
-    """seeded_db already has bot_text + an admin-edited row. Add a
-    system_setting table so the version helper can read/write it."""
+
     conn, cursor = seeded_db
     cursor.execute(
         """
@@ -119,16 +115,14 @@ def db_with_system_setting(seeded_db):
 
 def test_maybe_force_reseed_runs_when_stored_version_lower(db_with_system_setting):
     conn, cursor = db_with_system_setting
-    # Stored version absent — defaults to 1, which is < CURRENT_BOT_TEXTS_VERSION
+
     ran = _maybe_force_reseed_bot_texts(cursor)
     conn.commit()
     assert ran is True
 
-    # Existing admin-customised row is overwritten
     cursor.execute("SELECT text FROM bot_text WHERE key='welcome.title' AND lang='ru'")
     assert cursor.fetchone()[0].startswith("🛡️")
 
-    # Stored version is bumped
     cursor.execute("SELECT value FROM system_setting WHERE key='bot_texts_seeded_version'")
     assert cursor.fetchone()[0] == str(CURRENT_BOT_TEXTS_VERSION)
 
@@ -145,13 +139,12 @@ def test_maybe_force_reseed_noop_when_already_current(db_with_system_setting):
     conn.commit()
     assert ran is False
 
-    # Existing admin-customised row preserved
     cursor.execute("SELECT text FROM bot_text WHERE key='welcome.title' AND lang='ru'")
     assert cursor.fetchone()[0] == "OLD_CUSTOM_TEXT"
 
 
 def test_required_new_keys_exist():
-    """Keys added by this polish pass — referenced by migrated handler/kb code."""
+
     data = _load_yaml()
     required = [
         "menu.subscription",

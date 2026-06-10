@@ -125,7 +125,6 @@ export function TextsTab() {
 
   return (
     <div className="grid grid-cols-12 gap-4">
-      {/* Left: tree */}
       <div className="col-span-4 max-h-[70vh] overflow-y-auto rounded-2xl border border-white/[0.05] bg-white/[0.02] p-3 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 pr-2">
         {Object.entries(groups)
           .sort(([a], [b]) => a.localeCompare(b))
@@ -154,7 +153,6 @@ export function TextsTab() {
           ))}
       </div>
 
-      {/* Right: editor */}
       <div className="col-span-8">
         <AnimatePresence mode="wait">
           {selectedMeta ? (

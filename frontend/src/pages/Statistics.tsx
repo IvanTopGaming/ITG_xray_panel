@@ -25,8 +25,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
 type Period = '1h' | '6h' | '24h' | '7d' | '30d' | '90d' | '365d' | 'all' | 'custom';
 type CustomRange = { from: number; to: number };
 
@@ -98,8 +96,6 @@ interface UserRankEntry {
   source_ips?: string[];
 }
 
-// ─── Protocol colors ────────────────────────────────────────────────────────
-
 const PROTOCOL_COLORS: Record<string, string> = {
   vless: 'text-violet-400',
   vmess: 'text-blue-400',
@@ -119,8 +115,6 @@ const PROTOCOL_BG: Record<string, string> = {
   socks: 'bg-yellow-500/15 border-yellow-500/25',
   http: 'bg-gray-500/15 border-gray-500/25',
 };
-
-// ─── SVG Area Chart ──────────────────────────────────────────────────────────
 
 function AreaChart({
   points,
@@ -220,7 +214,6 @@ function AreaChart({
           </linearGradient>
         </defs>
 
-        {/* Grid lines */}
         {showLabels &&
           yFracs.map((frac) => (
             <line
@@ -234,7 +227,6 @@ function AreaChart({
             />
           ))}
 
-        {/* Y labels */}
         {showLabels &&
           yFracs.map((frac) => (
             <text
@@ -250,7 +242,6 @@ function AreaChart({
             </text>
           ))}
 
-        {/* X labels */}
         {showLabels &&
           xTicks.map(({ i, ts }) => (
             <text
@@ -265,7 +256,6 @@ function AreaChart({
             </text>
           ))}
 
-        {/* Down area + line */}
         <path d={areaPath('down')} fill="url(#gradDown)" />
         <path
           d={linePath('down')}
@@ -275,7 +265,6 @@ function AreaChart({
           strokeLinejoin="round"
         />
 
-        {/* Up area + line */}
         <path d={areaPath('up')} fill="url(#gradUp)" />
         <path
           d={linePath('up')}
@@ -285,7 +274,6 @@ function AreaChart({
           strokeLinejoin="round"
         />
 
-        {/* Hover indicator */}
         {hoverIdx !== null && (
           <>
             <line
@@ -313,7 +301,6 @@ function AreaChart({
         )}
       </svg>
 
-      {/* Floating tooltip */}
       <AnimatePresence>
         {hovered && (
           <motion.div
@@ -346,8 +333,6 @@ function AreaChart({
     </div>
   );
 }
-
-// ─── Stat card ───────────────────────────────────────────────────────────────
 
 function StatCard({
   icon: Icon,
@@ -398,8 +383,6 @@ function StatCard({
   );
 }
 
-// ─── Traffic bar ─────────────────────────────────────────────────────────────
-
 function TrafficBar({ up, down, max }: { up: number; down: number; max: number }) {
   const total = up + down;
   const pct = max > 0 ? (total / max) * 100 : 0;
@@ -414,8 +397,6 @@ function TrafficBar({ up, down, max }: { up: number; down: number; max: number }
     </div>
   );
 }
-
-// ─── Period selector ─────────────────────────────────────────────────────────
 
 const PERIODS: { value: Period; label: string }[] = [
   { value: '1h', label: '1H' },
@@ -451,8 +432,6 @@ function PeriodSelector({ value, onChange }: { value: Period; onChange: (p: Peri
     </div>
   );
 }
-
-// ─── Custom-range button + popover ────────────────────────────────────────────
 
 function CalendarRangeButton({
   active,
@@ -575,16 +554,12 @@ function CalendarRangeButton({
   );
 }
 
-// ─── Tab bar ─────────────────────────────────────────────────────────────────
-
 const TABS: { id: StatsTab; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Overview', icon: Activity },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'inbounds', label: 'Inbounds', icon: Layers },
   { id: 'sites', label: 'Sites', icon: Globe },
 ];
-
-// ─── Sortable table header ────────────────────────────────────────────────────
 
 function SortHeader({
   label,
@@ -623,8 +598,6 @@ function SortHeader({
   );
 }
 
-// ─── Mini bar ────────────────────────────────────────────────────────────────
-
 function MiniBar({ value, max, color = 'violet' }: { value: number; max: number; color?: string }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
   const c = color === 'blue' ? 'bg-blue-500/60' : 'bg-violet-500/60';
@@ -634,8 +607,6 @@ function MiniBar({ value, max, color = 'violet' }: { value: number; max: number;
     </div>
   );
 }
-
-// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Statistics() {
   const [period, setPeriod] = useState<Period>('7d');
@@ -796,7 +767,6 @@ export default function Statistics() {
 
   return (
     <div className="flex flex-col gap-6 px-4 md:px-6 py-6 max-w-7xl mx-auto">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Statistics</h1>
@@ -835,7 +805,6 @@ export default function Statistics() {
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-1 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] w-fit overflow-x-auto">
         {TABS.map((t) => (
           <button
@@ -861,7 +830,6 @@ export default function Statistics() {
       </div>
 
       <AnimatePresence mode="wait">
-        {/* ── OVERVIEW ──────────────────────────────────────────────────── */}
         {tab === 'overview' && (
           <motion.div
             key="overview"
@@ -870,7 +838,6 @@ export default function Statistics() {
             exit={{ opacity: 0, y: -8 }}
             className="flex flex-col gap-6"
           >
-            {/* Stat cards */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <StatCard
                 icon={TrendingUp}
@@ -901,7 +868,6 @@ export default function Statistics() {
               />
             </div>
 
-            {/* Total traffic chart */}
             <div className="rounded-2xl border border-white/5 bg-[#1e1b24]/60 p-5">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-medium text-gray-300">Traffic Over Time</h3>
@@ -919,9 +885,7 @@ export default function Statistics() {
               <AreaChart points={trafficAll?.points ?? []} height={200} />
             </div>
 
-            {/* Bottom 3-column grid */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {/* Top users */}
               <div className="rounded-2xl border border-white/5 bg-[#1e1b24]/60 p-5">
                 <h3 className="text-sm font-medium text-gray-300 mb-4 flex items-center gap-2">
                   <Users size={14} className="text-violet-400" /> Top Users
@@ -953,7 +917,6 @@ export default function Statistics() {
                 )}
               </div>
 
-              {/* Top inbounds */}
               <div className="rounded-2xl border border-white/5 bg-[#1e1b24]/60 p-5">
                 <h3 className="text-sm font-medium text-gray-300 mb-4 flex items-center gap-2">
                   <Layers size={14} className="text-orange-400" /> Top Inbounds
@@ -993,7 +956,6 @@ export default function Statistics() {
                 )}
               </div>
 
-              {/* Top domains */}
               <div className="rounded-2xl border border-white/5 bg-[#1e1b24]/60 p-5">
                 <h3 className="text-sm font-medium text-gray-300 mb-4 flex items-center gap-2">
                   <Globe size={14} className="text-emerald-400" /> Top Sites
@@ -1017,7 +979,6 @@ export default function Statistics() {
           </motion.div>
         )}
 
-        {/* ── USERS ─────────────────────────────────────────────────────── */}
         {tab === 'users' && (
           <motion.div
             key="users"
@@ -1026,7 +987,6 @@ export default function Statistics() {
             exit={{ opacity: 0, y: -8 }}
             className="flex flex-col gap-4"
           >
-            {/* User chart panel */}
             <AnimatePresence>
               {selectedUserForChart && (
                 <motion.div
@@ -1093,7 +1053,6 @@ export default function Statistics() {
               )}
             </AnimatePresence>
 
-            {/* Search */}
             <div className="relative">
               <Search
                 size={14}
@@ -1107,7 +1066,6 @@ export default function Statistics() {
               />
             </div>
 
-            {/* Table */}
             <div className="rounded-2xl border border-white/5 bg-[#1e1b24]/60 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -1252,7 +1210,6 @@ export default function Statistics() {
           </motion.div>
         )}
 
-        {/* ── INBOUNDS ──────────────────────────────────────────────────── */}
         {tab === 'inbounds' && (
           <motion.div
             key="inbounds"
@@ -1261,7 +1218,6 @@ export default function Statistics() {
             exit={{ opacity: 0, y: -8 }}
             className="flex flex-col gap-4"
           >
-            {/* Inbound chart panel */}
             <AnimatePresence>
               {selectedInboundForChart && (
                 <motion.div
@@ -1370,7 +1326,6 @@ export default function Statistics() {
           </motion.div>
         )}
 
-        {/* ── SITES ─────────────────────────────────────────────────────── */}
         {tab === 'sites' && (
           <motion.div
             key="sites"
@@ -1379,7 +1334,6 @@ export default function Statistics() {
             exit={{ opacity: 0, y: -8 }}
             className="flex flex-col gap-4"
           >
-            {/* Filters */}
             <div className="flex flex-col sm:flex-row gap-3">
               <div className="relative flex-1">
                 <Search
@@ -1487,7 +1441,6 @@ export default function Statistics() {
                               </td>
                             </tr>
 
-                            {/* Expanded per-user breakdown */}
                             <AnimatePresence>
                               {isExpanded && (
                                 <tr className="border-b border-white/5">

@@ -30,12 +30,7 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
       email: client.email,
       id: client.id,
       limit_gb: client.limit_bytes ? client.limit_bytes / 1024 ** 3 : 0,
-      // Pre-fill with the existing expiry if set, otherwise with "now" so the
-      // picker has a starting point instead of an empty box. On submit we
-      // check `dirtyFields.expiry_date` — if the admin did NOT touch the
-      // field, we preserve the original client.expiry_time (which may be 0,
-      // i.e. unlimited). Without that guard, opening + saving an unlimited
-      // client would silently revoke it by setting expiry to "now".
+
       expiry_date: formatDateTimeForLocalInput(client.expiry_time || Date.now()),
       reset_day: client.reset_day,
       enable: client.enable,
@@ -85,8 +80,6 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
   });
 
   const onSubmit = (data: any) => {
-    // If the admin did not touch the expiry picker, send back the original
-    // expiry_time (preserves unlimited=0 instead of using the pre-fill).
     const expiry_time = dirtyFields.expiry_date
       ? data.expiry_date
         ? epochMsFromLocalDateTimeInput(data.expiry_date)
@@ -144,11 +137,7 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
 
       <div className="grid grid-cols-2 gap-4">
         <Input label="Per-Node Data Limit (GB)" type="number" {...register('limit_gb')} />
-        {/*
-          Native datetime-local widgets use the browser locale's 12/24h
-          preference. `lang="en-GB"` forces 24h without AM/PM while keeping
-          the input's English UI strings.
-        */}
+
         <Input label="Expiry" type="datetime-local" lang="en-GB" {...register('expiry_date')} />
       </div>
 

@@ -21,7 +21,6 @@ function parseVer(v: string): number[] {
     .map((n) => parseInt(n, 10) || 0);
 }
 
-/** True when `latest` is strictly newer than `current`. Safe on dev/empty. */
 export function isNewer(
   latest: string | null | undefined,
   current: string | null | undefined

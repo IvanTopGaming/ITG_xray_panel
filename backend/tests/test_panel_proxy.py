@@ -1,9 +1,3 @@
-"""Unit tests for app.services.panel_proxy.
-
-FederationClient is tested by mocking requests.Session so no real HTTP is made.
-proxy_* functions are tested with in-memory SQLite via the shared app/db fixtures.
-"""
-
 import time
 from unittest.mock import MagicMock, patch
 
@@ -20,9 +14,6 @@ from app.services.panel_proxy import (
     proxy_create_user,
     proxy_delete_user,
 )
-
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def _make_panel(db, *, name="test-panel", status="online", enable=True):
@@ -48,12 +39,7 @@ def _mock_response(json_data, status_code=200):
     return resp
 
 
-# ─── FederationClient ─────────────────────────────────────────────────────────
-
-
 class TestFederationClient:
-    """FederationClient uses requests.Session with the token header pre-set."""
-
     def setup_method(self):
         self.client = FederationClient(
             url="https://child.example.com/",
@@ -67,9 +53,7 @@ class TestFederationClient:
         assert self.client.base_url == "https://child.example.com"
 
     def test_snapshot_calls_correct_url_with_split_timeout(self):
-        """Snapshot is called every 10s by poll_linked_panels. Use a tuple
-        (connect, read) timeout so an unreachable panel fails fast on connect
-        (2s) instead of blocking the polling cycle for the full 5s read budget."""
+
         with patch.object(self.client._session, "get", return_value=_mock_response({"inbounds": []})) as mock_get:
             result = self.client.snapshot()
         mock_get.assert_called_once_with(
@@ -164,9 +148,6 @@ class TestFederationClient:
         assert result == {"updated": 1}
 
 
-# ─── _get_panel_or_raise ──────────────────────────────────────────────────────
-
-
 class TestGetPanelOrRaise:
     def test_returns_panel_when_online(self, app, db):
         panel = _make_panel(db, status="online")
@@ -188,13 +169,10 @@ class TestGetPanelOrRaise:
             _get_panel_or_raise(panel.id)
 
     def test_unknown_status_does_not_raise(self, app, db):
-        """Panels with status 'unknown' (freshly registered) are allowed through."""
+
         panel = _make_panel(db, name="unknown-panel", status="unknown")
         result = _get_panel_or_raise(panel.id)
         assert result.id == panel.id
-
-
-# ─── get_panel_snapshot ───────────────────────────────────────────────────────
 
 
 class TestGetPanelSnapshot:
@@ -226,9 +204,6 @@ class TestGetPanelSnapshot:
             assert get_panel_snapshot(1) is None
 
 
-# ─── proxy_create_user ────────────────────────────────────────────────────────
-
-
 class TestProxyCreateUser:
     def test_raises_on_offline_panel(self, app, db):
         panel = _make_panel(db, name="offline-for-create", status="offline")
@@ -247,7 +222,7 @@ class TestProxyCreateUser:
         with patch("app.services.panel_proxy.FederationClient") as MockClient:
             instance = MockClient.return_value
             instance.create_user.return_value = expected
-            # _refresh_panel_cache will also use FederationClient; stub snapshot
+
             instance.snapshot.return_value = {}
 
             result = proxy_create_user(panel.id, "vless-in", user_data)
@@ -255,9 +230,6 @@ class TestProxyCreateUser:
         MockClient.assert_called_with(panel.url, panel.federation_token)
         instance.create_user.assert_called_once_with("vless-in", user_data)
         assert result == expected
-
-
-# ─── proxy_delete_user ────────────────────────────────────────────────────────
 
 
 class TestProxyDeleteUser:
@@ -281,9 +253,6 @@ class TestProxyDeleteUser:
         assert result == expected
 
 
-# ─── proxy_bulk_set_flow ──────────────────────────────────────────────────────
-
-
 class TestProxyBulkSetFlow:
     def test_raises_on_offline_panel(self, app, db):
         panel = _make_panel(db, name="offline-for-flow", status="offline")
@@ -304,9 +273,6 @@ class TestProxyBulkSetFlow:
 
         instance.bulk_set_flow.assert_called_once_with(users, "xtls-rprx-vision")
         assert result == expected
-
-
-# ─── fetch_panel_snapshot_live ──────────────────────────────────────────────────
 
 
 class TestFetchPanelSnapshotLive:

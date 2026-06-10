@@ -1,5 +1,3 @@
-"""Bot entry point — bootstraps runtime config from the panel, then long-polls."""
-
 import asyncio
 import logging
 

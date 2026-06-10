@@ -4,12 +4,10 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 18
+CURRENT_DB_VERSION = 19
 CURRENT_BOT_TEXTS_VERSION = 17
 
-# Keys removed from bot_texts_defaults.yaml in a past cleanup — purge orphan
-# bot_text rows on the next force-reseed so they stop appearing in the panel's
-# Bot → Texts admin UI. Append future deletions here.
+
 _REMOVED_BOT_TEXT_KEYS = (
     "checkout.button.cancel",
     "checkout.cancelled",
@@ -123,7 +121,7 @@ def _normalize_legacy_stream_settings(raw_stream: Optional[str]) -> Tuple[Option
 
 
 def _ensure_stats_tables(cursor: sqlite3.Cursor) -> int:
-    """Create traffic_snapshot and domain_stat tables if they don't exist."""
+
     created = 0
 
     if not _table_exists(cursor, "traffic_snapshot"):
@@ -230,7 +228,7 @@ def _ensure_federation_config_table(cursor: sqlite3.Cursor) -> int:
 
 
 def _ensure_client_device_table(cursor: sqlite3.Cursor) -> int:
-    """Create the client_device table for device tracking (Stage 1)."""
+
     if _table_exists(cursor, "client_device"):
         return 0
     cursor.execute(
@@ -257,10 +255,7 @@ def _ensure_client_device_table(cursor: sqlite3.Cursor) -> int:
 
 
 def _ensure_billing_tables(cursor: sqlite3.Cursor) -> int:
-    """Create billing-related tables if they don't exist (v10 migration).
 
-    Returns the number of tables newly created.
-    """
     statements = [
         (
             "tariff",
@@ -333,6 +328,7 @@ def _ensure_billing_tables(cursor: sqlite3.Cursor) -> int:
                 key VARCHAR(120) NOT NULL,
                 lang VARCHAR(8) NOT NULL,
                 text TEXT NOT NULL,
+                customized INTEGER NOT NULL DEFAULT 0,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (key, lang)
             )
@@ -403,20 +399,7 @@ def _ensure_billing_tables(cursor: sqlite3.Cursor) -> int:
 
 
 def _alter_client_billing_columns(cursor: sqlite3.Cursor) -> int:
-    """Add telegram_id and tariff_id columns to client table (v10 migration).
 
-    Returns the number of columns added. No-op if the `client` table doesn't
-    exist yet (it's created by SQLAlchemy `db.create_all()` on first startup;
-    migrate runs after, but defensive guards make this safe to call standalone).
-
-    Note: tariff_id is added as bare INTEGER without a REFERENCES clause.
-    SQLite cannot retroactively add a foreign-key constraint via ALTER TABLE,
-    so the FK declared on Client.tariff_id in models.py is only enforced for
-    fresh installs (created via SQLAlchemy create_all). For upgraded prod DBs
-    the column has no FK constraint. SQLite's `PRAGMA foreign_keys` is OFF by
-    default in this codebase anyway, so the practical impact is nil — but
-    don't try to "fix" this by adding REFERENCES here, it isn't possible.
-    """
     if not _table_exists(cursor, "client"):
         return 0
     added = 0
@@ -435,17 +418,7 @@ def _seed_bot_texts(
     *,
     force: bool = False,
 ) -> int:
-    """Insert default bot text strings from YAML.
 
-    Default (force=False): only inserts missing (key, lang) rows; preserves
-    any admin-edited row.
-
-    With force=True: upserts every (key, lang) pair from YAML, overwriting
-    existing rows. Used once on a `CURRENT_BOT_TEXTS_VERSION` bump to push
-    a new polished default set across the deployment.
-
-    Returns the number of (key, lang) rows inserted or updated.
-    """
     try:
         import yaml
     except ImportError:
@@ -477,6 +450,7 @@ def _seed_bot_texts(
                     ON CONFLICT(key, lang) DO UPDATE SET
                         text = excluded.text,
                         updated_at = CURRENT_TIMESTAMP
+                    WHERE customized = 0
                     """,
                     (key, lang, str(text)),
                 )
@@ -496,11 +470,49 @@ def _seed_bot_texts(
     return touched
 
 
+def _load_bot_text_defaults(defaults_path: Optional[str] = None) -> Dict[Tuple[str, str], str]:
+
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    if defaults_path is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        defaults_path = os.path.join(here, "app", "data", "bot_texts_defaults.yaml")
+    if not os.path.exists(defaults_path):
+        return {}
+    with open(defaults_path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[Tuple[str, str], str] = {}
+    for key, langs in data.items():
+        if not isinstance(langs, dict):
+            continue
+        for lang, text in langs.items():
+            out[(key, lang)] = str(text)
+    return out
+
+
+def _ensure_bot_text_customized_column(cursor: sqlite3.Cursor) -> int:
+
+    if not _add_column_if_missing(cursor, "bot_text", "customized", "INTEGER NOT NULL DEFAULT 0"):
+        return 0
+    defaults = _load_bot_text_defaults()
+    if not defaults:
+        return 0
+    marked = 0
+    cursor.execute("SELECT key, lang, text FROM bot_text")
+    for key, lang, text in cursor.fetchall():
+        default = defaults.get((key, lang))
+        if default is not None and text != default:
+            cursor.execute("UPDATE bot_text SET customized=1 WHERE key=? AND lang=?", (key, lang))
+            marked += 1
+    return marked
+
+
 def _maybe_force_reseed_bot_texts(cursor: sqlite3.Cursor) -> bool:
-    """One-shot force-reseed when the stored bot-texts version is below
-    CURRENT_BOT_TEXTS_VERSION. Returns True if a force-reseed actually ran.
-    """
-    # Read current stored version (default 1 — pre-existing installs).
+
     if not _table_exists(cursor, "system_setting"):
         return False
     cursor.execute("SELECT value FROM system_setting WHERE key='bot_texts_seeded_version'")
@@ -560,21 +572,14 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("client", "source_ips", "TEXT DEFAULT '[]'"),
         ("client", "flow", "VARCHAR(50)"),
         ("client", "preferred_outbound", "VARCHAR(50)"),
-        # Device tracking — Stage 1
         ("inbound", "device_limit", "INTEGER NOT NULL DEFAULT 0"),
         ("client", "device_limit", "INTEGER"),
-        # Balancer fallback outbound
         ("balancer", "fallback_tag", "VARCHAR(50)"),
-        # Language picker — explicit user choice on first /start
         ("telegram_user", "language_chosen", "BOOLEAN NOT NULL DEFAULT 0"),
-        # Inbound display label — admin-friendly name shown in bot UI
         ("inbound", "label", "VARCHAR(60)"),
-        # Payment Telegram message coords — for edit-in-place webhook callbacks
         ("payment", "chat_id", "BIGINT"),
         ("payment", "message_id", "INTEGER"),
-        # Panel Federation — tariff item linked to a specific remote panel
         ("tariff_item", "panel_id", "INTEGER REFERENCES linked_panel(id)"),
-        # Subscription token — keys the aggregated /api/sub/u/<token> endpoint
         ("telegram_user", "sub_token", "VARCHAR(36)"),
     ]
 
@@ -586,8 +591,7 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
 
 
 def _backfill_sub_tokens(cursor: sqlite3.Cursor) -> int:
-    """Generate a unique sub_token for every telegram_user row missing one,
-    and ensure the unique index. Idempotent — only NULL/empty tokens are filled."""
+
     if not _table_exists(cursor, "telegram_user"):
         return 0
     if not _column_exists(cursor, "telegram_user", "sub_token"):
@@ -696,19 +700,12 @@ def _apply_data_fixups(cursor: sqlite3.Cursor) -> int:
         "UPDATE client SET preferred_outbound = NULL WHERE preferred_outbound IS NOT NULL AND TRIM(preferred_outbound) = ''",
     )
 
-    # linked_panel.created_at was stored in Unix seconds before commit 54b624b
-    # (May 27 2026). The frontend treats numeric timestamps as ms, so legacy
-    # rows render as "01/21/1970". Anything below 10**11 must be seconds (a
-    # genuine ms value for any year ≥ 1973 is already above this threshold).
     _run_if_column(
         "linked_panel",
         "created_at",
         "UPDATE linked_panel SET created_at = created_at * 1000 WHERE created_at > 0 AND created_at < 100000000000",
     )
-    # linked_panel.last_poll: same problem from the other direction — when a
-    # child panel running pre-fix code returned `timestamp` in seconds via
-    # /api/federation/snapshot, the master stored it verbatim. Normalize same
-    # way; NULL stays NULL (panel never polled yet).
+
     _run_if_column(
         "linked_panel",
         "last_poll",
@@ -750,6 +747,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         billing_tables = _ensure_billing_tables(cursor)
         client_billing_columns = _alter_client_billing_columns(cursor)
         bot_texts_seeded = _seed_bot_texts(cursor)
+        bot_texts_customized_marked = _ensure_bot_text_customized_column(cursor)
         bot_texts_force_reseeded = _maybe_force_reseed_bot_texts(cursor)
         schema_changes = _ensure_schema_columns(cursor)
         sub_tokens_backfilled = _backfill_sub_tokens(cursor)
@@ -772,6 +770,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "billing_tables_created": billing_tables,
             "client_billing_columns_added": client_billing_columns,
             "bot_texts_seeded": bot_texts_seeded,
+            "bot_texts_customized_marked": bot_texts_customized_marked,
             "bot_texts_force_reseeded": bot_texts_force_reseeded,
             "schema_changes": schema_changes,
             "sub_tokens_backfilled": sub_tokens_backfilled,
@@ -788,6 +787,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             or billing_tables > 0
             or client_billing_columns > 0
             or bot_texts_seeded > 0
+            or bot_texts_customized_marked > 0
             or bot_texts_force_reseeded
             or schema_changes > 0
             or sub_tokens_backfilled > 0

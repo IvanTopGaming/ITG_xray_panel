@@ -160,9 +160,6 @@ services:
     container_name: panel-bot
     restart: always
     environment:
-      # Bot calls /api/bot-service/* on the backend. Token is auto-generated
-      # in SystemSetting on backend startup; copy it from the panel UI into
-      # .env. See docs/staging-deploy.md.
       - BACKEND_API_URL=http://backend:5000/api
       - BOT_SERVICE_TOKEN=${BOT_SERVICE_TOKEN:-}
       - BOT_LOG_LEVEL=${BOT_LOG_LEVEL:-INFO}

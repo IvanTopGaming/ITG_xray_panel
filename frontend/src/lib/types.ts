@@ -24,12 +24,12 @@ export interface Client {
   source_ips?: string[];
   inbound_tag: string;
   preferred_outbound?: string;
-  device_limit?: number | null; // null = inherit from inbound
-  device_count?: number; // present on list endpoints (batch-injected)
-  tariff_id?: number | null; // set when client was provisioned via a tariff
-  panel_id?: number | null; // set on the bot user drawer when client lives on a linked panel
+  device_limit?: number | null;
+  device_count?: number;
+  tariff_id?: number | null;
+  panel_id?: number | null;
   panel_name?: string;
-  sub_url?: string | null; // aggregated subscription URL when tied to a Telegram user; null otherwise
+  sub_url?: string | null;
 }
 
 export interface ClientDevice {
@@ -39,7 +39,7 @@ export interface ClientDevice {
   model: string;
   first_seen: number;
   last_seen: number;
-  // Admin-only — present on /api/clients/<id>/devices
+
   hwid?: string;
   user_agent?: string;
   request_ip?: string;
@@ -95,7 +95,7 @@ export interface Inbound {
   down: number;
   routing_profile_id?: number;
   fallback_address?: string;
-  device_limit?: number; // 0 = unlimited (feature off)
+  device_limit?: number;
   panel_id?: number | null;
   panel_name?: string;
 }
@@ -169,14 +169,13 @@ export interface RoutingProfile {
   rules: RoutingRule[];
 }
 
-// Bot billing — phase 1 (tariffs CRUD)
 export type TariffVisibility = 'public' | 'private' | 'archived';
 
 export interface TariffItem {
-  id?: number; // optional for new (unsaved) items
+  id?: number;
   inbound_tag: string;
   label: string;
-  traffic_gb: number; // 0 = unlimited
+  traffic_gb: number;
   sort_order: number;
   panel_id?: number | null;
 }
@@ -195,7 +194,6 @@ export interface Tariff {
   items: TariffItem[];
 }
 
-// Payload type for create/update — id is server-assigned, timestamps server-computed
 export type TariffWritePayload = Omit<Tariff, 'id' | 'created_at' | 'updated_at' | 'items'> & {
   items: Omit<TariffItem, 'id'>[];
 };
@@ -217,7 +215,6 @@ export interface TariffStats {
 
 export type TariffStatsMap = Record<number, TariffStats>;
 
-// Bot billing — phase 2 (i18n)
 export interface BotTextRow {
   key: string;
   lang: 'ru' | 'en';
@@ -233,7 +230,6 @@ export interface BotTextKeyMeta {
   default_en: string;
 }
 
-// Bot billing — phase 3 (users + grants)
 export type GrantBilling = 'paid' | 'gift' | 'free';
 
 export interface BotUser {
@@ -284,7 +280,6 @@ export interface GrantRow {
   note: string | null;
 }
 
-// Bot billing — phase 4 (payments + settings)
 export type PaymentStatus = 'pending' | 'succeeded' | 'cancelled' | 'failed';
 
 export interface Payment {

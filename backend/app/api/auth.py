@@ -17,19 +17,25 @@ from app.services.xray import generate_config_file, restart_xray_container
 bp = Blueprint("auth", __name__)
 
 
+_DUMMY_PASSWORD_HASH = generate_password_hash("constant-time-placeholder")
+
+
 @bp.route("/login", methods=["POST"])
 @limiter.limit("10 per minute")
 def login():
     auth = request.get_json(silent=True) or {}
-    if not auth or not auth.get("username") or not auth.get("password"):
+    username = auth.get("username")
+    password = auth.get("password")
+    if not username or not password:
         return jsonify({"message": "Could not verify"}), 401
 
-    admin = Admin.query.filter_by(username=auth.get("username")).first()
-    if admin and check_password_hash(admin.password, auth.get("password")):
+    admin = Admin.query.filter_by(username=username).first()
+    password_ok = check_password_hash(admin.password if admin else _DUMMY_PASSWORD_HASH, password)
+    if admin and password_ok:
         pwd_version = int(admin.password_changed_at or 0)
         token = jwt.encode(
             {
-                "user": auth.get("username"),
+                "user": username,
                 "admin_id": admin.id,
                 "role": "admin",
                 "pwdv": pwd_version,
@@ -45,6 +51,7 @@ def login():
 
 @bp.route("/user/routing", methods=["POST"])
 @token_required
+@limiter.limit("30 per minute")
 def set_user_routing():
     data = request.get_json(silent=True) or {}
     try:

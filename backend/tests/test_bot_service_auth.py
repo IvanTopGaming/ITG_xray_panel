@@ -1,5 +1,3 @@
-"""Tests for the bot_service_token_required decorator."""
-
 import time
 
 import jwt
@@ -13,13 +11,11 @@ from app.utils import SECRET_KEY, bot_service_token_required
 
 @pytest.fixture
 def app_with_route(app):
-    """Mount a tiny route guarded by the new decorator."""
 
     @bot_service_token_required
     def _ping():
         return jsonify({"ok": True})
 
-    # Use add_url_rule so we don't need a real blueprint
     app.add_url_rule("/_test/ping", view_func=_ping, methods=["GET"])
     return app
 
@@ -50,21 +46,15 @@ def test_correct_token_returns_200(app_with_route, db):
 
 
 def test_no_token_setting_returns_500(app_with_route, db):
-    """If the SystemSetting row is missing, the server is misconfigured —
-    fail fast with 500 rather than accepting any token."""
+
     client = app_with_route.test_client()
     resp = client.get("/_test/ping", headers={"Authorization": "Bearer anything"})
     assert resp.status_code == 500
 
 
-# ---------------------------------------------------------------------------
-# Fixtures for the rotate-bot-service-token endpoint test
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def app(app):
-    """Extend the base app fixture with bot_admin blueprint."""
+
     from app.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
@@ -102,8 +92,7 @@ def admin_token(app, db):
 
 
 def test_rotate_bot_service_token_replaces_value(app, client, admin_token):
-    """Calling the rotate endpoint mints a new token, persists it to
-    SystemSetting, and returns the new token once in the response."""
+
     with app.app_context():
         db.session.add(SystemSetting(key="bot_service_token", value="old-value"))
         db.session.commit()

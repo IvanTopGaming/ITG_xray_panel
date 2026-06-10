@@ -331,7 +331,6 @@ export default function System() {
       </div>
 
       <div className="space-y-4 lg:sticky lg:top-6 self-start order-1 lg:order-2">
-        {/* Pill tab bar */}
         <div className="flex gap-1 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05]">
           {SETTINGS_TABS.map((tab) => (
             <button
@@ -359,7 +358,6 @@ export default function System() {
           ))}
         </div>
 
-        {/* Animated settings content */}
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}

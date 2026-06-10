@@ -15,7 +15,7 @@ import type {
 
 interface TariffDrawerProps {
   open: boolean;
-  tariff: Tariff | null; // null = create mode
+  tariff: Tariff | null;
   stats: TariffStats | null;
   inbounds: Inbound[];
   panels: LinkedPanel[];

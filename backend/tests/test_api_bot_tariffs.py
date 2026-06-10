@@ -1,5 +1,3 @@
-"""Integration tests for /api/bot/tariffs endpoints."""
-
 import time
 from unittest.mock import patch
 
@@ -12,7 +10,7 @@ from app.utils import SECRET_KEY
 
 @pytest.fixture
 def app_with_bot_api(app):
-    """Register bot_admin blueprint on the test app."""
+
     from app.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
@@ -22,13 +20,7 @@ def app_with_bot_api(app):
 
 @pytest.fixture
 def auth_headers(app_with_bot_api, db):
-    """Headers that satisfy @token_required.
 
-    The decorator (app/utils.py L53) decodes the JWT inline with SECRET_KEY,
-    requires role='admin', looks up the Admin row by admin_id (or username),
-    and verifies pwdv matches admin.password_changed_at. So we need a real
-    Admin row plus a real JWT minted with the same SECRET_KEY.
-    """
     pwd_version = int(time.time())
     admin = Admin(
         username="admin",
@@ -284,8 +276,7 @@ def test_update_nonexistent_tariff_returns_404(app_with_bot_api, db, client, aut
 
 
 def test_update_existing_trial_keeps_trial_flag(app_with_bot_api, db, client, auth_headers):
-    """Re-saving the only trial tariff with is_trial=True must not be rejected
-    as a duplicate."""
+
     t = Tariff(name="Trial", price_rub=0, period_days=1, is_trial=True)
     db.session.add(t)
     db.session.commit()
@@ -362,7 +353,7 @@ def test_duplicate_tariff_copies_base_and_items(app_with_bot_api, db, client, au
     assert body["name"] == "Standard (копия)"
     assert body["price_rub"] == 150
     assert body["period_days"] == 30
-    assert body["visibility"] == "public"  # reset
+    assert body["visibility"] == "public"
     assert body["enabled"] is True
     assert body["is_trial"] is False
     item_tags = {i["inbound_tag"] for i in body["items"]}

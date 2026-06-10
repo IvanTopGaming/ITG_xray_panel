@@ -1,10 +1,3 @@
-"""Verify sensitive system endpoints reject the bot service token.
-
-/backup exfiltrates the entire SQLite DB; /restore replaces it. Neither is
-needed by the bot, and accepting the bot service token there means
-compromising one container yields full DB read+write.
-"""
-
 import time
 
 import jwt
@@ -79,12 +72,11 @@ def test_restore_rejects_bot_service_token(client, bot_token):
 
 
 def test_backup_accepts_admin_jwt(client, admin_token, tmp_path, monkeypatch):
-    """Admin token still works (sanity check that we didn't break the admin path)."""
+
     monkeypatch.setattr("app.api.system._db_path", lambda: str(tmp_path / "nope.db"))
     resp = client.get(
         "/api/backup",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    # _db_path returns a non-existent file → endpoint returns 404, but it
-    # at least passed the auth gate (no 401).
+
     assert resp.status_code != 401

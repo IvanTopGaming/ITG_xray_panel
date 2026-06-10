@@ -1,5 +1,3 @@
-"""Tests for /api/outbounds and /api/balancers endpoints (outbound blueprint)."""
-
 import datetime
 import json
 from unittest.mock import patch
@@ -10,11 +8,6 @@ import pytest
 from app.extensions import db
 from app.models import Admin, Outbound, Balancer, Client, Inbound
 from app.utils import SECRET_KEY
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _make_token(admin):
@@ -34,7 +27,7 @@ def _make_token(admin):
 
 @pytest.fixture
 def app(app):
-    """Extend base app fixture with the outbound blueprint."""
+
     from app.api import outbound as outbound_api
 
     if not any(bp_name == "outbound" for bp_name in app.blueprints):
@@ -67,7 +60,7 @@ def auth_headers(token):
 
 @pytest.fixture
 def seed_outbounds(app):
-    """Seed the two system outbounds plus one custom outbound."""
+
     db.session.add(Outbound(tag="direct", protocol="freedom", enable=True))
     db.session.add(Outbound(tag="block", protocol="blackhole", enable=True))
     db.session.add(
@@ -81,11 +74,6 @@ def seed_outbounds(app):
     db.session.commit()
 
 
-# ---------------------------------------------------------------------------
-# Xray mocks — applied to every test automatically
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(autouse=True)
 def _mock_xray():
     with (
@@ -93,11 +81,6 @@ def _mock_xray():
         patch("app.api.outbound.restart_xray_container"),
     ):
         yield
-
-
-# ===========================================================================
-# Auth
-# ===========================================================================
 
 
 class TestAuth:
@@ -138,11 +121,6 @@ class TestAuth:
         assert resp.status_code == 401
 
 
-# ===========================================================================
-# GET /api/outbounds
-# ===========================================================================
-
-
 class TestGetOutbounds:
     def test_empty_list(self, client, auth_headers, admin):
         resp = client.get("/api/outbounds", headers=auth_headers)
@@ -164,11 +142,6 @@ class TestGetOutbounds:
         assert item["enable"] is True
 
 
-# ===========================================================================
-# GET /api/outbounds/health
-# ===========================================================================
-
-
 class TestGetOutboundsHealth:
     def test_health_unknown_for_freedom(self, client, auth_headers, admin, seed_outbounds):
         resp = client.get("/api/outbounds/health", headers=auth_headers)
@@ -178,7 +151,7 @@ class TestGetOutboundsHealth:
         assert direct["status"] == "unknown"
 
     def test_health_probes_socks(self, client, auth_headers, admin, seed_outbounds):
-        """The socks outbound has a valid address:port, so it should be probed."""
+
         with patch("app.api.outbound._probe_outbound", return_value=42):
             resp = client.get("/api/outbounds/health", headers=auth_headers)
         data = resp.get_json()
@@ -194,11 +167,6 @@ class TestGetOutboundsHealth:
         proxy = next(o for o in data if o["tag"] == "proxy-de")
         assert proxy["status"] == "down"
         assert "refused" in proxy["error"]
-
-
-# ===========================================================================
-# POST /api/outbounds
-# ===========================================================================
 
 
 class TestCreateOutbound:
@@ -245,7 +213,7 @@ class TestCreateOutbound:
             },
         )
         assert resp.status_code == 201
-        # Verify stored correctly
+
         ob = Outbound.query.filter_by(tag="full").first()
         assert ob.enable is False
         assert json.loads(ob.stream_settings) == {"network": "tcp"}
@@ -329,15 +297,7 @@ class TestCreateOutbound:
         assert resp.status_code == 400
 
 
-# ===========================================================================
-# Config-validation gate: validate before persisting to the DB
-# ===========================================================================
-
-
 class TestCreateOutboundValidationGate:
-    """generate_config_file() runs before db.session.commit(); a rejected config
-    must return 400 and leave NO row committed (no poisoned rows)."""
-
     def test_rejected_config_does_not_persist(self, client, auth_headers, admin):
         with patch(
             "app.api.outbound.generate_config_file",
@@ -369,11 +329,6 @@ class TestCreateOutboundValidationGate:
             )
         assert resp.status_code == 201
         assert Outbound.query.filter_by(tag="test-reject").first() is not None
-
-
-# ===========================================================================
-# PUT /api/outbounds/<tag>
-# ===========================================================================
 
 
 class TestUpdateOutbound:
@@ -491,7 +446,7 @@ class TestUpdateOutbound:
         assert resp.status_code == 400
 
     def test_partial_update_keeps_other_fields(self, client, auth_headers, admin, seed_outbounds):
-        """Updating protocol should not reset settings."""
+
         ob_before = Outbound.query.filter_by(tag="proxy-de").first()
         settings_before = ob_before.settings
 
@@ -503,11 +458,6 @@ class TestUpdateOutbound:
         ob_after = Outbound.query.filter_by(tag="proxy-de").first()
         assert ob_after.protocol == "http"
         assert ob_after.settings == settings_before
-
-
-# ===========================================================================
-# DELETE /api/outbounds/<tag>
-# ===========================================================================
 
 
 class TestDeleteOutbound:
@@ -557,7 +507,7 @@ class TestDeleteOutbound:
         assert "fallback" in resp.get_json()["error"].lower()
 
     def test_delete_clears_client_preferred_outbound(self, client, auth_headers, admin, seed_outbounds):
-        """Deleting an outbound should null out preferred_outbound on clients that referenced it."""
+
         inbound = Inbound(tag="vless-in", port=10000, protocol="vless", stream_settings="{}")
         db.session.add(inbound)
         db.session.flush()
@@ -573,11 +523,6 @@ class TestDeleteOutbound:
         resp = client.delete("/api/outbounds/proxy-de", headers=auth_headers)
         assert resp.status_code == 200
         assert db.session.get(Client, "uuid-1").preferred_outbound is None
-
-
-# ===========================================================================
-# GET /api/balancers
-# ===========================================================================
 
 
 class TestGetBalancers:
@@ -603,11 +548,6 @@ class TestGetBalancers:
         assert data[0]["tag"] == "bal-a"
         assert set(data[0].keys()) == {"tag", "enable", "selector", "strategy", "fallback_tag"}
         assert data[0]["selector"] == ["direct", "proxy-de"]
-
-
-# ===========================================================================
-# POST /api/balancers
-# ===========================================================================
 
 
 class TestCreateBalancer:
@@ -731,11 +671,6 @@ class TestCreateBalancer:
         assert "unknown" in resp.get_json()["error"].lower()
 
 
-# ===========================================================================
-# PUT /api/balancers/<tag>
-# ===========================================================================
-
-
 class TestUpdateBalancer:
     @pytest.fixture(autouse=True)
     def _seed(self, seed_outbounds):
@@ -837,7 +772,7 @@ class TestUpdateBalancer:
         assert resp.status_code == 400
 
     def test_partial_update_keeps_selector(self, client, auth_headers, admin):
-        """Updating strategy alone should not clear the selector."""
+
         client.put(
             "/api/balancers/test-bal",
             headers=auth_headers,
@@ -845,11 +780,6 @@ class TestUpdateBalancer:
         )
         bal = Balancer.query.filter_by(tag="test-bal").first()
         assert json.loads(bal.selector) == ["direct"]
-
-
-# ===========================================================================
-# DELETE /api/balancers/<tag>
-# ===========================================================================
 
 
 class TestDeleteBalancer:
@@ -871,7 +801,7 @@ class TestDeleteBalancer:
         assert resp.status_code == 404
 
     def test_delete_clears_client_preferred_outbound(self, client, auth_headers, admin, seed_outbounds):
-        """Deleting a balancer should null out preferred_outbound on clients that referenced it."""
+
         db.session.add(
             Balancer(
                 tag="bal-del",
@@ -896,14 +826,7 @@ class TestDeleteBalancer:
         assert db.session.get(Client, "uuid-2").preferred_outbound is None
 
 
-# ===========================================================================
-# Helper coverage
-# ===========================================================================
-
-
 class TestHelpers:
-    """Unit-level coverage for internal helpers via the API surface."""
-
     def test_parse_bool_truthy_string(self, client, auth_headers, admin):
         resp = client.post(
             "/api/outbounds",

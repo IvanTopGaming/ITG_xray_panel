@@ -1,30 +1,4 @@
-"""Populate panel.db with realistic demo data covering all UI surfaces.
 
-Run inside the backend container:
-
-    docker-compose exec backend python /app/scripts/seed_demo.py
-
-Idempotent: tagged demo rows are wiped and re-created on every run.
-
-Coverage:
-    - Every user-facing protocol (VLESS, VMess, Trojan, Shadowsocks)
-      paired with multiple stream/security combos (Reality+Vision, gRPC,
-      XHTTP, WebSocket, HTTPUpgrade, SplitHTTP, plain TCP+TLS, ss-2022).
-    - Admin-only inbounds (SOCKS, HTTP) for bot/internal flows.
-    - Friendly per-inbound `label`s (country flag + protocol) so the
-      dashboard and bot subscription links show "🇩🇪 Frankfurt — VLESS
-      Reality (Vision)" instead of raw tags.
-    - 5 outbounds (3 region pops, 1 socks upstream, 1 WireGuard-WARP-like).
-    - 2 balancers (random + leastPing strategies).
-    - 5 routing profiles (ru-direct, streaming-balanced, ads-block,
-      gaming-low-latency, work-vpn).
-    - 6 nodes with varied states (online / offline / disabled /
-      degraded / strict-mirror) across 3 group labels.
-    - 32 demo clients with constraint diversity (limits, expiry,
-      device limits, group filters, disabled rows, etc.).
-    - 90 days of hourly traffic snapshots and 30 days of domain stats
-      synthesised from per-user archetype profiles.
-"""
 
 from __future__ import annotations
 
@@ -54,9 +28,9 @@ DEMO_PREFIX = "demo-"
 random.seed(20260522)
 
 
-# ─── Inbound catalog ─────────────────────────────────────────────────────────
-# Each entry: tag, port, protocol, stream_settings, routing_profile_name (or
-# None), label (display name shown to users), device_limit, fallback_address.
+
+
+
 INBOUNDS = [
     {
         "tag": f"{DEMO_PREFIX}vless-reality-vision",
@@ -220,11 +194,11 @@ INBOUNDS = [
         },
     },
     {
-        # Xray multi-user mode (panel's default — clients live in `Client`
-        # rows, not in inbound settings) only supports the blake3-aes-*-gcm
-        # methods. chacha20-poly1305 is single-user only and crashes startup
-        # with "shadowsocks 2022 (multi-user): only blake3-aes-*-gcm methods
-        # are supported".
+        
+        
+        
+        
+        
         "tag": f"{DEMO_PREFIX}ss-2022-aes256",
         "port": 2087,
         "protocol": "shadowsocks",
@@ -273,7 +247,7 @@ INBOUNDS = [
 ]
 
 
-# ─── Outbound catalog ────────────────────────────────────────────────────────
+
 OUTBOUNDS = [
     {
         "tag": f"{DEMO_PREFIX}proxy-eu",
@@ -366,7 +340,7 @@ OUTBOUNDS = [
 ]
 
 
-# ─── Balancers ───────────────────────────────────────────────────────────────
+
 BALANCERS = [
     {
         "tag": f"{DEMO_PREFIX}eu-us-balancer",
@@ -387,7 +361,7 @@ BALANCERS = [
 ]
 
 
-# ─── Routing profiles ────────────────────────────────────────────────────────
+
 ROUTING_PROFILES = [
     {
         "name": f"{DEMO_PREFIX}ru-direct",
@@ -537,20 +511,20 @@ ROUTING_PROFILES = [
 ]
 
 
-# ─── User catalog with rich variation ────────────────────────────────────────
-# archetype controls the *shape* of activity, not the volume.
-# 'night-owl': active 22:00–06:00
-# 'day-worker': active 09:00–18:00, weekdays only
-# 'evening': peak 18:00–24:00 every day
-# 'all-day': uniform 08:00–24:00
-# 'weekend-warrior': active mostly Sat/Sun, big bursts
-# 'sporadic': low online_chance, occasional bursts
-# 'idle': barely connects
 
-# Distribute users across the new inbound catalog so every UI surface
-# has live data. Order is heuristic — busy inbounds first.
+
+
+
+
+
+
+
+
+
+
+
 USER_EMAILS = [
-    # VLESS Reality Vision — flagship inbound, most users
+    
     ("alice", f"{DEMO_PREFIX}vless-reality-vision"),
     ("bob", f"{DEMO_PREFIX}vless-reality-vision"),
     ("carol", f"{DEMO_PREFIX}vless-reality-vision"),
@@ -559,36 +533,36 @@ USER_EMAILS = [
     ("frank", f"{DEMO_PREFIX}vless-reality-vision"),
     ("grace", f"{DEMO_PREFIX}vless-reality-vision"),
     ("hank", f"{DEMO_PREFIX}vless-reality-vision"),
-    # VLESS gRPC — fewer, but still meaningful
+    
     ("iris", f"{DEMO_PREFIX}vless-grpc"),
     ("jack", f"{DEMO_PREFIX}vless-grpc"),
     ("kate", f"{DEMO_PREFIX}vless-grpc"),
-    # VLESS XHTTP
+    
     ("leo", f"{DEMO_PREFIX}vless-xhttp"),
     ("luna", f"{DEMO_PREFIX}vless-xhttp"),
-    # VMess WS
+    
     ("heidi", f"{DEMO_PREFIX}vmess-ws"),
     ("ivan", f"{DEMO_PREFIX}vmess-ws"),
     ("judy", f"{DEMO_PREFIX}vmess-ws"),
     ("kevin", f"{DEMO_PREFIX}vmess-ws"),
-    # VMess HTTPUpgrade
+    
     ("mallory", f"{DEMO_PREFIX}vmess-httpupgrade"),
     ("niaj", f"{DEMO_PREFIX}vmess-httpupgrade"),
-    # Trojan TLS
+    
     ("olivia", f"{DEMO_PREFIX}trojan-tls"),
     ("peggy", f"{DEMO_PREFIX}trojan-tls"),
     ("ron", f"{DEMO_PREFIX}trojan-tls"),
-    # Trojan SplitHTTP
+    
     ("quinn", f"{DEMO_PREFIX}trojan-splithttp"),
     ("ruth", f"{DEMO_PREFIX}trojan-splithttp"),
-    # Shadowsocks 2022 AES
+    
     ("steve", f"{DEMO_PREFIX}ss-2022-aes"),
     ("trent", f"{DEMO_PREFIX}ss-2022-aes"),
     ("uma", f"{DEMO_PREFIX}ss-2022-aes"),
-    # Shadowsocks 2022 ChaCha20
+    
     ("victor", f"{DEMO_PREFIX}ss-2022-aes256"),
     ("wendy", f"{DEMO_PREFIX}ss-2022-aes256"),
-    # Extras spread across the rest
+    
     ("xavier", f"{DEMO_PREFIX}vless-reality-vision"),
     ("yara", f"{DEMO_PREFIX}vmess-ws"),
     ("zoe", f"{DEMO_PREFIX}trojan-tls"),
@@ -596,7 +570,7 @@ USER_EMAILS = [
 
 
 def build_user_profiles():
-    """Assign each user a unique random activity profile."""
+    
     archetype_distribution = (
         ["evening"] * 8
         + ["night-owl"] * 4
@@ -609,20 +583,20 @@ def build_user_profiles():
     random.shuffle(archetype_distribution)
     profiles = {}
     for (name, tag), archetype in zip(USER_EMAILS, archetype_distribution):
-        # Pareto-ish per-user peak: most users medium, few power users.
-        # peak bytes/hour
+        
+        
         roll = random.random()
         if archetype == "idle":
-            peak = random.randint(300_000, 2_500_000)  # 0.3–2.5 MB/h
+            peak = random.randint(300_000, 2_500_000)  
         elif archetype == "sporadic":
-            peak = random.randint(8_000_000, 80_000_000)  # 8–80 MB
-        elif roll < 0.10:  # 10% power users
-            peak = random.randint(800_000_000, 2_500_000_000)  # 800 MB – 2.5 GB
-        elif roll < 0.35:  # heavy users
+            peak = random.randint(8_000_000, 80_000_000)  
+        elif roll < 0.10:  
+            peak = random.randint(800_000_000, 2_500_000_000)  
+        elif roll < 0.35:  
             peak = random.randint(200_000_000, 800_000_000)
-        elif roll < 0.75:  # medium
+        elif roll < 0.75:  
             peak = random.randint(30_000_000, 200_000_000)
-        else:  # light
+        else:  
             peak = random.randint(3_000_000, 30_000_000)
 
         profiles[(f"{name}@vpn", tag)] = {
@@ -639,19 +613,19 @@ def build_user_profiles():
             }[archetype],
             "burst_chance": random.uniform(
                 0.005, 0.04
-            ),  # per-hour chance of 5–15x spike
-            "asymmetry": random.uniform(0.10, 0.35),  # upload share of total
-            "preferred_pool": random.choice(["ru", "ru", "ru", "eu", "asia"]),  # 60% RU
+            ),  
+            "asymmetry": random.uniform(0.10, 0.35),  
+            "preferred_pool": random.choice(["ru", "ru", "ru", "eu", "asia"]),  
         }
     return profiles
 
 
 def hour_weight(archetype: str, hour: int, weekday: int) -> float:
-    """0..1 weight modulating peak by time-of-day and day-of-week."""
+    
     if archetype == "evening":
         base = max(0.05, 1.0 - abs(hour - 20) / 8)
     elif archetype == "night-owl":
-        # peak at 2am, decays by ~10
+        
         dist = min(abs(hour - 2), abs(hour - 26)) / 6
         base = max(0.05, 1.0 - dist)
     elif archetype == "day-worker":
@@ -659,7 +633,7 @@ def hour_weight(archetype: str, hour: int, weekday: int) -> float:
         if weekday >= 5:
             base *= 0.20
     elif archetype == "all-day":
-        # broad plateau 08-23, low 00-07
+        
         base = 0.30 if hour < 8 else 0.85
         if 18 <= hour <= 22:
             base = 1.0
@@ -671,20 +645,20 @@ def hour_weight(archetype: str, hour: int, weekday: int) -> float:
     elif archetype == "sporadic":
         base = 0.3 + 0.4 * math.sin((hour / 24) * 2 * math.pi + weekday)
         base = max(0.05, base)
-    else:  # idle
+    else:  
         base = 0.10
     return base
 
 
 def hourly_bytes(profile: dict, hour: int, weekday: int) -> tuple[int, int] | None:
-    """Returns (up, down) for this hour, or None if user was offline."""
+    
     if random.random() > profile["online_chance"]:
         return None
     weight = hour_weight(profile["archetype"], hour, weekday)
     if weight <= 0:
         return None
     base = profile["peak"] * weight * random.uniform(0.55, 1.45)
-    # bursts: 0.5% – 4% chance of 5x – 15x spike
+    
     if random.random() < profile["burst_chance"]:
         base *= random.uniform(5.0, 15.0)
     if base < 1024:
@@ -695,7 +669,7 @@ def hourly_bytes(profile: dict, hour: int, weekday: int) -> tuple[int, int] | No
     return up, down
 
 
-# ─── IP & domain pools ───────────────────────────────────────────────────────
+
 DEMO_IP_POOLS = {
     "ru": [
         "87.117.190.{}",
@@ -753,7 +727,7 @@ def pick_ips(profile: dict) -> list[str]:
         return [] if random.random() < 0.35 else [gen_ip(profile["preferred_pool"])]
     if profile["archetype"] == "sporadic":
         count = random.randint(1, 3)
-    elif profile["peak"] > 500_000_000:  # power users have many devices
+    elif profile["peak"] > 500_000_000:  
         count = random.randint(5, 9)
     elif profile["peak"] > 100_000_000:
         count = random.randint(3, 6)
@@ -770,19 +744,19 @@ def pick_ips(profile: dict) -> list[str]:
     return out[:10]
 
 
-# ─── Limit/expiry/state diversity ────────────────────────────────────────────
+
 
 
 def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
-    """Generate a mix of limit/expiry/state for each user."""
+    
     now_ms = int(datetime.now().timestamp() * 1000)
     day_ms = 86_400_000
 
-    # ~15% disabled users
+    
     enable = random.random() > 0.15
 
-    # limit_bytes mix:
-    # 30% unlimited, 25% 5 GB, 20% 50 GB, 15% 200 GB, 10% 1 TB
+    
+    
     r = random.random()
     if r < 0.30:
         limit_bytes = 0
@@ -795,8 +769,8 @@ def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
     else:
         limit_bytes = 1024**4
 
-    # expiry mix:
-    # 25% no expiry, 25% in 30+ days, 20% in 3 days, 15% in <24h, 15% already expired
+    
+    
     r = random.random()
     if r < 0.25:
         expiry_time = 0
@@ -807,18 +781,18 @@ def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
     elif r < 0.85:
         expiry_time = now_ms + random.randint(1, 23) * 3_600_000
     else:
-        expiry_time = now_ms - random.randint(1, 7) * day_ms  # already expired
+        expiry_time = now_ms - random.randint(1, 7) * day_ms  
 
-    # device_limit: 0 = unlimited; 30% have device limits 1/2/5
+    
     if random.random() < 0.30:
         device_limit = random.choice([1, 2, 5])
     else:
         device_limit = 0
 
-    # reset_day: 30% have monthly reset
+    
     reset_day = random.choice([0, 1, 5, 15]) if random.random() < 0.3 else 0
 
-    # last_seen scaled to archetype
+    
     arch = profile["archetype"]
     if arch == "idle":
         last_seen = now_ms - random.randint(2, 60) * day_ms
@@ -827,11 +801,11 @@ def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
     elif arch == "day-worker" and datetime.now().weekday() >= 5:
         last_seen = now_ms - random.randint(1, 3) * day_ms
     elif profile["peak"] > 500_000_000:
-        last_seen = now_ms - random.randint(0, 20) * 60_000  # within 20min
+        last_seen = now_ms - random.randint(0, 20) * 60_000  
     else:
         last_seen = now_ms - random.randint(5, 24 * 60) * 60_000
 
-    # flow only for vless reality-vision inbounds (XTLS Vision is a TCP-only feature)
+    
     flow = None
     if (
         inbound_meta["protocol"] == "vless"
@@ -850,17 +824,11 @@ def assign_constraints(name: str, profile: dict, inbound_meta: dict) -> dict:
     }
 
 
-# ─── Main seeder ──────────────────────────────────────────────────────────────
+
 
 
 def wipe_existing_demo():
-    """Wipe any row whose identifying tag/name starts with DEMO_PREFIX.
-
-    Prefix-based (rather than enumerating current INBOUNDS/etc.) so that
-    stale rows from a previous seed catalog — e.g. renamed inbound tags —
-    get cleaned up too, instead of lingering and tripping UNIQUE
-    constraints on the next insert.
-    """
+    
     print("→ Wiping existing demo rows...")
     pattern = f"{DEMO_PREFIX}%"
     demo_emails = [f"{n}@vpn" for (n, _) in USER_EMAILS]
@@ -955,9 +923,7 @@ def _inbound_meta_by_tag() -> dict[str, dict]:
 
 
 def _generate_client_id(inbound: dict) -> str:
-    """For ss-2022 multi-user inbounds, the client's PSK must be base64-encoded
-    bytes of the same length as the server PSK (16 for aes-128, 32 for aes-256).
-    UUIDs work everywhere else."""
+    
     import base64
     import secrets
 
@@ -975,7 +941,7 @@ def create_clients(user_profiles) -> dict[tuple[str, str], Client]:
     meta = _inbound_meta_by_tag()
     by_key: dict[tuple[str, str], Client] = {}
     for (name, tag), profile in user_profiles.items():
-        email = name  # already 'name@vpn'
+        email = name  
         constraints = assign_constraints(email, profile, meta[tag])
         ips = pick_ips(profile)
         c = Client(
@@ -1086,8 +1052,8 @@ def create_domain_stats(user_profiles):
             if profile["archetype"] == "idle" and random.random() < 0.85:
                 continue
             if random.random() > profile["online_chance"] * 0.9:
-                continue  # skipped that day
-            # hits scale with profile peak (rough)
+                continue  
+            
             scale = max(5, int(profile["peak"] / 5_000_000))
             n_domains = random.randint(4, 14)
             picks = random.sample(DEMO_DOMAINS, n_domains)
@@ -1128,7 +1094,7 @@ def main():
         print(f"  Traffic snapshots:  {TrafficSnapshot.query.count()}")
         print(f"  Domain stats:       {DomainStat.query.count()}")
 
-        # Constraint diversity breakdown
+        
         clients = Client.query.filter(Client.inbound_tag.like(f"{DEMO_PREFIX}%")).all()
         disabled = sum(1 for c in clients if not c.enable)
         expired = sum(
@@ -1146,7 +1112,7 @@ def main():
         print(f"    device limit set:       {with_device_lim}/{len(clients)}")
         print(f"    empty source_ips:       {no_ips}/{len(clients)}")
 
-        # Per-inbound client count breakdown
+        
         print("\n  Per-inbound client count:")
         for ib in INBOUNDS:
             n = sum(1 for c in clients if c.inbound_tag == ib["tag"])

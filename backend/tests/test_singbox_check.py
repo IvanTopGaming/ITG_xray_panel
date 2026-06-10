@@ -1,10 +1,3 @@
-"""Empirical sing-box config conformance: validate generated single-client AND
-aggregated sing-box configs against the real `sing-box check` binary.
-
-Skipped automatically when the binary is not on PATH (e.g. on a laptop / CI
-without the core installed). On the dev server `sing-box` 1.13.x is on PATH.
-"""
-
 import json
 import shutil
 import subprocess

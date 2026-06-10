@@ -1,5 +1,3 @@
-"""Single gateway for tariff grants: YooKassa webhook, admin grant, trial, auto-renew."""
-
 import logging
 import secrets
 import time
@@ -25,16 +23,7 @@ def _sync_after_provision(
     new_clients: list,
     extended_clients_with_state: list,
 ) -> None:
-    """Sync Xray runtime after a provisioning batch.
 
-    `extended_clients_with_state` is a list of `(Client, was_enabled_before)` pairs.
-    Fast-path: when every client lives on a vless/vmess inbound, patch the runtime
-    via `_api_add_user_grpc` instead of restarting. New clients always need AddUser.
-    Extended clients only need AddUser if they were previously disabled — when they
-    were already enabled, their id/email haven't changed and the runtime still has
-    them. Falls back to `restart_xray_container` if any inbound is non-vless/vmess
-    or any gRPC call fails.
-    """
     all_clients = new_clients + [c for c, _ in extended_clients_with_state]
 
     for c in all_clients:
@@ -79,7 +68,7 @@ def _generate_identity(protocol: str) -> str:
 
 
 def _generate_email(telegram_id: int, inbound_tag: str) -> str:
-    # Caller must check uniqueness on (inbound_tag, email) and add a suffix on collision.
+
     return f"tg{telegram_id}_{inbound_tag}"
 
 
@@ -133,7 +122,7 @@ def provision_single_item(
     limit_bytes: int,
     tariff_id: int | None = None,
 ) -> dict:
-    """Create or extend a single Client by (telegram_id, inbound_tag). Used by federation provision endpoint."""
+
     now_ms = int(time.time() * 1000)
     inbound = Inbound.query.filter_by(tag=inbound_tag).first()
     if inbound is None:
@@ -198,15 +187,13 @@ def apply_tariff_for_user(
     *,
     source: str,
 ) -> dict:
-    """Extend an existing Client for (tg, inbound) or create one. Expiry stacks: max(now, existing) + period."""
+
     period_ms = tariff.period_days * 86400_000
     now_ms = int(time.time() * 1000)
 
     existing = list(Client.query.filter_by(telegram_id=telegram_id).all())
     existing_max_expiry = max((c.expiry_time for c in existing), default=0)
-    # Wall-clock semantics: a key bought at HH:MM expires at HH:MM `period_days`
-    # later. No calendar-day snap — admins were confused when a 24h tariff
-    # purchased at 23:15 expired at 12:00 the next day.
+
     new_expiry_ms = max(now_ms, existing_max_expiry) + period_ms
 
     new_clients = []
@@ -242,7 +229,7 @@ def apply_tariff_for_user(
             client.last_reset_time = now_ms
             client.enable = True
             client.tariff_id = tariff.id
-            # Counters reset → re-arm traffic warnings (expiry warnings deliberately preserved).
+
             NotificationLog.query.filter(
                 NotificationLog.client_id == client.id,
                 NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
@@ -278,15 +265,92 @@ def apply_tariff_for_user(
     }
 
 
-def _collect_tariff_holders(tariff: "Tariff", now_ms: int):
-    """Discover active holders of `tariff` across the master and every child
-    panel its items route to. Returns (holders, unreachable_ids).
+def revoke_payment_access(telegram_id: int, tariff_id: int) -> dict:
 
-    holders: {telegram_id: {"expiry_ms": int, "have": set[(panel_id|None, inbound_tag)]}}
-      - inherited expiry: 0 if any active tariff client is unlimited, else max.
-      - have: every (panel_id, inbound_tag) the holder already has a key on (any tariff).
-    unreachable_ids: set of child panel_ids whose snapshot could not be fetched.
-    """
+    from app.services.stats import _api_remove_user_grpc
+
+    active_clients = Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id, enable=True).all()
+    inbound_tags = {c.inbound_tag for c in active_clients}
+    inbounds_by_tag = (
+        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
+    )
+
+    restart_required = False
+    for c in active_clients:
+        ib = inbounds_by_tag.get(c.inbound_tag)
+        if ib and ib.protocol in ("vless", "vmess"):
+            try:
+                if not _api_remove_user_grpc(c.inbound_tag, c.email):
+                    restart_required = True
+            except Exception:
+                restart_required = True
+        else:
+            restart_required = True
+
+    remote_disabled = 0
+    panel_failures: list[dict] = []
+    from app.models import TariffItem
+
+    remote_items = (
+        TariffItem.query.filter_by(tariff_id=tariff_id)
+        .filter(TariffItem.panel_id.isnot(None))
+        .with_entities(TariffItem.panel_id, TariffItem.inbound_tag)
+        .all()
+    )
+    wanted = {(pid, tag) for pid, tag in remote_items}
+    if wanted:
+        from app.api.bot_admin import _remote_clients_by_telegram_id_live
+        from app.services.panel_proxy import proxy_update_user
+
+        panel_ids = {pid for pid, _tag in remote_items}
+        remote_by_tg, unreachable = _remote_clients_by_telegram_id_live(panel_ids=panel_ids)
+        panel_failures.extend(unreachable)
+        for rc in remote_by_tg.get(telegram_id, []):
+            if rc.get("tariff_id") != tariff_id:
+                continue
+            if (rc.get("panel_id"), rc.get("inbound_tag")) not in wanted or not rc.get("enable", True):
+                continue
+            try:
+                proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": False})
+                remote_disabled += 1
+            except Exception as exc:
+                logger.warning("revoke_payment_access: remote disable failed panel=%s: %s", rc["panel_id"], exc)
+                panel_failures.append(
+                    {"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)}
+                )
+
+    for c in active_clients:
+        c.enable = False
+    db.session.commit()
+
+    if active_clients:
+        generate_config_file()
+        if restart_required:
+            restart_xray_container()
+    for c in active_clients:
+        try:
+            sub_cache.invalidate_user(c.id)
+        except Exception:
+            pass
+    sub_cache.invalidate_user_aggregate(telegram_id)
+
+    logger.info(
+        "revoke_payment_access tg=%s tariff=%s disabled=%d remote_disabled=%d failures=%d",
+        telegram_id,
+        tariff_id,
+        len(active_clients),
+        remote_disabled,
+        len(panel_failures),
+    )
+    return {
+        "disabled_clients": len(active_clients),
+        "remote_disabled": remote_disabled,
+        "panel_failures": panel_failures,
+    }
+
+
+def _collect_tariff_holders(tariff: "Tariff", now_ms: int):
+
     records = []
     for c in Client.query.filter(Client.telegram_id.isnot(None)).all():
         active = bool(c.enable) and (c.expiry_time == 0 or c.expiry_time > now_ms)
@@ -329,12 +393,7 @@ def _collect_tariff_holders(tariff: "Tariff", now_ms: int):
 
 
 def backfill_tariff(tariff: "Tariff") -> dict:
-    """Idempotently ensure every active holder of `tariff` has a key on every
-    tariff inbound, across the master and its child panels. Never modifies
-    existing keys. Returns a summary; unreachable panels are reported, not fatal.
-    Failures are counted in `provision_failures`, not raised — re-run (re-save the
-    tariff) to retry them.
-    """
+
     now_ms = int(time.time() * 1000)
 
     panel_names: dict[int, str] = {}

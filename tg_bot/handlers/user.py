@@ -27,14 +27,7 @@ def h(value):
 
 
 async def safe_edit(message: types.Message, text: str, reply_markup=None, parse_mode="HTML"):
-    """Edit or replace a message regardless of its current content type.
 
-    - Text message → edit in-place (no flicker).
-    - Photo message → delete + send new text (photo must be removed).
-    - Swallows "message is not modified" silently to avoid duplicate messages
-      when the user taps the same button twice.
-    - Falls back to delete+send only when the message truly can't be edited.
-    """
     kwargs = {"reply_markup": reply_markup, "parse_mode": parse_mode}
     if message.content_type == types.ContentType.PHOTO:
         try:
@@ -70,16 +63,7 @@ async def auto_expire_keys_message(
     client_id: str,
     delay: int = 60,
 ):
-    """Self-destruct timer for the keys-display message.
 
-    After `delay` seconds, replaces the keys with a localized "session
-    expired" placeholder, but only if the user is still on the same
-    viewing_keys screen for the same client. If the user has navigated
-    away, opened a different key, or the message has been removed/
-    replaced by something else (e.g. a payment-success notification),
-    the timer becomes a silent no-op — we never post a fresh
-    "session expired" bubble into the chat.
-    """
     await asyncio.sleep(delay)
 
     if await state.get_state() != UserStates.viewing_keys:
@@ -102,9 +86,6 @@ async def auto_expire_keys_message(
             parse_mode="HTML",
         )
     except TelegramBadRequest as exc:
-        # Most common: "message to edit not found" — the keys bubble was
-        # already deleted (payment notification, manual delete, etc.).
-        # Also "message is not modified" — idempotent no-op. Both fine.
         logger.debug("auto_expire_keys_message: %s", exc)
     except Exception:
         logger.debug("auto_expire_keys_message: unexpected error", exc_info=True)
@@ -120,11 +101,7 @@ async def _render_welcome(
     backend: BackendClient,
     edit: bool = False,
 ) -> None:
-    """Render the post-/start welcome (trial offer / main menu / bare title).
 
-    `telegram_id` passed explicitly — callback callers have `message.from_user`
-    pointing at the bot, not the human. `edit=True` edits in place via safe_edit.
-    """
     title = await i18n.t("welcome.title", lang, user_name=h(user_name))
     body = await i18n.t("welcome.body", lang)
     header = f"{title}\n\n{body}"
@@ -200,12 +177,7 @@ async def _render_first_touch(
     backend: BackendClient,
     edit: bool = False,
 ) -> None:
-    """First-touch onboarding screen after a fresh language pick.
 
-    Shows a warm greeting with two buttons (activate trial / skip) when the
-    user has no clients and the trial is still available. Otherwise falls
-    back to `_render_welcome` so existing-state users get the regular menu.
-    """
     user_state = None
     try:
         user_state = await backend.get_user_state(telegram_id)
@@ -390,13 +362,10 @@ async def _render_no_subscription(
     i18n: I18n,
     backend: BackendClient,
 ):
-    """Show the no-subscription alert and re-render the welcome menu in place."""
+
     msg = await i18n.t("home.no_subscription", lang)
     await callback.answer(msg, show_alert=True)
-    # User saw the "My subscription" button but actually has no clients
-    # (admin revoked, or natural expiry+cleanup since the menu was sent).
-    # Re-render the welcome in place — it picks the no-clients keyboard
-    # automatically, so the stale subscription button disappears.
+
     try:
         user_name = (
             callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
@@ -422,7 +391,7 @@ async def _render_keys_picker(
     lang: str,
     clients: list,
 ):
-    """Render the multi-key picker list."""
+
     await state.clear()
     title = await i18n.t("keys.picker.title", lang)
     entry = await i18n.t("keys.list.entry", lang)
@@ -595,7 +564,7 @@ async def show_key_details(
 
 
 async def _show_single_link(callback, state, link, record, *, i18n, lang, back_label, back_callback):
-    """Display a single key with self-destruct timer."""
+
     client_id = record["id"]
     display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
     header = await i18n.t("keys.details.header", lang, email=h(display))
@@ -690,7 +659,7 @@ async def back_to_keys(
     lang: str,
     backend: BackendClient,
 ):
-    """Go back to the keys view by re-fetching — used from QR screen."""
+
     data = await state.get_data()
     client_id = data.get("selected_key_client_id")
 
@@ -725,7 +694,7 @@ async def back_to_keys_picker(
     lang: str,
     backend: BackendClient,
 ):
-    """Return from key details to the keys picker (when user has multiple keys)."""
+
     try:
         state_data = await backend.get_user_state(callback.from_user.id)
         users_records = list((state_data or {}).get("clients") or [])
@@ -830,7 +799,7 @@ async def qr_generate_for_server(
 
 
 async def _format_expiry(expiry_ts_ms, *, i18n: I18n, lang: str) -> str:
-    """Render a localized "expiry" string with a colored indicator emoji."""
+
     if expiry_ts_ms <= 0:
         return await i18n.t("stats.expiry.permanent", lang)
 
@@ -1000,8 +969,7 @@ async def cb_trial_skip(
     lang: str,
     backend: BackendClient,
 ):
-    """User dismissed the first-touch trial offer. Re-render the regular
-    no-clients menu in place; the trial button stays available there."""
+
     await callback.answer()
     await state.clear()
     user_name = callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
@@ -1055,6 +1023,5 @@ async def cb_trial_activate(
     try:
         await callback.message.edit_text(success, reply_markup=markup)
     except Exception:
-        # If editing fails (e.g., message older than 48h), send a new one
         await callback.message.answer(success, reply_markup=markup)
     await callback.answer()

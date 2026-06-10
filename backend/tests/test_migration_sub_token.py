@@ -1,5 +1,3 @@
-"""Migration test: telegram_user.sub_token added + backfilled (schema v18)."""
-
 import os
 import sqlite3
 import tempfile
@@ -15,7 +13,7 @@ from db_migration import (
 
 @pytest.fixture
 def telegram_user_pre_v18():
-    """Fresh SQLite with a pre-v18 telegram_user table (no sub_token)."""
+
     fd, path = tempfile.mkstemp(suffix=".sqlite")
     os.close(fd)
     conn = sqlite3.connect(path)
@@ -60,8 +58,8 @@ def test_backfill_populates_unique_tokens(telegram_user_pre_v18):
     assert n == 2
     cursor.execute("SELECT sub_token FROM telegram_user ORDER BY telegram_id")
     tokens = [r[0] for r in cursor.fetchall()]
-    assert all(t and len(t) == 36 for t in tokens)  # uuid4 with dashes
-    assert len(set(tokens)) == 2  # unique
+    assert all(t and len(t) == 36 for t in tokens)
+    assert len(set(tokens)) == 2
 
 
 def test_backfill_idempotent(telegram_user_pre_v18):
@@ -72,7 +70,7 @@ def test_backfill_idempotent(telegram_user_pre_v18):
     cursor.execute("SELECT sub_token FROM telegram_user WHERE telegram_id = 111")
     first = cursor.fetchone()[0]
 
-    second_run = _backfill_sub_tokens(cursor)  # must not regenerate
+    second_run = _backfill_sub_tokens(cursor)
     conn.commit()
     assert second_run == 0
     cursor.execute("SELECT sub_token FROM telegram_user WHERE telegram_id = 111")
@@ -89,5 +87,5 @@ def test_unique_index_present(telegram_user_pre_v18):
     assert "ix_telegram_user_sub_token" in idx_names
 
 
-def test_current_db_version_is_18():
-    assert CURRENT_DB_VERSION == 18
+def test_current_db_version_is_19():
+    assert CURRENT_DB_VERSION == 19

@@ -11,7 +11,7 @@ from app.utils import SECRET_KEY
 
 @pytest.fixture
 def app(app):
-    """Extend the base app fixture with the statistics blueprint."""
+
     from app.api import statistics as stats_api
 
     if not any(bp.name == "statistics" for bp in app.blueprints.values()):
@@ -26,7 +26,7 @@ def client(app):
 
 @pytest.fixture
 def admin_token(app):
-    """Seed an Admin row and return a valid JWT."""
+
     with app.app_context():
         admin = Admin(id=1, username="admin", password="hashed", password_changed_at=0)
         db.session.add(admin)
@@ -93,13 +93,8 @@ def _auth(token):
 
 
 def _recent_bucket():
-    """Return an hourly bucket timestamp within the default 7d window."""
+
     return (int(time.time()) // 3600) * 3600
-
-
-# ---------------------------------------------------------------------------
-# Auth: 401 without token
-# ---------------------------------------------------------------------------
 
 
 class TestAuth:
@@ -119,11 +114,6 @@ class TestAuth:
         assert client.get("/api/stats/domain-users?domain=example.com").status_code == 401
 
 
-# ---------------------------------------------------------------------------
-# GET /api/stats/overview
-# ---------------------------------------------------------------------------
-
-
 class TestOverview:
     def test_overview_empty_db(self, app, client, admin_token):
         resp = client.get("/api/stats/overview", headers=_auth(admin_token))
@@ -139,7 +129,7 @@ class TestOverview:
         assert body["top_domains"] == []
 
     def test_overview_default_period(self, app, client, admin_token):
-        """Default period is 7d; recent snapshots appear in totals."""
+
         bucket = _recent_bucket()
         with app.app_context():
             _seed_inbound("vless-in", 443)
@@ -167,10 +157,10 @@ class TestOverview:
         assert body["top_inbounds"][0]["protocol"] == "vless"
 
     def test_overview_custom_period_24h(self, app, client, admin_token):
-        """Snapshots outside the 24h window are excluded."""
+
         now_ts = int(time.time())
         recent_bucket = (now_ts // 3600) * 3600
-        old_bucket = recent_bucket - 90 * 86400  # 90 days ago
+        old_bucket = recent_bucket - 90 * 86400
 
         with app.app_context():
             _seed_inbound("vless-in", 443)
@@ -186,7 +176,7 @@ class TestOverview:
         assert body["period_down"] == 200
 
     def test_overview_period_all(self, app, client, admin_token):
-        """period=all includes everything."""
+
         now_ts = int(time.time())
         recent_bucket = (now_ts // 3600) * 3600
         old_bucket = recent_bucket - 400 * 86400
@@ -256,11 +246,6 @@ class TestOverview:
         assert body["top_domains"][0]["hit_count"] == 50
 
 
-# ---------------------------------------------------------------------------
-# GET /api/stats/traffic
-# ---------------------------------------------------------------------------
-
-
 class TestTraffic:
     def test_traffic_empty(self, app, client, admin_token):
         resp = client.get("/api/stats/traffic", headers=_auth(admin_token))
@@ -285,7 +270,7 @@ class TestTraffic:
         assert "ts" in point
         assert "up" in point
         assert "down" in point
-        # All user snapshots aggregated
+
         assert point["up"] == 150
         assert point["down"] == 280
 
@@ -369,13 +354,8 @@ class TestTraffic:
         resp_30d = client.get("/api/stats/traffic?period=30d", headers=_auth(admin_token))
         assert resp_1h.status_code == 200
         assert resp_30d.status_code == 200
-        assert resp_1h.get_json()["granularity"] == 600  # 10-minute
-        assert resp_30d.get_json()["granularity"] == 86400  # daily
-
-
-# ---------------------------------------------------------------------------
-# GET /api/stats/users-ranking
-# ---------------------------------------------------------------------------
+        assert resp_1h.get_json()["granularity"] == 600
+        assert resp_30d.get_json()["granularity"] == 86400
 
 
 class TestUsersRanking:
@@ -400,7 +380,7 @@ class TestUsersRanking:
         body = resp.get_json()
         users = body["users"]
         assert len(users) == 2
-        # Highest traffic first
+
         assert users[0]["email"] == "bob@test"
         assert users[0]["total"] == 1500
         assert users[0]["enable"] is False
@@ -409,7 +389,7 @@ class TestUsersRanking:
         assert users[1]["enable"] is True
 
     def test_users_ranking_enrichment(self, app, client, admin_token):
-        """Verify client metadata is included in the response."""
+
         bucket = _recent_bucket()
         with app.app_context():
             _seed_inbound("vless-in", 443)
@@ -428,7 +408,7 @@ class TestUsersRanking:
         assert user["source_ips"] == ["1.2.3.4"]
 
     def test_users_ranking_no_client_row(self, app, client, admin_token):
-        """Snapshot for a user that no longer has a Client row (deleted)."""
+
         bucket = _recent_bucket()
         with app.app_context():
             _seed_inbound("vless-in", 443)
@@ -439,7 +419,7 @@ class TestUsersRanking:
         assert resp.status_code == 200
         user = resp.get_json()["users"][0]
         assert user["email"] == "ghost@test"
-        assert user["enable"] is True  # default when client is missing
+        assert user["enable"] is True
         assert user["source_ips"] == []
 
     def test_users_ranking_custom_period(self, app, client, admin_token):
@@ -459,11 +439,6 @@ class TestUsersRanking:
         users = resp.get_json()["users"]
         assert len(users) == 1
         assert users[0]["total"] == 300
-
-
-# ---------------------------------------------------------------------------
-# GET /api/stats/domains
-# ---------------------------------------------------------------------------
 
 
 class TestDomains:
@@ -552,11 +527,6 @@ class TestDomains:
         domains = resp.get_json()["domains"]
         total_pct = sum(d["percent"] for d in domains)
         assert total_pct == pytest.approx(100.0, abs=0.2)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/stats/domain-users
-# ---------------------------------------------------------------------------
 
 
 class TestDomainUsers:

@@ -17,10 +17,8 @@ export function AnimatedBackground() {
 
   return (
     <div className="fixed inset-0 z-[-1] overflow-hidden pointer-events-none">
-      {/* Base */}
       <div className="absolute inset-0 bg-[#050505]" />
 
-      {/* Blob 1 — top-left purple */}
       <motion.div
         animate={
           animate
@@ -36,7 +34,6 @@ export function AnimatedBackground() {
         className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-primary/20 rounded-full blur-[120px]"
       />
 
-      {/* Blob 2 — bottom-right violet */}
       <motion.div
         animate={
           animate
@@ -52,7 +49,6 @@ export function AnimatedBackground() {
         className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-secondary/10 rounded-full blur-[120px]"
       />
 
-      {/* Blob 3 — center deep purple */}
       <motion.div
         animate={
           animate
@@ -66,7 +62,6 @@ export function AnimatedBackground() {
         className="absolute top-[30%] left-[35%] w-[800px] h-[800px] bg-[#4f378b]/15 rounded-full blur-[150px]"
       />
 
-      {/* Dot grid */}
       <div
         className="absolute inset-0"
         style={{
@@ -75,7 +70,6 @@ export function AnimatedBackground() {
         }}
       />
 
-      {/* Noise texture */}
       <div
         style={{ backgroundImage: NOISE_BG }}
         className="absolute inset-0 opacity-[0.15] brightness-100 contrast-150 mix-blend-overlay"

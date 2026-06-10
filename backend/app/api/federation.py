@@ -1,9 +1,3 @@
-"""Child-side Federation API blueprint.
-
-Endpoints used by a master panel to link, handshake, poll snapshots,
-read config, and provision users on this (child) panel.
-"""
-
 import hmac
 import json
 import logging
@@ -35,19 +29,10 @@ def _build_panel_url() -> str:
     return url
 
 
-# ---------------------------------------------------------------------------
-# 1. POST /api/federation/link-token  (admin JWT required)
-# ---------------------------------------------------------------------------
-
-
 @bp.route("/federation/link-token", methods=["POST"])
 @token_required
 def generate_link_token():
-    """Generate a one-time link token for the master to consume via handshake.
 
-    Returns 409 if this panel is already linked (federation_token AND linked_at
-    are both set on the singleton FederationConfig row).
-    """
     cfg = db.session.get(FederationConfig, 1)
     if cfg is None:
         cfg = FederationConfig(id=1)
@@ -69,18 +54,9 @@ def generate_link_token():
     return jsonify({"link_token": composite}), 200
 
 
-# ---------------------------------------------------------------------------
-# 2. POST /api/federation/handshake  (validates link_token from body)
-# ---------------------------------------------------------------------------
-
-
 @bp.route("/federation/handshake", methods=["POST"])
 def handshake():
-    """Master sends {link_token, master_url, master_name} to complete linking.
 
-    On success the child generates a permanent federation_token, stores the
-    master's coordinates, and returns credentials + basic panel info.
-    """
     data = request.get_json(silent=True) or {}
     incoming_token = str(data.get("link_token") or "")
     master_url = str(data.get("master_url") or "").strip()
@@ -89,8 +65,6 @@ def handshake():
     if not incoming_token:
         return jsonify({"error": "link_token is required"}), 401
 
-    # The link token may arrive as a base64-encoded composite "url|raw_token"
-    # (produced by the link-token endpoint) or as the raw token itself.
     import base64
 
     try:
@@ -110,7 +84,6 @@ def handshake():
     if not hmac.compare_digest(incoming_token, cfg.link_token):
         return jsonify({"error": "invalid link token"}), 401
 
-    # Generate the permanent federation token
     federation_token = secrets.token_urlsafe(32)
 
     cfg.federation_token = federation_token
@@ -120,7 +93,6 @@ def handshake():
     cfg.linked_at = int(time.time() * 1000)
     db.session.commit()
 
-    # Gather panel info for the response
     name_setting = SystemSetting.query.filter_by(key="panel_name").first()
     panel_name = name_setting.value if name_setting and name_setting.value else "Panel"
 
@@ -136,16 +108,11 @@ def handshake():
     ), 200
 
 
-# ---------------------------------------------------------------------------
-# 3. GET /api/federation/snapshot  (federation_token_required)
-# ---------------------------------------------------------------------------
-
-
 @bp.route("/federation/snapshot", methods=["GET"])
 @limiter.exempt
 @federation_token_required
 def snapshot():
-    """Return all inbounds with embedded clients in one JSON response."""
+
     name_setting = SystemSetting.query.filter_by(key="panel_name").first()
     panel_name = name_setting.value if name_setting and name_setting.value else "Panel"
 
@@ -153,7 +120,6 @@ def snapshot():
     result_inbounds = []
 
     for ib in inbounds:
-        # Parse stream_settings safely — may be stored as a JSON string
         ss = ib.stream_settings
         if isinstance(ss, str):
             try:
@@ -210,15 +176,10 @@ def snapshot():
     ), 200
 
 
-# ---------------------------------------------------------------------------
-# 4. GET /api/federation/config  (admin JWT required)
-# ---------------------------------------------------------------------------
-
-
 @bp.route("/federation/config", methods=["GET"])
 @token_required
 def get_config():
-    """Return federation config state for the child panel's UI."""
+
     cfg = db.session.get(FederationConfig, 1)
     if cfg is None:
         return jsonify(
@@ -231,7 +192,6 @@ def get_config():
             }
         ), 200
 
-    # Only expose the link_token if it hasn't been used yet
     link_token = None
     if cfg.link_token and not cfg.link_token_used:
         import base64
@@ -250,20 +210,11 @@ def get_config():
     ), 200
 
 
-# ---------------------------------------------------------------------------
-# 5. POST /api/federation/provision  (federation_token_required)
-# ---------------------------------------------------------------------------
-
-
 @bp.route("/federation/provision", methods=["POST"])
 @limiter.exempt
 @federation_token_required
 def provision():
-    """Provision a single tariff item on this child panel.
 
-    Receives {telegram_id, inbound_tag, expiry_ms, limit_bytes, tariff_id}.
-    Delegates to provision_single_item from app.services.provisioning.
-    """
     data = request.get_json(silent=True) or {}
 
     telegram_id = data.get("telegram_id")

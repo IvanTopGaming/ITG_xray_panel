@@ -1,5 +1,3 @@
-"""Auto-renewal cron for free-tier grants."""
-
 import logging
 from datetime import datetime, timedelta
 
@@ -12,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def auto_renew_free_users() -> None:
-    """Re-provision + bump each due free grant. Pauses (with notification) when tariff is gone/archived/disabled."""
+
     now = datetime.utcnow()
     due = (
         UserTariffAccess.query.filter(UserTariffAccess.billing == "free")

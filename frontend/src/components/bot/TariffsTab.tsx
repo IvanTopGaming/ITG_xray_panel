@@ -201,7 +201,6 @@ export function TariffsTab() {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* ── Page header ──────────────────────────────────────────── */}
       <div className="flex items-baseline justify-between">
         <div>
           <h2 className="text-xl font-bold text-white">Tariffs</h2>
@@ -214,7 +213,6 @@ export function TariffsTab() {
         </div>
       </div>
 
-      {/* ── Trial card ──────────────────────────────────────────── */}
       <TrialCard
         trial={trial}
         stats={trial ? (stats[trial.id] ?? null) : null}
@@ -222,7 +220,6 @@ export function TariffsTab() {
         onCreate={() => openCreate(true)}
       />
 
-      {/* ── Toolbar ──────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1 rounded-2xl border border-white/[0.05] bg-white/[0.04] p-1">
@@ -276,7 +273,6 @@ export function TariffsTab() {
         </button>
       </div>
 
-      {/* ── Table ──────────────────────────────────────────── */}
       <TariffsTable
         tariffs={filteredPaid}
         stats={stats}
@@ -288,7 +284,6 @@ export function TariffsTab() {
         onDelete={handleDelete}
       />
 
-      {/* ── Drawer ──────────────────────────────────────────── */}
       <TariffDrawer
         open={drawerOpen}
         tariff={drawerSeedTariff}
@@ -298,7 +293,6 @@ export function TariffsTab() {
         saving={saveMutation.isPending}
         onClose={closeDrawer}
         onSave={async (payload) => {
-          // If creating, propagate the seed (e.g. trial=true from TrialCard create)
           await saveMutation.mutateAsync({
             ...payload,
             is_trial: drawerSeed.is_trial || payload.is_trial,

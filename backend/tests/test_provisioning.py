@@ -1,10 +1,8 @@
-"""Unit and integration tests for app.services.provisioning."""
-
 from app.services.provisioning import _generate_email, _generate_identity
 
 
 def test_generate_identity_vless_returns_uuid_hex():
-    """VLESS uses standard UUID hex strings."""
+
     identity = _generate_identity("vless")
     cleaned = identity.replace("-", "")
     assert len(cleaned) >= 32
@@ -18,8 +16,7 @@ def test_generate_identity_vmess_returns_uuid_hex():
 
 
 def test_generate_identity_unknown_protocol_returns_token():
-    """For protocols phase 3 doesn't natively support, return a URL-safe
-    random token (not a UUID)."""
+
     identity = _generate_identity("trojan")
     assert len(identity) >= 16
     assert all(c.isalnum() or c in "-_" for c in identity)
@@ -32,7 +29,7 @@ def test_generate_identity_two_calls_return_different_values():
 
 
 def test_generate_email_includes_telegram_id_and_inbound():
-    """Email format: tg<telegram_id>_<inbound_tag>."""
+
     email = _generate_email(telegram_id=12345, inbound_tag="DE-vless")
     assert "12345" in email
     assert "DE-vless" in email
@@ -51,7 +48,7 @@ from app.services.provisioning import apply_tariff_for_user
 
 @pytest.fixture
 def basic_setup(app, db):
-    """Two inbounds, one tariff with two items matching them."""
+
     inbound_de = Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}")
     inbound_msk = Inbound(tag="MSK-vless", protocol="vless", port=10002, stream_settings="{}")
     db.session.add_all([inbound_de, inbound_msk])
@@ -110,7 +107,7 @@ def test_apply_extends_existing_client(app, db, basic_setup):
         result = apply_tariff_for_user(42, tariff, source="trial")
 
     db.session.refresh(client)
-    # Expiry stacks precisely on the previous one — no calendar-day snap.
+
     target = pre_expiry + 30 * 86400_000
     assert client.expiry_time == target
     assert client.up == 0
@@ -145,15 +142,12 @@ def test_apply_extends_uses_now_when_expiry_already_past(app, db, basic_setup):
     with patch("app.services.provisioning._sync_after_provision"):
         result = apply_tariff_for_user(42, tariff, source="auto_renew")
 
-    # Wall-clock semantics: now + period, no noon snap. Allow a small
-    # window for the elapsed millis between now_ms capture and the call.
     expected = now_ms + 30 * 86400_000
     assert abs(result["expires_at_ms"] - expected) < 2_000
 
 
 def test_apply_expiry_is_wall_clock_offset_from_purchase_time(app, db, basic_setup):
-    """A 1-day tariff bought at HH:MM expires at HH:MM next day — no noon snap.
-    Buying at 23:15 must yield expiry at 23:15 the next day, not at 12:00."""
+
     one_day_tariff = Tariff(name="One day", price_rub=50, period_days=1)
     db.session.add(one_day_tariff)
     db.session.flush()
@@ -171,7 +165,7 @@ def test_apply_expiry_is_wall_clock_offset_from_purchase_time(app, db, basic_set
 
 
 def test_apply_msk_item_sets_70gb_limit(app, db, basic_setup):
-    """traffic_gb=70 → limit_bytes = 70 * 1024**3."""
+
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
     msk = _make_client(
@@ -197,7 +191,7 @@ def test_apply_msk_item_sets_70gb_limit(app, db, basic_setup):
 
 
 def test_apply_creates_missing_client(app, db, basic_setup):
-    """User has no existing Client → both items create new ones."""
+
     tariff = basic_setup
 
     with patch("app.services.provisioning._sync_after_provision"):
@@ -211,12 +205,12 @@ def test_apply_creates_missing_client(app, db, basic_setup):
     assert by_inbound["DE-vless"].limit_bytes == 0
     assert by_inbound["MSK-vless"].limit_bytes == 70 * 1024**3
     assert by_inbound["DE-vless"].tariff_id == tariff.id
-    assert "-" in by_inbound["DE-vless"].id  # VLESS UUID has dashes
+    assert "-" in by_inbound["DE-vless"].id
     assert len(result["clients"]) == 2
 
 
 def test_apply_creates_only_missing_when_partial_overlap(app, db, basic_setup):
-    """User has Client for DE only → MSK is created; DE is extended."""
+
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
     de_existing = _make_client(
@@ -233,17 +227,17 @@ def test_apply_creates_only_missing_when_partial_overlap(app, db, basic_setup):
     clients = Client.query.filter_by(telegram_id=42).all()
     assert len(clients) == 2
     by_inbound = {c.inbound_tag: c for c in clients}
-    # DE existing one preserved (same id)
+
     assert by_inbound["DE-vless"].id == de_existing.id
-    # MSK newly created
+
     assert by_inbound["MSK-vless"].id != de_existing.id
     assert by_inbound["MSK-vless"].limit_bytes == 70 * 1024**3
 
 
 def test_apply_handles_email_collision(app, db, basic_setup):
-    """Force a collision on the default email; helper falls back to suffix."""
+
     tariff = basic_setup
-    # Pre-populate a Client whose email collides with the default
+
     _make_client(
         db,
         telegram_id=999,
@@ -265,9 +259,7 @@ def test_apply_handles_email_collision(app, db, basic_setup):
 
 
 def test_provision_calls_xray_regen_once(app, db, basic_setup):
-    """Provisioning calls generate_config_file ONCE per call, not once per item.
-    Restart is fast-path-skipped when all items are vless/vmess — see
-    test_provision_new_vless_uses_grpc_no_restart for the runtime sync contract."""
+
     tariff = basic_setup
     with (
         patch("app.services.provisioning.generate_config_file") as mock_gen,
@@ -282,7 +274,7 @@ def test_provision_calls_xray_regen_once(app, db, basic_setup):
 
 
 def test_provision_new_vless_uses_grpc_no_restart(app, db, basic_setup):
-    """All new vless clients → AddUser via gRPC, no restart."""
+
     tariff = basic_setup
     with (
         patch("app.services.provisioning.generate_config_file") as mock_gen,
@@ -294,12 +286,11 @@ def test_provision_new_vless_uses_grpc_no_restart(app, db, basic_setup):
 
     assert mock_gen.call_count == 1
     assert mock_restart.call_count == 0
-    assert mock_add.call_count == 2  # DE-vless + MSK-vless
+    assert mock_add.call_count == 2
 
 
 def test_provision_extending_enabled_vless_skips_runtime(app, db, basic_setup):
-    """Extending vless clients that were already enabled → no restart, no gRPC.
-    Their runtime state (id + email) hasn't changed, so Xray doesn't need to know."""
+
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
     _make_client(db, telegram_id=42, inbound_tag="DE-vless", expiry_ms=now_ms, limit_bytes=0)
@@ -319,7 +310,7 @@ def test_provision_extending_enabled_vless_skips_runtime(app, db, basic_setup):
 
 
 def test_provision_extending_disabled_vless_re_adds_via_grpc(app, db, basic_setup):
-    """Extending a previously-disabled vless client → AddUser to re-arm runtime."""
+
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
     de = _make_client(db, telegram_id=42, inbound_tag="DE-vless", expiry_ms=now_ms, limit_bytes=0)
@@ -336,12 +327,11 @@ def test_provision_extending_disabled_vless_re_adds_via_grpc(app, db, basic_setu
         apply_tariff_for_user(42, tariff, source="auto_renew")
 
     assert mock_restart.call_count == 0
-    assert mock_add.call_count == 1  # only the disabled one needs re-add
+    assert mock_add.call_count == 1
 
 
 def test_provision_non_vless_inbound_requires_restart(app, db):
-    """Tariff item on non-vless/vmess inbound (e.g. shadowsocks) → restart required.
-    Config-embedded user data can't be patched in via gRPC."""
+
     inbound_ss = Inbound(tag="SS-1", protocol="shadowsocks", port=10003, stream_settings="{}")
     db.session.add(inbound_ss)
     db.session.flush()
@@ -360,11 +350,11 @@ def test_provision_non_vless_inbound_requires_restart(app, db):
         apply_tariff_for_user(99, tariff, source="trial")
 
     assert mock_restart.call_count == 1
-    assert mock_add.call_count == 0  # don't even try gRPC for non-vless
+    assert mock_add.call_count == 0
 
 
 def test_provision_grpc_failure_falls_back_to_restart(app, db, basic_setup):
-    """If gRPC AddUser returns False → restart fallback so user is still routed."""
+
     tariff = basic_setup
 
     with (
@@ -379,14 +369,11 @@ def test_provision_grpc_failure_falls_back_to_restart(app, db, basic_setup):
 
 
 def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
-    """When a renewal resets a client's traffic counters to 0, any earlier
-    traffic_80/95/exhausted NotificationLog entries must be cleared too —
-    otherwise the dedup guard in send_traffic_notifications blocks the next
-    cycle's warnings even though the user is back at 0% usage."""
+
     from app.models import NotificationLog
 
     tariff = basic_setup
-    # Seed an existing client + stale traffic notification.
+
     existing = Client(
         id=str(_uuid.uuid4()),
         email="tg77_DE-vless",
@@ -405,8 +392,6 @@ def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
         [
             NotificationLog(telegram_id=77, client_id=existing.id, kind="traffic_80"),
             NotificationLog(telegram_id=77, client_id=existing.id, kind="traffic_95"),
-            # Expiry notifications must be preserved — they track Client lifetime
-            # independent of billing cycles, so a renewed Client keeps its expiry log.
             NotificationLog(telegram_id=77, client_id=existing.id, kind="expiry_1d"),
         ]
     )
@@ -420,4 +405,4 @@ def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
     assert "traffic_80" not in kinds
     assert "traffic_95" not in kinds
     assert "traffic_exhausted" not in kinds
-    assert "expiry_1d" in kinds  # preserved
+    assert "expiry_1d" in kinds

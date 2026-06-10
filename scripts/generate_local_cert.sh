@@ -1,7 +1,4 @@
 #!/bin/bash
-# Generate a self-signed certificate for local/dev use and install it where
-# Caddy reads it — ./certs/{fullchain,key}.pem. Use this instead of
-# generate_certs.sh when PANEL_DOMAIN is a local name Let's Encrypt can't sign.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

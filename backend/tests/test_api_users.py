@@ -1,5 +1,3 @@
-"""Tests for /api/bot/users/* endpoints (admin-side, JWT)."""
-
 import time
 from unittest.mock import patch
 
@@ -21,9 +19,6 @@ from app.models import (
 
 
 class _SqlOrderRecorder:
-    """Hook SQLAlchemy's engine to log INSERT/UPDATE/DELETE statements into a
-    shared list, so a test can assert that gRPC calls precede every DB write."""
-
     def __init__(self, order: list[str], label: str = "sql_write"):
         self._order = order
         self._label = label
@@ -92,17 +87,13 @@ def two_inbounds_and_tariff(app_with_admin, db):
 
 @pytest.fixture
 def private_tariff(app_with_admin, db, two_inbounds_and_tariff):
-    """A second tariff with visibility='private' — needed for paid-grant tests
-    (which now require private visibility)."""
+
     t = Tariff(name="VIP", price_rub=500, period_days=30, visibility="private")
     db.session.add(t)
     db.session.flush()
     db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE", traffic_gb=0, sort_order=0))
     db.session.commit()
     return t
-
-
-# === GET /api/bot/users ===
 
 
 def test_list_users_empty(app_with_admin, db, client, admin_headers):
@@ -125,9 +116,6 @@ def test_list_users_returns_telegram_users(app_with_admin, db, client, admin_hea
     assert "grants_count" in by_id[42]
 
 
-# === GET /api/bot/users/<id> ===
-
-
 def test_get_user_404_if_missing(app_with_admin, db, client, admin_headers):
     resp = client.get("/api/bot/users/9999", headers=admin_headers)
     assert resp.status_code == 404
@@ -145,12 +133,8 @@ def test_get_user_returns_detail(app_with_admin, db, client, admin_headers):
     assert body["payments"] == []
 
 
-# === POST /api/bot/users/<id>/grants ===
-
-
 def test_grant_paid_creates_access_row(app_with_admin, db, client, admin_headers, private_tariff):
-    """billing='paid' on a private tariff: creates a UserTariffAccess row,
-    does NOT provision Clients, and publishes access_offered."""
+
     tariff = private_tariff
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
@@ -178,9 +162,8 @@ def test_grant_paid_creates_access_row(app_with_admin, db, client, admin_headers
 
 
 def test_grant_paid_rejects_public_tariff(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """'paid' grants are only meaningful for private tariffs — the user can
-    already see and buy public ones without any grant. The API returns 400."""
-    tariff = two_inbounds_and_tariff  # default visibility=public
+
+    tariff = two_inbounds_and_tariff
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
 
@@ -195,8 +178,7 @@ def test_grant_paid_rejects_public_tariff(app_with_admin, db, client, admin_head
 
 
 def test_grant_gift_provisions_once(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """billing='gift': provisions Clients for one period, leaves
-    next_renewal_at=None (no auto-renew), and publishes access_granted_once."""
+
     tariff = two_inbounds_and_tariff
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
@@ -224,14 +206,12 @@ def test_grant_gift_provisions_once(app_with_admin, db, client, admin_headers, t
     assert payload["lang"] == "ru"
     assert isinstance(payload["expires_at_ms"], int) and payload["expires_at_ms"] > 0
 
-    # No competing event types
     assert not any(call.args and call.args[0] == "access_granted" for call in mock_publish.call_args_list)
     assert not any(call.args and call.args[0] == "access_offered" for call in mock_publish.call_args_list)
 
 
 def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """billing='free' provisions Clients immediately, sets next_renewal_at,
-    and publishes an access_granted event so the bot DMs the user."""
+
     tariff = two_inbounds_and_tariff
     db.session.add(TelegramUser(telegram_id=42, language="en"))
     db.session.commit()
@@ -281,7 +261,7 @@ def test_grant_rejects_unknown_tariff(app_with_admin, db, client, admin_headers)
 
 
 def test_grant_upsert_replaces_existing(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """Re-granting the same (tg_id, tariff_id) updates the existing row."""
+
     tariff = two_inbounds_and_tariff
     db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
     db.session.commit()
@@ -298,12 +278,8 @@ def test_grant_upsert_replaces_existing(app_with_admin, db, client, admin_header
     assert rows[0].billing == "free"
 
 
-# === GET /api/bot/grants ===
-
-
 def test_list_grants(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """Granted-tab endpoint returns all grants (both 'free' and 'paid'),
-    each row carrying its own `billing` field."""
+
     tariff = two_inbounds_and_tariff
     db.session.add(TelegramUser(telegram_id=42, username="ivan", language="ru"))
     db.session.add(
@@ -334,12 +310,8 @@ def test_list_grants(app_with_admin, db, client, admin_headers, two_inbounds_and
     assert by_tg[99]["billing"] == "paid"
 
 
-# === DELETE /api/bot/users/<id>/tariffs/<tariff_id> ===
-
-
 def _make_user_with_active_clients(db, tariff, telegram_id=42):
-    """Helper: create a TelegramUser and two enabled Clients tied to `tariff`,
-    one per inbound, returning the list of clients in deterministic order."""
+
     db.session.add(TelegramUser(telegram_id=telegram_id, language="ru"))
     db.session.flush()
     c1 = Client(
@@ -398,7 +370,6 @@ def test_revoke_tariff_disables_clients_and_removes_grant(
     assert all(c.tariff_id is None for c in remaining)
     assert UserTariffAccess.query.filter_by(telegram_id=42, tariff_id=tariff.id).count() == 0
 
-    # vless inbounds → one gRPC remove per disabled client, no container restart.
     assert remove.call_count == 2
     regen.assert_called_once()
     restart.assert_not_called()
@@ -434,7 +405,7 @@ def test_revoke_tariff_idempotent_when_nothing_to_revoke(
 
 
 def test_revoke_tariff_restarts_when_grpc_fails(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """If gRPC remove returns False even once, fall back to a container restart."""
+
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
     db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
@@ -466,7 +437,7 @@ def test_revoke_tariff_restarts_when_grpc_fails(app_with_admin, db, client, admi
 
 
 def test_revoke_tariff_restarts_for_non_vless_protocol(app_with_admin, db, client, admin_headers):
-    """Trojan/SS/etc. can't be hot-removed via gRPC — must restart."""
+
     db.session.add(Inbound(tag="TR", protocol="trojan", port=10003, stream_settings="{}"))
     db.session.flush()
     t = Tariff(name="Trojan-only", price_rub=100, period_days=30)
@@ -505,19 +476,14 @@ def test_revoke_tariff_restarts_for_non_vless_protocol(app_with_admin, db, clien
         "remote_disabled": 0,
         "panel_failures": [],
     }
-    # Non-vless protocol → gRPC remove is skipped entirely.
+
     remove.assert_not_called()
     regen.assert_called_once()
     restart.assert_called_once()
 
 
-# === POST /api/bot/users/<id>/block — must kill live Xray sessions ===
-
-
 def test_block_user_disables_and_removes_via_grpc(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """Blocking a user must NOT just flip enable=False in the DB — the live
-    Xray sessions for that user have to be torn down too, otherwise the
-    user keeps streaming until Xray restarts for an unrelated reason."""
+
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
     db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free"))
@@ -547,8 +513,7 @@ def test_block_user_disables_and_removes_via_grpc(app_with_admin, db, client, ad
 
 
 def test_block_user_restarts_when_grpc_fails(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """A single gRPC removal failure escalates to a full Xray restart so
-    no zombie session survives."""
+
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
     db.session.commit()
@@ -567,7 +532,7 @@ def test_block_user_restarts_when_grpc_fails(app_with_admin, db, client, admin_h
 
 
 def test_block_user_restarts_for_non_vless_protocol(app_with_admin, db, client, admin_headers):
-    """trojan / shadowsocks etc. can't be hot-removed via gRPC → restart."""
+
     db.session.add(Inbound(tag="TR", protocol="trojan", port=10003, stream_settings="{}"))
     db.session.flush()
     t = Tariff(name="Trojan-only", price_rub=100, period_days=30)
@@ -603,7 +568,7 @@ def test_block_user_restarts_for_non_vless_protocol(app_with_admin, db, client, 
 
 
 def test_block_user_no_clients_skips_xray_touch(app_with_admin, db, client, admin_headers):
-    """User with no active Clients: 200 OK, no Xray touch, idempotent."""
+
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
 
@@ -620,14 +585,6 @@ def test_block_user_no_clients_skips_xray_touch(app_with_admin, db, client, admi
     remove.assert_not_called()
     regen.assert_not_called()
     restart.assert_not_called()
-
-
-# === Transaction-shape invariants =============================================
-#
-# block_user and revoke_tariff_from_user used to mix _api_remove_user_grpc calls
-# with autoflushed UPDATE/DELETE statements inside a single open SQLite write
-# transaction, holding the writer lock for the entire loop. These tests pin the
-# fix: gRPC must complete before the first DB write.
 
 
 def test_block_user_grpc_calls_precede_all_sql_writes(
@@ -695,9 +652,6 @@ def test_revoke_tariff_grpc_calls_precede_all_sql_writes(
         f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
         f"This holds the SQLite write lock across gRPC, blocking concurrent writers. Order: {order}"
     )
-
-
-# === block_user — cross-panel disable ===
 
 
 def test_block_user_disables_remote_clients(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
@@ -825,9 +779,6 @@ def test_block_user_remote_partial_success(app_with_admin, db, client, admin_hea
     assert body["disabled_clients"] == 2
     assert body["remote_disabled"] == 1
     assert body["panel_failures"] == [{"panel_id": 8, "panel_name": "Child-B", "error": "panel offline"}]
-
-
-# === unblock_user — re-enable clients with tariff time remaining ===
 
 
 def _add_disabled_client(db, *, cid, tag, email, expiry, tg=42):
@@ -1032,22 +983,18 @@ def test_unblock_restarts_when_grpc_add_fails(app_with_admin, db, client, admin_
     restart.assert_called_once()
 
 
-# === revoke_tariff_from_user — cross-panel disable ===
-
-
 def test_revoke_tariff_disables_remote_clients_for_that_tariff(
     app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
 ):
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
-    # this tariff also routes one item to a linked panel (panel 7, inbound FR)
+
     db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="FR", traffic_gb=0, panel_id=7, sort_order=2))
     db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
     db.session.commit()
 
     remote = {
         42: [
-            # belongs to THIS tariff (panel 7, FR) -> must be disabled
             {
                 "panel_id": 7,
                 "panel_name": "Child-A",
@@ -1057,7 +1004,6 @@ def test_revoke_tariff_disables_remote_clients_for_that_tariff(
                 "expiry_time": 0,
                 "tariff_id": tariff.id,
             },
-            # different inbound, NOT part of this tariff -> must be left alone
             {
                 "panel_id": 7,
                 "panel_name": "Child-A",
@@ -1124,9 +1070,7 @@ def test_revoke_tariff_remote_failure_is_best_effort(
 def test_revoke_tariff_leaves_remote_client_of_other_tariff(
     app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
 ):
-    """Asymmetry fix: a remote client sitting on the tariff's (panel, inbound)
-    but belonging to a DIFFERENT tariff must NOT be disabled — remote now keys
-    on tariff_id, mirroring the local match."""
+
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
     db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="FR", traffic_gb=0, panel_id=7, sort_order=2))
@@ -1141,7 +1085,7 @@ def test_revoke_tariff_leaves_remote_client_of_other_tariff(
                 "email": "tg42_FR",
                 "enable": True,
                 "expiry_time": 0,
-                "tariff_id": tariff.id + 999,  # a different tariff shares this (panel, inbound)
+                "tariff_id": tariff.id + 999,
             }
         ]
     }
@@ -1162,8 +1106,7 @@ def test_revoke_tariff_leaves_remote_client_of_other_tariff(
 
 
 def test_revoke_tariff_reports_unreachable_panel(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """A panel the tariff routes to that we couldn't fetch live is surfaced in
-    panel_failures — not silently treated as 'no remote clients'."""
+
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
     db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="FR", traffic_gb=0, panel_id=7, sort_order=2))
@@ -1187,8 +1130,7 @@ def test_revoke_tariff_reports_unreachable_panel(app_with_admin, db, client, adm
 
 
 def test_block_user_reports_unreachable_panel(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    """block surfaces an unreachable panel from the live enumeration instead of
-    reporting a clean success — the bug class this fix targets."""
+
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
     db.session.commit()
@@ -1212,9 +1154,6 @@ def test_block_user_reports_unreachable_panel(app_with_admin, db, client, admin_
     prox.assert_not_called()
 
 
-# === _remote_clients_by_telegram_id_live — live fetch + unreachable reporting ===
-
-
 def _add_linked_panel(db, *, pid, name, enable=True):
     db.session.add(
         LinkedPanel(
@@ -1229,8 +1168,7 @@ def _add_linked_panel(db, *, pid, name, enable=True):
 
 
 def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin, db):
-    """The live helper fetches a fresh snapshot per enabled panel: reachable
-    panels contribute clients, unreachable ones land in `unreachable`."""
+
     from app.api.bot_admin import _remote_clients_by_telegram_id_live
 
     _add_linked_panel(db, pid=1, name="Child-A")
@@ -1258,8 +1196,7 @@ def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin
 
 
 def test_live_enumeration_scopes_to_given_panel_ids(app_with_admin, db):
-    """When panel_ids is provided, only those panels are queried (used by the
-    tariff-scoped revoke path) — others are never fetched."""
+
     from app.api.bot_admin import _remote_clients_by_telegram_id_live
 
     _add_linked_panel(db, pid=1, name="Child-A")

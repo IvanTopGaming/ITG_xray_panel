@@ -1,5 +1,3 @@
-"""Unit tests for app.services.stats — pure logic, limit enforcement, log parsing."""
-
 from __future__ import annotations
 
 import time
@@ -27,9 +25,6 @@ from app.services.stats import (
 
 
 class _SqlOrderRecorder:
-    """Hook SQLAlchemy's engine to log INSERT/UPDATE/DELETE statements into a
-    shared list — used to assert that gRPC calls precede every DB write."""
-
     def __init__(self, order: list[str], label: str = "sql_write"):
         self._order = order
         self._label = label
@@ -45,11 +40,6 @@ class _SqlOrderRecorder:
 
     def __exit__(self, *_exc):
         event.remove(Engine, "before_cursor_execute", self._listener)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_inbound(db_, *, tag="DE-vless", protocol="vless", port=10001):
@@ -93,11 +83,6 @@ def _make_client(
     return c
 
 
-# ---------------------------------------------------------------------------
-# 1. _ten_min_bucket
-# ---------------------------------------------------------------------------
-
-
 class TestTenMinBucket:
     def test_rounds_down_to_ten_minute_boundary(self):
         dt = datetime(2025, 6, 15, 14, 37, 59)
@@ -123,11 +108,6 @@ class TestTenMinBucket:
         assert bucket == int(expected.timestamp())
 
 
-# ---------------------------------------------------------------------------
-# 2. _is_ip_address
-# ---------------------------------------------------------------------------
-
-
 class TestIsIpAddress:
     def test_valid_ipv4(self):
         assert _is_ip_address("192.168.1.1") is True
@@ -149,11 +129,6 @@ class TestIsIpAddress:
         assert _is_ip_address("192.168.1.1:8080") is False
 
 
-# ---------------------------------------------------------------------------
-# 3. check_limits_and_reset — over traffic limit
-# ---------------------------------------------------------------------------
-
-
 _GRPC_PATCHES = {
     "get_channel": "app.services.stats.get_channel",
     "remove_grpc": "app.services.stats._api_remove_user_grpc",
@@ -170,7 +145,7 @@ class TestCheckLimitsOverTraffic:
             inbound_tag="DE-vless",
             limit_bytes=1_000_000,
             up=600_000,
-            down=500_000,  # total 1_100_000 > limit
+            down=500_000,
             enable=True,
         )
         with (
@@ -191,7 +166,7 @@ class TestCheckLimitsOverTraffic:
             inbound_tag="DE-vless",
             limit_bytes=1_000_000,
             up=500_000,
-            down=500_000,  # exactly at limit
+            down=500_000,
             enable=True,
         )
         with (
@@ -206,15 +181,10 @@ class TestCheckLimitsOverTraffic:
         assert client.enable is False
 
 
-# ---------------------------------------------------------------------------
-# 4. check_limits_and_reset — expired
-# ---------------------------------------------------------------------------
-
-
 class TestCheckLimitsExpired:
     def test_disables_client_when_expired(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
-        past_ts = int((time.time() - 3600) * 1000)  # 1 hour ago
+        past_ts = int((time.time() - 3600) * 1000)
         client = _make_client(
             db,
             inbound_tag="DE-vless",
@@ -233,21 +203,16 @@ class TestCheckLimitsExpired:
         assert client.enable is False
 
 
-# ---------------------------------------------------------------------------
-# 5. check_limits_and_reset — within limits and not expired
-# ---------------------------------------------------------------------------
-
-
 class TestCheckLimitsHealthy:
     def test_does_not_disable_healthy_client(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
-        future_ts = int((time.time() + 86400) * 1000)  # 24h from now
+        future_ts = int((time.time() + 86400) * 1000)
         client = _make_client(
             db,
             inbound_tag="DE-vless",
             limit_bytes=10_000_000,
             up=1_000_000,
-            down=2_000_000,  # total 3M < 10M
+            down=2_000_000,
             expiry_time=future_ts,
             enable=True,
         )
@@ -263,7 +228,7 @@ class TestCheckLimitsHealthy:
         assert client.enable is True
 
     def test_does_not_disable_unlimited_client(self, app, db):
-        """limit_bytes=0 means unlimited — never over limit."""
+
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         client = _make_client(
             db,
@@ -271,7 +236,7 @@ class TestCheckLimitsHealthy:
             limit_bytes=0,
             up=999_999_999,
             down=999_999_999,
-            expiry_time=0,  # 0 = no expiry
+            expiry_time=0,
             enable=True,
         )
         with (
@@ -286,7 +251,7 @@ class TestCheckLimitsHealthy:
         assert client.enable is True
 
     def test_expired_zero_means_no_expiry(self, app, db):
-        """expiry_time=0 means the client never expires."""
+
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         client = _make_client(
             db,
@@ -307,16 +272,11 @@ class TestCheckLimitsHealthy:
         assert client.enable is True
 
 
-# ---------------------------------------------------------------------------
-# 6. check_limits_and_reset — monthly reset
-# ---------------------------------------------------------------------------
-
-
 class TestCheckLimitsMonthlyReset:
     def test_resets_counters_on_reset_day(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         current_day = datetime.now().day
-        # last_reset_time from yesterday so it hasn't been reset today
+
         yesterday_ts = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
         client = _make_client(
             db,
@@ -351,7 +311,7 @@ class TestCheckLimitsMonthlyReset:
     def test_does_not_reset_if_already_reset_today(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         current_day = datetime.now().day
-        # last_reset_time is today already
+
         now_ts = int(datetime.now().timestamp() * 1000)
         client = _make_client(
             db,
@@ -373,14 +333,14 @@ class TestCheckLimitsMonthlyReset:
             check_limits_and_reset()
 
         db.session.refresh(client)
-        # Counters unchanged
+
         assert client.up == 5_000_000_000
         assert client.down == 3_000_000_000
 
     def test_does_not_reset_on_wrong_day(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         current_day = datetime.now().day
-        wrong_day = (current_day % 28) + 1  # different day
+        wrong_day = (current_day % 28) + 1
         client = _make_client(
             db,
             inbound_tag="DE-vless",
@@ -405,11 +365,6 @@ class TestCheckLimitsMonthlyReset:
         assert client.down == 3_000_000_000
 
 
-# ---------------------------------------------------------------------------
-# 7. check_limits_and_reset — clears traffic NotificationLog on reset
-# ---------------------------------------------------------------------------
-
-
 class TestCheckLimitsClearsNotifications:
     def test_clears_traffic_notifications_on_monthly_reset(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
@@ -426,7 +381,7 @@ class TestCheckLimitsClearsNotifications:
             last_reset_time=yesterday_ts,
             telegram_id=42,
         )
-        # Seed traffic + expiry notification logs
+
         db.session.add_all(
             [
                 NotificationLog(telegram_id=42, client_id=client.id, kind="traffic_80"),
@@ -455,13 +410,8 @@ class TestCheckLimitsClearsNotifications:
         assert "traffic_80" not in kinds
         assert "traffic_95" not in kinds
         assert "traffic_exhausted" not in kinds
-        # Expiry notifications are preserved
+
         assert "expiry_1d" in kinds
-
-
-# ---------------------------------------------------------------------------
-# 8. parse_access_logs — regex + domain stat upsert
-# ---------------------------------------------------------------------------
 
 
 class TestParseAccessLogs:
@@ -484,7 +434,7 @@ class TestParseAccessLogs:
         assert m.group(2) == "testuser"
 
     def test_full_regex_skips_bare_ip_destination(self):
-        """The regex still matches an IP destination — _is_ip_address filters it later."""
+
         line = (
             "2025/06/15 14:30:00 192.168.1.10:54321 accepted "
             "tcp:93.184.216.34:443 [inbound] email: v1|DE-vless|dXNlcl8x"
@@ -492,11 +442,11 @@ class TestParseAccessLogs:
         m = _ACCEPT_FULL.search(line)
         assert m is not None
         dest = m.group(2)
-        # The domain-stat logic skips IPs
+
         assert _is_ip_address(dest) is True
 
     def test_parse_access_logs_upserts_domain_stats(self, app, db):
-        """End-to-end: fake log file -> DomainStat rows created."""
+
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         _make_client(
             db,
@@ -526,7 +476,7 @@ class TestParseAccessLogs:
         assert stats[0].hit_count >= 1
 
     def test_parse_access_logs_skips_bare_ip_destinations(self, app, db):
-        """Bare IP destinations should NOT appear in DomainStat."""
+
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         _make_client(
             db,
@@ -553,11 +503,6 @@ class TestParseAccessLogs:
 
         stats = DomainStat.query.all()
         assert len(stats) == 0
-
-
-# ---------------------------------------------------------------------------
-# 9. cleanup_old_domain_stats
-# ---------------------------------------------------------------------------
 
 
 class TestCleanupOldDomainStats:
@@ -588,11 +533,6 @@ class TestCleanupOldDomainStats:
         cleanup_old_domain_stats()
 
         assert DomainStat.query.count() == 1
-
-
-# ---------------------------------------------------------------------------
-# 10. reset_user_traffic
-# ---------------------------------------------------------------------------
 
 
 class TestResetUserTraffic:
@@ -626,11 +566,6 @@ class TestResetUserTraffic:
             reset_user_traffic("DE-vless", "nonexistent")
 
 
-# ---------------------------------------------------------------------------
-# check_limits_and_reset — calls generate_config_file + restart
-# ---------------------------------------------------------------------------
-
-
 class TestCheckLimitsXrayInteraction:
     def test_calls_generate_config_on_disable(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
@@ -650,7 +585,7 @@ class TestCheckLimitsXrayInteraction:
             check_limits_and_reset()
 
         mock_gen.assert_called_once()
-        # vless uses gRPC remove, so restart is only needed if gRPC fails
+
         mock_remove.assert_called_once()
         mock_restart.assert_not_called()
 
@@ -675,7 +610,7 @@ class TestCheckLimitsXrayInteraction:
         mock_restart.assert_called_once()
 
     def test_restarts_for_non_vless_vmess_protocol(self, app, db):
-        """Non-vless/vmess protocols (e.g. trojan) always require restart."""
+
         _make_inbound(db, tag="TR-trojan", protocol="trojan", port=10002)
         past_ts = int((time.time() - 3600) * 1000)
         _make_client(
@@ -697,7 +632,7 @@ class TestCheckLimitsXrayInteraction:
         mock_restart.assert_called_once()
 
     def test_no_config_change_when_all_clients_healthy(self, app, db):
-        """No config regen when nothing changed."""
+
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         future_ts = int((time.time() + 86400) * 1000)
         _make_client(
@@ -722,13 +657,8 @@ class TestCheckLimitsXrayInteraction:
         mock_restart.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# sync_traffic_stats — transaction-shape invariant + correctness
-# ---------------------------------------------------------------------------
-
-
 def _make_stats_stub(per_call_value: int):
-    """Mock stub whose QueryStats returns a response with .stat[0].value == per_call_value."""
+
     stub = MagicMock()
 
     def _query(*_args, **_kwargs):
@@ -743,14 +673,6 @@ def _make_stats_stub(per_call_value: int):
 
 
 class TestSyncTrafficTransactionShape:
-    """Regression guard: do not hold a SQLite write transaction across gRPC calls.
-
-    sync_traffic_stats must complete the gRPC read phase BEFORE issuing any
-    INSERT/UPDATE. Otherwise the writer-lock is held for seconds while gRPC
-    yields, blocking parse_logs / check_limits / poll_pending_payments and
-    eventually triggering `database is locked` once busy_timeout expires.
-    """
-
     def test_grpc_reads_complete_before_any_upsert(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         _make_client(db, inbound_tag="DE-vless", email="u1", enable=True)
@@ -793,12 +715,10 @@ class TestSyncTrafficTransactionShape:
 
 
 class TestSyncTrafficCorrectness:
-    """Refactor must preserve end-state: client.up/down get the deltas, snapshots upserted."""
-
     def test_accumulates_deltas_into_client_counters(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         c = _make_client(db, inbound_tag="DE-vless", email="u1", up=100, down=200, enable=True)
-        # Each QueryStats returns value=1000 (uplink + downlink both, 2 calls per client → up+=1000, down+=1000)
+
         stub = _make_stats_stub(per_call_value=1000)
 
         with (
@@ -816,7 +736,7 @@ class TestSyncTrafficCorrectness:
         ib.up = 50
         ib.down = 75
         db.session.commit()
-        # No enabled clients → only inbound stats are queried.
+
         stub = _make_stats_stub(per_call_value=2000)
 
         with (
@@ -841,14 +761,8 @@ class TestSyncTrafficCorrectness:
 
 
 class TestCheckLimitsTransactionShape:
-    """Regression guard: check_limits_and_reset must run all gRPC operations
-    BEFORE issuing any UPDATE/DELETE. The original code interleaved
-    _api_remove_user_grpc and Xray QueryStats with NotificationLog DELETEs
-    and Client autoflushes, holding the writer lock for the entire loop."""
-
     def test_grpc_calls_precede_all_sql_writes(self, app, db):
-        # One client over limit (triggers _api_remove_user_grpc) and another
-        # on its reset day (triggers Xray QueryStats counter zeroing).
+
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         over_limit = _make_client(
             db,
@@ -869,7 +783,7 @@ class TestCheckLimitsTransactionShape:
             reset_day=today_day,
             last_reset_time=0,
         )
-        # Sanity: both clients independently need work this run.
+
         assert over_limit.id != on_reset_day.id
 
         order: list[str] = []

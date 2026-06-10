@@ -1,10 +1,6 @@
-"""Smoke test for the conftest fixtures themselves."""
-
-
 def test_app_fixture_provides_context(app):
     from flask import current_app
 
-    # current_app is a LocalProxy; compare via _get_current_object
     assert current_app._get_current_object() is app
 
 

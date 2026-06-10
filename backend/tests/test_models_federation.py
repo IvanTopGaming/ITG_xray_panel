@@ -1,5 +1,3 @@
-"""Tests for LinkedPanel and FederationConfig models (multi-panel federation)."""
-
 import time
 
 import pytest
@@ -8,11 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from app.models import FederationConfig, LinkedPanel
 
 
-# ─── LinkedPanel ──────────────────────────────────────────────────────────────
-
-
 def test_linked_panel_creation(app, db):
-    """A LinkedPanel row can be created and retrieved by id."""
+
     now = int(time.time())
     panel = LinkedPanel(
         name="eu-node",
@@ -35,7 +30,7 @@ def test_linked_panel_creation(app, db):
 
 
 def test_linked_panel_name_unique_constraint(app, db):
-    """Two LinkedPanel rows with the same name must raise IntegrityError."""
+
     now = int(time.time())
     db.session.add(LinkedPanel(name="dup", url="https://a.com", federation_token="tok1", created_at=now))
     db.session.commit()
@@ -47,7 +42,7 @@ def test_linked_panel_name_unique_constraint(app, db):
 
 
 def test_linked_panel_to_dict_masks_token_by_default(app, db):
-    """to_dict() must redact federation_token when mask_token=True (default)."""
+
     now = int(time.time())
     panel = LinkedPanel(
         name="masked-panel",
@@ -70,7 +65,7 @@ def test_linked_panel_to_dict_masks_token_by_default(app, db):
 
 
 def test_linked_panel_to_dict_unmask_token(app, db):
-    """to_dict(mask_token=False) returns the real federation_token."""
+
     now = int(time.time())
     panel = LinkedPanel(
         name="unmasked-panel",
@@ -86,7 +81,7 @@ def test_linked_panel_to_dict_unmask_token(app, db):
 
 
 def test_linked_panel_status_and_error_fields(app, db):
-    """status, last_poll, and last_error can be updated and persist."""
+
     now = int(time.time())
     panel = LinkedPanel(
         name="live-panel",
@@ -107,7 +102,7 @@ def test_linked_panel_status_and_error_fields(app, db):
 
 
 def test_linked_panel_enable_defaults_true(app, db):
-    """enable defaults to True for new LinkedPanel rows."""
+
     now = int(time.time())
     panel = LinkedPanel(name="default-enable", url="https://x.com", federation_token="t", created_at=now)
     db.session.add(panel)
@@ -117,7 +112,7 @@ def test_linked_panel_enable_defaults_true(app, db):
 
 
 def test_linked_panel_can_be_disabled(app, db):
-    """enable=False persists correctly."""
+
     now = int(time.time())
     panel = LinkedPanel(
         name="disabled-panel",
@@ -133,18 +128,15 @@ def test_linked_panel_can_be_disabled(app, db):
     assert panel.to_dict()["enable"] is False
 
 
-# ─── FederationConfig ─────────────────────────────────────────────────────────
-
-
 def test_federation_config_singleton_seeded_by_fixture(app, db):
-    """conftest.py seeds id=1; querying it must return exactly one row."""
+
     rows = FederationConfig.query.all()
     assert len(rows) == 1
     assert rows[0].id == 1
 
 
 def test_federation_config_defaults_are_null(app, db):
-    """The freshly seeded singleton has all nullable fields as None/False."""
+
     cfg = db.session.get(FederationConfig, 1)
     assert cfg is not None
     assert cfg.master_url is None
@@ -156,7 +148,7 @@ def test_federation_config_defaults_are_null(app, db):
 
 
 def test_federation_config_can_be_updated(app, db):
-    """Fields on the singleton row can be written and read back."""
+
     now = int(time.time())
     cfg = db.session.get(FederationConfig, 1)
     cfg.master_url = "https://master.example.com"
@@ -178,7 +170,7 @@ def test_federation_config_can_be_updated(app, db):
 
 
 def test_federation_config_singleton_constraint_rejects_second_row(app, db):
-    """The CHECK constraint prevents inserting a second row (id != 1)."""
+
     db.session.add(FederationConfig(id=2))
     with pytest.raises(Exception):
         db.session.commit()

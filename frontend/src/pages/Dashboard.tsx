@@ -54,10 +54,6 @@ import { QRCodeCanvas } from 'qrcode.react';
 import { motion, AnimatePresence, animate, useMotionValue } from 'framer-motion';
 import { Select } from '@/components/ui/Select';
 
-// ─── Bulk-selection keys ─────────────────────────────────────────────────────
-// A selected user is keyed by panel + inbound tag + email so bulk operations
-// can route each user back to its owning panel (master = panel_id null).
-
 const KEY_SEP = '\0';
 
 const makeUserKey = (panelId: number | null | undefined, tag: string, email: string) =>
@@ -71,8 +67,6 @@ const parseUserKey = (key: string) => {
     email: rest.join(KEY_SEP),
   };
 };
-
-// ─── User status ─────────────────────────────────────────────────────────────
 
 type UserStatus = 'online' | 'offline' | 'expired' | 'overlimit' | 'disabled';
 type StatusFilter = 'all' | UserStatus;
@@ -136,7 +130,6 @@ const STATUS_FILTERS: Array<{
   },
 ];
 
-// Protocol accent colors
 const PROTOCOL_COLORS: Record<string, string> = {
   vless: 'bg-violet-500/15 text-violet-300 border-violet-500/25',
   vmess: 'bg-blue-500/15 text-blue-300 border-blue-500/25',
@@ -206,11 +199,6 @@ function SkeletonCard() {
   );
 }
 
-// Tracks inner content height exactly via ResizeObserver. The container is a
-// passive follower — any smoothness comes from animations inside the children
-// (e.g. AnimatePresence height transitions). This avoids the "border lags
-// behind content" effect of running a spring on top of an already-animating
-// child.
 function AnimatedHeight({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const heightValue = useMotionValue<number | string>('auto');
@@ -311,9 +299,7 @@ export default function Dashboard() {
       try {
         const sys = await api.get('/stats/system');
         setStats(sys.data);
-      } catch (_) {
-        /* stats fetch is non-critical */
-      }
+      } catch (_) {}
       setNow(Date.now());
     };
     fetchStats();
@@ -395,7 +381,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 pb-24 md:pb-10">
-      {/* Stats row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
         <StatsCard
           title="Inbounds"
@@ -432,7 +417,6 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Header row */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pt-1">
         <h2 className="text-xl font-bold text-white flex items-center gap-3">
           <span className="w-1 h-6 bg-gradient-to-b from-primary to-violet-600 rounded-full"></span>
@@ -460,7 +444,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Status filter bar */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
         <div className="relative flex items-center gap-1.5 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] flex-nowrap">
           {STATUS_FILTERS.map((f) => {
@@ -531,7 +514,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Inbound list */}
       <div className="space-y-5">
         {isLoading && !inbounds && (
           <>
@@ -612,10 +594,8 @@ export default function Dashboard() {
         })()}
       </div>
 
-      {/* Bulk Action Toolbar */}
       <BulkToolbar selectedUsers={selectedUsers} clearSelection={clearSelection} />
 
-      {/* FAB */}
       <motion.div
         className="fixed bottom-6 right-6 md:bottom-8 md:right-8 z-30"
         initial={{ scale: 0, opacity: 0 }}
@@ -648,8 +628,6 @@ export default function Dashboard() {
   );
 }
 
-// ─── StatsCard ───────────────────────────────────────────────────────────────
-
 interface StatsCardProps {
   icon: React.ReactNode;
   title: string;
@@ -679,11 +657,10 @@ function StatsCard({
       whileHover={{ y: -3, transition: { duration: 0.2 } }}
       className="relative overflow-hidden rounded-2xl bg-[#1a1625]/70 backdrop-blur-xl border border-white/[0.06] p-4 md:p-5 group cursor-default"
     >
-      {/* Background glow blob */}
       <div
         className={`absolute -right-6 -top-6 w-20 h-20 md:w-28 md:h-28 bg-gradient-to-br ${gradient} opacity-15 blur-2xl rounded-full group-hover:opacity-30 transition-opacity duration-500`}
       />
-      {/* Hover border glow */}
+
       <div
         className={`absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-br ${gradient} blur-md -z-10 scale-105`}
         style={{ opacity: 0 }}
@@ -722,8 +699,6 @@ function StatsCard({
   );
 }
 
-// ─── BulkToolbar ────────────────────────────────────────────────────────────
-
 type AdjustMode = 'add' | 'subtract';
 
 function BulkToolbar({
@@ -755,8 +730,6 @@ function BulkToolbar({
     toast.success(msg);
   };
 
-  // Backend bulk ops are best-effort across linked panels: an offline child is
-  // skipped and reported in `errors` rather than failing the whole batch.
   const warnErrors = (errs?: string[]) => {
     if (Array.isArray(errs) && errs.length) {
       toast.error(`Some linked panels failed: ${errs.join('; ')}`);
@@ -1120,8 +1093,6 @@ function BulkToolbar({
   );
 }
 
-// ─── InboundCard ─────────────────────────────────────────────────────────────
-
 function InboundCard({
   inbound,
   now,
@@ -1189,7 +1160,6 @@ function InboundCard({
 
   return (
     <div className="group bg-[#1a1722]/90 border border-white/[0.06] rounded-3xl overflow-hidden hover:border-white/[0.12] transition-colors duration-300 shadow-xl">
-      {/* Card header */}
       <div
         className={`p-5 md:p-6 border-b border-white/[0.05] flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-gradient-to-r ${headerGlow} to-transparent`}
       >
@@ -1291,7 +1261,6 @@ function InboundCard({
         </div>
       </div>
 
-      {/* Card body — AnimatedHeight measures content and springs to new height */}
       <AnimatedHeight>
         <div className="p-4 md:p-5">
           {supportsPanelUsers ? (
@@ -1386,8 +1355,6 @@ function InboundCard({
     </div>
   );
 }
-
-// ─── UserRow ──────────────────────────────────────────────────────────────────
 
 function trafficBarColor(percent: number) {
   if (percent >= 90) return 'bg-red-500';
@@ -1485,8 +1452,6 @@ function UserRow({
     },
   });
 
-  // Devices query — auto-refresh every 3s while expanded so the list stays in
-  // sync with the chip count (which is itself driven by the inbounds poll).
   const devicesQueryKey = ['client-devices', client.id];
   const devicesQuery = useQuery<ClientDevice[]>({
     queryKey: devicesQueryKey,
@@ -1510,8 +1475,7 @@ function UserRow({
       setDevicesExpanded(false);
       return;
     }
-    // Pre-fetch BEFORE expanding so the spring animates straight to the final
-    // height instead of stuttering when the loading placeholder is replaced.
+
     if (!devicesQuery.data) {
       await queryClient.fetchQuery({
         queryKey: devicesQueryKey,
@@ -1533,8 +1497,7 @@ function UserRow({
     setRevokeLoading(true);
     try {
       await api.delete(`/clients/${client.id}/devices/${revokeTarget.id}`);
-      // Optimistic local removal so the row disappears instantly; query will
-      // refetch on next tick and confirm.
+
       queryClient.setQueryData<ClientDevice[]>(devicesQueryKey, (prev) =>
         prev ? prev.filter((x) => x.id !== revokeTarget.id) : prev
       );
@@ -1555,7 +1518,6 @@ function UserRow({
   const status = getClientStatus(client, now);
   const barColor = trafficBarColor(usagePercent);
 
-  // Avatar gradient based on first letter
   const avatarHue = ((client.email.charCodeAt(0) || 65) * 137) % 360;
 
   return (
@@ -1585,7 +1547,6 @@ function UserRow({
               : 'bg-white/[0.025] border-white/[0.05] hover:bg-white/[0.04] hover:border-primary/20'
       )}
     >
-      {/* Traffic usage bar at bottom */}
       {client.limit_bytes > 0 && (
         <div className="absolute bottom-0 left-0 h-[2px] w-full bg-white/[0.04]">
           <motion.div
@@ -1598,7 +1559,6 @@ function UserRow({
       )}
 
       <div className="flex flex-col xl:flex-row xl:items-center justify-between">
-        {/* Left: avatar + info */}
         <div className="flex items-center gap-3 mb-3 xl:mb-0 min-w-0">
           <button
             onClick={(e) => {
@@ -1665,7 +1625,6 @@ function UserRow({
           </div>
         </div>
 
-        {/* Right: traffic + actions */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full xl:w-auto">
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-2 text-[10px] font-mono px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/[0.05] w-fit">

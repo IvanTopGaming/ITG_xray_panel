@@ -29,11 +29,7 @@ _ENDPOINT_RE = re.compile(r"^(?P<scheme>vless|trojan|ss)://[^@\s]+@(?P<host>[^:/
 
 
 def _parse_link_endpoint(link):
-    """Extract (scheme, host, port) from a subscription URI.
 
-    Returns a lowercased 3-tuple or None if the link is not parseable.
-    VMess is handled separately because its endpoint is inside base64(JSON).
-    """
     if not isinstance(link, str) or not link:
         return None
     stripped = link.strip()
@@ -72,7 +68,7 @@ def _parse_vmess_endpoint(link):
 
 
 def _panel_hostname(panel):
-    """Return the lowercased hostname of a SinglePanel's base_url, or None."""
+
     base = getattr(panel, "base_url", "") or ""
     if not base:
         return None
@@ -85,12 +81,7 @@ def _panel_hostname(panel):
 
 
 def _dedup_pairs(pairs):
-    """Collapse (panel, link) pairs that share the same (scheme, host, port).
 
-    When multiple pairs share an endpoint, prefer the one whose panel's own
-    hostname equals the link's host ("direct"). Unparseable links are kept
-    as-is since we can't compare them.
-    """
     kept_order = []
     kept_by_key = {}
     unparseable = []
@@ -137,7 +128,7 @@ class SinglePanel:
         self.session = None
 
     async def health_check(self):
-        """Quick auth-checked ping; returns True if panel accepts our token."""
+
         await self.ensure_session()
         if not self.token:
             return False
@@ -206,10 +197,7 @@ class SinglePanel:
 
 class MultiPanelManager:
     def __init__(self):
-        # Single-master topology: panels[] always has zero or one entry,
-        # rebuilt from runtime_config (panel admin user/password + the
-        # backend URL the bot is configured to talk to). Filled in on
-        # first reload_from_runtime() call.
+
         self.panels: list[SinglePanel] = []
 
     @staticmethod
@@ -229,12 +217,11 @@ class MultiPanelManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def reload_from_runtime(self):
-        """Rebuild the single master panel from env (BACKEND_API_URL + BOT_SERVICE_TOKEN)."""
+
         new_panels: list[SinglePanel] = []
         backend_url = os.environ.get("BACKEND_API_URL", "").rstrip("/")
         token = os.environ.get("BOT_SERVICE_TOKEN", "")
         if backend_url and token:
-            # strip trailing /api so SinglePanel can re-add it
             base = backend_url[:-4] if backend_url.endswith("/api") else backend_url
             new_panels.append(
                 SinglePanel(
@@ -375,12 +362,7 @@ class MultiPanelManager:
         }
 
     async def _fetch_raw_subscription_pairs(self, email, inbound_tag=None):
-        """Fetch subscription links from every panel.
 
-        Returns a list of (SinglePanel, raw_link_string) pairs. The link string
-        is the original text from the panel's /sub response — remarks are NOT
-        rewritten here. Panels where the user does not exist are skipped silently.
-        """
         pairs = []
         for p in self.panels:
             target_inbound = self._resolve_inbound_tag(p, inbound_tag)
@@ -418,14 +400,7 @@ class MultiPanelManager:
         return pairs
 
     async def get_dedup_subscription_links(self, email, inbound_tag=None):
-        """Fetch subscription links across all panels, dedup by (scheme, host, port).
 
-        Dedup rule: when the same endpoint is returned by multiple panels, prefer
-        the panel whose own hostname equals the link's host (the "direct" source).
-        Each link's remark (text after `#`) is whatever the source panel emitted —
-        backend subscription endpoint now uses Inbound.label (admin-editable
-        Display Label) instead of the raw email.
-        """
         pairs = await self._fetch_raw_subscription_pairs(email, inbound_tag=inbound_tag)
         deduped = _dedup_pairs(pairs)
 

@@ -3,9 +3,6 @@ import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { setDisplayTimezone } from '@/lib/datetime';
 
-// Authed components fetch the panel-wide display config (timezone, …) once
-// and write it into the datetime module so all formatters see the same TZ.
-// Rendered inside the protected Layout so the request only fires post-login.
 export function DisplayConfigLoader() {
   const { data } = useQuery({
     queryKey: ['display-config'],

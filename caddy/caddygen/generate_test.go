@@ -74,7 +74,6 @@ func TestLoadConfig_KeepsSubWhenSet(t *testing.T) {
 	}
 }
 
-// jsonValid is a guard reused by later tests.
 func jsonValid(t *testing.T, b []byte) map[string]any {
 	t.Helper()
 	var out map[string]any
@@ -107,7 +106,7 @@ func TestGenerate_WithSub(t *testing.T) {
 
 	httpApp := apps["http"].(map[string]any)
 	httpServers := httpApp["servers"].(map[string]any)
-	// panel + sub security layers, plus the :80 redirect server.
+
 	if len(httpServers) != 3 {
 		t.Fatalf("want 3 http servers, got %d", len(httpServers))
 	}
@@ -130,7 +129,7 @@ func TestGenerate_WithoutSub(t *testing.T) {
 		t.Fatal("want 2 layer4 routes without sub")
 	}
 	httpServers := apps["http"].(map[string]any)["servers"].(map[string]any)
-	// panel security layer + the :80 redirect server.
+
 	if len(httpServers) != 2 {
 		t.Fatalf("want 2 http servers (panel + redirect) without sub, got %d", len(httpServers))
 	}
@@ -165,7 +164,6 @@ func TestGenerate_HTTPRedirectOn80(t *testing.T) {
 	}
 }
 
-// apps unmarshals the generated config and returns its apps map.
 func apps(t *testing.T, b []byte) map[string]any {
 	t.Helper()
 	return jsonValid(t, b)["apps"].(map[string]any)
@@ -198,8 +196,7 @@ func TestGenerate_NoDeadXRealIP(t *testing.T) {
 	}))
 	b, _ := Generate(cfg)
 	str := string(b)
-	// The dead X-Real-IP header (set from an unset http.vars.client_ip placeholder)
-	// was removed; the real client IP reaches the backend via X-Forwarded-For.
+
 	if containsString(str, "X-Real-IP") {
 		t.Fatal("dead X-Real-IP header should be gone")
 	}
@@ -229,6 +226,50 @@ func TestGenerate_DefaultRoutesFileValidJSON(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	jsonValid(t, b)
+}
+
+const routesYAMLWithAPI = `
+sni_routes:
+  - name: panel
+    match: "${PANEL_DOMAIN}"
+    upstream: "frontend:80"
+    tls: true
+    api_path: "/${PANEL_SECRET_PATH}/api/"
+    api_upstream: "backend:5000"
+`
+
+func TestGenerate_PanelAPIRoute(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAMLWithAPI), envMap(map[string]string{
+		"PANEL_DOMAIN":      "panel.example.com",
+		"PANEL_SECRET_PATH": "s3cret",
+	}))
+	b, err := Generate(cfg)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	str := string(b)
+	if !containsString(str, "/s3cret/api/*") {
+		t.Fatal("panel API path matcher missing")
+	}
+	if !containsString(str, "strip_path_prefix") || !containsString(str, "/s3cret") {
+		t.Fatal("strip_path_prefix for secret prefix missing")
+	}
+	if !containsString(str, "backend:5000") {
+		t.Fatal("panel API backend upstream missing")
+	}
+	if !containsString(str, "frontend:80") {
+		t.Fatal("panel SPA upstream missing")
+	}
+}
+
+func TestGenerate_PanelAPIRouteSkippedWithoutSecret(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAMLWithAPI), envMap(map[string]string{
+		"PANEL_DOMAIN": "panel.example.com",
+	}))
+	b, _ := Generate(cfg)
+	if containsString(string(b), "backend:5000") {
+		t.Fatal("API route must be skipped when PANEL_SECRET_PATH is empty")
+	}
 }
 
 func containsString(haystack, needle string) bool {

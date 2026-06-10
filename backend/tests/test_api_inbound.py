@@ -1,21 +1,3 @@
-"""Integration tests for /api/inbound.py — the inbound CRUD API module.
-
-Covers:
-- GET /api/inbounds (empty, with data, local-only filter)
-- POST /api/inbounds (create vless inbound)
-- PUT /api/inbounds/<tag> (update port/label)
-- DELETE /api/inbounds/<tag> (remove inbound + cascaded clients)
-- POST /api/inbounds/<tag>/users (add user, UUID auto-generated)
-- PUT /api/inbounds/<tag>/users (update email/limit)
-- DELETE /api/inbounds/<tag>/users (remove user)
-- POST /users/reset-traffic (single + bulk)
-- POST /users/bulk-enable (enable/disable toggle)
-- POST /users/bulk-delete
-- POST /users/bulk-adjust-days
-- POST /users/bulk-adjust-traffic
-- Auth: 401 without token
-"""
-
 import json
 import time
 import uuid
@@ -29,14 +11,9 @@ from app.models import Admin, Inbound, Client
 from app.utils import SECRET_KEY
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def app(app):
-    """Extend base app fixture with inbound + federation blueprints."""
+
     from app.api import inbound as inbound_api
     from app.api import federation as federation_api
 
@@ -67,7 +44,7 @@ def admin(app):
 
 @pytest.fixture
 def auth_headers(admin):
-    """Headers that satisfy @token_required and @admin_or_federation_token_required."""
+
     token = jwt.encode(
         {
             "user": admin.username,
@@ -82,8 +59,9 @@ def auth_headers(admin):
     return {"Authorization": f"Bearer {token}"}
 
 
-# Common mocks applied to every test to avoid gRPC / Docker / sub_cache calls.
 _COMMON_PATCHES = [
+    "app.api.inbound.generate_config_file",
+    "app.api.inbound.restart_xray_container",
     "app.services.xray.generate_config_file",
     "app.services.xray.restart_xray_container",
     "app.services.stats._api_add_user_grpc",
@@ -95,7 +73,7 @@ _COMMON_PATCHES = [
 
 @pytest.fixture(autouse=True)
 def _mock_infra():
-    """Patch gRPC, Docker, and Redis calls for every test in this module."""
+
     patchers = []
     mocks = {}
     for target in _COMMON_PATCHES:
@@ -113,7 +91,7 @@ def _mock_infra():
 
 
 def _make_inbound(tag="vless-in", port=10443, protocol="vless", label=None):
-    """Helper to create a persisted Inbound row with minimal stream settings."""
+
     stream = json.dumps({"network": "tcp", "security": "none"})
     ib = Inbound(
         tag=tag,
@@ -128,7 +106,7 @@ def _make_inbound(tag="vless-in", port=10443, protocol="vless", label=None):
 
 
 def _make_client(inbound_tag="vless-in", email="alice", client_id=None, **kwargs):
-    """Helper to create a persisted Client row."""
+
     if client_id is None:
         client_id = str(uuid.uuid4())
     c = Client(
@@ -145,11 +123,6 @@ def _make_client(inbound_tag="vless-in", email="alice", client_id=None, **kwargs
     db.session.add(c)
     db.session.commit()
     return c
-
-
-# ---------------------------------------------------------------------------
-# 1. GET /api/inbounds
-# ---------------------------------------------------------------------------
 
 
 class TestGetInbounds:
@@ -175,7 +148,7 @@ class TestGetInbounds:
         assert clients[0]["email"] == "alice"
 
     def test_non_panel_user_protocol_returns_empty_clients(self, app, client, auth_headers):
-        """Protocols like socks/http should not expose client rows."""
+
         _make_inbound(tag="socks-in", port=1080, protocol="socks")
         resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
         data = resp.get_json()
@@ -188,9 +161,7 @@ class TestGetInbounds:
         assert resp.get_json()[0]["label"] == "Germany VPN"
 
     def test_client_sub_url_exposed(self, app, client, auth_headers, monkeypatch):
-        """A client with a telegram_id whose TelegramUser has a sub_token gets a
-        sub_url pointing at the aggregated /api/sub/u/<token> endpoint; a client
-        without a telegram_id gets sub_url=None."""
+
         from app.models import TelegramUser
 
         monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
@@ -210,11 +181,6 @@ class TestGetInbounds:
         assert by_email["no-tg"]["sub_url"] is None
 
 
-# ---------------------------------------------------------------------------
-# 2. POST /api/inbounds — create
-# ---------------------------------------------------------------------------
-
-
 class TestCreateInbound:
     def test_create_vless_minimal(self, client, auth_headers):
         resp = client.post(
@@ -232,7 +198,7 @@ class TestCreateInbound:
         body = resp.get_json()
         assert body["tag"] == "vless-new"
         assert body["port"] == 20443
-        # Verify the row exists in the DB.
+
         ib = Inbound.query.filter_by(tag="vless-new").first()
         assert ib is not None
         assert ib.port == 20443
@@ -301,11 +267,6 @@ class TestCreateInbound:
         assert Inbound.query.filter_by(tag="labeled-ib").first().label == "My Label"
 
 
-# ---------------------------------------------------------------------------
-# 3. PUT /api/inbounds/<tag> — update
-# ---------------------------------------------------------------------------
-
-
 class TestUpdateInbound:
     def test_update_port_and_label(self, app, client, auth_headers):
         _make_inbound(tag="upd", port=8001)
@@ -345,7 +306,7 @@ class TestUpdateInbound:
         assert Inbound.query.filter_by(tag="dl").first().device_limit == 5
 
     def test_switching_transport_to_xhttp_clears_client_flow(self, app, client, auth_headers):
-        """XTLS Vision is invalid on xhttp — switching transport must clear users' flow."""
+
         ib = Inbound(
             tag="flow-xhttp",
             port=8101,
@@ -361,7 +322,7 @@ class TestUpdateInbound:
         assert Client.query.filter_by(inbound_tag="flow-xhttp", email="u1").first().flow == ""
 
     def test_unrelated_update_keeps_compatible_flow(self, app, client, auth_headers):
-        """A change that leaves the inbound on raw-TCP + TLS must preserve flow."""
+
         ib = Inbound(
             tag="flow-keep",
             port=8102,
@@ -377,7 +338,7 @@ class TestUpdateInbound:
         assert Client.query.filter_by(inbound_tag="flow-keep", email="u1").first().flow == "xtls-rprx-vision"
 
     def test_switching_to_non_panel_protocol_removes_clients(self, app, client, auth_headers):
-        """When switching a vless inbound to socks, existing clients should be deleted."""
+
         _make_inbound(tag="switch", port=6100, protocol="vless")
         _make_client(inbound_tag="switch", email="user1")
         assert Client.query.filter_by(inbound_tag="switch").count() == 1
@@ -388,11 +349,6 @@ class TestUpdateInbound:
         )
         assert resp.status_code == 200
         assert Client.query.filter_by(inbound_tag="switch").count() == 0
-
-
-# ---------------------------------------------------------------------------
-# 4. DELETE /api/inbounds/<tag>
-# ---------------------------------------------------------------------------
 
 
 class TestDeleteInbound:
@@ -409,11 +365,6 @@ class TestDeleteInbound:
         assert resp.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# 5. POST /api/inbounds/<tag>/users — add user
-# ---------------------------------------------------------------------------
-
-
 class TestAddUser:
     def test_add_user_auto_uuid(self, app, client, auth_headers):
         _make_inbound(tag="ib-users", port=4001)
@@ -425,11 +376,11 @@ class TestAddUser:
         assert resp.status_code == 201
         body = resp.get_json()
         assert body["email"] == "bob"
-        # ID should be a valid UUID (auto-generated for vless).
+
         uuid.UUID(body["id"])
         assert body["inbound_tag"] == "ib-users"
         assert body["enable"] is True
-        # Verify DB row.
+
         assert Client.query.filter_by(inbound_tag="ib-users", email="bob").first() is not None
 
     def test_add_user_with_explicit_uuid(self, app, client, auth_headers):
@@ -503,11 +454,6 @@ class TestAddUser:
         assert "UUID" in resp.get_json()["error"]
 
 
-# ---------------------------------------------------------------------------
-# 6. PUT /api/inbounds/<tag>/users — update user
-# ---------------------------------------------------------------------------
-
-
 class TestUpdateUser:
     def test_update_email_and_limit(self, app, client, auth_headers):
         _make_inbound(tag="ib-upd", port=3001)
@@ -525,7 +471,7 @@ class TestUpdateUser:
         body = resp.get_json()
         assert body["email"] == "new-name"
         assert body["limit_bytes"] == 5368709120
-        # Old email gone.
+
         assert Client.query.filter_by(inbound_tag="ib-upd", email="old-name").first() is None
         assert Client.query.filter_by(inbound_tag="ib-upd", email="new-name").first() is not None
 
@@ -580,11 +526,6 @@ class TestUpdateUser:
         assert "does not support panel users" in resp.get_json()["error"]
 
 
-# ---------------------------------------------------------------------------
-# 7. DELETE /api/inbounds/<tag>/users — remove user
-# ---------------------------------------------------------------------------
-
-
 class TestDeleteUser:
     def test_delete_user(self, app, client, auth_headers):
         _make_inbound(tag="ib-del", port=2001)
@@ -612,11 +553,6 @@ class TestDeleteUser:
         )
         assert resp.status_code == 400
         assert "does not support panel users" in resp.get_json()["error"]
-
-
-# ---------------------------------------------------------------------------
-# 8. POST /users/reset-traffic — single + bulk
-# ---------------------------------------------------------------------------
 
 
 class TestResetTraffic:
@@ -649,11 +585,6 @@ class TestResetTraffic:
         )
         assert resp.status_code == 200
         assert mock_reset.call_count == 2
-
-
-# ---------------------------------------------------------------------------
-# 9. POST /users/bulk-enable
-# ---------------------------------------------------------------------------
 
 
 class TestBulkEnable:
@@ -725,11 +656,6 @@ class TestBulkEnable:
         assert resp.get_json()["count"] == 0
 
 
-# ---------------------------------------------------------------------------
-# 10. Auth — 401 without token
-# ---------------------------------------------------------------------------
-
-
 class TestAuth:
     def test_get_inbounds_no_token(self, client):
         resp = client.get("/api/inbounds")
@@ -766,11 +692,6 @@ class TestAuth:
     def test_bulk_enable_no_token(self, client):
         resp = client.post("/api/users/bulk-enable", json={"users": [], "enable": True})
         assert resp.status_code == 401
-
-
-# ---------------------------------------------------------------------------
-# Bonus: bulk-delete, bulk-adjust-days, bulk-adjust-traffic
-# ---------------------------------------------------------------------------
 
 
 class TestBulkDelete:
@@ -815,11 +736,11 @@ class TestBulkAdjustDays:
         body = resp.get_json()
         assert body["updated"] == 1
         c = Client.query.filter_by(inbound_tag="adj-ib", email="adj1").first()
-        # Should have added 7 * 86400 * 1000 ms.
+
         assert c.expiry_time >= now_ms + 7 * 86_400_000
 
     def test_skip_no_expiry(self, app, client, auth_headers):
-        """Users with expiry_time=0 (unlimited) are skipped."""
+
         _make_inbound(tag="adj-ib2", port=1802)
         _make_client(inbound_tag="adj-ib2", email="unlimited", expiry_time=0)
         resp = client.post(
@@ -854,7 +775,7 @@ class TestBulkAdjustTraffic:
         assert c.limit_bytes == 1024**3 + 5 * 1024**3
 
     def test_skip_unlimited(self, app, client, auth_headers):
-        """Users with limit_bytes=0 (unlimited) are skipped."""
+
         _make_inbound(tag="traf-ib2", port=1902)
         _make_client(inbound_tag="traf-ib2", email="unlim", limit_bytes=0)
         resp = client.post(
@@ -882,13 +803,8 @@ class TestBulkAdjustTraffic:
             },
         )
         assert resp.status_code == 200
-        # 500MB - 1GB would go negative -> skipped.
+
         assert resp.get_json()["skipped"] == 1
-
-
-# ---------------------------------------------------------------------------
-# Inbound reset-traffic
-# ---------------------------------------------------------------------------
 
 
 class TestResetInboundTraffic:
@@ -902,12 +818,6 @@ class TestResetInboundTraffic:
     def test_reset_inbound_traffic_no_token(self, client):
         resp = client.post("/api/inbounds/x/reset-traffic")
         assert resp.status_code == 401
-
-
-# ---------------------------------------------------------------------------
-# Cross-panel bulk routing — selected users from a linked panel are proxied
-# to that panel instead of silently no-op'd against the local DB.
-# ---------------------------------------------------------------------------
 
 
 class TestBulkCrossPanelRouting:
@@ -935,11 +845,11 @@ class TestBulkCrossPanelRouting:
             )
 
         assert resp.status_code == 200
-        # local (1) + remote (2) aggregated
+
         assert resp.get_json()["count"] == 3
-        # local op only saw the local user
+
         mock_local.assert_called_once_with([{"tag": "xp-local", "email": "loc1"}])
-        # remote proxied to panel 7 with panel_id stripped from each entry
+
         mock_remote.assert_called_once_with(7, [{"tag": "rem-in", "email": "r1"}, {"tag": "rem-in", "email": "r2"}])
 
     def test_bulk_delete_remote_failure_is_best_effort(self, app, client, auth_headers):
@@ -966,7 +876,7 @@ class TestBulkCrossPanelRouting:
 
         assert resp.status_code == 200
         body = resp.get_json()
-        assert body["count"] == 1  # local still deleted
+        assert body["count"] == 1
         assert "errors" in body and any("offline" in e for e in body["errors"])
 
     def test_bulk_enable_routes_remote_group(self, app, client, auth_headers):
@@ -990,7 +900,7 @@ class TestBulkCrossPanelRouting:
             )
 
         assert resp.status_code == 200
-        assert resp.get_json()["count"] == 4  # 1 local + 3 remote
+        assert resp.get_json()["count"] == 4
         mock_remote.assert_called_once_with(4, [{"tag": "rem-in", "email": "r1"}], True)
         assert Client.query.filter_by(inbound_tag="xp-en", email="e1").first().enable is True
 
@@ -1018,8 +928,8 @@ class TestBulkCrossPanelRouting:
 
         assert resp.status_code == 200
         body = resp.get_json()
-        assert body["updated"] == 3  # 1 local + 2 remote
-        assert body["skipped"] == 1  # from remote
+        assert body["updated"] == 3
+        assert body["skipped"] == 1
         mock_remote.assert_called_once_with(5, [{"tag": "rem-in", "email": "r1"}], 7, "add")
 
     def test_bulk_adjust_traffic_routes_remote_group(self, app, client, auth_headers):
@@ -1044,7 +954,7 @@ class TestBulkCrossPanelRouting:
             )
 
         assert resp.status_code == 200
-        assert resp.get_json()["updated"] == 2  # 1 local + 1 remote
+        assert resp.get_json()["updated"] == 2
         mock_remote.assert_called_once_with(6, [{"tag": "rem-in", "email": "r1"}], 5, "add")
 
     @patch("app.api.inbound.reset_user_traffic")
@@ -1086,11 +996,6 @@ class TestBulkCrossPanelRouting:
         assert resp.status_code == 200
         mock_local.assert_not_called()
         mock_remote.assert_called_once_with(8, [{"tag": "rem-in", "email": "solo"}])
-
-
-# ---------------------------------------------------------------------------
-# POST /users/bulk-set-flow — enable/disable VLESS flow in bulk
-# ---------------------------------------------------------------------------
 
 
 class TestBulkSetFlow:
@@ -1201,12 +1106,12 @@ class TestBulkSetFlow:
 
         assert resp.status_code == 200
         body = resp.get_json()
-        assert body["updated"] == 3  # 1 local + 2 remote
-        assert body["skipped"] == 1  # from remote
+        assert body["updated"] == 3
+        assert body["skipped"] == 1
         mock_remote.assert_called_once_with(5, [{"tag": "rem-in", "email": "r1"}], "xtls-rprx-vision")
 
     def test_enable_flow_skips_incompatible_transport(self, app, client, auth_headers):
-        """Enabling Vision on an xhttp inbound is skipped — flow can't carry there."""
+
         ib = Inbound(
             tag="fl-xhttp",
             port=2210,
@@ -1229,7 +1134,7 @@ class TestBulkSetFlow:
         assert Client.query.filter_by(inbound_tag="fl-xhttp", email="f1").first().flow == ""
 
     def test_disable_flow_allowed_on_incompatible_transport(self, app, client, auth_headers):
-        """Disabling (clearing) flow is always allowed, even on xhttp."""
+
         ib = Inbound(
             tag="fl-xhttp2",
             port=2211,

@@ -1,14 +1,3 @@
-"""Empirical Clash.Meta config conformance: validate generated single-client AND
-aggregated Clash configs against the real `mihomo` (Clash.Meta) binary.
-
-Skipped automatically when the binary is not on PATH (e.g. on a laptop / CI
-without the core installed). On the dev server `mihomo` v1.19.x is on PATH.
-
-`mihomo -t -f <config.yaml> -d <workdir>` parses/validates the config and exits
-non-zero on an invalid config. A shared workdir is used so any geo data mihomo
-downloads (for the GEOIP rule) is cached across cases instead of re-fetched.
-"""
-
 import json
 import shutil
 import subprocess
@@ -74,7 +63,7 @@ def app(app):
 
 @pytest.fixture(scope="session")
 def mihomo_workdir(tmp_path_factory):
-    """Persistent working dir so geo data mihomo may download is reused across cases."""
+
     return tmp_path_factory.mktemp("mihomo-wd")
 
 

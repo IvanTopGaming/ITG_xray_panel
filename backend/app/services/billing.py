@@ -1,5 +1,3 @@
-"""YooKassa checkout + payment provisioning. The only module that talks to the YooKassa SDK."""
-
 from __future__ import annotations
 
 import datetime as _dt
@@ -18,10 +16,7 @@ from app.services import bot_events, provisioning
 
 logger = logging.getLogger(__name__)
 
-# Hard cap on a single YooKassa SDK call. The SDK uses `requests` with no
-# read timeout — under gevent monkey-patching a stuck remote hangs the
-# greenlet indefinitely. Wrap every SDK call so user-facing checkouts and
-# background polls always release the worker.
+
 _YK_CALL_TIMEOUT_S = 8
 
 
@@ -72,13 +67,11 @@ def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str,
     tariff = db.session.get(Tariff, tariff_id)
     _ensure_tariff_available(tariff, telegram_id)
 
-    # Validate YooKassa config BEFORE the Payment INSERT so a misconfigured
-    # panel doesn't leak placeholder pending rows that linger until cleanup.
     _configure_sdk()
     return_url = _get_setting("yookassa_return_url") or "https://t.me/"
 
     payment = Payment(
-        yookassa_id=f"pending-{uuid.uuid4().hex}",  # placeholder, overwritten after API call
+        yookassa_id=f"pending-{uuid.uuid4().hex}",
         telegram_id=telegram_id,
         tariff_id=tariff.id,
         tariff_snapshot=_build_snapshot(tariff),
@@ -87,14 +80,9 @@ def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str,
         metadata_json={"telegram_id": telegram_id, "tariff_id": tariff.id, "lang": lang},
     )
     db.session.add(payment)
-    # Commit before the YooKassa HTTPS call so the SQLite writer lock is
-    # released. Otherwise an 8-16s yookassa.Payment.create round-trip blocks
-    # every other writer (sync_traffic, parse_logs, check_limits, etc.).
+
     db.session.commit()
-    # No `receipt` field — merchant uses "Чеки самозанятого" mode in YooKassa
-    # cabinet, so YooKassa auto-generates fiscal receipts via the "Мой налог"
-    # FNS integration. If the merchant later switches to ИП/ООО with an
-    # online cash register (54-ФЗ), bring the `receipt` block back.
+
     payload = {
         "amount": {"value": f"{tariff.price_rub:.2f}", "currency": "RUB"},
         "description": f"{tariff.id}-{telegram_id}",
@@ -106,12 +94,7 @@ def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str,
             "tariff_id": tariff.id,
         },
     }
-    # YooKassa SDK uses urllib + ssl directly. Under gevent monkey-patching,
-    # the TLS handshake to api.yookassa.ru occasionally hangs (seen in the
-    # gevent.ssl.do_handshake greenlet for tens of seconds). Wrap in a
-    # per-call timeout and retry once with the SAME idempotence key — if the
-    # remote already accepted the first attempt, the retry returns the same
-    # payment instead of double-creating.
+
     idempotence_key = uuid.uuid4().hex
     yk_payment = None
     last_exc: Exception | None = None
@@ -154,15 +137,7 @@ def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str,
 
 
 def fetch_remote_status(payment: Payment) -> str | None:
-    """Authoritative payment status from YooKassa, or None if unavailable.
 
-    YooKassa notifications carry no signature or shared secret, so the webhook
-    body is only a trigger — never proof of payment. This re-fetch is the
-    source of truth that makes forged notifications harmless. Mirrors the
-    lookup the poll cron already performs. Returns None on misconfiguration,
-    timeout, or lookup error; the caller then does nothing and the poll cron
-    retries the row later.
-    """
     try:
         _configure_sdk()
     except ValueError:
@@ -178,13 +153,64 @@ def fetch_remote_status(payment: Payment) -> str | None:
     return yk.status
 
 
-def apply_payment(payment: Payment) -> None:
-    """Provision the user and mark the payment succeeded. Idempotent.
+def _amount_value(amount) -> float:
+    try:
+        return float(getattr(amount, "value", None) or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
-    Webhook and poll cron can both reach this with a "pending" view of the
-    same row; the atomic UPDATE below ensures only one crosses into
-    provisioning.
-    """
+
+def handle_refund(payment: Payment) -> None:
+
+    if payment.status == "refunded":
+        return
+
+    if payment.status != "succeeded":
+        return
+    try:
+        _configure_sdk()
+    except ValueError:
+        return
+    try:
+        yk = gevent.with_timeout(_YK_CALL_TIMEOUT_S, yookassa.Payment.find_one, payment.yookassa_id)
+    except gevent.Timeout:
+        logger.warning("handle_refund: find_one timed out payment=%s", payment.id)
+        return
+    except Exception as exc:
+        logger.info("handle_refund: find_one failed payment=%s err=%s", payment.id, exc)
+        return
+
+    refunded = _amount_value(getattr(yk, "refunded_amount", None))
+    if refunded <= 0:
+        return
+
+    result = provisioning.revoke_payment_access(payment.telegram_id, payment.tariff_id)
+    payment.status = "refunded"
+    db.session.commit()
+    bot_events.publish(
+        "payment_refunded",
+        payment.telegram_id,
+        {
+            "payment_id": payment.id,
+            "tariff_id": payment.tariff_id,
+            "lang": (payment.metadata_json or {}).get("lang", "ru"),
+            "chat_id": payment.chat_id,
+            "message_id": payment.message_id,
+        },
+    )
+    logger.warning(
+        "billing.handle_refund revoked access: payment=%s tg=%s tariff=%s refunded=%s of %s disabled=%d",
+        payment.id,
+        payment.telegram_id,
+        payment.tariff_id,
+        refunded,
+        payment.amount_rub,
+        result.get("disabled_clients", 0),
+    )
+
+
+def apply_payment(payment: Payment) -> None:
+
     if payment.status == "succeeded":
         return
 
@@ -234,7 +260,6 @@ def apply_payment(payment: Payment) -> None:
             source="yookassa",
         )
     except Exception:
-        # Release the claim — poll cron only retries rows still in "pending".
         db.session.rollback()
         db.session.execute(update(Payment).where(Payment.id == payment.id).values(status="pending"))
         db.session.commit()

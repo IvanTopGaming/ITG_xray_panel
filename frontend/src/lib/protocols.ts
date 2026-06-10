@@ -1,4 +1,5 @@
 import { Inbound, Client } from './types';
+import { panelBase } from './panelBase';
 
 function normalizeRealityPublicKey(value: string): string {
   const key = (value || '').trim();
@@ -12,9 +13,7 @@ function normalizeRealityPublicKey(value: string): string {
     if (raw.length === 32) {
       return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
     }
-  } catch {
-    // keep fallback below
-  }
+  } catch {}
 
   return key.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
@@ -43,10 +42,9 @@ function normalizeShadowsocks2022Key(value: string): string {
 }
 
 function resolvePanelApiPath(path: string): string {
-  const panelBaseRaw = window.__PANEL_BASE_URL__ || '/';
-  const panelBase = panelBaseRaw.endsWith('/') ? panelBaseRaw : `${panelBaseRaw}/`;
+  const panelBaseNorm = panelBase.endsWith('/') ? panelBase : `${panelBase}/`;
   const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
-  return new URL(`${panelBase}${normalizedPath}`, window.location.origin).toString();
+  return new URL(`${panelBaseNorm}${normalizedPath}`, window.location.origin).toString();
 }
 
 function appendPathHostParams(

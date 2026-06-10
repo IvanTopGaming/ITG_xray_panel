@@ -1,5 +1,3 @@
-"""Tests for POST /bot-service/payments/<id>/chat-coords."""
-
 import pytest
 
 from app.extensions import db as _db
@@ -45,7 +43,7 @@ def test_set_chat_coords_persists(http, svc_headers, db):
     p = _make_payment(db)
     resp = http.post(
         f"/api/bot-service/payments/{p.id}/chat-coords",
-        json={"chat_id": 8070297806, "message_id": 12345},
+        json={"chat_id": 8070297806, "message_id": 12345, "telegram_id": 42},
         headers=svc_headers,
     )
     assert resp.status_code == 200
@@ -62,12 +60,12 @@ def test_set_chat_coords_overwrites(http, svc_headers, db):
     p = _make_payment(db)
     http.post(
         f"/api/bot-service/payments/{p.id}/chat-coords",
-        json={"chat_id": 1, "message_id": 1},
+        json={"chat_id": 1, "message_id": 1, "telegram_id": 42},
         headers=svc_headers,
     )
     resp = http.post(
         f"/api/bot-service/payments/{p.id}/chat-coords",
-        json={"chat_id": 2, "message_id": 2},
+        json={"chat_id": 2, "message_id": 2, "telegram_id": 42},
         headers=svc_headers,
     )
     assert resp.status_code == 200
@@ -79,10 +77,22 @@ def test_set_chat_coords_overwrites(http, svc_headers, db):
 def test_set_chat_coords_404_for_unknown_payment(http, svc_headers, db):
     resp = http.post(
         "/api/bot-service/payments/99999/chat-coords",
-        json={"chat_id": 1, "message_id": 1},
+        json={"chat_id": 1, "message_id": 1, "telegram_id": 42},
         headers=svc_headers,
     )
     assert resp.status_code == 404
+
+
+def test_set_chat_coords_rejects_other_owner(http, svc_headers, db):
+    p = _make_payment(db)
+    resp = http.post(
+        f"/api/bot-service/payments/{p.id}/chat-coords",
+        json={"chat_id": 1, "message_id": 1, "telegram_id": 999},
+        headers=svc_headers,
+    )
+    assert resp.status_code == 404
+    fetched = db.session.get(Payment, p.id)
+    assert fetched.chat_id is None
 
 
 def test_set_chat_coords_400_on_bad_body(http, svc_headers, db):

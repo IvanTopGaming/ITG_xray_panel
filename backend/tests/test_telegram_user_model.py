@@ -1,5 +1,3 @@
-"""Model-level checks for TelegramUser.language_chosen."""
-
 from app.models import TelegramUser
 
 

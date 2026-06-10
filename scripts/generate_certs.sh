@@ -1,13 +1,4 @@
 #!/bin/bash
-# Issue or renew the panel's Let's Encrypt certificate and install it where
-# Caddy reads it — ./certs/{fullchain,key}.pem — as one SAN cert covering
-# PANEL_DOMAIN and, when set, SUB_DOMAIN.
-#
-# Caddy owns :80, so certbot can't use it while the container runs. The script
-# stops Caddy, issues over the standalone challenge on the freed :80, copies the
-# result into ./certs, then brings Caddy back up (even if certbot fails). Re-run
-# it to renew — manual, no cron. Needs certbot on the host and the domain's DNS
-# already pointing here.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -23,7 +14,6 @@ cert_dir="$PWD/certs"
 domains=(-d "$PANEL_DOMAIN")
 [[ -n "${SUB_DOMAIN:-}" ]] && domains+=(-d "$SUB_DOMAIN")
 
-# Free :80 for the challenge, and guarantee Caddy comes back — success or not.
 docker compose stop caddy
 trap 'docker compose up -d caddy' EXIT
 

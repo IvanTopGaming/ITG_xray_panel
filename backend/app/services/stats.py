@@ -1,8 +1,10 @@
+import calendar
 import ipaddress
 import os
 import grpc
 import re
 import logging
+import threading
 from datetime import datetime, timedelta
 import json
 from sqlalchemy import text
@@ -28,8 +30,10 @@ ACCESS_LOG_OFFSET_PATH = f"{ACCESS_LOG_PATH}.offset"
 _grpc_channel = None
 logger = logging.getLogger(__name__)
 
-# Regex to extract client IP, destination host, and runtime email from access log.
-# Group 1: client IP, Group 2: dest host (optional), Group 3: runtime email
+
+_RESET_LOCK = threading.Lock()
+
+
 _ACCEPT_FULL = re.compile(
     r"(\d{1,3}(?:\.\d{1,3}){3}):\d+\s+accepted\s+"
     r"(?:[a-zA-Z]+:)?([^\s:]+):\d+.*?email:\s+(\S+)"
@@ -46,13 +50,13 @@ def _is_ip_address(s: str) -> bool:
 
 
 def _ten_min_bucket(dt: datetime) -> int:
-    """Return unix timestamp of the start of the current 10-minute window."""
+
     floored = dt.replace(minute=(dt.minute // 10) * 10, second=0, microsecond=0)
     return int(floored.timestamp())
 
 
 def _upsert_snapshot(entity_type, entity_id, inbound_tag, bucket, up_delta, down_delta):
-    """Upsert a traffic snapshot row, accumulating deltas."""
+
     if up_delta == 0 and down_delta == 0:
         return
     db.session.execute(
@@ -79,7 +83,7 @@ def _upsert_snapshot(entity_type, entity_id, inbound_tag, bucket, up_delta, down
 
 
 def _upsert_domain_stat(date_str, domain, client_email, inbound_tag, count):
-    """Upsert a domain stat row, accumulating hit counts."""
+
     db.session.execute(
         text(
             """
@@ -172,21 +176,7 @@ def _api_remove_user_grpc(inbound_tag, email):
 
 
 def sync_traffic_stats():
-    """Pull per-user / per-inbound traffic deltas from Xray and persist them.
 
-    Split into two phases to keep the SQLite write transaction short:
-
-    1. **Read phase (no DB writes):** issue all `QueryStats` gRPC calls and
-       collect `(entity, up_delta, down_delta)` tuples in memory. gevent
-       greenlets yield freely here without holding the writer lock.
-    2. **Write phase:** in a single tight transaction, bump counters on the
-       attached ORM rows, upsert snapshot rows, commit.
-
-    Previously the loop interleaved gRPC and `_upsert_snapshot`, holding the
-    SQLite writer lock for the duration of every per-client gRPC round-trip
-    and starving `parse_logs` / `check_limits` / `poll_pending_payments` until
-    `busy_timeout` fired with `database is locked`.
-    """
     inbounds = Inbound.query.all()
     clients = Client.query.filter_by(enable=True).all()
     if not inbounds:
@@ -202,15 +192,15 @@ def sync_traffic_stats():
 
     def _query_pair(pattern_up: str, pattern_down: str) -> tuple[int, int] | None:
         try:
-            u = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_up, reset=True), timeout=1)
-            d = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_down, reset=True), timeout=1)
+            with _RESET_LOCK:
+                u = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_up, reset=True), timeout=1)
+                d = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_down, reset=True), timeout=1)
         except grpc.RpcError:
             return None
         up_delta = u.stat[0].value if u.stat else 0
         down_delta = d.stat[0].value if d.stat else 0
         return up_delta, down_delta
 
-    # ── Phase 1: read-only ───────────────────────────────────────────────
     user_deltas: list[tuple[Client, int, int]] = []
     inbound_deltas: list[tuple[Inbound, int, int]] = []
 
@@ -240,7 +230,6 @@ def sync_traffic_stats():
     if not user_deltas and not inbound_deltas:
         return
 
-    # ── Phase 2: single short write transaction ──────────────────────────
     bucket = _ten_min_bucket(datetime.now())
     for c, up_d, down_d in user_deltas:
         c.up += up_d
@@ -254,29 +243,20 @@ def sync_traffic_stats():
 
 
 def check_limits_and_reset():
-    """Run monthly traffic counter resets and disable expired / over-limit users.
 
-    Three-phase to keep the SQLite write transaction short:
-
-    1. **Decide (read-only):** classify each enabled client as needing a
-       monthly reset, a disable, both, or neither. No DB mutation.
-    2. **gRPC side-effects:** zero Xray's internal counters for reset clients,
-       and remove disabled vless/vmess users from the runtime. No DB writes.
-    3. **Persist (single commit):** zero counters, clear traffic
-       notifications, flip `enable=False`, commit, then regenerate config
-       (and restart only as a fallback when gRPC removes failed).
-    """
     clients = Client.query.filter_by(enable=True).all()
     now_dt = datetime.now()
     now_ts = int(now_dt.timestamp() * 1000)
     current_day = now_dt.day
 
-    # ── Phase 1: classify ────────────────────────────────────────────────
     to_reset: list[Client] = []
-    to_disable: list[tuple[Client, str]] = []  # (client, reason)
+    to_disable: list[tuple[Client, str]] = []
+
+    days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
 
     for c in clients:
-        if c.reset_day > 0 and c.reset_day == current_day:
+        effective_reset_day = min(c.reset_day, days_in_month) if c.reset_day > 0 else 0
+        if effective_reset_day > 0 and effective_reset_day == current_day:
             last_reset_dt = None
             if c.last_reset_time and c.last_reset_time > 0:
                 try:
@@ -295,14 +275,11 @@ def check_limits_and_reset():
     if not to_reset and not to_disable:
         return
 
-    # Prefetch the inbounds we'll need in Phase 2 so the gRPC block doesn't
-    # interleave additional SELECTs (and their potential autoflushes).
     relevant_tags = {c.inbound_tag for c in to_reset} | {c.inbound_tag for c, _ in to_disable}
     inbounds_by_tag = (
         {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(relevant_tags)).all()} if relevant_tags else {}
     )
 
-    # ── Phase 2: gRPC only (no DB writes) ────────────────────────────────
     if to_reset:
         try:
             channel = get_channel()
@@ -311,12 +288,13 @@ def check_limits_and_reset():
                 runtime_email = build_runtime_email(c.inbound_tag, c.email)
                 for suffix in ("uplink", "downlink"):
                     try:
-                        stub.QueryStats(
-                            stats_command_pb2.QueryStatsRequest(
-                                pattern=f"user>>>{runtime_email}>>>traffic>>>{suffix}",
-                                reset=True,
+                        with _RESET_LOCK:
+                            stub.QueryStats(
+                                stats_command_pb2.QueryStatsRequest(
+                                    pattern=f"user>>>{runtime_email}>>>traffic>>>{suffix}",
+                                    reset=True,
+                                )
                             )
-                        )
                     except grpc.RpcError as e:
                         logger.debug("Failed to reset gRPC %s for %s: %s", suffix, c.email, e)
         except grpc.RpcError as e:
@@ -335,13 +313,11 @@ def check_limits_and_reset():
             restart_required = True
             logger.warning("Failed to process limit disable for %s/%s: %s", c.inbound_tag, c.email, e)
 
-    # ── Phase 3: single short write transaction ──────────────────────────
     for c in to_reset:
         c.up = 0
         c.down = 0
         c.last_reset_time = now_ts
-        # Clear stale traffic notifications so the next cycle re-fires
-        # 80% / 95% / exhausted warnings. Expiry kinds intentionally preserved.
+
         NotificationLog.query.filter(
             NotificationLog.client_id == c.id,
             NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
@@ -393,18 +369,16 @@ def _parse_access_logs_logic():
         if not logs:
             return
 
-        ip_updates: dict[str, set] = {}  # runtime_email → {ips}
-        domain_updates: dict[str, dict] = {}  # runtime_email → {domain: count}
+        ip_updates: dict[str, set] = {}
+        domain_updates: dict[str, dict] = {}
 
         for line in logs.split("\n"):
-            # Try full pattern with destination host
             match = _ACCEPT_FULL.search(line)
             if match:
                 ip = match.group(1)
                 dest_host = match.group(2)
                 runtime_email = match.group(3)
             else:
-                # Fallback: no destination captured
                 match = _ACCEPT_BASIC.search(line)
                 if not match:
                     continue
@@ -436,7 +410,6 @@ def _parse_access_logs_logic():
                 matched_clients = Client.query.filter_by(email=email).all()
 
             for c in matched_clients:
-                # Update last_seen and source_ips
                 if runtime_email in ip_updates:
                     c.last_seen = now_ts
                     try:
@@ -448,7 +421,6 @@ def _parse_access_logs_logic():
                             current.insert(0, ip)
                     c.source_ips = json.dumps(current[:10])
 
-                # Save domain stats
                 if runtime_email in domain_updates:
                     for domain, count in domain_updates[runtime_email].items():
                         _upsert_domain_stat(today_str, domain, c.email, c.inbound_tag, count)
@@ -459,7 +431,7 @@ def _parse_access_logs_logic():
 
 
 def cleanup_old_domain_stats():
-    """Delete domain stats older than 90 days to prevent unbounded growth."""
+
     try:
         cutoff = (datetime.now() - timedelta(days=90)).date().isoformat()
         deleted = DomainStat.query.filter(DomainStat.date < cutoff).delete()

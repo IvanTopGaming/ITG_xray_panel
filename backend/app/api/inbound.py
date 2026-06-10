@@ -4,7 +4,7 @@ import base64
 import secrets
 from datetime import datetime
 from flask import Blueprint, request, jsonify
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models import Inbound, Client, ClientDevice, TelegramUser
 from app.api.subscription import build_aggregate_sub_url
 from app.utils import (
@@ -62,20 +62,14 @@ def _parse_bool(value, default=False):
 
 
 def _parse_optional_int(value, field):
-    """Return None if value is None/'', otherwise parse_int with min_value=0."""
+
     if value is None or value == "":
         return None
     return parse_int(value, field, min_value=0)
 
 
 def _stream_supports_vless_flow(stream):
-    """Whether XTLS Vision (xtls-rprx-vision) is valid on this transport.
 
-    Vision flow only works on raw-TCP with TLS or REALITY. It is incompatible
-    with xhttp, ws, grpc, httpupgrade, splithttp, kcp and quic, and with
-    security 'none'. Used to keep client flow consistent with the inbound's
-    transport (e.g. clear flow when an inbound is switched to xhttp).
-    """
     if not isinstance(stream, dict):
         return False
     return stream.get("network") == "tcp" and stream.get("security") in ("tls", "reality")
@@ -134,13 +128,10 @@ def get_inbounds():
 
     inbounds = Inbound.query.all()
 
-    # Batch device-count per client to avoid N+1.
     counts = dict(
         db.session.query(ClientDevice.client_id, func.count(ClientDevice.id)).group_by(ClientDevice.client_id).all()
     )
 
-    # Map telegram_id → sub_token once so each client can expose its real
-    # (aggregated) subscription URL.
     _tok_map = dict(
         db.session.query(TelegramUser.telegram_id, TelegramUser.sub_token)
         .filter(TelegramUser.sub_token.isnot(None))
@@ -221,6 +212,7 @@ def get_inbounds():
 
 @bp.route("/inbounds", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("30 per minute")
 def create_inbound():
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -283,6 +275,7 @@ def create_inbound():
 
 @bp.route("/inbounds/<tag>", methods=["PUT"])
 @admin_or_federation_token_required
+@limiter.limit("30 per minute")
 def update_inbound(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -432,6 +425,8 @@ def update_inbound(tag):
                             "Cannot switch protocol: one or more user IDs are invalid for Shadowsocks 2022"
                         )
                     candidate_id = normalized_ss_client_id
+                elif ib.protocol in ("trojan", "shadowsocks"):
+                    candidate_id = secrets.token_urlsafe(16)
                 normalized_id = _normalize_client_id(candidate_id, ib.protocol)
                 if normalized_id in normalized_client_ids:
                     raise ValueError("Cannot switch protocol: duplicate user IDs after normalization")
@@ -449,10 +444,6 @@ def update_inbound(tag):
         if ib.protocol not in PANEL_USER_PROTOCOLS:
             Client.query.filter_by(inbound_tag=ib.tag).delete()
 
-        # Keep client flow consistent with the transport. XTLS Vision only works
-        # on raw-TCP + TLS/REALITY, so if this inbound was switched to an
-        # incompatible transport (e.g. xhttp) or away from VLESS, clear the
-        # now-invalid flow on its users before the config is regenerated.
         if ib.protocol in PANEL_USER_PROTOCOLS and not (
             ib.protocol == "vless" and _stream_supports_vless_flow(built_stream_settings)
         ):
@@ -484,6 +475,7 @@ def update_inbound(tag):
 
 @bp.route("/inbounds/<tag>", methods=["DELETE"])
 @admin_or_federation_token_required
+@limiter.limit("30 per minute")
 def delete_inbound(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -520,6 +512,7 @@ def delete_inbound(tag):
 
 @bp.route("/inbounds/<tag>/reset-traffic", methods=["POST"])
 @token_required
+@limiter.limit("30 per minute")
 def reset_ib_traffic(tag):
     try:
         reset_inbound_traffic(tag)
@@ -530,6 +523,7 @@ def reset_ib_traffic(tag):
 
 @bp.route("/inbounds/<tag>/users", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def add_user(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -613,6 +607,7 @@ def add_user(tag):
 
 @bp.route("/inbounds/<tag>/users", methods=["PUT"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def update_user(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -713,6 +708,7 @@ def update_user(tag):
 
 @bp.route("/inbounds/<tag>/users", methods=["DELETE"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def delete_user_route(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -763,14 +759,7 @@ def delete_user_route(tag):
 
 
 def _split_users_by_panel(users):
-    """Split a bulk-op ``users`` payload into local and per-panel remote groups.
 
-    Each user dict may carry an optional ``panel_id`` naming the linked panel
-    that owns the client. Entries without one (None/0/"") are local (master)
-    users. Returns ``(local, {panel_id: [entries]})`` where every entry is
-    normalized to ``{"tag", "email"}`` — panel_id is stripped so a child panel
-    runs the op purely against its own DB and never re-proxies.
-    """
     if not isinstance(users, list) or not users:
         raise ValueError("users array required")
     local = []
@@ -792,6 +781,7 @@ def _split_users_by_panel(users):
 
 @bp.route("/users/bulk-delete", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def bulk_delete_users_route():
     try:
         from app.services.panel_proxy import proxy_bulk_delete_users
@@ -802,8 +792,6 @@ def bulk_delete_users_route():
         deleted_count = 0
         errors = []
 
-        # Remote panels first — best-effort: a single offline/failing child
-        # must not abort the deletion on the master or other reachable panels.
         for panel_id, group in remote.items():
             try:
                 res = proxy_bulk_delete_users(panel_id, group)
@@ -812,8 +800,6 @@ def bulk_delete_users_route():
                 errors.append(str(exc))
 
         if local:
-            # Capture client ids BEFORE delegating to bulk_delete_users so we
-            # can invalidate their cached subscriptions afterwards.
             doomed_ids = []
             for u in local:
                 row = Client.query.with_entities(Client.id).filter_by(inbound_tag=u["tag"], email=u["email"]).first()
@@ -840,6 +826,7 @@ def bulk_delete_users_route():
 
 @bp.route("/users/reset-traffic", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def reset_user_traffic_route():
     try:
         from app.services.panel_proxy import proxy_bulk_reset_traffic
@@ -852,7 +839,6 @@ def reset_user_traffic_route():
             for u in local:
                 reset_user_traffic(u["tag"], u["email"])
         else:
-            # Single-user reset — the UserRow sends panel_id as a query param.
             panel_id = request.args.get("panel_id", type=int)
             tag = normalize_tag(data.get("tag"))
             email = normalize_email(data.get("email"))
@@ -869,6 +855,7 @@ def reset_user_traffic_route():
 
 @bp.route("/users/bulk-enable", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def bulk_enable_users_route():
     try:
         from app.services.panel_proxy import proxy_bulk_enable_users
@@ -953,6 +940,7 @@ def bulk_enable_users_route():
 
 @bp.route("/users/bulk-adjust-days", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def bulk_adjust_days_route():
     try:
         from app.services.panel_proxy import proxy_bulk_adjust_days
@@ -1015,6 +1003,7 @@ def bulk_adjust_days_route():
 
 @bp.route("/users/bulk-adjust-traffic", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def bulk_adjust_traffic_route():
     try:
         from app.services.panel_proxy import proxy_bulk_adjust_traffic
@@ -1079,14 +1068,9 @@ def bulk_adjust_traffic_route():
 
 @bp.route("/users/bulk-set-flow", methods=["POST"])
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def bulk_set_flow_route():
-    """Enable/disable the VLESS flow for a batch of users.
 
-    ``flow`` is an explicit value ("" to disable, "xtls-rprx-vision" to enable).
-    Non-VLESS users and users already on the target flow are skipped. The change
-    is applied at runtime via gRPC remove+re-add (the flow is baked into the
-    VLESS account on add), falling back to a container restart if gRPC fails.
-    """
     try:
         from app.services.panel_proxy import proxy_bulk_set_flow
 
@@ -1119,8 +1103,7 @@ def bulk_set_flow_route():
             if not ib or ib.protocol != "vless":
                 skipped += 1
                 continue
-            # Enabling Vision on a transport that can't carry it (xhttp/ws/grpc/…)
-            # would produce a broken config — skip those inbounds.
+
             if flow and not _stream_supports_vless_flow(json.loads(ib.stream_settings or "{}")):
                 skipped += 1
                 continue
@@ -1140,9 +1123,6 @@ def bulk_set_flow_route():
                 except Exception:
                     pass
 
-            # Apply the new flow at runtime: re-add each enabled VLESS user so
-            # Xray picks up the changed account. Disabled users aren't in the
-            # runtime, so a DB change is enough until they're next enabled.
             grpc_failed = False
             for item in changed:
                 if not item["was_enabled"]:

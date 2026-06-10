@@ -102,8 +102,7 @@ def user_sub_page_kb(
     back_label: str,
     sub_url: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """Subscription screen: open-page URL button (only when sub_url is set),
-    show-keys fallback, help, back."""
+
     buttons = []
     if sub_url:
         buttons.append([InlineKeyboardButton(text=open_label, url=sub_url)])
@@ -201,7 +200,7 @@ def confirm_restart_kb(target):
 
 
 def language_picker_kb(en_label: str, ru_label: str) -> InlineKeyboardMarkup:
-    """Two-button row: English / Русский. Callback data set_lang:en|ru."""
+
     buttons = [
         [
             InlineKeyboardButton(text=en_label, callback_data="set_lang:en"),
@@ -212,7 +211,7 @@ def language_picker_kb(en_label: str, ru_label: str) -> InlineKeyboardMarkup:
 
 
 def first_touch_kb(*, activate_label: str, skip_label: str) -> InlineKeyboardMarkup:
-    """Two-button row for the onboarding screen: activate trial / skip."""
+
     buttons = [
         [
             InlineKeyboardButton(text=activate_label, callback_data="trial:activate"),
@@ -223,8 +222,7 @@ def first_touch_kb(*, activate_label: str, skip_label: str) -> InlineKeyboardMar
 
 
 def trial_success_kb(*, subs_label: str, back_label: str) -> InlineKeyboardMarkup:
-    """Two stacked buttons shown after trial activation: jump to subscription
-    keys, or fall back to the main menu."""
+
     buttons = [
         [InlineKeyboardButton(text=subs_label, callback_data="user_sub")],
         [InlineKeyboardButton(text=back_label, callback_data="user_home")],
@@ -233,8 +231,7 @@ def trial_success_kb(*, subs_label: str, back_label: str) -> InlineKeyboardMarku
 
 
 def payment_retry_kb(*, tariffs_label: str, back_label: str) -> InlineKeyboardMarkup:
-    """Two-button column shown after payment_cancelled or payment_failed:
-    open tariffs to try again, or go back to main menu."""
+
     buttons = [
         [InlineKeyboardButton(text=tariffs_label, callback_data="tariffs:list")],
         [InlineKeyboardButton(text=back_label, callback_data="user_home")],
@@ -248,8 +245,7 @@ def no_clients_menu_kb(
     tariffs_label: str,
     help_label: str,
 ) -> InlineKeyboardMarkup:
-    """Menu for users without active clients. The trial row appears only
-    when `trial_label` is truthy."""
+
     rows = []
     if trial_label:
         rows.append([InlineKeyboardButton(text=trial_label, callback_data="trial:activate")])

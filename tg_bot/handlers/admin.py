@@ -18,8 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_admin(event) -> bool:
-    """Live admin check — reads runtime_config every call so changes via the
-    panel UI take effect on the next message without restarting the bot."""
+
     user = getattr(event, "from_user", None)
     if user is None or user.id is None:
         return False

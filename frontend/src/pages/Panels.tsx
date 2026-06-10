@@ -63,7 +63,6 @@ function formatLastPoll(ts: number | null): string {
 export default function Panels() {
   const queryClient = useQueryClient();
 
-  // -- state --
   const [showAddForm, setShowAddForm] = useState(false);
   const [addFormData, setAddFormData] = useState<AddPanelForm>(EMPTY_ADD_FORM);
   const [editingPanel, setEditingPanel] = useState<LinkedPanel | null>(null);
@@ -74,22 +73,17 @@ export default function Panels() {
   const [tokenRevealed, setTokenRevealed] = useState(false);
   const [, setTick] = useState(0);
 
-  // Tick every second to keep relative timestamps fresh
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // -- queries --
-
-  // Federation config: determines if this panel is a child
   const { data: federationConfig, isLoading: fedLoading } = useQuery<FederationConfig>({
     queryKey: ['federation', 'config'],
     queryFn: () => api.get('/federation/config').then((r) => r.data),
     refetchInterval: 30000,
   });
 
-  // Linked panels (master view)
   const { data: panels = [], isLoading: panelsLoading } = useQuery<LinkedPanel[]>({
     queryKey: ['panels'],
     queryFn: () => api.get('/panels').then((r) => r.data),
@@ -97,14 +91,11 @@ export default function Panels() {
     enabled: true,
   });
 
-  // Local inbound count for the master card
   const { data: inbounds = [] } = useQuery<Inbound[]>({
     queryKey: ['inbounds'],
     queryFn: () => api.get('/inbounds').then((r) => r.data),
     enabled: true,
   });
-
-  // -- mutations (master) --
 
   const addPanelMutation = useMutation({
     mutationFn: (data: AddPanelForm) => api.post('/panels', data),
@@ -156,8 +147,6 @@ export default function Panels() {
     onError: () => toast.error('Test request failed'),
   });
 
-  // -- mutations (child) --
-
   const generateTokenMutation = useMutation({
     mutationFn: () => api.post('/federation/link-token'),
     onSuccess: () => {
@@ -168,8 +157,6 @@ export default function Panels() {
       toast.error(err?.response?.data?.error || 'Failed to generate token');
     },
   });
-
-  // -- handlers --
 
   const openEdit = (panel: LinkedPanel) => {
     setEditingPanel(panel);
@@ -189,19 +176,12 @@ export default function Panels() {
     0
   );
 
-  // -- loading --
-
   if (fedLoading) {
     return <div className="text-center text-gray-500 py-12">Loading...</div>;
   }
 
-  // =========================================================================
-  // Combined view: linked-to-master banner (if child) + master panel management
-  // =========================================================================
-
   return (
     <div className="space-y-6">
-      {/* Child banner: shown when this panel is linked to a master */}
       {federationConfig?.is_linked && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -258,7 +238,6 @@ export default function Panels() {
         </div>
       </div>
 
-      {/* Master panel card */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -292,7 +271,6 @@ export default function Panels() {
         </div>
       </motion.div>
 
-      {/* Link Token Modal */}
       <Modal isOpen={showTokenModal} onClose={() => setShowTokenModal(false)} title="Link Token">
         <div className="space-y-4">
           <p className="text-sm text-gray-400">
@@ -357,7 +335,6 @@ export default function Panels() {
         </div>
       </Modal>
 
-      {/* Child panels grid */}
       {panelsLoading ? (
         <div className="text-center text-gray-500 py-12">Loading...</div>
       ) : panels.length === 0 ? (
@@ -381,7 +358,6 @@ export default function Panels() {
                   transition={{ delay: i * 0.05 }}
                   className="bg-white/[0.02] border border-white/[0.06] rounded-2xl p-5 space-y-4"
                 >
-                  {/* Header: name, URL, status */}
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3 min-w-0">
                       <div
@@ -405,7 +381,6 @@ export default function Panels() {
                     </div>
                   </div>
 
-                  {/* Stats row */}
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="bg-white/[0.03] rounded-lg px-3 py-2 flex items-center gap-2">
                       <Clock size={13} className="text-gray-500 shrink-0" />
@@ -423,14 +398,12 @@ export default function Panels() {
                     </div>
                   </div>
 
-                  {/* Disabled badge */}
                   {!panel.enable && (
                     <div className="text-xs text-yellow-500/80 bg-yellow-500/10 rounded-lg px-3 py-1.5">
                       Disabled
                     </div>
                   )}
 
-                  {/* Error message */}
                   {panel.last_error && panel.status === 'offline' && (
                     <div
                       className="text-xs text-red-400/80 bg-red-500/10 rounded-lg px-3 py-1.5 truncate"
@@ -440,7 +413,6 @@ export default function Panels() {
                     </div>
                   )}
 
-                  {/* Action buttons */}
                   <div className="flex gap-2 pt-1">
                     <Button
                       variant="secondary"
@@ -467,7 +439,6 @@ export default function Panels() {
         </div>
       )}
 
-      {/* Add Panel Modal */}
       <Modal isOpen={showAddForm} onClose={() => setShowAddForm(false)} title="Add Panel">
         <div className="space-y-4">
           <Input
@@ -497,7 +468,6 @@ export default function Panels() {
         </div>
       </Modal>
 
-      {/* Edit Panel Modal */}
       <Modal isOpen={!!editingPanel} onClose={() => setEditingPanel(null)} title="Edit Panel">
         <div className="space-y-4">
           <Input
@@ -527,7 +497,6 @@ export default function Panels() {
         </div>
       </Modal>
 
-      {/* Unlink Confirmation */}
       <ConfirmationModal
         isOpen={!!unlinkTarget}
         onClose={() => setUnlinkTarget(null)}

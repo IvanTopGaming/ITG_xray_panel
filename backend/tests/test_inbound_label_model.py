@@ -1,5 +1,3 @@
-"""Tests for Client.to_dict() inbound_label fallback chain."""
-
 from app.models import Client, Inbound
 
 
@@ -40,8 +38,7 @@ def test_inbound_label_falls_back_to_tag_when_label_empty(app, db):
 
 
 def test_inbound_label_falls_back_when_inbound_missing(app, db):
-    # Create a Client whose inbound_tag points at a non-existent inbound
-    # (foreign key without FK enforcement on test DB).
+
     c = Client(id="cid4", email="tg1_orphan", inbound_tag="orphan-tag")
     db.session.add(c)
     db.session.commit()

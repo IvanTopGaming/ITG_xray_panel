@@ -1,5 +1,3 @@
-"""Migration test: payment.chat_id and payment.message_id added by _ensure_schema_columns."""
-
 import os
 import sqlite3
 import tempfile
@@ -11,7 +9,7 @@ from db_migration import CURRENT_DB_VERSION, _ensure_schema_columns
 
 @pytest.fixture
 def payment_pre_v13():
-    """Fresh SQLite with a v12-shaped payment table (no chat_id/message_id)."""
+
     fd, path = tempfile.mkstemp(suffix=".sqlite")
     os.close(fd)
     conn = sqlite3.connect(path)
@@ -60,7 +58,6 @@ def test_schema_patch_adds_chat_id_and_message_id(payment_pre_v13):
     assert "chat_id" in after
     assert "message_id" in after
 
-    # Existing row defaults to NULL on both.
     cursor.execute("SELECT chat_id, message_id FROM payment WHERE yookassa_id='yk-test-1'")
     chat, msg = cursor.fetchone()
     assert chat is None

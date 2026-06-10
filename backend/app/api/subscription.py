@@ -16,7 +16,7 @@ bp = Blueprint("subscription", __name__)
 
 
 def _try_proxy_sub_to_child(uuid_str: str, req) -> Response | None:
-    """If the UUID belongs to a client on a child panel, proxy the sub request there."""
+
     from app.models import LinkedPanel
     from app.services.panel_proxy import get_panel_snapshot
 
@@ -35,6 +35,7 @@ def _try_proxy_sub_to_child(uuid_str: str, req) -> Response | None:
                             f"{panel.url.rstrip('/')}/api/sub/{uuid_str}",
                             headers={"User-Agent": ua},
                             timeout=8,
+                            allow_redirects=False,
                         )
                         if resp.status_code == 200:
                             return Response(
@@ -60,7 +61,7 @@ def _try_proxy_sub_to_child(uuid_str: str, req) -> Response | None:
 
 
 def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> list[str]:
-    """Fetch subscription links from child panels for clients matching this UUID or telegram_id."""
+
     from urllib.parse import urlparse
     from app.models import LinkedPanel
     from app.services.panel_proxy import get_panel_snapshot
@@ -92,8 +93,7 @@ def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> l
 
 
 def _remote_clients_for_headers(telegram_id):
-    """Lightweight client-likes (up/down/limit_bytes/expiry_time) for a user's
-    enabled child-panel keys, so the aggregated subscription-userinfo header counts them."""
+
     from types import SimpleNamespace
     from app.models import LinkedPanel
     from app.services.panel_proxy import get_panel_snapshot
@@ -124,13 +124,7 @@ def _remote_clients_for_headers(telegram_id):
 
 
 def _build_share_links(host, protocol, port, stream, client_id, flow, label) -> list[str]:
-    """Single source of truth for share links — used by BOTH the local
-    subscription (Client+Inbound from the DB) and the federation remote path
-    (inbound/client dicts from a child snapshot), so the two can't drift.
 
-    `stream` is the inbound's parsed (nested) stream_settings blob. Returns a
-    list of link strings (one per protocol; empty for unknown protocols).
-    """
     if not isinstance(stream, dict):
         stream = {}
     network = stream.get("network", "tcp")
@@ -227,7 +221,7 @@ def _build_share_links(host, protocol, port, stream, client_id, flow, label) -> 
 
 
 def _build_remote_link(host: str, ib_data: dict, client_data: dict) -> list[str]:
-    """Share link(s) for a remote inbound+client, using the child panel's host."""
+
     stream = ib_data.get("stream_settings", {})
     if isinstance(stream, str):
         try:
@@ -298,7 +292,7 @@ def _warn_singbox(state: str) -> str:
 
 
 def _warn_response(state: str, user_agent: str, extra_headers: dict) -> Response:
-    """Build the format-appropriate warn-config Response. Never cached."""
+
     if any(x in user_agent for x in ["clash", "meta", "stash"]):
         body = _warn_clash(state)
         return Response(
@@ -334,13 +328,7 @@ def _warn_response(state: str, user_agent: str, extra_headers: dict) -> Response
 
 
 def _config_filename(client, ext: str) -> str:
-    """Filename for Content-Disposition.
 
-    Personalised per client when available (extension dropped for cleaner
-    display in client UIs — Content-Type header conveys the actual format).
-    Warn-config (client=None) keeps the canonical extension so users can tell
-    it's a system-generated message, not their real config.
-    """
     if client is None or not client.email:
         return f"config.{ext}"
     safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in client.email)
@@ -348,12 +336,7 @@ def _config_filename(client, ext: str) -> str:
 
 
 def _user_headers(client=None) -> dict:
-    """Build standard subscription headers.
 
-    With client: include subscription-userinfo (aggregate traffic + limit + expiry).
-    Without client (warn-config path): only Profile-Update-Interval.
-    Headers are recomputed every request — never cached.
-    """
     setting = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
     try:
         interval = int(setting.value) if setting and setting.value else 24
@@ -380,12 +363,7 @@ def _user_headers(client=None) -> dict:
 
 
 def _aggregate_user_headers(clients) -> dict:
-    """subscription-userinfo for an aggregated subscription.
 
-    Report the key NEAREST to exhaustion — smallest remaining (limit - used) among
-    limited keys; expire = nearest expiry. If every key is unlimited, total=0 with
-    summed usage.
-    """
     setting = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
     try:
         interval = int(setting.value) if setting and setting.value else 24
@@ -398,10 +376,8 @@ def _aggregate_user_headers(clients) -> dict:
     brand = SystemSetting.query.filter_by(key="brand_name").first()
     title = (brand.value if brand and brand.value else "Subscription").strip()[:25]
     if title.isascii():
-        headers["profile-title"] = title  # ASCII — send plain
+        headers["profile-title"] = title
     else:
-        # Non-ASCII (Cyrillic/CJK/accented latin): base64 UTF-8 so clients decode it correctly
-        # (and the HTTP header value stays latin-1 safe).
         headers["profile-title"] = "base64:" + base64.b64encode(title.encode("utf-8")).decode("ascii")
 
     clients = [c for c in clients if c is not None]
@@ -442,7 +418,6 @@ def _normalize_reality_public_key(public_key):
     if not key:
         return ""
 
-    # Accept both std/base64 and urlsafe/base64 keys, output canonical urlsafe form.
     padded = key + ("=" * ((4 - len(key) % 4) % 4))
     for decoder in (base64.urlsafe_b64decode, base64.b64decode):
         try:
@@ -510,15 +485,7 @@ def _extract_tls_utls_fingerprint(stream):
 
 
 def _extract_transport_path_host(stream):
-    """Path + Host header for ws / xhttp / httpupgrade / splithttp.
 
-    Inbounds saved via the UI store the flat ``wsPath`` / ``wsHost`` keys
-    (shared across all four transports — see InboundForm + xray.generate);
-    older/seed blobs may instead carry the nested xray-structure keys
-    (wsSettings / xhttpSettings / httpUpgradeSettings / splitHttpSettings).
-    Read the flat keys first, fall back to the nested ones. Returns ("", "")
-    for tcp/grpc (no path/host). Path is normalized to a leading "/".
-    """
     network = stream.get("network", "tcp")
     if network not in ("ws", "xhttp", "httpupgrade", "splithttp"):
         return "", ""
@@ -650,13 +617,12 @@ def _looks_like_browser(user_agent: str) -> bool:
     ua = user_agent.lower()
     if any(token in ua for token in _KNOWN_CLIENT_UA_TOKENS):
         return False
-    # Common browser identifiers — covers Chrome, Firefox, Safari, Edge, Opera.
+
     return any(token in ua for token in ("mozilla", "applewebkit", "gecko", "trident", "edg"))
 
 
 def build_aggregate_sub_url(token):
-    """Canonical aggregated subscription URL for a TelegramUser.sub_token.
-    Prefers SUB_DOMAIN; otherwise PANEL_DOMAIN + PANEL_SECRET_PATH. None if unresolvable."""
+
     if not token:
         return None
     sub_domain = os.getenv("SUB_DOMAIN", "").strip()
@@ -768,7 +734,6 @@ def get_subscription_aggregate(token):
 def get_subscription(uuid_str):
     user_agent = request.headers.get("User-Agent", "").lower()
 
-    # Allow the in-browser landing page to force a specific format via ?ua=…
     forced_ua = (request.args.get("ua", "") or "").strip().lower()
     if forced_ua in ("clash", "meta", "stash"):
         user_agent = "clash"
@@ -777,7 +742,6 @@ def get_subscription(uuid_str):
     elif forced_ua in ("v2ray", "v2rayng", "raw"):
         user_agent = "v2ray"
 
-    # Device tracking gate — runs before cache lookup.
     client = db.session.get(Client, uuid_str)
     if not client or not client.enable:
         proxy_resp = _try_proxy_sub_to_child(uuid_str, request)
@@ -886,7 +850,7 @@ def get_subscription(uuid_str):
 
 
 def get_subscription_content(uuid_str):
-    """Local links + remote links from child panels for same user."""
+
     local = _get_local_subscription_content(uuid_str)
     client = db.session.get(Client, uuid_str)
     if not client:
@@ -900,13 +864,13 @@ def get_subscription_content(uuid_str):
 
 
 def _enabled_client_ids_for_user(telegram_id):
-    """All enabled local Client UUIDs belonging to a telegram user."""
+
     rows = Client.query.filter_by(telegram_id=telegram_id, enable=True).with_entities(Client.id).all()
     return [r[0] for r in rows if r[0]]
 
 
 def get_subscription_content_for_user(telegram_id):
-    """Aggregated v2ray links: every enabled local key of the user + child-panel keys."""
+
     links = []
     for cid in _enabled_client_ids_for_user(telegram_id):
         local = _get_local_subscription_content(cid)
@@ -933,9 +897,7 @@ def _get_local_subscription_content(uuid_str):
 
 
 def _remote_inbound_client_pairs(telegram_id):
-    """Yield (panel_host, ib_data, client_data) for a user's enabled child-panel
-    keys, from cached linked-panel snapshots. Shared by the aggregated Clash /
-    sing-box generators so they include federation nodes (not just local keys)."""
+
     from urllib.parse import urlparse
     from app.models import LinkedPanel
     from app.services.panel_proxy import get_panel_snapshot
@@ -967,8 +929,7 @@ def _remote_inbound_client_pairs(telegram_id):
 
 
 def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
-    """Single source of truth for a Clash proxy node — used by the local
-    single-key generator AND the aggregated remote (federation) path."""
+
     if not isinstance(stream, dict):
         stream = {}
     security = stream.get("security", "none")
@@ -1042,8 +1003,7 @@ def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
 
 
 def _build_singbox_outbound(tag, protocol, host, port, stream, client_id, flow):
-    """Single source of truth for a sing-box proxy outbound — used by the local
-    single-key generator AND the aggregated remote (federation) path."""
+
     if not isinstance(stream, dict):
         stream = {}
     security = stream.get("security", "none")
@@ -1181,8 +1141,7 @@ def generate_singbox_config(uuid_str):
 
 
 def generate_clash_config_for_user(telegram_id):
-    """One Clash document merging the user's local keys AND child-panel
-    (federation) keys, built through the shared `_build_clash_proxy`."""
+
     proxies = []
     seen = set()
 
@@ -1253,9 +1212,7 @@ def generate_clash_config_for_user(telegram_id):
 
 
 def generate_singbox_config_for_user(telegram_id):
-    """One sing-box document merging the user's local keys AND child-panel
-    (federation) keys, built through the shared `_build_singbox_outbound` and
-    routed through a single PROXY selector."""
+
     outbounds = []
     seen = set()
 
@@ -1330,9 +1287,7 @@ def generate_singbox_config_for_user(telegram_id):
 
 
 def _protocol_tag(protocol, stream) -> str:
-    """Human-readable protocol/transport tag for the subscription page node row.
 
-    `stream` may be a dict or a JSON string (federation snapshots store it as a string)."""
     if isinstance(stream, str):
         try:
             stream = json.loads(stream)
@@ -1364,17 +1319,11 @@ def _protocol_tag(protocol, stream) -> str:
     return proto.upper() or "Proxy"
 
 
-# A local key counts as "online" if it pushed traffic within this window (last_seen, ms).
-_NODE_ONLINE_WINDOW_MS = 5 * 60 * 1000  # 5 minutes
+_NODE_ONLINE_WINDOW_MS = 5 * 60 * 1000
 
 
 def _user_page_nodes(telegram_id):
-    """Per-key node descriptors for the aggregated subscription page.
 
-    Includes disabled local keys (rendered greyed). Online:
-      - local key: enable AND last_seen within _NODE_ONLINE_WINDOW_MS
-      - remote key: owning panel status == "online"
-    """
     now_ms = int(time.time() * 1000)
     nodes = []
 
@@ -1404,7 +1353,6 @@ def _user_page_nodes(telegram_id):
             }
         )
 
-    # Child-panel keys (federation snapshot), matched by telegram_id.
     try:
         from app.models import LinkedPanel
         from app.services.panel_proxy import get_panel_snapshot
@@ -1440,9 +1388,7 @@ def _user_page_nodes(telegram_id):
 
 
 def _user_device_summary(telegram_id):
-    """Aggregate device summary for the page. Card shown only when the user-scope
-    device limit toggle is ON. Counts unique HWIDs across the user's enabled keys;
-    limit==0 means unlimited (count shown without /N)."""
+
     from app.services.device_tracking import list_devices, subscription_device_settings
 
     enabled, limit = subscription_device_settings()
@@ -1536,7 +1482,7 @@ _PAGE_STRINGS = {
 
 
 def _format_date_localized(ms, lang) -> str:
-    """Human date as '18 июня' / '18 June' for the subscription page (no year)."""
+
     s = _PAGE_STRINGS.get(lang, _PAGE_STRINGS["en"])
     if not ms or ms <= 0:
         return s["never"]
@@ -1548,12 +1494,11 @@ def _format_date_localized(ms, lang) -> str:
 
 
 def _pick_lang(query_lang, accept_language) -> str:
-    """Resolve page language: ?lang= wins, then Accept-Language, default 'en'. Only en/ru."""
+
     q = (query_lang or "").strip().lower()[:2]
     if q in _PAGE_STRINGS:
         return q
     if q:
-        # A query lang was supplied but isn't supported -> default, no header fallback.
         return "en"
     al = (accept_language or "").strip().lower()
     for part in al.split(","):
@@ -1586,7 +1531,7 @@ def _format_expiry(ms: int) -> str:
 
 
 def render_aggregate_subscription_page(user, lang, abs_sub_url):
-    """White-label HTML landing page for an aggregated subscription (Plan 2, mockup v3)."""
+
     s = _PAGE_STRINGS.get(lang, _PAGE_STRINGS["en"])
 
     brand_row = SystemSetting.query.filter_by(key="brand_name").first()
@@ -1610,7 +1555,6 @@ def render_aggregate_subscription_page(user, lang, abs_sub_url):
         else f'<span class="pill off">● {html.escape(s["status_disabled"])}</span>'
     )
 
-    # Nearest expiry across enabled keys (fallback: any key).
     now_ms = int(time.time() * 1000)
     expiries = [n["expiry"] for n in nodes if n["enabled"] and n["expiry"] > 0] or [
         n["expiry"] for n in nodes if n["expiry"] > 0
@@ -1621,7 +1565,7 @@ def render_aggregate_subscription_page(user, lang, abs_sub_url):
         if nearest <= now_ms:
             days_sub = s["expired"]
         else:
-            days = -(-(nearest - now_ms) // 86400_000)  # ceil: 11d23h -> "12 days left"
+            days = -(-(nearest - now_ms) // 86400_000)
             days_sub = s["days_left"].format(n=days)
     else:
         until_str = s["never"]
@@ -1630,7 +1574,6 @@ def render_aggregate_subscription_page(user, lang, abs_sub_url):
     def _esc(x):
         return html.escape(str(x or ""))
 
-    # Summary boxes.
     summary_boxes = [
         f'<div class="sbox"><div class="small">{_esc(s["valid_until"])}</div>'
         f'<div class="big">{_esc(until_str)}</div>'
@@ -1648,7 +1591,6 @@ def render_aggregate_subscription_page(user, lang, abs_sub_url):
         )
     summary_html = '<div class="summary">' + "".join(summary_boxes) + "</div>"
 
-    # Node rows.
     node_parts = []
     for n in nodes:
         dot = "on" if n["online"] else "off"

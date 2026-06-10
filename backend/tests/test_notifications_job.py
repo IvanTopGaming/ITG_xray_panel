@@ -1,8 +1,3 @@
-"""Unit tests for send_expiry_notifications and its dedup behaviour.
-
-The Redis publisher is mocked; we only verify the BotEvent rows + NotificationLog rows.
-"""
-
 from __future__ import annotations
 
 import time
@@ -37,11 +32,7 @@ def inbound(app):
 
 
 def _make_client(app, *, telegram_id, email, expiry_offset_ms, enable=True, tariff_id=None):
-    """Insert a Client whose expiry_time is now + offset_ms.
 
-    `Client.protocol` doesn't exist on the model — protocol comes from the
-    parent Inbound. We also don't need `settings`/`flow`/etc. for these tests.
-    """
     with app.app_context():
         c = Client(
             id=f"cli-{email}",
@@ -61,8 +52,7 @@ def _make_client(app, *, telegram_id, email, expiry_offset_ms, enable=True, tari
 
 
 def _make_tariff(app, **overrides):
-    """Helper to insert a Tariff for renewable-flag tests. Defaults to a
-    public/enabled/non-trial tariff that should be renewable."""
+
     from app.models import Tariff, TariffItem
 
     with app.app_context():
@@ -101,16 +91,14 @@ def test_publishes_event_in_3d_window(app, inbound):
     assert payload["kind"] == "expiry_3d"
     assert payload["client_id"] == cid
     assert payload["email"] == "alice"
-    # tariff_id flows through so the bot can build a one-click renew button.
+
     assert payload["tariff_id"] == tariff_id
-    # Standard public/enabled/non-trial tariff → renewable.
+
     assert payload["renewable"] is True
 
 
 def test_payload_carries_null_tariff_id_for_legacy_clients(app, inbound):
-    """Legacy clients (provisioned before billing tables existed) have
-    Client.tariff_id=NULL. The payload should still publish — the bot falls
-    back to a Back-to-main-only keyboard."""
+
     _make_client(app, telegram_id=42, email="legacy", expiry_offset_ms=3 * 86400 * 1000)
     from app.jobs.notifications import send_expiry_notifications
 
@@ -213,7 +201,7 @@ def test_dedups_within_same_kind(app, inbound):
 
     with app.app_context(), patch("app.jobs.notifications.bot_events.publish") as mock_publish:
         send_expiry_notifications()
-        send_expiry_notifications()  # second invocation
+        send_expiry_notifications()
     assert mock_publish.call_count == 1, "second run should be a no-op (dedup)"
     with app.app_context():
         assert NotificationLog.query.count() == 1
@@ -272,7 +260,7 @@ def test_publishes_separate_events_for_3d_1d_1h_buckets(app, inbound):
 
 
 def test_expired_kind_for_just_expired_clients(app, inbound):
-    # offset = -10 minutes (already expired but inside the [now-15min, now] window)
+
     _make_client(app, telegram_id=42, email="expired", expiry_offset_ms=-10 * 60 * 1000)
     from app.jobs.notifications import send_expiry_notifications
 
@@ -283,7 +271,7 @@ def test_expired_kind_for_just_expired_clients(app, inbound):
 
 
 def test_includes_lang_from_telegram_user(app, inbound):
-    """If a TelegramUser row exists, propagate its language into the event payload."""
+
     from app.models import TelegramUser
 
     with app.app_context():

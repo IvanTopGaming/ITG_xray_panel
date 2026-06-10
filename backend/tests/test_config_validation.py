@@ -27,7 +27,7 @@ from app.services import xray as xray_svc
 def test_validate_skips_when_binary_absent():
     with patch("app.services.xray.os.path.exists", return_value=False):
         with patch("app.services.xray.subprocess.run") as run:
-            xray_svc._validate_xray_config("/tmp/c.json")  # must not raise
+            xray_svc._validate_xray_config("/tmp/c.json")
     run.assert_not_called()
 
 
@@ -37,7 +37,7 @@ def test_validate_ok_on_exit_zero():
             "app.services.xray.subprocess.run",
             return_value=MagicMock(returncode=0, stderr=b"Configuration OK.", stdout=b""),
         ):
-            xray_svc._validate_xray_config("/tmp/c.json")  # must not raise
+            xray_svc._validate_xray_config("/tmp/c.json")
 
 
 def test_validate_raises_on_nonzero_with_reason():
@@ -68,7 +68,7 @@ def test_validate_fail_closed_on_timeout():
 class TestGenerateConfigGate:
     @pytest.fixture(autouse=True)
     def _setup(self, app, db, tmp_path):
-        # app + db come from conftest; redirect config file I/O to tmp_path.
+
         self._ctx = app.app_context()
         self._ctx.push()
         self._patches = [
@@ -88,7 +88,7 @@ class TestGenerateConfigGate:
     def test_valid_config_is_committed(self):
         from app.services.xray import generate_config_file
 
-        with patch("app.services.xray._validate_xray_config"):  # no-op = valid
+        with patch("app.services.xray._validate_xray_config"):
             generate_config_file()
         assert self.cfg.exists()
         assert not self.candidate.exists()
@@ -103,12 +103,12 @@ class TestGenerateConfigGate:
         ):
             with pytest.raises(ValueError, match="bad thing"):
                 generate_config_file()
-        assert self.cfg.read_text() == '{"old": "good"}'  # untouched
-        assert not self.candidate.exists()  # cleaned up
+        assert self.cfg.read_text() == '{"old": "good"}'
+        assert not self.candidate.exists()
 
 
 def test_candidate_path_has_json_extension():
-    """xray detects config format by file extension — candidate must end in .json."""
+
     from app.services import xray as xray_svc
 
     assert xray_svc.CANDIDATE_PATH.endswith(".json")

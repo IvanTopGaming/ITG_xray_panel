@@ -1,5 +1,3 @@
-"""Reconcile pending payments against YooKassa (webhook fallback)."""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -17,10 +15,13 @@ logger = logging.getLogger(__name__)
 
 _MIN_AGE_S = 30
 _MAX_AGE_S = 24 * 3600
-# SDK uses requests w/o read timeout — under gevent a stuck server hangs the
-# greenlet forever. With APScheduler max_instances=1 that blocks subsequent
-# runs. Keep this well under the 30s cron interval.
+
+
 _YK_CALL_TIMEOUT_S = 8
+
+
+_REFUND_LOOKBACK_DAYS = 30
+_REFUND_BATCH = 200
 
 
 def _get_setting(key: str) -> str:
@@ -99,8 +100,35 @@ def poll_pending_payments() -> None:
             )
 
 
+def reconcile_refunds() -> None:
+
+    if not _configure_sdk():
+        return
+
+    now = dt.datetime.utcnow()
+    lo = now - dt.timedelta(days=_REFUND_LOOKBACK_DAYS)
+    candidates = (
+        Payment.query.filter(Payment.status == "succeeded")
+        .filter(Payment.created_at >= lo)
+        .order_by(Payment.created_at.desc())
+        .limit(_REFUND_BATCH)
+        .all()
+    )
+    if len(candidates) >= _REFUND_BATCH:
+        logger.info(
+            "reconcile_refunds: hit batch cap (%d); older succeeded payments not checked this run",
+            _REFUND_BATCH,
+        )
+
+    for payment in candidates:
+        try:
+            billing.handle_refund(payment)
+        except Exception:
+            logger.exception("reconcile_refunds: handle_refund failed payment=%s", payment.id)
+
+
 def cleanup_old_payments() -> None:
-    """Cancel pending > 24h (with notification so the user's checkout bubble doesn't dangle), delete terminal > 90d."""
+
     now = dt.datetime.utcnow()
     stuck = (
         Payment.query.filter(

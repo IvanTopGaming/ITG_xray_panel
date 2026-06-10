@@ -1,5 +1,3 @@
-"""Backend-driven expiry + traffic notifications, BotEvent replay + cleanup."""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -28,7 +26,7 @@ _BUCKETS = (
     ("expired", 0),
 )
 
-# Order matters — pick the highest bucket the client crosses (97% → traffic_95, not _80).
+
 _TRAFFIC_BUCKETS = (
     ("traffic_exhausted", 1.0),
     ("traffic_95", 0.95),
@@ -50,7 +48,7 @@ def _lookup_lang(telegram_id: int, cache: dict[int, str]) -> str:
 
 
 def _is_renewable(tariff_id: int | None, telegram_id: int, cache: dict[int, bool]) -> bool:
-    """True if a Renew button would reach a working checkout. Mirrors `_ensure_tariff_available`."""
+
     if tariff_id is None:
         return False
     key = (tariff_id, telegram_id)
@@ -107,7 +105,7 @@ def send_expiry_notifications() -> None:
                     "client_id": c.id,
                     "email": c.email,
                     "expiry_time_ms": c.expiry_time,
-                    "tariff_id": c.tariff_id,  # None for pre-billing legacy clients
+                    "tariff_id": c.tariff_id,
                     "renewable": _is_renewable(c.tariff_id, c.telegram_id, renewable_cache),
                     "lang": _lookup_lang(c.telegram_id, lang_cache),
                 },
@@ -115,7 +113,7 @@ def send_expiry_notifications() -> None:
 
 
 def send_traffic_notifications() -> None:
-    """Warn at 80/95/100% of per-inbound limit."""
+
     lang_cache: dict[int, str] = {}
     renewable_cache: dict = {}
 
@@ -162,7 +160,7 @@ def send_traffic_notifications() -> None:
 
 
 def replay_undelivered_bot_events() -> None:
-    """Re-publish events whose original Redis publish failed. 30s grace avoids racing in-flight publishes."""
+
     import json as _json
 
     redis_client = _get_redis()
@@ -202,7 +200,7 @@ def replay_undelivered_bot_events() -> None:
 
 
 def cleanup_bot_events() -> None:
-    """Prune delivered events > 7d, undelivered > 30d."""
+
     now = dt.datetime.utcnow()
     BotEvent.query.filter(
         BotEvent.delivered_at.isnot(None),

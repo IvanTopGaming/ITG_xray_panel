@@ -1,5 +1,3 @@
-"""Tests for the master-side Panels API (app/api/panels.py)."""
-
 import time
 from unittest.mock import patch, MagicMock
 
@@ -10,12 +8,41 @@ from app.models import Admin, LinkedPanel, SystemSetting
 from app.utils import SECRET_KEY
 
 
-# ─── Fixtures ────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://127.0.0.1:5000",
+        "http://localhost/api",
+        "http://10.1/api",
+        "http://127.1/api",
+        "http://0177.0.0.1/api",
+        "http://169.254.169.254/latest",
+        "http://socket-proxy:2375",
+        "http://redis:6379",
+        "https://panel.local/api",
+        "ftp://example.com",
+    ],
+)
+def test_validate_panel_url_rejects_internal(bad_url):
+    from app.api.panels import _validate_panel_url
+
+    with pytest.raises(ValueError):
+        _validate_panel_url(bad_url)
+
+
+@pytest.mark.parametrize(
+    "ok_url",
+    ["https://child.example.com", "https://panel.acme.io:8443/x", "http://8.8.8.8/api"],
+)
+def test_validate_panel_url_allows_public(ok_url):
+    from app.api.panels import _validate_panel_url
+
+    assert _validate_panel_url(ok_url) == ok_url
 
 
 @pytest.fixture
 def app(app):
-    """Extend the base app fixture with the panels blueprint."""
+
     from app.api import panels
 
     if not any(bp_name == "panels" for bp_name in app.blueprints):
@@ -69,9 +96,6 @@ def _make_panel(db, name="child-1", url="https://child.example.com", token="fed-
     return panel
 
 
-# ─── GET /api/panels ─────────────────────────────────────────────────────────
-
-
 def test_list_panels_empty(client, admin_token):
     resp = client.get("/api/panels", headers=_auth(admin_token))
     assert resp.status_code == 200
@@ -85,7 +109,7 @@ def test_list_panels_returns_ordered(client, admin_token, db):
     assert resp.status_code == 200
     data = resp.get_json()
     assert len(data) == 2
-    # Ordered by id (insertion order)
+
     assert data[0]["name"] == "b-panel"
     assert data[1]["name"] == "a-panel"
 
@@ -100,9 +124,6 @@ def test_list_panels_masks_token(client, admin_token, db):
 def test_list_panels_requires_auth(client):
     resp = client.get("/api/panels")
     assert resp.status_code == 401
-
-
-# ─── POST /api/panels (create + handshake) ───────────────────────────────────
 
 
 @patch("app.api.panels.requests.post")
@@ -121,17 +142,15 @@ def test_create_panel_success(mock_post, client, admin_token, db):
     data = resp.get_json()
     assert data["name"] == "new-child"
     assert data["url"] == "https://child.example.com"
-    assert data["federation_token"] == "••••••••"  # masked
+    assert data["federation_token"] == "••••••••"
 
-    # Verify the handshake call
     mock_post.assert_called_once()
     call_args = mock_post.call_args
     assert call_args[0][0] == "https://child.example.com/api/federation/handshake"
     assert call_args[1]["json"]["link_token"] == "link-abc"
-    assert call_args[1]["json"]["master_name"] == "Master"  # default
+    assert call_args[1]["json"]["master_name"] == "Master"
     assert call_args[1]["timeout"] == 10
 
-    # Verify DB row
     panel = LinkedPanel.query.filter_by(name="new-child").first()
     assert panel is not None
     assert panel.federation_token == "new-fed-token-xyz"
@@ -230,9 +249,6 @@ def test_create_panel_handshake_rejected(mock_post, client, admin_token):
     assert "invalid link token" in resp.get_json()["error"].lower()
 
 
-# ─── PUT /api/panels/<id> ────────────────────────────────────────────────────
-
-
 def test_update_panel_name(client, admin_token, db):
     panel = _make_panel(db, name="old-name")
     resp = client.put(
@@ -287,9 +303,6 @@ def test_update_panel_not_found(client, admin_token):
     assert resp.status_code == 404
 
 
-# ─── DELETE /api/panels/<id> ──────────────────────────────────────────────────
-
-
 def test_delete_panel(client, admin_token, db):
     panel = _make_panel(db, name="doomed")
     panel_id = panel.id
@@ -316,9 +329,6 @@ def test_delete_panel_not_found(client, admin_token):
     assert resp.status_code == 404
 
 
-# ─── POST /api/panels/<id>/test ──────────────────────────────────────────────
-
-
 @patch("app.api.panels.requests.get")
 def test_test_panel_online(mock_get, client, admin_token, db):
     panel = _make_panel(db, name="healthy")
@@ -334,7 +344,6 @@ def test_test_panel_online(mock_get, client, admin_token, db):
     assert "latency_ms" in data
     assert isinstance(data["latency_ms"], int)
 
-    # Verify the snapshot call used the federation token header
     mock_get.assert_called_once()
     call_headers = mock_get.call_args[1]["headers"]
     assert call_headers["X-Federation-Token"] == "fed-tok-123"
@@ -387,9 +396,7 @@ def test_test_panel_not_found(client, admin_token):
 
 @patch("app.api.panels.requests.get")
 def test_test_panel_writes_last_poll_in_ms_on_success(mock_get, client, admin_token, db):
-    """Regression guard: panel.last_poll must be ms (13 digits), not seconds.
-    The frontend treats numeric timestamps as ms, so a seconds value (10 digits)
-    renders as "01/21/1970"."""
+
     panel = _make_panel(db, name="ok-panel")
     mock_resp = MagicMock()
     mock_resp.status_code = 200

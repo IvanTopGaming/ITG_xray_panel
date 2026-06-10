@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
-// securityHeaders mirrors the static response-header set from the original caddy.json.
 func securityHeaders() map[string]any {
 	return map[string]any{
 		"handler": "headers",
@@ -18,7 +18,7 @@ func securityHeaders() map[string]any {
 				"Referrer-Policy":           []any{"strict-origin-when-cross-origin"},
 				"Content-Security-Policy": []any{
 					"default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; " +
-						"script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+						"script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
 						"font-src 'self' https://fonts.gstatic.com data:; img-src 'self' https: data: blob:; " +
 						"connect-src 'self' https: wss:;",
 				},
@@ -27,7 +27,6 @@ func securityHeaders() map[string]any {
 	}
 }
 
-// reverseProxy builds a reverse_proxy handler to a single upstream with standard request headers.
 func reverseProxy(upstream string) map[string]any {
 	return map[string]any{
 		"handler":   "reverse_proxy",
@@ -42,10 +41,21 @@ func reverseProxy(upstream string) map[string]any {
 	}
 }
 
-// httpServer builds one loopback HTTP security-layer server.
-// If onlyPaths is non-empty, requests outside those prefixes get a 404.
-func httpServer(listen string, upstream string, onlyPaths []string) map[string]any {
+func httpServer(listen string, upstream string, onlyPaths []string, apiPath, apiUpstream string) map[string]any {
 	var routes []any
+	if apiUpstream != "" && apiPath != "" {
+		stripPrefix := strings.TrimSuffix(apiPath, "/api/")
+		if stripPrefix != "" && stripPrefix != "/" {
+			routes = append(routes, map[string]any{
+				"match": []any{map[string]any{"path": []any{apiPath + "*"}}},
+				"handle": []any{
+					securityHeaders(),
+					map[string]any{"handler": "rewrite", "strip_path_prefix": stripPrefix},
+					reverseProxy(apiUpstream),
+				},
+			})
+		}
+	}
 	if len(onlyPaths) > 0 {
 		globs := make([]any, 0, len(onlyPaths))
 		for _, p := range onlyPaths {
@@ -72,9 +82,6 @@ func httpServer(listen string, upstream string, onlyPaths []string) map[string]a
 	}
 }
 
-// httpRedirectServer: a plain :80 server that 308-redirects every request to
-// its https:// equivalent. Caddy's own automatic-HTTPS redirect is disabled so
-// it doesn't try to manage :80/:443 itself (layer4 owns :443).
 func httpRedirectServer() map[string]any {
 	return map[string]any{
 		"listen":          []any{":80"},
@@ -95,7 +102,6 @@ func httpRedirectServer() map[string]any {
 	}
 }
 
-// layer4Passthrough: raw TCP proxy with PROXY protocol v2 to upstream.
 func layer4Passthrough(sni, upstream string) map[string]any {
 	return map[string]any{
 		"match": []any{map[string]any{"tls": map[string]any{"sni": []any{sni}}}},
@@ -107,14 +113,17 @@ func layer4Passthrough(sni, upstream string) map[string]any {
 	}
 }
 
-// layer4TLS: terminate TLS (alpn http/1.1) then PROXY-protocol to a loopback http server.
 func layer4TLS(sni, loopback string) map[string]any {
 	return map[string]any{
 		"match": []any{map[string]any{"tls": map[string]any{"sni": []any{sni}}}},
 		"handle": []any{
 			map[string]any{
-				"handler":             "tls",
-				"connection_policies": []any{map[string]any{"alpn": []any{"http/1.1"}}},
+				"handler": "tls",
+				"connection_policies": []any{map[string]any{
+					"alpn":         []any{"http/1.1"},
+					"protocol_min": "tls1.2",
+					"protocol_max": "tls1.3",
+				}},
 			},
 			map[string]any{
 				"handler":        "proxy",
@@ -125,7 +134,6 @@ func layer4TLS(sni, loopback string) map[string]any {
 	}
 }
 
-// Generate builds the full Caddy JSON config from the parsed routes.
 func Generate(cfg *Config) ([]byte, error) {
 	httpServers := map[string]any{}
 	var l4routes []any
@@ -141,12 +149,11 @@ func Generate(cfg *Config) ([]byte, error) {
 		if name == "" {
 			name = fmt.Sprintf("srv%d", port)
 		}
-		httpServers[name+"_security_layer"] = httpServer(loopback, r.Upstream, r.OnlyPaths)
+		httpServers[name+"_security_layer"] = httpServer(loopback, r.Upstream, r.OnlyPaths, r.APIPath, r.APIUpstream)
 		l4routes = append(l4routes, layer4TLS(r.Match, loopback))
 		port++
 	}
 
-	// Plain :80 server that redirects everything to https (camouflage + UX).
 	httpServers["http_redirect"] = httpRedirectServer()
 
 	root := map[string]any{

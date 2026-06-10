@@ -57,7 +57,6 @@ function Select({
     setIsOpen(false);
   };
 
-  // Close on outside click or Escape
   useEffect(() => {
     if (!isOpen) return;
     const onMouse = (e: MouseEvent) => {
@@ -78,7 +77,6 @@ function Select({
     };
   }, [isOpen]);
 
-  // Reposition on scroll / resize
   useEffect(() => {
     if (!isOpen) return;
     const handler = () => updatePosition();

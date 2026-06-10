@@ -113,14 +113,12 @@ class SystemSetting(db.Model):
 
 
 class TrafficSnapshot(db.Model):
-    """Hourly traffic delta snapshots per entity (user or inbound)."""
-
     __tablename__ = "traffic_snapshot"
     id = db.Column(db.Integer, primary_key=True)
-    entity_type = db.Column(db.String(10), nullable=False)  # 'inbound' or 'user'
-    entity_id = db.Column(db.String(150), nullable=False)  # tag or email
-    inbound_tag = db.Column(db.String(50), nullable=False, default="")  # '' for inbounds
-    bucket = db.Column(db.BigInteger, nullable=False)  # unix ts of hour start
+    entity_type = db.Column(db.String(10), nullable=False)
+    entity_id = db.Column(db.String(150), nullable=False)
+    inbound_tag = db.Column(db.String(50), nullable=False, default="")
+    bucket = db.Column(db.BigInteger, nullable=False)
     up = db.Column(db.BigInteger, default=0)
     down = db.Column(db.BigInteger, default=0)
     __table_args__ = (
@@ -132,8 +130,6 @@ class TrafficSnapshot(db.Model):
 
 
 class LinkedPanel(db.Model):
-    """Remote panel registered on the master side for federation."""
-
     __tablename__ = "linked_panel"
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), unique=True, nullable=False)
@@ -160,8 +156,6 @@ class LinkedPanel(db.Model):
 
 
 class FederationConfig(db.Model):
-    """Singleton row (id=1) on the child side storing the master link."""
-
     __tablename__ = "federation_config"
     id = db.Column(db.Integer, primary_key=True)
     master_url = db.Column(db.String(255), nullable=True)
@@ -174,11 +168,9 @@ class FederationConfig(db.Model):
 
 
 class DomainStat(db.Model):
-    """Daily domain access counts parsed from Xray access logs."""
-
     __tablename__ = "domain_stat"
     id = db.Column(db.Integer, primary_key=True)
-    date = db.Column(db.String(10), nullable=False)  # YYYY-MM-DD
+    date = db.Column(db.String(10), nullable=False)
     domain = db.Column(db.String(255), nullable=False)
     client_email = db.Column(db.String(100), nullable=False, default="")
     inbound_tag = db.Column(db.String(50), nullable=False, default="")
@@ -192,8 +184,6 @@ class DomainStat(db.Model):
 
 
 class ClientDevice(db.Model):
-    """Track devices (HWIDs) for each client, including OS and hardware info."""
-
     __tablename__ = "client_device"
     id = db.Column(db.Integer, primary_key=True)
     client_id = db.Column(
@@ -231,9 +221,6 @@ class ClientDevice(db.Model):
         return out
 
 
-# ─── Billing: tariffs ────────────────────────────────────────────────────
-
-
 class Tariff(db.Model):
     __tablename__ = "tariff"
 
@@ -242,7 +229,7 @@ class Tariff(db.Model):
     price_rub = db.Column(db.Integer, nullable=False)
     period_days = db.Column(db.Integer, nullable=False)
     visibility = db.Column(db.String(16), nullable=False, default="public")
-    # 'public' | 'private' | 'archived'
+
     is_trial = db.Column(db.Boolean, nullable=False, default=False)
     enabled = db.Column(db.Boolean, nullable=False, default=True)
     sort_order = db.Column(db.Integer, nullable=False, default=0)
@@ -274,7 +261,7 @@ class TariffItem(db.Model):
     )
     inbound_tag = db.Column(db.String(120), nullable=False)
     label = db.Column(db.String(60), nullable=True)
-    traffic_gb = db.Column(db.Integer, nullable=False)  # 0 = unlimited
+    traffic_gb = db.Column(db.Integer, nullable=False)
     panel_id = db.Column(db.Integer, db.ForeignKey("linked_panel.id"), nullable=True)
     sort_order = db.Column(db.Integer, nullable=False, default=0)
 
@@ -291,7 +278,7 @@ class UserTariffAccess(db.Model):
         db.ForeignKey("tariff.id", ondelete="CASCADE"),
         nullable=False,
     )
-    billing = db.Column(db.String(8), nullable=False)  # 'free' | 'paid'
+    billing = db.Column(db.String(8), nullable=False)
     next_renewal_at = db.Column(db.DateTime, nullable=True)
     note = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
@@ -311,13 +298,13 @@ class Payment(db.Model):
     telegram_id = db.Column(db.BigInteger, nullable=False, index=True)
     tariff_id = db.Column(
         db.Integer,
-        db.ForeignKey("tariff.id"),  # default RESTRICT — preserves history
+        db.ForeignKey("tariff.id"),
         nullable=False,
     )
     tariff_snapshot = db.Column(db.JSON, nullable=False)
     amount_rub = db.Column(db.Integer, nullable=False)
     status = db.Column(db.String(16), nullable=False)
-    # 'pending' | 'succeeded' | 'cancelled' | 'failed'
+
     confirmation_url = db.Column(db.Text, nullable=True)
     metadata_json = db.Column("metadata", db.JSON, nullable=False, default=dict, server_default="{}")
     created_at = db.Column(
@@ -336,6 +323,8 @@ class BotText(db.Model):
     key = db.Column(db.String(120), primary_key=True)
     lang = db.Column(db.String(8), primary_key=True)
     text = db.Column(db.Text, nullable=False)
+
+    customized = db.Column(db.Boolean, nullable=False, default=False)
     updated_at = db.Column(
         db.DateTime,
         default=db.func.current_timestamp(),
@@ -349,7 +338,7 @@ class BotEvent(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     type = db.Column(db.String(32), nullable=False)
     telegram_id = db.Column(db.BigInteger, nullable=True, index=True)
-    # nullable telegram_id = broadcast event (e.g., 'texts_changed')
+
     payload = db.Column(db.JSON, nullable=False)
     created_at = db.Column(
         db.DateTime,
@@ -395,7 +384,7 @@ class NotificationLog(db.Model):
         nullable=False,
     )
     kind = db.Column(db.String(32), nullable=False)
-    # 'expiry_3d' | 'expiry_1d' | 'expiry_1h' | 'expired'
+
     sent_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     __table_args__ = (db.Index("ix_notif_dedup", "telegram_id", "client_id", "kind", "sent_at"),)

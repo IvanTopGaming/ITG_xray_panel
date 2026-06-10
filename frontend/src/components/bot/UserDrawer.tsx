@@ -275,7 +275,6 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                   </div>
                 )}
 
-                {/* Profile section */}
                 <section
                   className={cn(
                     'rounded-xl border bg-white/[0.02] p-5',
@@ -312,7 +311,6 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                   </dl>
                 </section>
 
-                {/* Active Tariffs */}
                 {activeTariffs.length > 0 && (
                   <section>
                     <h3 className="mb-3 text-base font-semibold text-white">
@@ -359,7 +357,6 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                   </section>
                 )}
 
-                {/* Clients */}
                 <section>
                   <h3 className="mb-3 text-base font-semibold text-white">
                     Clients <span className="text-white/40">({detail.clients.length})</span>
@@ -418,7 +415,6 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                   )}
                 </section>
 
-                {/* Grants */}
                 <section>
                   <div className="mb-3 flex items-center justify-between">
                     <h3 className="text-base font-semibold text-white">
@@ -586,7 +582,6 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                   )}
                 </section>
 
-                {/* Payments */}
                 <section>
                   <h3 className="mb-3 text-base font-semibold text-white">
                     Payments <span className="text-white/40">({detail.payments.length})</span>

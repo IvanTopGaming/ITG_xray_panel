@@ -1,5 +1,3 @@
-"""Admin-facing /api/bot/* endpoints — JWT-protected, drive the panel UI."""
-
 import logging
 import os
 import secrets
@@ -71,7 +69,7 @@ def list_tariffs():
 @bp.route("/bot/tariffs/stats", methods=["GET"])
 @token_required
 def tariffs_stats():
-    """Per-tariff active_subs / revenue_30d / last_sale_at. Tariffs with no activity get zeros."""
+
     from sqlalchemy import func
 
     now = datetime.utcnow()
@@ -117,7 +115,7 @@ _VALID_VISIBILITY = frozenset({"public", "private", "archived"})
 
 
 def _validate_tariff_payload(payload):
-    """Raise ValueError on bad input."""
+
     if not isinstance(payload, dict):
         raise ValueError("expected JSON object")
     name = payload.get("name")
@@ -126,11 +124,11 @@ def _validate_tariff_payload(payload):
     if len(name) > 120:
         raise ValueError("name too long (max 120)")
     price = payload.get("price_rub")
-    if not isinstance(price, int) or price < 0:
-        raise ValueError("price_rub must be a non-negative integer")
+    if not isinstance(price, int) or price < 0 or price > 10_000_000:
+        raise ValueError("price_rub must be between 0 and 10000000")
     period = payload.get("period_days")
-    if not isinstance(period, int) or period <= 0:
-        raise ValueError("period_days must be a positive integer")
+    if not isinstance(period, int) or period <= 0 or period > 3650:
+        raise ValueError("period_days must be between 1 and 3650")
     visibility = payload.get("visibility", "public")
     if visibility not in _VALID_VISIBILITY:
         raise ValueError(f"visibility must be one of {sorted(_VALID_VISIBILITY)}")
@@ -153,7 +151,7 @@ def _validate_tariff_payload(payload):
 
 
 def _apply_items(tariff, items_payload):
-    """Replace tariff.items with the new list. Caller commits."""
+
     tariff.items.clear()
     db.session.flush()
     for idx, item in enumerate(items_payload):
@@ -212,9 +210,6 @@ def update_tariff(tariff_id):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    # Preserve current is_trial / enabled when caller omits the key, so a
-    # partial PUT doesn't silently strip flags. Frontend always sends them,
-    # but external API consumers could trip on a default-False contract.
     is_trial = bool(payload.get("is_trial", t.is_trial))
     if is_trial:
         other_trial = Tariff.query.filter(
@@ -258,7 +253,7 @@ def archive_tariff(tariff_id):
 @bp.route("/bot/tariffs/<int:tariff_id>/restore", methods=["POST"])
 @token_required
 def restore_tariff(tariff_id):
-    """Bring an archived tariff back to 'public'. No-op on already-visible."""
+
     t = db.session.get(Tariff, tariff_id)
     if t is None:
         return jsonify({"error": "tariff not found"}), 404
@@ -271,9 +266,7 @@ def restore_tariff(tariff_id):
 @bp.route("/bot/tariffs/<int:tariff_id>/permanent", methods=["DELETE"])
 @token_required
 def delete_tariff_permanent(tariff_id):
-    """Hard-delete a tariff. Refuses when Payment rows reference it
-    (FK is RESTRICT — preserves billing history). TariffItem and
-    UserTariffAccess cascade-delete with the tariff row."""
+
     t = db.session.get(Tariff, tariff_id)
     if t is None:
         return jsonify({"error": "tariff not found"}), 404
@@ -305,8 +298,8 @@ def duplicate_tariff(tariff_id):
         name=f"{src.name} (копия)",
         price_rub=src.price_rub,
         period_days=src.period_days,
-        visibility="public",  # always re-publish a duplicate
-        is_trial=False,  # never propagate the trial flag
+        visibility="public",
+        is_trial=False,
         enabled=True,
         sort_order=src.sort_order,
     )
@@ -340,6 +333,7 @@ def list_texts():
                     "key": r.key,
                     "lang": r.lang,
                     "text": r.text,
+                    "customized": bool(r.customized),
                     "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 }
                 for r in rows
@@ -351,7 +345,7 @@ def list_texts():
 @bp.route("/bot/texts/keys", methods=["GET"])
 @token_required
 def list_text_keys():
-    """Merge meta + defaults YAML for the editor UI."""
+
     here = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(here, "..", "data")
     defaults_path = os.path.join(data_dir, "bot_texts_defaults.yaml")
@@ -395,10 +389,12 @@ def upsert_text(key):
 
     row = db.session.get(BotText, (key, lang))
     if row is None:
-        row = BotText(key=key, lang=lang, text=text)
+        row = BotText(key=key, lang=lang, text=text, customized=True)
         db.session.add(row)
     else:
         row.text = text
+
+        row.customized = True
     db.session.commit()
 
     bot_events.publish("texts_changed", telegram_id=None, payload={"lang": lang})
@@ -408,6 +404,7 @@ def upsert_text(key):
             "key": row.key,
             "lang": row.lang,
             "text": row.text,
+            "customized": bool(row.customized),
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
     )
@@ -443,22 +440,7 @@ def _serialize_grant(g):
 
 
 def _remote_clients_by_telegram_id() -> dict[int, list[dict]]:
-    """Bucket all linked-panel clients by telegram_id from cached snapshots.
 
-    Includes both enabled and disabled clients (each dict carries its own
-    ``enable`` flag) — callers like unblock_user rely on seeing disabled remote
-    clients. Each client dict mirrors Client.to_dict() so frontend code can treat
-    local and remote rows uniformly, with extra ``panel_id`` / ``panel_name``
-    fields so the UI can show where the client lives.
-
-    Returns {} if no panels are linked or all snapshots are missing — callers
-    should handle this gracefully (it's the steady-state on a standalone panel).
-
-    NOTE: this reads the *cached* (poll-refreshed, 60s TTL) snapshot and is fine
-    for read-only UI rendering. Destructive operations (block/unblock/revoke)
-    must use `_remote_clients_by_telegram_id_live` instead, so a stale/missing
-    cache can't make a remote disable silently no-op.
-    """
     bucket: dict[int, list[dict]] = {}
     for panel in LinkedPanel.query.filter_by(enable=True).all():
         snapshot = get_panel_snapshot(panel.id)
@@ -469,7 +451,7 @@ def _remote_clients_by_telegram_id() -> dict[int, list[dict]]:
 
 
 def _bucket_panel_clients(bucket: dict[int, list[dict]], snapshot: dict, panel) -> None:
-    """Append every telegram-linked client in `panel`'s `snapshot` into `bucket`."""
+
     for ib_data in snapshot.get("inbounds", []):
         inbound_tag = ib_data.get("tag", "")
         inbound_label = ib_data.get("label") or inbound_tag
@@ -506,18 +488,7 @@ def _bucket_panel_clients(bucket: dict[int, list[dict]], snapshot: dict, panel) 
 def _remote_clients_by_telegram_id_live(
     panel_ids: set[int] | None = None,
 ) -> tuple[dict[int, list[dict]], list[dict]]:
-    """Like `_remote_clients_by_telegram_id` but fetches LIVE snapshots so a
-    destructive op never acts on a stale picture.
 
-    Returns ``(bucket, unreachable)`` where `unreachable` is a list of
-    ``{panel_id, panel_name, error}`` for every queried panel whose live
-    snapshot could not be fetched. Callers fold these into ``panel_failures`` so
-    a remote effect we *couldn't apply* is reported instead of silently passing
-    as success (the bug class: "revoked the grant, only local clients dropped").
-
-    `panel_ids`: when given, only those linked panels are queried (used by the
-    tariff-scoped revoke path); None means every enabled panel.
-    """
     bucket: dict[int, list[dict]] = {}
     unreachable: list[dict] = []
     query = LinkedPanel.query.filter_by(enable=True)
@@ -641,9 +612,6 @@ def create_grant(tg_id):
         result = apply_tariff_for_user(tg_id, tariff, source="admin_grant")
         grant.next_renewal_at = datetime.utcnow() + timedelta(days=tariff.period_days)
     elif billing == "gift":
-        # One-shot admin grant: provision Clients for one tariff period, no
-        # auto-renewal. Access expires naturally via the standard
-        # Client.expiry_time path enforced by check_limits.
         result = apply_tariff_for_user(tg_id, tariff, source="admin_gift")
         grant.next_renewal_at = None
     else:
@@ -689,24 +657,18 @@ def create_grant(tg_id):
 @bp.route("/bot/users/<int:tg_id>/block", methods=["POST"])
 @token_required
 def block_user(tg_id):
-    """Block: bot ignores them, grants cancelled, clients disabled (kept for audit), Xray sessions yanked.
 
-    Three-phase to keep the SQLite writer lock short: classify clients,
-    run gRPC removals with no DB writes in flight, then commit all mutations
-    in one transaction.
-    """
     user = db.session.get(TelegramUser, tg_id)
     if user is None:
         return jsonify({"error": "user not found"}), 404
 
     active_clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
-    # Pre-fetch inbounds so the gRPC block doesn't pull in extra SELECTs.
+
     inbound_tags = {c.inbound_tag for c in active_clients}
     inbounds_by_tag = (
         {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
     )
 
-    # ── Phase: gRPC side-effects (no DB writes) ──────────────────────────
     restart_required = False
     for c in active_clients:
         ib = inbounds_by_tag.get(c.inbound_tag)
@@ -719,9 +681,6 @@ def block_user(tg_id):
         else:
             restart_required = True
 
-    # Live snapshot, not the cached one: a stale/missing cache must never let a
-    # block silently leave the user enabled on a child panel. Panels we can't
-    # reach are surfaced in panel_failures rather than skipped.
     remote_by_tg, panel_failures = _remote_clients_by_telegram_id_live()
     remote_clients = remote_by_tg.get(tg_id, [])
     remote_disabled = 0
@@ -735,7 +694,6 @@ def block_user(tg_id):
             logger.warning("block: remote disable failed panel=%s tag=%s: %s", rc["panel_id"], rc["inbound_tag"], exc)
             panel_failures.append({"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)})
 
-    # ── Phase: single short write transaction ────────────────────────────
     user.blocked = True
     for c in active_clients:
         c.enable = False
@@ -767,14 +725,7 @@ def block_user(tg_id):
 @bp.route("/bot/users/<int:tg_id>/unblock", methods=["POST"])
 @token_required
 def unblock_user(tg_id):
-    """Unblock: clear the flag and re-enable clients whose tariff time still
-    remains (local + linked panels). Grants are NOT restored — admin re-grants
-    to resume renewal.
 
-    Remote re-enable runs before the commit (best-effort, mirroring block_user),
-    while the local gRPC hot-add runs AFTER the commit — matching provisioning —
-    so a DB/runtime mismatch fails safe: clients are committed enabled before the
-    live Xray runtime starts serving them."""
     user = db.session.get(TelegramUser, tg_id)
     if user is None:
         return jsonify({"error": "user not found"}), 404
@@ -791,8 +742,6 @@ def unblock_user(tg_id):
         {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
     )
 
-    # Live snapshot, mirroring block_user — an unreachable panel is reported,
-    # not silently treated as "nothing to re-enable here".
     remote_by_tg, panel_failures = _remote_clients_by_telegram_id_live()
     remote_clients = remote_by_tg.get(tg_id, [])
     remote_re_enabled = 0
@@ -848,18 +797,13 @@ def unblock_user(tg_id):
 @bp.route("/bot/users/<int:tg_id>/tariffs/<int:tariff_id>", methods=["DELETE"])
 @token_required
 def revoke_tariff_from_user(tg_id, tariff_id):
-    """Revoke one tariff: disable matching clients, gRPC-yank vless/vmess (else regen+restart), drop the grant.
 
-    Three-phase to keep the SQLite writer lock short: classify clients,
-    run gRPC removals with no DB writes in flight, then commit in one go.
-    """
     active_clients = Client.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id, enable=True).all()
     inbound_tags = {c.inbound_tag for c in active_clients}
     inbounds_by_tag = (
         {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
     )
 
-    # ── Phase: gRPC side-effects (no DB writes) ──────────────────────────
     restart_required = False
     for c in active_clients:
         ib = inbounds_by_tag.get(c.inbound_tag)
@@ -872,10 +816,6 @@ def revoke_tariff_from_user(tg_id, tariff_id):
         else:
             restart_required = True
 
-    # ── Phase: disable this tariff's clients on linked panels (best-effort, no DB writes) ──
-    # The tariff's remote footprint is defined by its TariffItems that route to a linked
-    # panel (panel_id set). Disable the user's remote clients sitting on those
-    # (panel_id, inbound_tag) pairs — mirrors block_user, but scoped to this tariff.
     panel_failures: list[dict] = []
     remote_disabled = 0
     remote_items = (
@@ -886,14 +826,10 @@ def revoke_tariff_from_user(tg_id, tariff_id):
     )
     wanted = {(pid, tag) for pid, tag in remote_items}
     if wanted:
-        # Live snapshot, scoped to the panels this tariff routes to. Panels we
-        # can't reach go to panel_failures so a missed remote disable is visible.
         panel_ids = {pid for pid, _tag in remote_items}
         remote_by_tg, unreachable = _remote_clients_by_telegram_id_live(panel_ids=panel_ids)
         panel_failures.extend(unreachable)
         for rc in remote_by_tg.get(tg_id, []):
-            # Mirror the local match (tariff_id): only touch THIS tariff's remote
-            # clients — not another tariff sharing the same (panel_id, inbound_tag).
             if rc.get("tariff_id") != tariff_id:
                 continue
             if (rc.get("panel_id"), rc.get("inbound_tag")) not in wanted or not rc.get("enable", True):
@@ -912,7 +848,6 @@ def revoke_tariff_from_user(tg_id, tariff_id):
                     {"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)}
                 )
 
-    # ── Phase: single short write transaction ────────────────────────────
     for c in active_clients:
         c.enable = False
         c.tariff_id = None
@@ -1149,7 +1084,6 @@ def update_bot_settings():
             continue
         value = payload[key]
         if key in _SECRET_SETTINGS_KEYS and not value:
-            # don't overwrite secret with empty string — explicit clear uses a separate flag
             continue
         if key == "admin_ids":
             value = _normalize_admin_ids_for_storage(value)

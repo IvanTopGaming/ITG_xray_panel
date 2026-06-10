@@ -1,9 +1,3 @@
-"""Tests for app.services.xray — pure logic + config generation.
-
-Covers _build_stream_settings, generate_config_file, get_system_settings,
-and key stripping behaviour.
-"""
-
 import json
 import uuid
 
@@ -14,13 +8,8 @@ from app.extensions import db
 from app.models import Client, Inbound, Outbound, RoutingProfile, SystemSetting
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _reality_keys():
-    """Return a deterministic REALITY key pair (valid x25519)."""
+
     from cryptography.hazmat.primitives.asymmetric import x25519
     from cryptography.hazmat.primitives import serialization
     import base64
@@ -40,14 +29,7 @@ def _reality_keys():
     return pk, pub
 
 
-# ---------------------------------------------------------------------------
-# _build_stream_settings
-# ---------------------------------------------------------------------------
-
-
 class TestBuildStreamSettings:
-    """Unit tests for _build_stream_settings (no DB needed)."""
-
     def test_vless_reality(self):
         from app.services.xray import _build_stream_settings
 
@@ -74,7 +56,7 @@ class TestBuildStreamSettings:
         assert rs["shortIds"] == ["abcdef01"]
         assert rs["fingerprint"] == "chrome"
         assert rs["spiderX"] == "/"
-        # Keys should be normalised but present
+
         assert rs["privateKey"]
         assert rs["publicKey"]
 
@@ -153,7 +135,7 @@ class TestBuildStreamSettings:
         assert result["wsSettings"]["path"] == "/no-slash"
 
     def test_shadowsocks_extra_keys_preserved(self):
-        """ssMethod, ssPassword, ssNetwork should appear in the returned stream dict."""
+
         import base64
         import secrets
         from app.services.xray import _build_stream_settings
@@ -171,7 +153,7 @@ class TestBuildStreamSettings:
         result = _build_stream_settings(inp)
 
         assert result["ssMethod"] == method
-        assert result["ssPassword"]  # normalised, non-empty
+        assert result["ssPassword"]
         assert result["ssNetwork"] == "tcp,udp"
 
     def test_grpc_transport(self):
@@ -200,7 +182,7 @@ class TestBuildStreamSettings:
         result = _build_stream_settings(inp)
         assert result["authUser"] == "user1"
         assert result["authPass"] == "pass1"
-        # SOCKS forces tcp + none
+
         assert result["network"] == "tcp"
         assert result["security"] == "none"
 
@@ -238,15 +220,28 @@ class TestBuildStreamSettings:
             "security": "tls",
             "tlsServerName": "example.com",
             "tlsAlpn": "h2,http/1.1",
-            "tlsCertFile": "/certs/cert.pem",
-            "tlsKeyFile": "/certs/key.pem",
+            "tlsCertFile": "/etc/xray/certs/cert.pem",
+            "tlsKeyFile": "/etc/xray/certs/key.pem",
         }
         result = _build_stream_settings(inp)
         assert result["security"] == "tls"
         tls = result["tlsSettings"]
         assert tls["serverName"] == "example.com"
         assert tls["alpn"] == ["h2", "http/1.1"]
-        assert tls["certificates"][0]["certificateFile"] == "/certs/cert.pem"
+        assert tls["certificates"][0]["certificateFile"] == "/etc/xray/certs/cert.pem"
+
+    def test_tls_cert_path_outside_etc_xray_rejected(self):
+        from app.services.xray import _build_stream_settings
+
+        inp = {
+            "protocol": "vless",
+            "network": "tcp",
+            "security": "tls",
+            "tlsCertFile": "/root/cert/key.pem",
+            "tlsKeyFile": "/root/cert/key.pem",
+        }
+        with pytest.raises(ValueError):
+            _build_stream_settings(inp)
 
     def test_httpupgrade_transport(self):
         from app.services.xray import _build_stream_settings
@@ -264,17 +259,10 @@ class TestBuildStreamSettings:
         assert result["httpUpgradeSettings"]["host"] == "host.example.com"
 
 
-# ---------------------------------------------------------------------------
-# generate_config_file  (requires DB fixtures)
-# ---------------------------------------------------------------------------
-
-
 class TestGenerateConfigFile:
-    """Integration tests — seed DB rows, generate config, parse the JSON."""
-
     @pytest.fixture(autouse=True)
     def _setup(self, app, db, tmp_path):
-        """Provide app context and redirect file I/O to tmp_path."""
+
         self.app = app
         self.db = db
         self.tmp_path = tmp_path
@@ -292,7 +280,7 @@ class TestGenerateConfigFile:
             p.stop()
 
     def _seed_outbounds(self):
-        """Create the mandatory direct + block outbounds."""
+
         db.session.add(
             Outbound(
                 tag="direct",
@@ -318,8 +306,6 @@ class TestGenerateConfigFile:
     def _read_config(self):
         with open(str(self.tmp_path / "config.json"), "r") as f:
             return json.load(f)
-
-    # ---- test: basic VLESS inbound with a client ----
 
     def test_generates_valid_json_with_inbound_and_client(self):
         from app.services.xray import generate_config_file
@@ -364,31 +350,25 @@ class TestGenerateConfigFile:
 
         cfg = self._read_config()
 
-        # Top-level structure
         assert "inbounds" in cfg
         assert "outbounds" in cfg
         assert "routing" in cfg
         assert "log" in cfg
         assert "stats" in cfg
 
-        # Find our inbound (skip the api dokodemo-door)
         vless_inbounds = [i for i in cfg["inbounds"] if i["tag"] == "vless-in"]
         assert len(vless_inbounds) == 1
         vless_ib = vless_inbounds[0]
         assert vless_ib["port"] == 443
         assert vless_ib["protocol"] == "vless"
 
-        # Client should be in settings
         clients = vless_ib["settings"]["clients"]
         assert len(clients) == 1
         assert clients[0]["id"] == client_uuid
         assert clients[0]["flow"] == "xtls-rprx-vision"
 
-    # ---- test: UI-only keys are stripped ----
-
     def test_strips_ui_only_keys(self):
-        """ssMethod, ssPassword, ssNetwork, authUser, authPass, wg* must NOT appear
-        in the written Xray config's streamSettings."""
+
         import base64
         import secrets
         from app.services.xray import generate_config_file
@@ -435,11 +415,8 @@ class TestGenerateConfigFile:
         found = extra_keys & set(ss_stream.keys())
         assert not found, f"UI-only keys leaked into config: {found}"
 
-        # But the protocol settings should still have the method + password
         assert ss_ib["settings"]["method"] == method
         assert ss_ib["settings"]["password"]
-
-    # ---- test: enabled vs disabled clients ----
 
     def test_includes_enabled_excludes_disabled(self):
         from app.services.xray import generate_config_file
@@ -479,8 +456,6 @@ class TestGenerateConfigFile:
         assert enabled_uuid in client_ids
         assert disabled_uuid not in client_ids
 
-    # ---- test: trojan protocol ----
-
     def test_trojan_inbound(self):
         from app.services.xray import generate_config_file
 
@@ -510,8 +485,6 @@ class TestGenerateConfigFile:
         assert len(clients) == 1
         assert clients[0]["password"] == client_pw
 
-    # ---- test: socks inbound with auth ----
-
     def test_socks_inbound_with_auth(self):
         from app.services.xray import generate_config_file
 
@@ -537,12 +510,9 @@ class TestGenerateConfigFile:
         assert socks_ib["settings"]["accounts"][0]["user"] == "myuser"
         assert socks_ib["settings"]["accounts"][0]["pass"] == "mypass"
 
-        # authUser/authPass must be stripped from streamSettings
         ss = socks_ib.get("streamSettings", {})
         assert "authUser" not in ss
         assert "authPass" not in ss
-
-    # ---- test: routing profile attached to inbound ----
 
     def test_routing_profile_rules_included(self):
         from app.services.xray import generate_config_file
@@ -581,28 +551,18 @@ class TestGenerateConfigFile:
         cfg = self._read_config()
 
         rules = cfg["routing"]["rules"]
-        # Find a rule with domain matching
+
         domain_rules = [r for r in rules if "domain" in r]
         assert len(domain_rules) >= 1
         assert "geosite:category-ads" in domain_rules[0]["domain"]
         assert domain_rules[0]["outboundTag"] == "block"
 
-    # ---- test: a proxy outbound is inert until explicitly routed ----
-
     def test_proxy_outbound_does_not_create_implicit_catch_all(self):
-        """A proxy outbound must not silently capture all traffic.
 
-        Two inbounds, one proxy outbound. The first inbound has a routing
-        profile sending its traffic to the proxy outbound; the second inbound
-        has no rules. The second inbound's traffic must fall through to the
-        first outbound (``direct``) — there must be NO implicit
-        ``system_auto_balancer`` and NO unfiltered tcp/udp catch-all rule.
-        """
         from app.services.xray import generate_config_file
 
         self._seed_outbounds()
 
-        # A proxy (non-system) outbound.
         db.session.add(
             Outbound(
                 tag="proxy-out",
@@ -614,7 +574,6 @@ class TestGenerateConfigFile:
             )
         )
 
-        # Inbound #1: routed to the proxy outbound via a routing profile.
         profile = RoutingProfile(
             name="via-proxy",
             enable=True,
@@ -634,7 +593,6 @@ class TestGenerateConfigFile:
             )
         )
 
-        # Inbound #2: no routing profile — implies direct egress.
         db.session.add(
             Inbound(
                 tag="in-direct",
@@ -651,23 +609,18 @@ class TestGenerateConfigFile:
         balancers = cfg["routing"]["balancers"]
         rules = cfg["routing"]["rules"]
 
-        # No implicit balancer was synthesized.
         assert all(b["tag"] != "system_auto_balancer" for b in balancers)
-        # No unfiltered tcp/udp catch-all rule pointing at a balancer.
+
         catch_all = [r for r in rules if r.get("network") == "tcp,udp" and "balancerTag" in r and "inboundTag" not in r]
         assert catch_all == []
 
-        # direct is the first outbound, so unmatched (inbound #2) traffic egresses direct.
         assert cfg["outbounds"][0]["tag"] == "direct"
         assert "proxy-out" in [o["tag"] for o in cfg["outbounds"]]
 
-        # Sanity: inbound #1's rule still targets the proxy outbound, scoped to itself.
         routed = [r for r in rules if r.get("outboundTag") == "proxy-out"]
         assert len(routed) == 1
         assert "in-routed" in routed[0]["inboundTag"]
         assert "in-direct" not in routed[0].get("inboundTag", [])
-
-    # ---- test: port 443 gets sockopt ----
 
     def test_port_443_gets_sockopt(self):
         from app.services.xray import generate_config_file
@@ -686,8 +639,6 @@ class TestGenerateConfigFile:
         sockopt = vless_ib["streamSettings"]["sockopt"]
         assert sockopt["acceptProxyProtocol"] is True
 
-    # ---- test: empty DB produces minimal valid config ----
-
     def test_empty_db_produces_valid_config(self):
         from app.services.xray import generate_config_file
 
@@ -696,11 +647,9 @@ class TestGenerateConfigFile:
         generate_config_file()
         cfg = self._read_config()
 
-        assert cfg["inbounds"][0]["tag"] == "api"  # dokodemo-door api inbound
+        assert cfg["inbounds"][0]["tag"] == "api"
         assert "outbounds" in cfg
         assert cfg["routing"]["rules"][0]["inboundTag"] == ["api"]
-
-    # ---- test: http inbound no auth ----
 
     def test_http_inbound_no_auth(self):
         from app.services.xray import generate_config_file
@@ -720,14 +669,7 @@ class TestGenerateConfigFile:
         assert "accounts" not in http_ib["settings"]
 
 
-# ---------------------------------------------------------------------------
-# get_system_settings
-# ---------------------------------------------------------------------------
-
-
 class TestGetSystemSettings:
-    """Tests for get_system_settings — defaults and DB overrides."""
-
     def test_returns_defaults_when_no_rows(self, app, db):
         from app.services.xray import get_system_settings
 
@@ -767,13 +709,8 @@ class TestGetSystemSettings:
         db.session.commit()
 
         result = get_system_settings()
-        # Should fall back to the default, which is a valid URL
+
         assert result["geoipUrl"] == DEFAULT_GEOIP_URL
-
-
-# ---------------------------------------------------------------------------
-# _derive_reality_pubkey
-# ---------------------------------------------------------------------------
 
 
 class TestDeriveRealityPubkey:
@@ -790,11 +727,6 @@ class TestDeriveRealityPubkey:
         assert _derive_reality_pubkey("garbage") == ""
         assert _derive_reality_pubkey("") == ""
         assert _derive_reality_pubkey(None) == ""
-
-
-# ---------------------------------------------------------------------------
-# Normalisation helpers
-# ---------------------------------------------------------------------------
 
 
 class TestNormalisationHelpers:
@@ -822,7 +754,7 @@ class TestNormalisationHelpers:
         from app.services.xray import normalize_packet_network
 
         assert normalize_packet_network("tcp") == "tcp"
-        assert normalize_packet_network("udp,tcp") == "tcp,udp"  # alias
+        assert normalize_packet_network("udp,tcp") == "tcp,udp"
         assert normalize_packet_network("invalid") == "tcp"
 
     def test_flag_enabled(self):
@@ -832,13 +764,11 @@ class TestNormalisationHelpers:
         assert _flag_enabled(False) is False
         assert _flag_enabled("yes") is True
         assert _flag_enabled("0") is False
-        assert _flag_enabled(None) is True  # default=True
+        assert _flag_enabled(None) is True
         assert _flag_enabled(None, default=False) is False
 
 
 class TestValidateXrayConfig:
-    """_validate_xray_config subprocess gate — skip / accept / reject / timeout-retry."""
-
     def test_skips_when_binary_absent(self):
         from app.services import xray
 

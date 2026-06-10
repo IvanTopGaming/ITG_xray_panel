@@ -1,5 +1,3 @@
-"""Tests for GET /api/bot/payments admin endpoint."""
-
 import datetime as dt
 import time
 
@@ -13,7 +11,7 @@ from app.utils import SECRET_KEY
 
 @pytest.fixture
 def app(app):
-    """Extend the base app fixture with bot_admin blueprint."""
+
     from app.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
@@ -124,7 +122,7 @@ def test_list_payments_filters_by_tg_id(app, client, admin_token, tariff):
 def test_list_payments_stats_count_this_month(app, client, admin_token, tariff):
     _seed(app, tariff, "succeeded", tg_id=42)
     _seed(app, tariff, "succeeded", tg_id=43)
-    _seed(app, tariff, "pending", tg_id=44)  # not counted
+    _seed(app, tariff, "pending", tg_id=44)
     resp = client.get("/api/bot/payments", headers={"Authorization": f"Bearer {admin_token}"})
     body = resp.get_json()
     assert body["stats"]["month_count"] == 2

@@ -1,5 +1,3 @@
-"""Unit tests for billing-related SQLAlchemy models."""
-
 from datetime import datetime
 
 import pytest

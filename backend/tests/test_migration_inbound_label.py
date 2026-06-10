@@ -1,5 +1,3 @@
-"""Migration test: inbound.label column added by _ensure_schema_columns."""
-
 import os
 import sqlite3
 import tempfile
@@ -11,7 +9,7 @@ from db_migration import CURRENT_DB_VERSION, _ensure_schema_columns
 
 @pytest.fixture
 def inbound_pre_v12():
-    """Fresh SQLite with a v11-shaped inbound table (no label)."""
+
     fd, path = tempfile.mkstemp(suffix=".sqlite")
     os.close(fd)
     conn = sqlite3.connect(path)
@@ -56,7 +54,6 @@ def test_schema_patch_adds_label(inbound_pre_v12):
     after = {row[1] for row in cursor.fetchall()}
     assert "label" in after
 
-    # Existing row defaults to NULL.
     cursor.execute("SELECT label FROM inbound WHERE tag = 'demo-tag'")
     assert cursor.fetchone()[0] is None
 

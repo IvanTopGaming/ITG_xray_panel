@@ -1,5 +1,3 @@
-"""Tests for bot_service language exposure + the new language-setter endpoint."""
-
 import pytest
 
 from app.extensions import db as _db

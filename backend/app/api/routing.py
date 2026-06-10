@@ -1,6 +1,6 @@
 import json
 from flask import Blueprint, request, jsonify
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models import RoutingProfile, Outbound, Balancer
 from app.utils import token_required
 from app.services.xray import generate_config_file, restart_xray_container
@@ -167,6 +167,7 @@ def get_profiles():
 
 @bp.route("/routing-profiles", methods=["POST"])
 @token_required
+@limiter.limit("30 per minute")
 def create_profile():
     data = request.get_json(silent=True) or {}
     try:
@@ -194,6 +195,7 @@ def create_profile():
 
 @bp.route("/routing-profiles/<int:pid>", methods=["PUT"])
 @token_required
+@limiter.limit("30 per minute")
 def update_profile(pid):
     try:
         p = db.session.get(RoutingProfile, pid)
@@ -227,6 +229,7 @@ def update_profile(pid):
 
 @bp.route("/routing-profiles/<int:pid>", methods=["DELETE"])
 @token_required
+@limiter.limit("30 per minute")
 def delete_profile(pid):
     try:
         p = db.session.get(RoutingProfile, pid)

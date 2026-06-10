@@ -6,7 +6,6 @@ import { useAuthStore, AuthState } from '@/stores/authStore';
 import { AnimatedBackground } from './AnimatedBackground';
 import { DisplayConfigLoader } from '@/components/DisplayConfigLoader';
 import { motion, AnimatePresence } from 'framer-motion';
-// AnimatePresence kept for header title transition
 
 export function Layout() {
   const [isSidebarOpen, setSidebarOpen] = useState(false);

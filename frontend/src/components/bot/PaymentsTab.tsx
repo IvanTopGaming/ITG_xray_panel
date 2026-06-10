@@ -44,7 +44,6 @@ export function PaymentsTab() {
 
   return (
     <div className="space-y-4">
-      {/* Stats */}
       <div className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-5 shadow-sm">
         <div className="absolute -right-12 -top-12 h-32 w-32 rounded-full bg-primary/10 blur-[40px]" />
         {q.data ? (
@@ -62,7 +61,6 @@ export function PaymentsTab() {
         )}
       </div>
 
-      {/* Filters */}
       <div className="grid grid-cols-1 gap-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4 sm:grid-cols-2 md:grid-cols-5">
         <Select
           value={status}
@@ -96,7 +94,6 @@ export function PaymentsTab() {
         </button>
       </div>
 
-      {/* Table */}
       <div className="overflow-x-auto rounded-2xl border border-white/[0.05] bg-white/[0.02]">
         <table className="w-full text-sm whitespace-nowrap">
           <thead className="bg-black/40 text-left text-xs uppercase tracking-wider text-white/50">

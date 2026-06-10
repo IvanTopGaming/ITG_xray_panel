@@ -44,8 +44,6 @@ def poll_linked_panels():
         old_status = panel.status
         panel.status = status
         if status == "online":
-            # Defend against child panels running pre-fix code that returns
-            # `timestamp` in seconds (10 digits) instead of ms (13 digits).
             if ts and ts < 100_000_000_000:
                 ts *= 1000
             panel.last_poll = ts or int(time.time() * 1000)

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { useAuthStore } from '@/stores/authStore';
+import { panelBase } from '@/lib/panelBase';
 
-const panelBase = window.__PANEL_BASE_URL__ || '/';
 const normalizedBase = panelBase.endsWith('/') ? panelBase : `${panelBase}/`;
 
 const api = axios.create({

@@ -24,7 +24,7 @@ from .jobs.notifications import (
     send_expiry_notifications,
     send_traffic_notifications,
 )
-from .jobs.payments import cleanup_old_payments, poll_pending_payments
+from .jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from .jobs.panels import poll_linked_panels
 from .services.version_check import fetch_latest
 
@@ -164,7 +164,7 @@ def create_app():
         )
 
     CORS(app, resources={r"/api/*": {"origins": _cors_origins()}})
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=2, x_proto=1, x_host=1, x_prefix=1)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
     db.init_app(app)
     migrate.init_app(app, db)
@@ -174,16 +174,17 @@ def create_app():
     _ensure_scheduler_job("sync_traffic", sync_traffic_job, 10)
     _ensure_scheduler_job("check_limits", check_limits_job, 60)
     _ensure_scheduler_job("parse_logs", parse_access_logs, 15)
-    _ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)  # daily
-    _ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)  # 15 minutes
+    _ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
+    _ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
     _ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
+    _ensure_scheduler_job("reconcile_refunds", reconcile_refunds, 3600)
     _ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
     _ensure_scheduler_job("send_expiry_notifications", send_expiry_notifications, 900)
     _ensure_scheduler_job("send_traffic_notifications", send_traffic_notifications, 900)
     _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
     _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
-    _ensure_scheduler_job("check_latest_version", fetch_latest, 21600)  # 6 hours
+    _ensure_scheduler_job("check_latest_version", fetch_latest, 21600)
     if not scheduler.running:
         scheduler.start()
 
@@ -243,7 +244,6 @@ def create_app():
             db.session.remove()
             db.engine.dispose()
 
-            # Ensure bot service token exists (generate once on first startup)
             from .models import SystemSetting
             import secrets
 

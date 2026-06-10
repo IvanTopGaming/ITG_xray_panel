@@ -19,6 +19,7 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-empty-object-type': 'off',
+      'no-empty': ['error', { allowEmptyCatch: true }],
     },
   },
   prettier

@@ -1,11 +1,41 @@
+[project]
+name = "itg-xray-panel-backend"
+version = "0"
+requires-python = "==3.12.*"
+dependencies = [
+    "flask",
+    "flask-cors",
+    "docker",
+    "grpcio==1.66.2",
+    "grpcio-tools==1.66.2",
+    "protobuf==5.28.3",
+    "psutil",
+    "pyjwt",
+    "gunicorn",
+    "gevent",
+    "flask-limiter",
+    "redis",
+    "flask-sqlalchemy",
+    "flask-migrate",
+    "flask-apscheduler",
+    "filelock",
+    "requests",
+    "pyyaml",
+    "cryptography",
+    "yookassa>=3.0,<4.0",
+]
+
+[dependency-groups]
+dev = ["pytest==8.3.3", "pytest-flask==1.3.0"]
+
+[tool.uv]
+package = false
+
 [tool.ruff]
 line-length = 120
 target-version = "py39"
 
 [tool.ruff.lint]
-# E = pycodestyle errors, F = pyflakes (real bugs like unused imports)
-# Intentionally NOT including: I (isort), B (bugbear), UP (pyupgrade) —
-# these require mass refactoring of existing code.
 select = ["E", "F"]
 ignore = [
     "E501",  # line too long — not enforced

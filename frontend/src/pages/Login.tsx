@@ -44,7 +44,6 @@ export default function Login() {
 
   return (
     <div className="h-screen w-full flex items-center justify-center bg-[#050505] relative overflow-hidden">
-      {/* Background blobs */}
       <motion.div
         animate={{ scale: [1, 1.2, 1], opacity: [0.2, 0.4, 0.2] }}
         transition={{ duration: 8, repeat: Infinity, ease: 'easeInOut' }}
@@ -56,7 +55,6 @@ export default function Login() {
         className="absolute bottom-[-15%] right-[-10%] w-[600px] h-[600px] bg-violet-700/15 rounded-full blur-[130px] pointer-events-none"
       />
 
-      {/* Dot grid */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -71,14 +69,11 @@ export default function Login() {
         animate="visible"
         className="relative w-full max-w-sm mx-4"
       >
-        {/* Card glow */}
         <div className="absolute inset-0 rounded-[36px] blur-3xl bg-primary/8 scale-110 pointer-events-none" />
 
         <div className="relative w-full p-8 bg-[#0e0c14]/85 backdrop-blur-2xl rounded-[32px] border border-white/[0.08] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.8),0_0_0_1px_rgba(208,188,255,0.06)]">
-          {/* Logo */}
           <motion.div variants={itemVariants} className="flex flex-col items-center mb-10">
             <div className="relative mb-5">
-              {/* Pulsing rings */}
               <motion.div
                 animate={{ scale: [1, 1.6, 1], opacity: [0.35, 0, 0.35] }}
                 transition={{ duration: 2.8, repeat: Infinity, ease: 'easeOut' }}
@@ -89,7 +84,7 @@ export default function Login() {
                 transition={{ duration: 2.8, repeat: Infinity, ease: 'easeOut', delay: 0.5 }}
                 className="absolute inset-0 rounded-full bg-primary/10"
               />
-              {/* Icon container */}
+
               <motion.div
                 whileHover={{ rotate: 180, scale: 1.05 }}
                 transition={{ duration: 0.5, ease: 'easeInOut' }}

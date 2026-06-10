@@ -25,15 +25,15 @@ docker compose build caddy    && docker compose up -d caddy
 ### Backend (Python/Flask)
 ```bash
 cd backend
-pip install -r requirements.txt
-python run.py                  # Dev server on :5000
-python db_migration.py         # Run DB migrations standalone
+uv sync                        # install deps into .venv (+ dev group)
+uv run python run.py           # Dev server on :5000
+uv run python db_migration.py  # Run DB migrations standalone
 
-ruff check backend/
-ruff format backend/           # auto-fix formatting
-ruff format --check backend/   # CI mode — no changes, exit 1 if dirty
+uvx ruff check backend/
+uvx ruff format backend/           # auto-fix formatting
+uvx ruff format --check backend/   # CI mode — no changes, exit 1 if dirty
 
-pytest tests/                  # 835+ unit + integration tests
+uv run pytest tests/                  # 850+ unit + integration tests
 ```
 
 `backend/tests/conftest.py` stubs gRPC modules in `sys.modules` before importing the app so tests run on a dev checkout without needing the protobuf bundle that ships only inside the Docker image.
@@ -53,12 +53,12 @@ npm run format        # Prettier auto-fix
 ### Telegram Bot
 ```bash
 cd tg_bot
-pip install -r requirements.txt
-BACKEND_API_URL=http://backend:5000/api BOT_SERVICE_TOKEN=<token> python main.py
+uv sync
+BACKEND_API_URL=http://backend:5000/api BOT_SERVICE_TOKEN=<token> uv run python main.py
 
-ruff check tg_bot/
-ruff format tg_bot/
-ruff format --check tg_bot/
+uvx ruff check tg_bot/
+uvx ruff format tg_bot/
+uvx ruff format --check tg_bot/
 ```
 
 ### Caddy / caddygen (Go)
@@ -113,7 +113,7 @@ Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only on
   - `bot_status.py` — small cache for the bot's reported version/health surfaced in the UI
 - `app/jobs/`
   - `billing.py` — `auto_renew_free_users` (free-tier renewal, pause+notify on archive/disable)
-  - `payments.py` — `poll_pending_payments` (30s webhook fallback), `cleanup_old_payments` (24h, cancels stuck pending + publishes notification)
+  - `payments.py` — `poll_pending_payments` (30s webhook fallback), `reconcile_refunds` (1h refund-webhook fallback → `billing.handle_refund` revokes access), `cleanup_old_payments` (24h, cancels stuck pending + publishes notification)
   - `notifications.py` — `send_expiry_notifications`, `send_traffic_notifications`, `cleanup_bot_events`, `replay_undelivered_bot_events`
   - `panels.py` — `poll_linked_panels` (10s linked-panel health poll)
 
@@ -172,6 +172,7 @@ Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted fro
 | `poll_linked_panels` | 10s | Pings each enabled `LinkedPanel`, updates `status`/`last_poll`/`last_error` |
 | `auto_renew_free_users` | 15m | Re-provisions due `billing='free'` grants; pauses + emits `access_paused` on tariff archive/disable (does **not** force-disable clients — they lapse via their own `expiry_time`) |
 | `poll_pending_payments` | 30s | Webhook fallback; reconciles pending YooKassa payments older than 30s, younger than 24h |
+| `reconcile_refunds` | 1h | Refund-webhook fallback; re-checks the most recent succeeded payments (≤30d, capped 200) and revokes access on any YooKassa now reports refunded (via `billing.handle_refund`) |
 | `cleanup_old_payments` | 24h | Cancels `pending > 24h` (and publishes `payment_cancelled` so users find out); deletes terminal records `> 90d` |
 | `send_expiry_notifications` | 15m | 3d/1d/1h/expired warnings (dedup via `notification_log`, renew button shown only when tariff is still purchasable) |
 | `send_traffic_notifications` | 15m | 80%/95%/exhausted warnings (dedup + per-cycle re-arm) |
@@ -262,11 +263,18 @@ Protocol details live in `frontend/lib/protocols.ts` (UI-facing) and are seriali
 On startup, `direct` (freedom) and `block` (blackhole) outbounds are auto-created if missing. These are always re-enabled if disabled — do not delete them.
 
 ### Database migrations
-`db_migration.py` is a custom migration system (not Flask-Migrate). Current schema version is **`18`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count. When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
+`db_migration.py` is a custom migration system (not Flask-Migrate). Current schema version is **`19`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count. When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
 
-Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 17`. A bump triggers a one-shot **force-reseed** (only when `stored < CURRENT`): it DELETEs the `_REMOVED_BOT_TEXT_KEYS` tuple (purging orphan rows for keys dropped from the YAML) and then upserts every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` (~74 keys × RU/EN), **overwriting admin-edited texts**. When you remove a key from the YAML, append it to `_REMOVED_BOT_TEXT_KEYS`.
+Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 17`. A bump triggers a one-shot **force-reseed** (only when `stored < CURRENT`): it DELETEs the `_REMOVED_BOT_TEXT_KEYS` tuple (purging orphan rows for keys dropped from the YAML) and then upserts every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` (~74 keys × RU/EN). The upsert **preserves admin-edited rows** — `bot_text.customized` (set to `1` whenever an admin saves a text via Bot → Texts) is honoured by `ON CONFLICT … DO UPDATE … WHERE customized = 0`, so a force-reseed refreshes only untouched defaults and never reverts customizations. On the v19 migration that added the column, rows whose stored text already diverged from the YAML default are back-filled `customized=1` to protect pre-existing edits. When you remove a key from the YAML, append it to `_REMOVED_BOT_TEXT_KEYS` (the purge ignores `customized`, since a removed key is dead regardless).
 
 > **Reseed gotcha:** the purge/overwrite only fires when `stored < CURRENT`. An install already **at** the current number but with older content (e.g. a dev box that ran an unreleased build at the same version) is skipped — new keys still appear via the non-force `INSERT OR IGNORE` seed, but removed/changed keys don't. Coming from a real release baseline it's always clean; to force a clean reseed on such a dev box, set `system_setting.bot_texts_seeded_version` below CURRENT and restart the backend. To guarantee a reseed on *every* install regardless of prior unreleased numbers, bump strictly above the highest number any box has stored.
+
+### Python dependencies & Docker images (uv)
+Both Python services (`backend/`, `tg_bot/`) are **uv projects**: dependencies live in `[project].dependencies` in each `pyproject.toml`, pinned by a committed `uv.lock` (reproducible builds — previously every rebuild floated to latest). `[tool.uv] package = false` marks them as applications (install deps only, no wheel build), and `requires-python = "==3.12.*"` matches the `python:3.12-slim` base and the `grpcio==1.66.2` pin. There is **no `requirements.txt`** — `uv sync` is the install path everywhere.
+
+Dockerfiles are **multi-stage**: a builder stage runs `uv sync --frozen --no-dev` into `/app/.venv` (backend also generates the Xray protobuf stubs there with `grpc_tools.protoc`), then the final stage copies only `/app/.venv` + code — no `uv` binary, no `git`, no `build-essential` in the runtime image (backend ~317 MB, bot ~176 MB). The `uv` binary comes from the pinned `ghcr.io/astral-sh/uv:0.11.19` image; `UV_LINK_MODE=copy` keeps the venv relocatable across stages, `/app/.venv/bin` is first on `PATH`, and a `.dockerignore` keeps the local `.venv` out of the build context. `UV_PYTHON_DOWNLOADS=0` forces uv to use the base image's interpreter.
+
+CI installs uv via `astral-sh/setup-uv@v8.2.0` and runs `uvx ruff` for lint, `uv sync --frozen` + `uv run pytest` for tests. `uv sync` installs the dev group (`pytest`, `pytest-flask`) — note `pytest-flask`'s autouse fixtures pull the `app` fixture ahead of other autouse fixtures, so test mocks must patch a name **where it is used** (`app.api.inbound.restart_xray_container`), not only where it is defined (`app.services.xray.*`); the source-module patch silently misses because `api/inbound.py` did `from app.services.xray import …`.
 
 ### Statistics storage
 `TrafficSnapshot` stores hourly traffic deltas per entity (user or inbound) **forever** — space is ~100 bytes × entities × 8760 hours/year, negligible for typical deployments. `DomainStat` stores daily domain hit counts and is pruned to 90 days. Both use SQLite `ON CONFLICT DO UPDATE` upserts via `literal_column()` + raw `text()` SQL — do not replace with ORM insert, it breaks atomicity.
@@ -278,11 +286,12 @@ The frontend is served under `PANEL_SECRET_PATH`. At container startup, `fronten
 `grpc_gevent.init_gevent()` is called at app startup before any gRPC usage. The backend runs under gunicorn+gevent (single worker), so gRPC calls must be gevent-compatible. Current pin: `grpcio==1.66.2` on Python 3.12.
 
 ### ProxyFix
-Configured in `app/__init__.py` as `ProxyFix(app.wsgi_app, x_for=2, x_proto=1, x_host=1, x_prefix=1)`. **`x_for=2` is NOT a clean candidate to drop to `x_for=1`** — the trusted-proxy hop count differs by path:
-- Panel API: client → Caddy → **Nginx** (`frontend`, which appends `X-Forwarded-For`) → backend = **2 hops**.
+Configured in `app/__init__.py` as `ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)`. **Every API path is now a single proxy hop**, so `x_for=1` (trust only the right-most `X-Forwarded-For`, which Caddy sets to the real client) is correct everywhere and not spoofable:
+- Panel API: caddygen routes `/<PANEL_SECRET_PATH>/api/*` (the `api_path`/`api_upstream` fields on the `panel` route in `routes.yaml`) **straight to `backend`** with the secret prefix stripped — bypassing Nginx = **1 hop**.
 - Subscription domain: client → Caddy → backend = **1 hop**.
+- Panel SPA (non-API) still goes client → Caddy → Nginx → static (2 hops), but those requests never use `remote_addr`.
 
-So `x_for=2` is correct for the panel path but lets the sub path's `remote_addr` (used by Flask-Limiter) be spoofed via a left-most XFF; flipping to `x_for=1` fixes the sub path but collapses every panel/admin `remote_addr` to Caddy's internal IP (one shared rate-limit bucket → a self-DoS vector). **The real fix is architectural:** route `/<secret>/api/*` straight to `backend` in caddygen (like the sub route) so every API path is 1 hop, then `x_for=1` is correct everywhere. Until then, leave `x_for=2`. The YooKassa webhook sidesteps the issue entirely — it re-validates against YooKassa's API rather than trusting `remote_addr`; prefer that pattern for any new webhook-style endpoint.
+The earlier `x_for=2` workaround (which left the sub path's `remote_addr` spoofable via a left-most XFF) is gone now that the architectural fix landed. The YooKassa webhook also re-validates against YooKassa's API rather than trusting `remote_addr`; prefer that pattern for any new webhook-style endpoint.
 
 ### Frontend tab/slider style
 All horizontal tab bars use a consistent pill style: container `bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05]`, active item is an absolutely-positioned `motion.div` with `layoutId` and `bg-gradient-to-br from-primary/25 to-violet-600/20 rounded-xl border border-white/[0.1] shadow-[0_0_12px_rgba(208,188,255,0.12)]`, spring transition `stiffness: 500, damping: 35`. Do not use plain CSS active classes for tab bars.
@@ -293,17 +302,19 @@ All checks must pass before code reaches `main`. Run locally before pushing:
 
 | Check | Command |
 |---|---|
-| Python lint + format | `ruff check backend/ tg_bot/` · `ruff format --check backend/ tg_bot/` |
+| Python lint + format | `uvx ruff check backend/ tg_bot/` · `uvx ruff format --check backend/ tg_bot/` |
 | TypeScript typecheck | `cd frontend && npx tsc --noEmit` |
 | ESLint | `cd frontend && npm run lint` |
 | Prettier | `cd frontend && npm run format:check` |
 | Frontend build | `cd frontend && npm run build` |
-| Backend pytest | `cd backend && pytest tests/ -q` |
+| Backend pytest | `cd backend && uv sync --frozen && uv run pytest tests/ -q` |
 | Dockerfile lint | hadolint (runs in CI only) |
 
-`ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. The `caddygen` Go tests (`cd caddy/caddygen && go test ./...`) are not in CI but should pass after caddygen changes. markdownlint is **not** run in CI.
+CI provisions uv via `astral-sh/setup-uv@v8.2.0` (there is no moving `v8` major tag — pin the exact version), then runs the commands above through `uvx` / `uv run`.
 
-CI **runs pytest** (the `Backend pytest` job runs `pytest tests/ -q`) — a test failure turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
+`uvx ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. The `caddygen` Go tests (`cd caddy/caddygen && go test ./...`) are not in CI but should pass after caddygen changes. markdownlint is **not** run in CI.
+
+CI **runs pytest** (the `Backend pytest` job runs `uv run pytest tests/ -q` after `uv sync --frozen`) — a test failure turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
 
 ## Git Workflow
 

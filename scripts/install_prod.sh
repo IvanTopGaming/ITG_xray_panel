@@ -1,13 +1,4 @@
 #!/bin/bash
-# Bootstrap an ITG Xray Panel production deployment.
-#
-# Downloads the prod docker-compose, Caddy config and .env template, then
-# generates a fresh .env with strong random secrets on first run. Existing
-# .env is preserved — re-running just refreshes the supporting files.
-#
-# Bot configuration (token, admin IDs, YooKassa keys, timezone) lives in the
-# panel UI now — no YAML required. The bot service token is the only thing
-# you write back to .env; everything else is set under Bot → Settings.
 
 set -e
 
@@ -50,9 +41,6 @@ else
     PANEL_SECRET_PATH=$(gen_secret 12)
     SECRET_KEY=$(gen_secret 48)
     PANEL_ADMIN_PASSWORD=$(gen_secret 16)
-    # Derive .env from the freshly downloaded .env.example so image pins always
-    # track the current release. Inject the random secrets and resolve the two
-    # external images whose .env.example placeholder is a literal vX.Y.Z.
     sed \
         -e "s|change-this-secret-path|$PANEL_SECRET_PATH|" \
         -e "s|change-this-super-long-random-secret|$SECRET_KEY|" \

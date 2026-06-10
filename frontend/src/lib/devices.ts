@@ -1,5 +1,3 @@
-// Device tracking helpers for displaying ClientDevice rows in the admin UI.
-
 import { formatDate } from './datetime';
 
 export function deviceIcon(os: string): string {

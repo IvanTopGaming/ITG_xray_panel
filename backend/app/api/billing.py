@@ -1,10 +1,8 @@
-"""Billing endpoints. Checkout: bot service token. Webhook: status re-verified against YooKassa."""
-
 import logging
 
 from flask import Blueprint, jsonify, request
 
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models import Payment
 from app.services import billing, bot_events
 from app.utils import bot_service_token_required
@@ -29,8 +27,6 @@ def checkout():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
-        # Split SQLite-contention from YooKassa-unreachable so the bot can
-        # show a retry hint instead of "tariff unavailable for renewal".
         from sqlalchemy.exc import OperationalError as _SAOperationalError
 
         if isinstance(exc, _SAOperationalError) and "database is locked" in str(exc.orig or ""):
@@ -42,12 +38,30 @@ def checkout():
 
 
 @bp.route("/billing/yookassa/webhook", methods=["POST"])
+@limiter.limit("60 per minute")
 def yookassa_webhook():
     body = request.get_json(silent=True) or {}
     event = body.get("event")
     obj = body.get("object") or {}
+    if not event:
+        return jsonify({"error": "invalid_request"}), 400
+
+    if str(event).startswith("refund."):
+        original_yk_id = obj.get("payment_id")
+        if not original_yk_id:
+            return jsonify({"error": "invalid_request"}), 400
+        refunded_payment = Payment.query.filter_by(yookassa_id=original_yk_id).first()
+        if refunded_payment is None:
+            logger.info("yookassa_webhook: refund for unknown payment yk=%s", original_yk_id)
+            return jsonify({"ok": True}), 200
+        try:
+            billing.handle_refund(refunded_payment)
+        except Exception:
+            logger.exception("yookassa_webhook: refund handler crashed yk=%s", original_yk_id)
+        return jsonify({"ok": True}), 200
+
     yk_id = obj.get("id")
-    if not event or not yk_id:
+    if not yk_id:
         return jsonify({"error": "invalid_request"}), 400
 
     payment = Payment.query.filter_by(yookassa_id=yk_id).first()
@@ -55,10 +69,6 @@ def yookassa_webhook():
         logger.info("yookassa_webhook: unknown payment yk=%s", yk_id)
         return jsonify({"ok": True}), 200
 
-    # YooKassa webhooks carry no signature, so the body is only a trigger.
-    # Re-fetch the authoritative status before acting — a forged notification
-    # then provisions nothing. None means the lookup was unavailable; the poll
-    # cron retries the row, so we simply do nothing here.
     real_status = billing.fetch_remote_status(payment)
 
     try:

@@ -1,5 +1,3 @@
-"""Migration test: telegram_user.language_chosen is added by _ensure_schema_columns."""
-
 import os
 import sqlite3
 import tempfile
@@ -11,7 +9,7 @@ from db_migration import CURRENT_DB_VERSION, _ensure_schema_columns
 
 @pytest.fixture
 def telegram_user_pre_v11():
-    """Fresh SQLite with a v10-shaped telegram_user table (no language_chosen)."""
+
     fd, path = tempfile.mkstemp(suffix=".sqlite")
     os.close(fd)
     conn = sqlite3.connect(path)
@@ -51,7 +49,6 @@ def test_schema_patch_adds_language_chosen(telegram_user_pre_v11):
     after = {row[1] for row in cursor.fetchall()}
     assert "language_chosen" in after
 
-    # Existing rows default to 0 (false).
     cursor.execute("SELECT language_chosen FROM telegram_user WHERE telegram_id = 999")
     assert cursor.fetchone()[0] == 0
 
@@ -59,7 +56,7 @@ def test_schema_patch_adds_language_chosen(telegram_user_pre_v11):
 def test_schema_patch_idempotent(telegram_user_pre_v11):
     conn, cursor = telegram_user_pre_v11
     _ensure_schema_columns(cursor)
-    _ensure_schema_columns(cursor)  # second call must not raise
+    _ensure_schema_columns(cursor)
     conn.commit()
 
 

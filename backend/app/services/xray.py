@@ -4,6 +4,8 @@ import docker
 import subprocess
 import base64
 import binascii
+import hashlib
+import ipaddress
 import re
 import secrets
 import requests
@@ -189,17 +191,7 @@ def _extract_reason(output):
 
 
 def _validate_xray_config(candidate_path):
-    """Run `xray run -test` on the candidate config via the bundled xray binary.
 
-    Skips silently when the binary is absent (dev / CI / any environment without
-    the bundled validator). Fail-closed (raises ValueError) when the test rejects
-    the config.
-
-    A genuine `-test` is fast (~1s), but on a CPU-starved host (e.g. a concurrent
-    image build pegging the box) it can transiently exceed the wall-clock timeout.
-    A timeout is retried once before failing closed so transient contention does
-    not strand a legitimate change; a real reject still fails immediately.
-    """
     if not os.path.exists(XRAY_BIN):
         logger.warning("Config validation skipped — xray binary not bundled at %s", XRAY_BIN)
         return
@@ -354,7 +346,7 @@ def generate_reality_keys():
 
 
 def generate_reality_short_id():
-    # Xray REALITY accepts up to 16 hex chars, generate the maximum length by default.
+
     return secrets.token_hex(8)
 
 
@@ -429,7 +421,6 @@ def normalize_shadowsocks_2022_key(value, method):
     required_len = SS2022_METHOD_KEY_LENGTHS[normalized_method]
     allowed_lengths = {required_len}
     if required_len == 16:
-        # Xray's Go implementation accepts 32-byte keys for AES-128 methods.
         allowed_lengths.add(32)
     if len(decoded) not in allowed_lengths:
         return ""
@@ -582,6 +573,57 @@ def _normalize_fallback_dest(value):
     return f"{host}:{port}"
 
 
+_CERT_PATH_PREFIX = "/etc/xray/"
+
+
+def _host_is_internal(host):
+    h = (host or "").strip().lower()
+    if not h:
+        return True
+    ip = None
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        import socket
+
+        try:
+            ip = ipaddress.ip_address(socket.inet_aton(h))
+        except (OSError, ValueError):
+            ip = None
+    if ip is None:
+        return h == "localhost" or "." not in h or h.endswith((".local", ".internal", ".localhost"))
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+
+
+def _validate_reality_dest(value):
+    host, port = _parse_host_port(value, "REALITY dest")
+    if _host_is_internal(host):
+        raise ValueError("REALITY dest must be a public host:port")
+    return f"{host}:{port}"
+
+
+def _validate_cert_path(path, field_name):
+    p = str(path or "").strip()
+    if not p:
+        return p
+    real = os.path.realpath(p)
+    if real != "/etc/xray" and not real.startswith(_CERT_PATH_PREFIX):
+        raise ValueError(f"{field_name} must be a path under /etc/xray")
+    return p
+
+
+def _wg_peer_ip(client_id, used):
+
+    base = int.from_bytes(hashlib.sha256(str(client_id).encode()).digest()[:4], "big") % 65532
+    for probe in range(65532):
+        offset = 2 + ((base + probe) % 65532)
+        if offset not in used:
+            used.add(offset)
+            hi, lo = divmod(offset, 256)
+            return f"172.19.{hi}.{lo}/32"
+    return None
+
+
 def _build_stream_settings(settings_dict):
     protocol = str(settings_dict.get("protocol", "") or "").strip().lower()
     requested_network = settings_dict.get("network", "tcp")
@@ -591,7 +633,6 @@ def _build_stream_settings(settings_dict):
     }
 
     if protocol in ["socks", "http"]:
-        # SOCKS/HTTP inbounds in this panel are configured as plain TCP listeners with optional auth.
         stream["network"] = "tcp"
         stream["security"] = "none"
     elif protocol == "shadowsocks" and stream["security"] not in ["none", "tls"]:
@@ -640,8 +681,8 @@ def _build_stream_settings(settings_dict):
     if stream["security"] == "tls":
         tls_server_name = str(settings_dict.get("tlsServerName", "") or "").strip()
         raw_tls_alpn = settings_dict.get("tlsAlpn", "")
-        tls_cert_file = str(settings_dict.get("tlsCertFile", "") or "").strip()
-        tls_key_file = str(settings_dict.get("tlsKeyFile", "") or "").strip()
+        tls_cert_file = _validate_cert_path(settings_dict.get("tlsCertFile", ""), "TLS certificate file")
+        tls_key_file = _validate_cert_path(settings_dict.get("tlsKeyFile", ""), "TLS key file")
         tls_utls_fingerprint = str(settings_dict.get("tlsUTLSFingerprint", "") or "").strip()
 
         if bool(tls_cert_file) != bool(tls_key_file):
@@ -673,7 +714,6 @@ def _build_stream_settings(settings_dict):
                 }
             ]
         if tls_utls_fingerprint:
-            # Stored for client config/link generation, not passed into Xray core config.
             tls_settings["_utlsFingerprint"] = tls_utls_fingerprint
         if tls_settings:
             stream["tlsSettings"] = tls_settings
@@ -705,7 +745,7 @@ def _build_stream_settings(settings_dict):
 
         stream["realitySettings"] = {
             "show": False,
-            "dest": settings_dict.get("realityDest", "www.google.com:443"),
+            "dest": _validate_reality_dest(settings_dict.get("realityDest", "www.google.com:443")),
             "xver": 0,
             "serverNames": [settings_dict.get("realitySNI", "www.google.com")],
             "privateKey": pk,
@@ -969,18 +1009,19 @@ def generate_config_file(validate=True):
                 elif ib.protocol == "wireguard":
                     secret_key = stream_settings.get("wgSecretKey", "")
                     peers = []
-                    ip_suffix = 2
+                    used_wg_ips = set()
                     for c in ib.clients:
                         if c.enable:
                             pub_key = _derive_wg_pubkey(c.id)
                             if pub_key:
-                                peers.append(
-                                    {
-                                        "publicKey": pub_key,
-                                        "allowedIPs": [f"172.19.0.{ip_suffix}/32"],
-                                    }
-                                )
-                                ip_suffix += 1
+                                allowed_ip = _wg_peer_ip(c.id, used_wg_ips)
+                                if allowed_ip:
+                                    peers.append(
+                                        {
+                                            "publicKey": pub_key,
+                                            "allowedIPs": [allowed_ip],
+                                        }
+                                    )
                     settings = {
                         "secretKey": secret_key,
                         "peers": peers,

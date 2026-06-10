@@ -1,9 +1,3 @@
-"""In-memory cache of the bot's last self-reported version.
-
-Populated by the X-Bot-Version header on the bot's runtime-config poll.
-In-memory is sufficient: on a backend restart the next poll (<=60s) repopulates it.
-"""
-
 import time
 
 _STATE = {"version": None, "reported_at": None}

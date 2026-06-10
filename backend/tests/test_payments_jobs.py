@@ -86,14 +86,12 @@ def test_poll_marks_cancelled(app, tariff):
         poll_pending_payments()
     with app.app_context():
         assert db.session.get(Payment, pid).status == "cancelled"
-    # The publish call lives in app.jobs.payments — check that name first; fall back to billing's
+
     assert (mock_publish_local.call_args or mock_publish.call_args).args[0] == "payment_cancelled"
 
 
 def test_poll_cancel_event_carries_chat_coords(app, tariff):
-    """When the poll cron flips a payment to cancelled it must include
-    chat_id/message_id in the payload — same as the webhook path — so the
-    consumer can delete the stale checkout bubble."""
+
     pid = _insert_pending(app, tariff)
     with app.app_context():
         p = db.session.get(Payment, pid)
@@ -157,10 +155,73 @@ def test_poll_swallows_individual_failures(app, tariff):
         patch("app.services.billing.bot_events.publish"),
     ):
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
-        poll_pending_payments()  # must not raise
+        poll_pending_payments()
     with app.app_context():
         assert db.session.get(Payment, pid_a).status == "pending"
         assert db.session.get(Payment, pid_b).status == "succeeded"
+
+
+def _insert_succeeded(app, tariff_id, age_days=1, yk_id="yk-succ-1"):
+    with app.app_context():
+        p = Payment(
+            yookassa_id=yk_id,
+            telegram_id=42,
+            tariff_id=tariff_id,
+            tariff_snapshot={"name": "x", "price_rub": 150, "period_days": 30, "items": []},
+            amount_rub=150,
+            status="succeeded",
+            metadata_json={"lang": "ru"},
+        )
+        db.session.add(p)
+        db.session.flush()
+        p.created_at = dt.datetime.utcnow() - dt.timedelta(days=age_days)
+        db.session.commit()
+        return p.id
+
+
+def test_reconcile_revokes_refunded(app, tariff):
+    pid = _insert_succeeded(app, tariff)
+    from app.jobs.payments import reconcile_refunds
+
+    with (
+        app.app_context(),
+        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("app.services.billing.bot_events.publish") as mock_publish,
+    ):
+        mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="150.00"))
+        reconcile_refunds()
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "refunded"
+    assert mock_publish.call_args.args[0] == "payment_refunded"
+
+
+def test_reconcile_ignores_unrefunded(app, tariff):
+    pid = _insert_succeeded(app, tariff)
+    from app.jobs.payments import reconcile_refunds
+
+    with (
+        app.app_context(),
+        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
+    ):
+        mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="0.00"))
+        reconcile_refunds()
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "succeeded"
+
+
+def test_reconcile_skips_old_succeeded(app, tariff):
+    pid = _insert_succeeded(app, tariff, age_days=31)
+    from app.jobs.payments import reconcile_refunds
+
+    with (
+        app.app_context(),
+        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
+    ):
+        mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="150.00"))
+        reconcile_refunds()
+    mock_find.assert_not_called()
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "succeeded"
 
 
 def test_cleanup_cancels_stale_pending(app, tariff):
@@ -173,9 +234,7 @@ def test_cleanup_cancels_stale_pending(app, tariff):
 
 
 def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
-    """When the 24h cleanup cancels a stuck pending payment the user must
-    be told via payment_cancelled — otherwise they're stuck staring at
-    a 'pay here' bubble that silently became a dead link."""
+
     pid_a = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-stuck-a")
     pid_b = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-stuck-b")
     with app.app_context():

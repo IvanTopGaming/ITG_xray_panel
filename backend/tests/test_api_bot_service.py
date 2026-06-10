@@ -1,5 +1,3 @@
-"""Tests for /api/bot-service/* endpoints (bot-facing, service-token auth)."""
-
 import pytest
 
 from app.models import BotText, SystemSetting, Tariff, TelegramUser
@@ -44,7 +42,7 @@ def test_get_texts_returns_only_requested_lang(app_with_service_api, db, client,
     body = resp.get_json()
     assert set(body["texts"].keys()) == {"welcome.title", "menu.keys"}
     assert body["texts"]["welcome.title"] == "Привет"
-    assert body["version"] > 0  # epoch from latest updated_at
+    assert body["version"] > 0
 
 
 def test_get_texts_requires_token(app_with_service_api, db, client):
@@ -87,14 +85,14 @@ def test_upsert_user_updates_existing(app_with_service_api, db, client, service_
     )
     assert resp.status_code == 200
     body = resp.get_json()
-    # username refreshed
+
     assert body["username"] == "new"
-    # but the existing language preference is preserved (NOT overwritten by language_code)
+
     assert body["language"] == "en"
 
 
 def test_upsert_user_defaults_language_for_unknown_code(app_with_service_api, db, client, service_headers):
-    """Telegram language_code 'fr' is not in our supported set — fallback to 'ru'."""
+
     resp = client.post(
         "/api/bot-service/users",
         headers=service_headers,
@@ -106,7 +104,7 @@ def test_upsert_user_defaults_language_for_unknown_code(app_with_service_api, db
 
 
 def test_upsert_user_normalizes_ru_dialects(app_with_service_api, db, client, service_headers):
-    """language_code 'ru-RU' and 'ru' both map to 'ru'."""
+
     resp = client.post(
         "/api/bot-service/users",
         headers=service_headers,
@@ -134,7 +132,7 @@ def test_upsert_user_requires_token(app_with_service_api, db, client):
 
 
 def test_get_user_state_brand_new_user(app_with_service_api, db, client, service_headers):
-    """Unknown telegram_id → trial available, no clients."""
+
     db.session.add(Tariff(name="Trial", is_trial=True, enabled=True, price_rub=0, period_days=1))
     db.session.commit()
     resp = client.get("/api/bot-service/users/9999/state", headers=service_headers)

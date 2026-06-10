@@ -1,5 +1,3 @@
-"""Read the bot's own version from the bundled versions.json (build-time)."""
-
 import json
 import os
 
