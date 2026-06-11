@@ -454,6 +454,76 @@ class TestAddUser:
         assert "UUID" in resp.get_json()["error"]
 
 
+class TestVlessFlowTransportCompat:
+    def _make_vless_inbound(self, tag, port, network, security):
+        ib = Inbound(
+            tag=tag,
+            port=port,
+            protocol="vless",
+            stream_settings=json.dumps({"network": network, "security": security}),
+        )
+        db.session.add(ib)
+        db.session.commit()
+        return ib
+
+    def test_add_user_default_flow_empty_on_xhttp(self, app, client, auth_headers):
+        self._make_vless_inbound("fc-xh", 8201, "xhttp", "tls")
+        resp = client.post("/api/inbounds/fc-xh/users", headers=auth_headers, json={"email": "u1"})
+        assert resp.status_code == 201
+        assert resp.get_json()["flow"] == ""
+
+    def test_add_user_default_flow_vision_on_tcp_reality(self, app, client, auth_headers):
+        self._make_vless_inbound("fc-tcp", 8202, "tcp", "reality")
+        resp = client.post("/api/inbounds/fc-tcp/users", headers=auth_headers, json={"email": "u1"})
+        assert resp.status_code == 201
+        assert resp.get_json()["flow"] == "xtls-rprx-vision"
+
+    def test_add_user_explicit_vision_on_xhttp_is_cleared(self, app, client, auth_headers):
+        self._make_vless_inbound("fc-xh2", 8203, "xhttp", "tls")
+        resp = client.post(
+            "/api/inbounds/fc-xh2/users",
+            headers=auth_headers,
+            json={"email": "u1", "flow": "xtls-rprx-vision"},
+        )
+        assert resp.status_code == 201
+        assert resp.get_json()["flow"] == ""
+        assert Client.query.filter_by(inbound_tag="fc-xh2", email="u1").first().flow == ""
+
+    def test_update_user_vision_on_ws_is_cleared(self, app, client, auth_headers):
+        self._make_vless_inbound("fc-ws", 8204, "ws", "tls")
+        _make_client(inbound_tag="fc-ws", email="u1", flow="")
+        resp = client.put(
+            "/api/inbounds/fc-ws/users",
+            headers=auth_headers,
+            json={"old_email": "u1", "flow": "xtls-rprx-vision"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["flow"] == ""
+        assert Client.query.filter_by(inbound_tag="fc-ws", email="u1").first().flow == ""
+
+    def test_update_user_vision_on_tcp_tls_is_kept(self, app, client, auth_headers):
+        self._make_vless_inbound("fc-tls", 8205, "tcp", "tls")
+        _make_client(inbound_tag="fc-tls", email="u1", flow="")
+        resp = client.put(
+            "/api/inbounds/fc-tls/users",
+            headers=auth_headers,
+            json={"old_email": "u1", "flow": "xtls-rprx-vision"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["flow"] == "xtls-rprx-vision"
+
+    def test_update_user_legacy_vision_on_xhttp_normalized_on_save(self, app, client, auth_headers):
+        self._make_vless_inbound("fc-legacy", 8206, "xhttp", "tls")
+        _make_client(inbound_tag="fc-legacy", email="u1", flow="xtls-rprx-vision")
+        resp = client.put(
+            "/api/inbounds/fc-legacy/users",
+            headers=auth_headers,
+            json={"old_email": "u1", "limit_bytes": 1024},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["flow"] == ""
+
+
 class TestUpdateUser:
     def test_update_email_and_limit(self, app, client, auth_headers):
         _make_inbound(tag="ib-upd", port=3001)

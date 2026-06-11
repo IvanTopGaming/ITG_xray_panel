@@ -59,6 +59,13 @@ function appendPathHostParams(
   }
 }
 
+export function supportsVlessFlow(inbound: Inbound): boolean {
+  if (inbound.protocol !== 'vless') return false;
+  const network = inbound.streamSettings?.network || 'tcp';
+  const security = inbound.streamSettings?.security || 'none';
+  return network === 'tcp' && (security === 'tls' || security === 'reality');
+}
+
 export function generateLink(
   inbound: Inbound,
   client: Client,
@@ -130,7 +137,7 @@ export function generateLink(
       if (tlsFp) params.set('fp', tlsFp);
     }
 
-    if (client.flow) params.set('flow', client.flow);
+    if (client.flow && supportsVlessFlow(inbound)) params.set('flow', client.flow);
     return `${protocol}://${encodeURIComponent(uuid)}@${host}:${port}?${params.toString()}#${name}`;
   }
 

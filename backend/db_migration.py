@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 19
+CURRENT_DB_VERSION = 20
 CURRENT_BOT_TEXTS_VERSION = 17
 
 
@@ -181,6 +181,32 @@ def _ensure_stats_indexes(cursor: sqlite3.Cursor) -> int:
         ),
     ]
     for table_name, index_name, sql in composite_indexes:
+        if not _table_exists(cursor, table_name):
+            continue
+        already = _index_exists(cursor, index_name)
+        cursor.execute(sql)
+        if not already:
+            created += 1
+    return created
+
+
+def _ensure_stats_cover_indexes(cursor: sqlite3.Cursor) -> int:
+    created = 0
+    cover_indexes = [
+        (
+            "traffic_snapshot",
+            "ix_ts_type_bucket_cover",
+            "CREATE INDEX IF NOT EXISTS ix_ts_type_bucket_cover "
+            "ON traffic_snapshot (entity_type, bucket, entity_id, inbound_tag, up, down)",
+        ),
+        (
+            "domain_stat",
+            "ix_ds_date_domain_cover",
+            "CREATE INDEX IF NOT EXISTS ix_ds_date_domain_cover "
+            "ON domain_stat (date, domain, client_email, inbound_tag, hit_count)",
+        ),
+    ]
+    for table_name, index_name, sql in cover_indexes:
         if not _table_exists(cursor, table_name):
             continue
         already = _index_exists(cursor, index_name)
@@ -741,6 +767,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
 
         stats_tables = _ensure_stats_tables(cursor)
         stats_indexes = _ensure_stats_indexes(cursor)
+        stats_cover_indexes = _ensure_stats_cover_indexes(cursor)
         linked_panel_table = _ensure_linked_panel_table(cursor)
         federation_config_table = _ensure_federation_config_table(cursor)
         client_device_table = _ensure_client_device_table(cursor)
@@ -764,6 +791,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "new_version": CURRENT_DB_VERSION,
             "stats_tables_created": stats_tables,
             "stats_indexes_created": stats_indexes,
+            "stats_cover_indexes_created": stats_cover_indexes,
             "linked_panel_table_created": linked_panel_table,
             "federation_config_table_created": federation_config_table,
             "client_device_table_created": client_device_table,
@@ -781,6 +809,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         changed = (
             stats_tables > 0
             or stats_indexes > 0
+            or stats_cover_indexes > 0
             or linked_panel_table > 0
             or federation_config_table > 0
             or client_device_table > 0

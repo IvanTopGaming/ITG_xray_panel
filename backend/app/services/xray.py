@@ -386,6 +386,22 @@ def normalize_packet_network(value, default="tcp"):
     return default
 
 
+def stream_supports_vless_flow(stream):
+    if not isinstance(stream, dict):
+        return False
+    return stream.get("network") == "tcp" and stream.get("security") in ("tls", "reality")
+
+
+def inbound_supports_vless_flow(inbound):
+    if getattr(inbound, "protocol", None) != "vless":
+        return False
+    try:
+        stream = json.loads(inbound.stream_settings or "{}")
+    except (TypeError, ValueError):
+        return False
+    return stream_supports_vless_flow(stream)
+
+
 def is_shadowsocks_2022_method(method):
     normalized = str(method or "").strip().lower()
     return normalized in SS2022_METHOD_KEY_LENGTHS
@@ -817,6 +833,7 @@ def _build_stream_settings(settings_dict):
 
 
 def generate_config_file(validate=True):
+    t0 = time.monotonic()
     lock = FileLock(LOCK_PATH, timeout=5)
     try:
         with lock:
@@ -956,11 +973,12 @@ def generate_config_file(validate=True):
                 settings = {}
 
                 if ib.protocol in ["vless", "vmess"]:
+                    flow_allowed = ib.protocol == "vless" and stream_supports_vless_flow(stream_settings)
                     active_clients = [
                         {
                             "id": c.id,
                             "email": build_runtime_email(c.inbound_tag, c.email),
-                            "flow": c.flow if c.flow else "",
+                            "flow": c.flow if (c.flow and flow_allowed) else "",
                             "level": 0,
                         }
                         for c in ib.clients
@@ -1215,5 +1233,12 @@ def generate_config_file(validate=True):
                         os.remove(candidate)
                     except OSError:
                         pass
+        logger.info(
+            "config regenerated in %.0f ms (%d inbounds, %d outbounds, validate=%s)",
+            (time.monotonic() - t0) * 1000,
+            len(inbounds_json) - 1,
+            len(outbounds_json),
+            validate,
+        )
     except Timeout:
         raise Exception("Could not acquire lock")

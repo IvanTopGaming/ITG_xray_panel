@@ -566,3 +566,57 @@ class TestDomainUsers:
         assert users[0]["hit_count"] == 80
         assert "percent" in users[0]
         assert users[1]["email"] == "bob@test"
+
+
+class TestTopDomainsCoveringIndex:
+    def test_models_define_cover_indexes(self, app):
+        from app.models import DomainStat, TrafficSnapshot
+
+        ds_indexes = {ix.name: [c.name for c in ix.columns] for ix in DomainStat.__table__.indexes}
+        ts_indexes = {ix.name: [c.name for c in ix.columns] for ix in TrafficSnapshot.__table__.indexes}
+
+        assert ds_indexes.get("ix_ds_date_domain_cover") == [
+            "date",
+            "domain",
+            "client_email",
+            "inbound_tag",
+            "hit_count",
+        ]
+        assert ts_indexes.get("ix_ts_type_bucket_cover") == [
+            "entity_type",
+            "bucket",
+            "entity_id",
+            "inbound_tag",
+            "up",
+            "down",
+        ]
+
+    def test_top_domains_query_uses_covering_index(self, app, client, admin_token):
+        from sqlalchemy import text
+
+        from app.api.statistics import _top_domains_sql
+        from app.extensions import db
+
+        _seed_domain_stat("example.com", "2026-06-01", 5)
+
+        sql, params = _top_domains_sql("2026-05-01", None, "", "")
+        params["limit"] = 10
+        plan_rows = db.session.execute(text("EXPLAIN QUERY PLAN " + sql), params).fetchall()
+        plan = " ".join(str(r) for r in plan_rows)
+
+        assert "ix_ds_date_domain_cover" in plan
+        assert "COVERING INDEX" in plan
+
+    def test_overview_and_domains_endpoints_still_work(self, app, client, admin_token):
+        _seed_domain_stat("alpha.com", "2026-06-01", 50)
+        _seed_domain_stat("beta.com", "2026-06-01", 30)
+
+        resp = client.get("/api/stats/domains?period=365d", headers=_auth(admin_token))
+        assert resp.status_code == 200
+        domains = [d["domain"] for d in resp.get_json()["domains"]]
+        assert domains[:2] == ["alpha.com", "beta.com"]
+
+        resp = client.get("/api/stats/overview?period=365d", headers=_auth(admin_token))
+        assert resp.status_code == 200
+        top = [d["domain"] for d in resp.get_json()["top_domains"]]
+        assert "alpha.com" in top

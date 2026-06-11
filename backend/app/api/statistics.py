@@ -1,7 +1,7 @@
 import json
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func, literal_column
+from sqlalchemy import func, literal_column, text
 from datetime import datetime
 
 from app.extensions import db
@@ -77,6 +77,39 @@ def _granularity_seconds(period: str) -> int:
     return _granularity_for_duration(secs)
 
 
+def _top_domains_sql(since_date, until_date, email_filter="", tag_filter=""):
+
+    where = []
+    params = {}
+    if since_date:
+        where.append("date >= :since_date")
+        params["since_date"] = since_date
+    if until_date:
+        where.append("date <= :until_date")
+        params["until_date"] = until_date
+    if email_filter:
+        where.append("client_email = :email")
+        params["email"] = email_filter
+    if tag_filter:
+        where.append("inbound_tag = :tag")
+        params["tag"] = tag_filter
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = (
+        "SELECT domain, SUM(hit_count) AS hits "
+        "FROM domain_stat INDEXED BY ix_ds_date_domain_cover"
+        f"{where_sql} "
+        "GROUP BY domain ORDER BY hits DESC LIMIT :limit"
+    )
+    return sql, params
+
+
+def _top_domains(since_date, until_date, email_filter="", tag_filter="", limit=10):
+
+    sql, params = _top_domains_sql(since_date, until_date, email_filter, tag_filter)
+    params["limit"] = int(limit)
+    return db.session.execute(text(sql), params).all()
+
+
 @bp.get("/stats/overview")
 @token_required
 def get_overview():
@@ -148,16 +181,7 @@ def get_overview():
         reverse=True,
     )
 
-    domain_q = db.session.query(
-        DomainStat.domain,
-        func.sum(DomainStat.hit_count).label("hits"),
-    )
-    if since_date is not None:
-        domain_q = domain_q.filter(DomainStat.date >= since_date)
-    if until_date is not None:
-        domain_q = domain_q.filter(DomainStat.date <= until_date)
-    domain_q = domain_q.group_by(DomainStat.domain).order_by(func.sum(DomainStat.hit_count).desc()).limit(10)
-    top_domains = [{"domain": r.domain, "hit_count": r.hits} for r in domain_q.all()]
+    top_domains = [{"domain": r.domain, "hit_count": r.hits} for r in _top_domains(since_date, until_date)]
 
     return jsonify(
         {
@@ -242,20 +266,7 @@ def get_domains():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    q = db.session.query(
-        DomainStat.domain,
-        func.sum(DomainStat.hit_count).label("hits"),
-    )
-    if since_date:
-        q = q.filter(DomainStat.date >= since_date)
-    if until_date:
-        q = q.filter(DomainStat.date <= until_date)
-    if email_filter:
-        q = q.filter(DomainStat.client_email == email_filter)
-    if tag_filter:
-        q = q.filter(DomainStat.inbound_tag == tag_filter)
-
-    rows = q.group_by(DomainStat.domain).order_by(func.sum(DomainStat.hit_count).desc()).limit(limit).all()
+    rows = _top_domains(since_date, until_date, email_filter, tag_filter, limit)
 
     total = sum(r.hits for r in rows) or 1
     return jsonify(

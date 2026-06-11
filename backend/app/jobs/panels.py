@@ -22,12 +22,23 @@ def poll_linked_panels():
         try:
             client = FederationClient(url, token)
             data = client.snapshot()
+            ts = data.get("timestamp")
+            if ts and ts < 100_000_000_000:
+                ts *= 1000
+            ts = ts or int(time.time() * 1000)
             r = get_redis()
             if r:
                 r.setex(f"panel:{panel_id}:snapshot", 60, json.dumps(data))
                 r.setex(f"panel:{panel_id}:status", 120, "online")
-            return panel_id, "online", None, data.get("timestamp")
+                r.setex(f"panel:{panel_id}:last_poll", 300, str(ts))
+            return panel_id, "online", None, ts
         except Exception as exc:
+            r = get_redis()
+            if r:
+                try:
+                    r.setex(f"panel:{panel_id}:status", 120, "offline")
+                except Exception:
+                    pass
             return panel_id, "offline", str(exc)[:500], None
 
     jobs = []
@@ -36,21 +47,22 @@ def poll_linked_panels():
 
     pool.join()
 
+    dirty = False
     for job in jobs:
         panel_id, status, error, ts = job.value
         panel = db.session.get(LinkedPanel, panel_id)
         if panel is None:
             continue
-        old_status = panel.status
+        if panel.status == status and (panel.last_error or None) == (error or None):
+            continue
+        logger.info("panel %s: %s → %s", panel.name, panel.status, status)
         panel.status = status
         if status == "online":
-            if ts and ts < 100_000_000_000:
-                ts *= 1000
-            panel.last_poll = ts or int(time.time() * 1000)
+            panel.last_poll = ts
             panel.last_error = None
         else:
             panel.last_error = error
-        if old_status != status:
-            logger.info("panel %s: %s → %s", panel.name, old_status, status)
+        dirty = True
 
-    db.session.commit()
+    if dirty:
+        db.session.commit()

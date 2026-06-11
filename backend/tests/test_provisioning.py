@@ -36,6 +36,7 @@ def test_generate_email_includes_telegram_id_and_inbound():
     assert email.startswith("tg")
 
 
+import json as _json
 import time as _time
 import uuid as _uuid
 from unittest.mock import patch
@@ -43,7 +44,7 @@ from unittest.mock import patch
 import pytest
 
 from app.models import Client, Inbound, Tariff, TariffItem
-from app.services.provisioning import apply_tariff_for_user
+from app.services.provisioning import apply_tariff_for_user, provision_single_item
 
 
 @pytest.fixture
@@ -366,6 +367,124 @@ def test_provision_grpc_failure_falls_back_to_restart(app, db, basic_setup):
         apply_tariff_for_user(99, tariff, source="trial")
 
     assert mock_restart.call_count == 1
+
+
+def _flow_tariff(db):
+    inbound_xh = Inbound(
+        tag="XH-vless",
+        protocol="vless",
+        port=10010,
+        stream_settings=_json.dumps({"network": "xhttp", "security": "tls"}),
+    )
+    inbound_tcp = Inbound(
+        tag="TCPR-vless",
+        protocol="vless",
+        port=10011,
+        stream_settings=_json.dumps({"network": "tcp", "security": "reality"}),
+    )
+    db.session.add_all([inbound_xh, inbound_tcp])
+    db.session.flush()
+    tariff = Tariff(name="Flow", price_rub=100, period_days=30)
+    db.session.add(tariff)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="XH-vless", traffic_gb=0, sort_order=0))
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="TCPR-vless", traffic_gb=0, sort_order=1))
+    db.session.commit()
+    return tariff
+
+
+def test_apply_sets_flow_only_on_flow_compatible_inbounds(app, db):
+
+    tariff = _flow_tariff(db)
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(501, tariff, source="trial")
+
+    by_inbound = {c.inbound_tag: c for c in Client.query.filter_by(telegram_id=501).all()}
+    assert by_inbound["XH-vless"].flow == ""
+    assert by_inbound["TCPR-vless"].flow == "xtls-rprx-vision"
+
+
+def test_provision_single_item_no_flow_on_xhttp_inbound(app, db):
+
+    _flow_tariff(db)
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        provision_single_item(
+            telegram_id=502,
+            inbound_tag="XH-vless",
+            expiry_ms=int(_time.time() * 1000) + 86_400_000,
+            limit_bytes=0,
+        )
+
+    c = Client.query.filter_by(telegram_id=502, inbound_tag="XH-vless").first()
+    assert c is not None
+    assert c.flow == ""
+
+
+def test_provision_single_item_vision_on_tcp_reality_inbound(app, db):
+
+    _flow_tariff(db)
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        provision_single_item(
+            telegram_id=503,
+            inbound_tag="TCPR-vless",
+            expiry_ms=int(_time.time() * 1000) + 86_400_000,
+            limit_bytes=0,
+        )
+
+    c = Client.query.filter_by(telegram_id=503, inbound_tag="TCPR-vless").first()
+    assert c is not None
+    assert c.flow == "xtls-rprx-vision"
+
+
+def _federated_tariff(db):
+    inbound_local = Inbound(tag="LOC-vless", protocol="vless", port=10020, stream_settings="{}")
+    db.session.add(inbound_local)
+    db.session.flush()
+    tariff = Tariff(name="Fed", price_rub=200, period_days=30)
+    db.session.add(tariff)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="LOC-vless", traffic_gb=0, sort_order=0))
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="remote-vless", traffic_gb=0, sort_order=1, panel_id=7))
+    db.session.commit()
+    return tariff
+
+
+def test_apply_remote_provision_happens_before_local_writes(app, db):
+
+    tariff = _federated_tariff(db)
+    pending_at_call = []
+
+    def _spy(panel_id, telegram_id, inbound_tag, params):
+        pending_at_call.append((len(db.session.new), len(db.session.dirty)))
+        return {"status": "ok"}
+
+    with (
+        patch("app.services.panel_proxy.proxy_provision", side_effect=_spy),
+        patch("app.services.provisioning._sync_after_provision"),
+    ):
+        apply_tariff_for_user(601, tariff, source="trial")
+
+    assert pending_at_call == [(0, 0)]
+    assert Client.query.filter_by(telegram_id=601, inbound_tag="LOC-vless").count() == 1
+
+
+def test_apply_remote_failure_leaves_local_state_untouched(app, db):
+
+    tariff = _federated_tariff(db)
+
+    with (
+        patch("app.services.panel_proxy.proxy_provision", side_effect=RuntimeError("panel down")),
+        patch("app.services.provisioning._sync_after_provision"),
+        pytest.raises(RuntimeError),
+    ):
+        apply_tariff_for_user(602, tariff, source="admin_grant")
+
+    assert len(db.session.new) == 0
+    assert len(db.session.dirty) == 0
+    assert Client.query.filter_by(telegram_id=602).count() == 0
 
 
 def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):

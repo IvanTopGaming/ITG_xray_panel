@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
 import { Inbound, Client } from '@/lib/types';
+import { supportsVlessFlow } from '@/lib/protocols';
 import api from '@/lib/api';
 import { epochMsFromLocalDateTimeInput, formatDateTimeForLocalInput } from '@/lib/datetime';
 import { toast } from 'react-toastify';
@@ -44,6 +45,7 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
 
   const inboundDeviceLimit = inbound.device_limit ?? 0;
 
+  const flowSupported = supportsVlessFlow(inbound);
   const flow = useWatch({ control, name: 'flow' });
 
   const mutation = useMutation({
@@ -95,7 +97,7 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
       expiry_time,
       reset_day: Number(data.reset_day),
       enable: data.enable,
-      flow: data.flow,
+      flow: flowSupported ? data.flow : '',
       device_limit:
         data.device_limit === '' || data.device_limit === null || data.device_limit === undefined
           ? null
@@ -123,7 +125,7 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
         </Button>
       </div>
 
-      {inbound.protocol === 'vless' && (
+      {flowSupported && (
         <Select
           label="Flow"
           {...register('flow')}

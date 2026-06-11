@@ -124,6 +124,81 @@ def _browser_ua():
     }
 
 
+class TestShareLinkFlowCompat:
+    def test_drops_flow_on_xhttp_stream(self):
+        from app.api.subscription import _build_share_links
+
+        links = _build_share_links(
+            "example.com",
+            "vless",
+            443,
+            {"network": "xhttp", "security": "tls"},
+            TEST_UUID,
+            "xtls-rprx-vision",
+            "XH",
+        )
+        assert links
+        assert "flow=" not in links[0]
+
+    def test_keeps_flow_on_tcp_reality_stream(self):
+        from app.api.subscription import _build_share_links
+
+        links = _build_share_links(
+            "example.com",
+            "vless",
+            443,
+            json.loads(VLESS_STREAM),
+            TEST_UUID,
+            "xtls-rprx-vision",
+            "DE",
+        )
+        assert links
+        assert "flow=xtls-rprx-vision" in links[0]
+
+    def test_drops_flow_on_tcp_without_tls(self):
+        from app.api.subscription import _build_share_links
+
+        links = _build_share_links(
+            "example.com",
+            "vless",
+            443,
+            {"network": "tcp", "security": "none"},
+            TEST_UUID,
+            "xtls-rprx-vision",
+            "PLAIN",
+        )
+        assert links
+        assert "flow=" not in links[0]
+
+    def test_clash_proxy_drops_flow_on_xhttp_stream(self):
+        from app.api.subscription import _build_clash_proxy
+
+        node = _build_clash_proxy(
+            "XH",
+            "vless",
+            "example.com",
+            443,
+            {"network": "xhttp", "security": "tls"},
+            TEST_UUID,
+            "xtls-rprx-vision",
+        )
+        assert "flow" not in node
+
+    def test_singbox_outbound_drops_flow_on_xhttp_stream(self):
+        from app.api.subscription import _build_singbox_outbound
+
+        ob = _build_singbox_outbound(
+            "XH",
+            "vless",
+            "example.com",
+            443,
+            {"network": "xhttp", "security": "tls"},
+            TEST_UUID,
+            "xtls-rprx-vision",
+        )
+        assert "flow" not in ob
+
+
 class TestV2RaySubscription:
     def test_returns_base64_vless_link(self, client, seed_vless):
         with (

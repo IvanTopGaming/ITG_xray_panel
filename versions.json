@@ -1,6 +1,6 @@
 {
-  "backend": "2.2.2",
-  "frontend": "2.2.1",
+  "backend": "2.2.3",
+  "frontend": "2.2.2",
   "caddy": "1.1.1",
   "bot": "2.2.1",
   "xray_core_ref": "v26.3.27"

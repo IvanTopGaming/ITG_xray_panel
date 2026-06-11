@@ -1,5 +1,7 @@
+import logging
 import os
 import sqlite3
+import time
 
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
@@ -11,6 +13,9 @@ from sqlalchemy.engine import Engine
 
 db = SQLAlchemy()
 
+_sql_logger = logging.getLogger("app.sql")
+_SLOW_SQL_MS = float(os.getenv("BACKEND_SLOW_SQL_MS", "200"))
+
 
 @event.listens_for(Engine, "connect")
 def _sqlite_pragmas(dbapi_conn, _):
@@ -19,9 +24,28 @@ def _sqlite_pragmas(dbapi_conn, _):
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA synchronous=NORMAL")
-    cur.execute("PRAGMA busy_timeout=15000")
+    cur.execute("PRAGMA busy_timeout=5000")
     cur.execute("PRAGMA temp_store=MEMORY")
     cur.close()
+
+
+@event.listens_for(Engine, "before_cursor_execute")
+def _sql_timer_start(conn, cursor, statement, parameters, context, executemany):
+    conn.info.setdefault("_sql_t0", []).append(time.monotonic())
+
+
+@event.listens_for(Engine, "after_cursor_execute")
+def _sql_timer_stop(conn, cursor, statement, parameters, context, executemany):
+    stack = conn.info.get("_sql_t0")
+    if not stack:
+        return
+    dur_ms = (time.monotonic() - stack.pop()) * 1000
+    if dur_ms >= _SLOW_SQL_MS:
+        _sql_logger.warning(
+            "slow SQL %.0f ms%s: %s", dur_ms, " (executemany)" if executemany else "", " ".join(statement.split())[:300]
+        )
+    elif _sql_logger.isEnabledFor(logging.DEBUG):
+        _sql_logger.debug("SQL %.1f ms: %s", dur_ms, " ".join(statement.split())[:300])
 
 
 migrate = Migrate()

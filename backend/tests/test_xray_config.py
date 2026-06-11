@@ -367,6 +367,45 @@ class TestGenerateConfigFile:
         assert clients[0]["id"] == client_uuid
         assert clients[0]["flow"] == "xtls-rprx-vision"
 
+    def test_logs_regeneration_duration(self, caplog):
+        import logging as _logging
+
+        from app.services.xray import generate_config_file
+
+        self._seed_outbounds()
+
+        with caplog.at_level(_logging.INFO, logger="app.services.xray"):
+            generate_config_file()
+
+        msgs = [r.getMessage() for r in caplog.records if r.name == "app.services.xray"]
+        assert any("config regenerated" in m and "ms" in m for m in msgs)
+
+    def test_clears_incompatible_flow_in_generated_config(self):
+        from app.services.xray import generate_config_file
+
+        self._seed_outbounds()
+
+        stream = json.dumps({"network": "xhttp", "security": "none"})
+        ib = Inbound(tag="vless-xh", port=8443, protocol="vless", stream_settings=stream)
+        db.session.add(ib)
+        db.session.flush()
+
+        c = Client(
+            id=str(uuid.uuid4()),
+            email="legacy",
+            inbound_tag="vless-xh",
+            enable=True,
+            flow="xtls-rprx-vision",
+        )
+        db.session.add(c)
+        db.session.commit()
+
+        generate_config_file()
+        cfg = self._read_config()
+
+        xh_ib = [i for i in cfg["inbounds"] if i["tag"] == "vless-xh"][0]
+        assert xh_ib["settings"]["clients"][0]["flow"] == ""
+
     def test_strips_ui_only_keys(self):
 
         import base64

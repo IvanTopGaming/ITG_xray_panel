@@ -10,6 +10,7 @@ from flask import Blueprint, request, Response
 from app.extensions import limiter, db
 from app.models import Client, Inbound, SystemSetting, TelegramUser
 from app.services import sub_cache
+from app.services.xray import stream_supports_vless_flow
 
 
 bp = Blueprint("subscription", __name__)
@@ -170,7 +171,7 @@ def _build_share_links(host, protocol, port, stream, client_id, flow, label) -> 
             _add_reality(query)
         elif security == "tls":
             _add_tls(query)
-        if flow:
+        if flow and stream_supports_vless_flow(stream):
             query["flow"] = flow
         return [f"vless://{uuid}@{host}:{port}?{urlencode(query)}#{remark}"]
 
@@ -965,7 +966,7 @@ def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
             _reality(node)
         elif security == "tls":
             _tls(node)
-        if flow:
+        if flow and stream_supports_vless_flow(stream):
             node["flow"] = flow
     elif protocol == "vmess":
         node.update(
@@ -1037,7 +1038,7 @@ def _build_singbox_outbound(tag, protocol, host, port, stream, client_id, flow):
 
     if protocol == "vless":
         ob.update({"uuid": client_id, "packet_encoding": "xudp"})
-        if flow:
+        if flow and stream_supports_vless_flow(stream):
             ob["flow"] = flow
         if security == "reality":
             ob["tls"] = _reality()

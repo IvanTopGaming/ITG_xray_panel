@@ -126,6 +126,7 @@ class TrafficSnapshot(db.Model):
         db.Index("ix_ts_bucket", "bucket"),
         db.Index("ix_ts_entity", "entity_type", "entity_id", "inbound_tag"),
         db.Index("ix_ts_type_bucket", "entity_type", "bucket"),
+        db.Index("ix_ts_type_bucket_cover", "entity_type", "bucket", "entity_id", "inbound_tag", "up", "down"),
     )
 
 
@@ -180,6 +181,7 @@ class DomainStat(db.Model):
         db.Index("ix_ds_date", "date"),
         db.Index("ix_ds_domain", "domain"),
         db.Index("ix_ds_date_domain", "date", "domain"),
+        db.Index("ix_ds_date_domain_cover", "date", "domain", "client_email", "inbound_tag", "hit_count"),
     )
 
 

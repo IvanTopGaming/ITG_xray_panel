@@ -87,9 +87,15 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-}
       - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
       - DOCKER_HOST=tcp://socket-proxy:2375
+      - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
     env_file:
       - .env
-    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 30 "app:create_app()"
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "app:create_app()"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     healthcheck:
       test:
         [

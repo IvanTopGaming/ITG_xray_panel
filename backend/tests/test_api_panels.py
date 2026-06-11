@@ -126,6 +126,44 @@ def test_list_panels_requires_auth(client):
     assert resp.status_code == 401
 
 
+def test_list_panels_overlays_live_status_from_redis(client, admin_token, db):
+    panel = _make_panel(db)
+    panel.status = "online"
+    panel.last_poll = 111
+    db.session.commit()
+
+    fake = MagicMock()
+    fake.get.side_effect = lambda key: {
+        f"panel:{panel.id}:status": b"offline",
+        f"panel:{panel.id}:last_poll": b"1781200000000",
+    }.get(key)
+
+    with patch("app.api.panels.get_redis", return_value=fake):
+        resp = client.get("/api/panels", headers=_auth(admin_token))
+
+    assert resp.status_code == 200
+    item = next(p for p in resp.get_json() if p["id"] == panel.id)
+    assert item["status"] == "offline"
+    assert item["last_poll"] == 1781200000000
+
+
+def test_list_panels_keeps_db_values_when_redis_empty(client, admin_token, db):
+    panel = _make_panel(db)
+    panel.status = "online"
+    panel.last_poll = 111
+    db.session.commit()
+
+    fake = MagicMock()
+    fake.get.return_value = None
+
+    with patch("app.api.panels.get_redis", return_value=fake):
+        resp = client.get("/api/panels", headers=_auth(admin_token))
+
+    item = next(p for p in resp.get_json() if p["id"] == panel.id)
+    assert item["status"] == "online"
+    assert item["last_poll"] == 111
+
+
 @patch("app.api.panels.requests.post")
 def test_create_panel_success(mock_post, client, admin_token, db):
     mock_resp = MagicMock()

@@ -14,6 +14,7 @@ from grpc.experimental import gevent as grpc_gevent
 from db_migration import migrate_sqlite_db
 
 from .extensions import db, migrate, scheduler, limiter
+from .observability import setup_logging, init_request_logging, run_job_logged
 from .models import Admin, Outbound
 from .services.xray import generate_config_file
 from .services.stats import sync_traffic_job, check_limits_job, parse_access_logs, cleanup_stats_job
@@ -83,9 +84,9 @@ def _cors_origins():
 def _ensure_scheduler_job(job_id, func, seconds):
     if scheduler.get_job(job_id) is None:
 
-        def _wrapped(_func=func):
+        def _wrapped(_func=func, _job_id=job_id, _seconds=seconds):
             with scheduler.app.app_context():
-                _func()
+                run_job_logged(_job_id, _seconds, _func)
 
         scheduler.add_job(id=job_id, func=_wrapped, trigger="interval", seconds=seconds)
 
@@ -137,7 +138,9 @@ def _resolve_admin_bootstrap_credentials(panel_host):
 
 
 def create_app():
+    setup_logging()
     app = Flask(__name__)
+    init_request_logging(app)
 
     db_folder = os.path.join(os.getcwd(), "db")
     os.makedirs(db_folder, exist_ok=True)

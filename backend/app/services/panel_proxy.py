@@ -21,140 +21,79 @@ class FederationClient:
         self._session.headers["X-Federation-Token"] = self.token
         self._session.max_redirects = 0
 
-    def snapshot(self) -> dict:
-
-        resp = self._session.get(f"{self.base_url}/api/federation/snapshot", timeout=(2, 5))
-        resp.raise_for_status()
+    def _call(self, verb: str, path: str, **kwargs) -> dict:
+        t0 = time.monotonic()
+        try:
+            resp = getattr(self._session, verb)(f"{self.base_url}{path}", **kwargs)
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.warning(
+                "federation %s %s failed in %.0f ms: %s",
+                verb.upper(),
+                path,
+                (time.monotonic() - t0) * 1000,
+                exc,
+            )
+            raise
+        logger.debug(
+            "federation %s %s -> HTTP %s in %.0f ms",
+            verb.upper(),
+            path,
+            resp.status_code,
+            (time.monotonic() - t0) * 1000,
+        )
         return resp.json()
+
+    def snapshot(self) -> dict:
+        return self._call("get", "/api/federation/snapshot", timeout=(2, 5))
 
     def create_inbound(self, payload: dict) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/inbounds",
-            json=payload,
-            timeout=8,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("post", "/api/inbounds", json=payload, timeout=8)
 
     def update_inbound(self, tag: str, payload: dict) -> dict:
-
-        resp = self._session.put(
-            f"{self.base_url}/api/inbounds/{tag}",
-            json=payload,
-            timeout=8,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("put", f"/api/inbounds/{tag}", json=payload, timeout=8)
 
     def delete_inbound(self, tag: str) -> dict:
-
-        resp = self._session.delete(
-            f"{self.base_url}/api/inbounds/{tag}",
-            timeout=8,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("delete", f"/api/inbounds/{tag}", timeout=8)
 
     def create_user(self, tag: str, user_data: dict) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/inbounds/{tag}/users",
-            json=user_data,
-            timeout=8,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("post", f"/api/inbounds/{tag}/users", json=user_data, timeout=8)
 
     def update_user(self, tag: str, user_data: dict) -> dict:
-
-        resp = self._session.put(
-            f"{self.base_url}/api/inbounds/{tag}/users",
-            json=user_data,
-            timeout=8,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("put", f"/api/inbounds/{tag}/users", json=user_data, timeout=8)
 
     def delete_user(self, tag: str, email: str) -> dict:
-
-        resp = self._session.delete(
-            f"{self.base_url}/api/inbounds/{tag}/users",
-            params={"email": email},
-            timeout=8,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("delete", f"/api/inbounds/{tag}/users", params={"email": email}, timeout=8)
 
     def bulk_delete_users(self, users: list) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/users/bulk-delete",
-            json={"users": users},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("post", "/api/users/bulk-delete", json={"users": users}, timeout=30)
 
     def bulk_enable_users(self, users: list, enable: bool) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/users/bulk-enable",
-            json={"users": users, "enable": enable},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("post", "/api/users/bulk-enable", json={"users": users, "enable": enable}, timeout=30)
 
     def bulk_adjust_days(self, users: list, days: int, mode: str) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/users/bulk-adjust-days",
-            json={"users": users, "days": days, "mode": mode},
-            timeout=30,
+        return self._call(
+            "post", "/api/users/bulk-adjust-days", json={"users": users, "days": days, "mode": mode}, timeout=30
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def bulk_adjust_traffic(self, users: list, gb: int, mode: str) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/users/bulk-adjust-traffic",
-            json={"users": users, "gb": gb, "mode": mode},
-            timeout=30,
+        return self._call(
+            "post", "/api/users/bulk-adjust-traffic", json={"users": users, "gb": gb, "mode": mode}, timeout=30
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def reset_traffic(self, users: list) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/users/reset-traffic",
-            json={"users": users},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("post", "/api/users/reset-traffic", json={"users": users}, timeout=30)
 
     def bulk_set_flow(self, users: list, flow: str) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/users/bulk-set-flow",
-            json={"users": users, "flow": flow},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._call("post", "/api/users/bulk-set-flow", json={"users": users, "flow": flow}, timeout=30)
 
     def provision(self, telegram_id: int, inbound_tag: str, params: dict) -> dict:
-
-        resp = self._session.post(
-            f"{self.base_url}/api/federation/provision",
+        return self._call(
+            "post",
+            "/api/federation/provision",
             json={"telegram_id": telegram_id, "inbound_tag": inbound_tag, **params},
             timeout=8,
         )
-        resp.raise_for_status()
-        return resp.json()
 
 
 def _snapshot_key(panel_id: int) -> str:
@@ -183,29 +122,18 @@ def get_panel_snapshot(panel_id: int) -> dict | None:
 def _refresh_panel_cache(panel: LinkedPanel) -> None:
 
     client = FederationClient(panel.url, panel.federation_token)
-    now = int(time.time())
+    r = get_redis()
     try:
         data = client.snapshot()
     except Exception as exc:
-        panel.status = "offline"
-        panel.last_poll = now
-        panel.last_error = str(exc)
-        db.session.commit()
-
-        r = get_redis()
+        logger.info("panel_proxy: cache refresh failed for panel %d: %s", panel.id, exc)
         if r is not None:
             try:
                 r.setex(_status_key(panel.id), _STATUS_TTL, "offline")
             except Exception:
                 pass
-        raise
+        return
 
-    panel.status = "online"
-    panel.last_poll = now
-    panel.last_error = None
-    db.session.commit()
-
-    r = get_redis()
     if r is not None:
         try:
             encoded = json.dumps(data).encode()

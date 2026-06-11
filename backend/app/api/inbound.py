@@ -26,6 +26,8 @@ from app.services.xray import (
     is_shadowsocks_2022_method,
     normalize_shadowsocks_2022_key,
     generate_shadowsocks_user_key,
+    stream_supports_vless_flow,
+    inbound_supports_vless_flow,
 )
 from app.services.stats import (
     _api_add_user_grpc,
@@ -66,13 +68,6 @@ def _parse_optional_int(value, field):
     if value is None or value == "":
         return None
     return parse_int(value, field, min_value=0)
-
-
-def _stream_supports_vless_flow(stream):
-
-    if not isinstance(stream, dict):
-        return False
-    return stream.get("network") == "tcp" and stream.get("security") in ("tls", "reality")
 
 
 def _normalize_client_id(value, protocol):
@@ -445,7 +440,7 @@ def update_inbound(tag):
             Client.query.filter_by(inbound_tag=ib.tag).delete()
 
         if ib.protocol in PANEL_USER_PROTOCOLS and not (
-            ib.protocol == "vless" and _stream_supports_vless_flow(built_stream_settings)
+            ib.protocol == "vless" and stream_supports_vless_flow(built_stream_settings)
         ):
             for c in ib.clients:
                 if c.flow:
@@ -577,7 +572,7 @@ def add_user(tag):
             expiry_time=parse_int(data.get("expiry_time"), "expiry_time", min_value=0),
             enable=_parse_bool(data.get("enable"), default=True),
             reset_day=parse_int(data.get("reset_day"), "reset_day", min_value=0, max_value=31),
-            flow=data.get("flow", "xtls-rprx-vision" if ib.protocol == "vless" else ""),
+            flow=(str(data.get("flow", "xtls-rprx-vision") or "").strip() if inbound_supports_vless_flow(ib) else ""),
             device_limit=_parse_optional_int(data.get("device_limit", None), "device_limit"),
         )
         db.session.add(new_client)
@@ -656,7 +651,7 @@ def update_user(tag):
         reset_day = parse_int(data.get("reset_day", client.reset_day), "reset_day", min_value=0, max_value=31)
         enable = _parse_bool(data.get("enable"), default=client.enable)
         flow = str(data.get("flow", client.flow or "") or "").strip()
-        if ib.protocol != "vless":
+        if not inbound_supports_vless_flow(ib):
             flow = ""
 
         old_runtime_email = client.email
@@ -1104,7 +1099,7 @@ def bulk_set_flow_route():
                 skipped += 1
                 continue
 
-            if flow and not _stream_supports_vless_flow(json.loads(ib.stream_settings or "{}")):
+            if flow and not inbound_supports_vless_flow(ib):
                 skipped += 1
                 continue
             if (client.flow or "") == flow:

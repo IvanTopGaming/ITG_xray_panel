@@ -73,7 +73,20 @@ def _validate_panel_url(url: str) -> str:
 @admin_or_bot_token_required
 def list_panels():
     panels = LinkedPanel.query.order_by(LinkedPanel.id).all()
-    return jsonify([p.to_dict() for p in panels]), 200
+    items = [p.to_dict() for p in panels]
+    r = get_redis()
+    if r is not None:
+        for item in items:
+            try:
+                status = r.get(f"panel:{item['id']}:status")
+                if status:
+                    item["status"] = status.decode() if isinstance(status, bytes) else str(status)
+                last_poll = r.get(f"panel:{item['id']}:last_poll")
+                if last_poll:
+                    item["last_poll"] = int(last_poll)
+            except Exception:
+                break
+    return jsonify(items), 200
 
 
 @bp.route("/panels", methods=["POST"])

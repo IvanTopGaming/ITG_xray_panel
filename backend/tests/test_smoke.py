@@ -12,3 +12,9 @@ def test_db_fixture_can_create_table(app, db):
     db.session.commit()
     rows = db.session.execute(text("SELECT id FROM _smoke")).fetchall()
     assert len(rows) == 1
+
+
+def test_sqlite_busy_timeout_is_bounded(app, db):
+    from sqlalchemy import text
+
+    assert db.session.execute(text("PRAGMA busy_timeout")).scalar() == 5000

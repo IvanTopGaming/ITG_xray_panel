@@ -9,7 +9,7 @@ from app.models import Client, Inbound, LinkedPanel, NotificationLog
 from app.services import sub_cache
 from app.services.panel_proxy import fetch_panel_snapshot_live
 from app.services.stats import _api_add_user_grpc
-from app.services.xray import generate_config_file, restart_xray_container
+from app.services.xray import generate_config_file, inbound_supports_vless_flow, restart_xray_container
 
 if TYPE_CHECKING:
     from app.models import Tariff, TariffItem
@@ -108,7 +108,7 @@ def _create_client_for_item(
         up=0,
         down=0,
         enable=True,
-        flow="xtls-rprx-vision" if inbound.protocol == "vless" else "",
+        flow="xtls-rprx-vision" if inbound_supports_vless_flow(inbound) else "",
     )
     db.session.add(client)
     return client
@@ -170,7 +170,7 @@ def provision_single_item(
             up=0,
             down=0,
             enable=True,
-            flow="xtls-rprx-vision" if inbound.protocol == "vless" else "",
+            flow="xtls-rprx-vision" if inbound_supports_vless_flow(inbound) else "",
         )
         db.session.add(client)
         new_clients.append(client)
@@ -196,25 +196,28 @@ def apply_tariff_for_user(
 
     new_expiry_ms = max(now_ms, existing_max_expiry) + period_ms
 
+    remote_items = [item for item in tariff.items if item.panel_id is not None]
+    local_items = [item for item in tariff.items if item.panel_id is None]
+
+    for item in remote_items:
+        from app.services.panel_proxy import proxy_provision
+
+        limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
+        try:
+            proxy_provision(
+                item.panel_id,
+                telegram_id,
+                item.inbound_tag,
+                {"expiry_ms": new_expiry_ms, "limit_bytes": limit_bytes, "tariff_id": tariff.id},
+            )
+        except Exception as exc:
+            logger.error("proxy_provision failed for panel=%s tag=%s: %s", item.panel_id, item.inbound_tag, exc)
+            raise
+
     new_clients = []
     extended_clients_with_state: list[tuple[Client, bool]] = []
-    for item in tariff.items:
+    for item in local_items:
         limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
-
-        if item.panel_id is not None:
-            from app.services.panel_proxy import proxy_provision
-
-            try:
-                proxy_provision(
-                    item.panel_id,
-                    telegram_id,
-                    item.inbound_tag,
-                    {"expiry_ms": new_expiry_ms, "limit_bytes": limit_bytes, "tariff_id": tariff.id},
-                )
-            except Exception as exc:
-                logger.error("proxy_provision failed for panel=%s tag=%s: %s", item.panel_id, item.inbound_tag, exc)
-                raise
-            continue
 
         client = next(
             (c for c in existing if c.inbound_tag == item.inbound_tag),
