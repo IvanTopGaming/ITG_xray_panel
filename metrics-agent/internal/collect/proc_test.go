@@ -33,7 +33,7 @@ func TestParseMem(t *testing.T) {
 }
 
 func TestParseNetDev(t *testing.T) {
-	p := procFS(t)
+	p := &Proc{Root: os.DirFS("testdata/hostproc")}
 	rx, tx, err := p.NetTotals()
 	if err != nil {
 		t.Fatal(err)

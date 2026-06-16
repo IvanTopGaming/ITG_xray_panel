@@ -80,7 +80,7 @@ func (p *Proc) Mem() (MemStat, error) {
 }
 
 func (p *Proc) NetTotals() (rx, tx int64, err error) {
-	lines, err := p.read("net/dev")
+	lines, err := p.read("1/net/dev")
 	if err != nil {
 		return 0, 0, err
 	}
