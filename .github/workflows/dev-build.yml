@@ -32,7 +32,7 @@ jobs:
           SHORT_SHA="${SHA:0:7}"
           XRAY_REF=$(python3 -c "import json; print(json.load(open('versions.json'))['xray_core_ref'])")
 
-          for SERVICE in backend frontend caddy bot; do
+          for SERVICE in backend frontend caddy bot metrics; do
             case $SERVICE in
               backend)
                 CONTEXT="./backend"
@@ -53,6 +53,11 @@ jobs:
                 CONTEXT="./tg_bot"
                 IMAGE="ghcr.io/ivantopgaming/panel-bot"
                 BUILD_ARGS="--build-context project=."
+                ;;
+              metrics)
+                CONTEXT="./metrics-agent"
+                IMAGE="ghcr.io/ivantopgaming/panel-metrics"
+                BUILD_ARGS=""
                 ;;
             esac
 

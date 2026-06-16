@@ -22,8 +22,6 @@ from .jobs.billing import auto_renew_free_users
 from .jobs.notifications import (
     cleanup_bot_events,
     replay_undelivered_bot_events,
-    send_expiry_notifications,
-    send_traffic_notifications,
 )
 from .jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from .jobs.panels import poll_linked_panels
@@ -182,8 +180,6 @@ def create_app():
     _ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
     _ensure_scheduler_job("reconcile_refunds", reconcile_refunds, 3600)
     _ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
-    _ensure_scheduler_job("send_expiry_notifications", send_expiry_notifications, 900)
-    _ensure_scheduler_job("send_traffic_notifications", send_traffic_notifications, 900)
     _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
     _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
@@ -211,6 +207,7 @@ def create_app():
         billing as billing_api,
         panels,
         federation,
+        monitoring,
     )
 
     app.register_blueprint(auth.bp, url_prefix="/api")
@@ -225,6 +222,7 @@ def create_app():
     app.register_blueprint(billing_api.bp, url_prefix="/api")
     app.register_blueprint(panels.bp, url_prefix="/api")
     app.register_blueprint(federation.bp, url_prefix="/api")
+    app.register_blueprint(monitoring.bp, url_prefix="/api")
 
     @app.get("/healthz")
     def healthz():

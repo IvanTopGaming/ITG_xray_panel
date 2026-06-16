@@ -241,6 +241,34 @@ def sync_traffic_stats():
         _upsert_snapshot("inbound", ib.tag, "", bucket, up_d, down_d)
     db.session.commit()
 
+    try:
+        from app.jobs.notifications import emit_if_new, evaluate_traffic
+
+        lang_cache: dict = {}
+        renewable_cache: dict = {}
+        for c, _up_d, _down_d in user_deltas:
+            if c.telegram_id is None:
+                continue
+            kind = evaluate_traffic(c)
+            if kind is None:
+                continue
+            used_bytes = (c.up or 0) + (c.down or 0)
+            emit_if_new(
+                "traffic_notification",
+                kind,
+                c,
+                {
+                    "used_bytes": used_bytes,
+                    "limit_bytes": c.limit_bytes,
+                    "limit_kind": "per_inbound",
+                    "pct": round(used_bytes / c.limit_bytes, 4),
+                },
+                lang_cache=lang_cache,
+                renewable_cache=renewable_cache,
+            )
+    except Exception as e:
+        logger.warning("traffic notification pass failed: %s", e)
+
 
 def check_limits_and_reset():
 
@@ -271,6 +299,28 @@ def check_limits_and_reset():
         expired = c.expiry_time > 0 and now_ts > c.expiry_time
         if expired or over_limit:
             to_disable.append((c, "over_limit" if over_limit else "expired"))
+
+    try:
+        from app.jobs.notifications import emit_if_new, evaluate_expiry
+
+        expiry_lang_cache: dict = {}
+        expiry_renewable_cache: dict = {}
+        for c in clients:
+            if c.telegram_id is None:
+                continue
+            kind = evaluate_expiry(c, now_ts)
+            if kind is None:
+                continue
+            emit_if_new(
+                "expiry_notification",
+                kind,
+                c,
+                {"expiry_time_ms": c.expiry_time},
+                lang_cache=expiry_lang_cache,
+                renewable_cache=expiry_renewable_cache,
+            )
+    except Exception as e:
+        logger.warning("expiry notification pass failed: %s", e)
 
     if not to_reset and not to_disable:
         return

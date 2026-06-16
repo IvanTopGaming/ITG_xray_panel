@@ -7,7 +7,6 @@ import time
 from app.extensions import db
 from app.models import (
     BotEvent,
-    Client,
     NotificationLog,
     Tariff,
     TelegramUser,
@@ -18,20 +17,61 @@ from app.services.bot_events import _get_redis  # noqa: F401 — re-exported for
 
 logger = logging.getLogger(__name__)
 
-_WINDOW_MS = 15 * 60 * 1000
-_BUCKETS = (
-    ("expiry_3d", 3 * 86400 * 1000),
-    ("expiry_1d", 1 * 86400 * 1000),
-    ("expiry_1h", 3600 * 1000),
-    ("expired", 0),
-)
-
-
 _TRAFFIC_BUCKETS = (
     ("traffic_exhausted", 1.0),
     ("traffic_95", 0.95),
     ("traffic_80", 0.80),
 )
+
+
+def evaluate_traffic(client) -> str | None:
+    limit_bytes = client.limit_bytes or 0
+    if limit_bytes <= 0:
+        return None
+    pct = ((client.up or 0) + (client.down or 0)) / limit_bytes
+    for kind, threshold in _TRAFFIC_BUCKETS:
+        if pct >= threshold:
+            return kind
+    return None
+
+
+_EXPIRY_THRESHOLDS = (
+    ("expired", 0),
+    ("expiry_1h", 3600 * 1000),
+    ("expiry_1d", 86400 * 1000),
+    ("expiry_3d", 3 * 86400 * 1000),
+)
+
+
+def evaluate_expiry(client, now_ms: int) -> str | None:
+    if not client.expiry_time or client.expiry_time <= 0:
+        return None
+    remaining = client.expiry_time - now_ms
+    for kind, threshold_ms in _EXPIRY_THRESHOLDS:
+        if remaining <= threshold_ms:
+            return kind
+    return None
+
+
+def emit_if_new(event_type, kind, client, extra, *, lang_cache=None, renewable_cache=None) -> bool:
+    already = NotificationLog.query.filter_by(telegram_id=client.telegram_id, client_id=client.id, kind=kind).first()
+    if already is not None:
+        return False
+    db.session.add(NotificationLog(telegram_id=client.telegram_id, client_id=client.id, kind=kind))
+    db.session.commit()
+    lang_cache = {} if lang_cache is None else lang_cache
+    renewable_cache = {} if renewable_cache is None else renewable_cache
+    payload = {
+        "kind": kind,
+        "client_id": client.id,
+        "email": client.email,
+        **extra,
+        "tariff_id": client.tariff_id,
+        "renewable": _is_renewable(client.tariff_id, client.telegram_id, renewable_cache),
+        "lang": _lookup_lang(client.telegram_id, lang_cache),
+    }
+    bot_events.publish(event_type, client.telegram_id, payload)
+    return True
 
 
 def _now_ms() -> int:
@@ -65,98 +105,6 @@ def _is_renewable(tariff_id: int | None, telegram_id: int, cache: dict[int, bool
         result = True
     cache[key] = result
     return result
-
-
-def send_expiry_notifications() -> None:
-    now_ms = _now_ms()
-    lang_cache: dict[int, str] = {}
-    renewable_cache: dict = {}
-
-    for kind, offset_ms in _BUCKETS:
-        window_lo = now_ms + offset_ms - _WINDOW_MS
-        window_hi = now_ms + offset_ms
-
-        clients = (
-            Client.query.filter(Client.telegram_id.isnot(None))
-            .filter(Client.enable.is_(True))
-            .filter(Client.expiry_time > 0)
-            .filter(Client.expiry_time >= window_lo)
-            .filter(Client.expiry_time <= window_hi)
-            .limit(500)
-            .all()
-        )
-        for c in clients:
-            already = NotificationLog.query.filter_by(telegram_id=c.telegram_id, client_id=c.id, kind=kind).first()
-            if already is not None:
-                continue
-            db.session.add(
-                NotificationLog(
-                    telegram_id=c.telegram_id,
-                    client_id=c.id,
-                    kind=kind,
-                )
-            )
-            db.session.commit()
-            bot_events.publish(
-                "expiry_notification",
-                c.telegram_id,
-                {
-                    "kind": kind,
-                    "client_id": c.id,
-                    "email": c.email,
-                    "expiry_time_ms": c.expiry_time,
-                    "tariff_id": c.tariff_id,
-                    "renewable": _is_renewable(c.tariff_id, c.telegram_id, renewable_cache),
-                    "lang": _lookup_lang(c.telegram_id, lang_cache),
-                },
-            )
-
-
-def send_traffic_notifications() -> None:
-
-    lang_cache: dict[int, str] = {}
-    renewable_cache: dict = {}
-
-    clients = (
-        Client.query.filter(Client.telegram_id.isnot(None))
-        .filter(Client.enable.is_(True))
-        .filter(Client.limit_bytes > 0)
-        .limit(2000)
-        .all()
-    )
-    for c in clients:
-        used_bytes = (c.up or 0) + (c.down or 0)
-        limit_bytes = c.limit_bytes
-        if not limit_bytes:
-            continue
-        pct = used_bytes / limit_bytes
-        limit_kind = "per_inbound"
-
-        kind = next((k for k, threshold in _TRAFFIC_BUCKETS if pct >= threshold), None)
-        if kind is None:
-            continue
-
-        already = NotificationLog.query.filter_by(telegram_id=c.telegram_id, client_id=c.id, kind=kind).first()
-        if already is not None:
-            continue
-        db.session.add(NotificationLog(telegram_id=c.telegram_id, client_id=c.id, kind=kind))
-        db.session.commit()
-        bot_events.publish(
-            "traffic_notification",
-            c.telegram_id,
-            {
-                "kind": kind,
-                "client_id": c.id,
-                "email": c.email,
-                "used_bytes": used_bytes,
-                "limit_bytes": limit_bytes,
-                "limit_kind": limit_kind,
-                "pct": round(pct, 4),
-                "tariff_id": c.tariff_id,
-                "renewable": _is_renewable(c.tariff_id, c.telegram_id, renewable_cache),
-                "lang": _lookup_lang(c.telegram_id, lang_cache),
-            },
-        )
 
 
 def replay_undelivered_bot_events() -> None:

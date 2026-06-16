@@ -1,5 +1,4 @@
 db_data/
-bot_data/
 caddy_data/
 caddy_config/
 certs/
@@ -23,6 +22,7 @@ docs/*
 
 frontend/node_modules/
 frontend/dist/
+metrics-agent/vendor/
 out-tsc/
 bazel-out/
 coverage/

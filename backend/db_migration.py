@@ -471,8 +471,8 @@ def _seed_bot_texts(
             if force:
                 cursor.execute(
                     """
-                    INSERT INTO bot_text (key, lang, text)
-                    VALUES (?, ?, ?)
+                    INSERT INTO bot_text (key, lang, text, customized)
+                    VALUES (?, ?, ?, 0)
                     ON CONFLICT(key, lang) DO UPDATE SET
                         text = excluded.text,
                         updated_at = CURRENT_TIMESTAMP
@@ -489,7 +489,7 @@ def _seed_bot_texts(
                 if cursor.fetchone() is not None:
                     continue
                 cursor.execute(
-                    "INSERT INTO bot_text (key, lang, text) VALUES (?, ?, ?)",
+                    "INSERT INTO bot_text (key, lang, text, customized) VALUES (?, ?, ?, 0)",
                     (key, lang, str(text)),
                 )
                 touched += 1

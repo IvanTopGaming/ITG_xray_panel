@@ -43,20 +43,29 @@ else
     SECRET_KEY=$(gen_secret 48)
     PANEL_ADMIN_PASSWORD=$(gen_secret 16)
     cat > .env <<EOF
+# Container images (staging hardcodes :dev-latest for panel + metrics)
 XRAY_IMAGE=ghcr.io/xtls/xray-core:latest
 SOCKET_PROXY_IMAGE=tecnativa/docker-socket-proxy:latest
 REDIS_IMAGE=redis:alpine
 
+# Domains, routing & TLS
 PANEL_DOMAIN=panel.local
 PROXY_DOMAIN=www.google.com
 PANEL_SECRET_PATH=$PANEL_SECRET_PATH
+SUB_DOMAIN=
+
+# Admin login & security
 SECRET_KEY=$SECRET_KEY
 PANEL_ADMIN_USER=admin
 PANEL_ADMIN_PASSWORD=$PANEL_ADMIN_PASSWORD
 CORS_ORIGINS=https://panel.local
-RATELIMIT_STORAGE_URI=redis://redis:6379/0
 
-# Bot service token — fill after first login (panel /bot → Settings → Rotate token).
+# Runtime & logging
+RATELIMIT_STORAGE_URI=redis://redis:6379/0
+BACKEND_LOG_LEVEL=INFO
+BOT_LOG_LEVEL=INFO
+
+# Telegram bot — fill the token after first login (Panel → Bot → Settings → rotate).
 BOT_SERVICE_TOKEN=
 EOF
     echo -e "${GREEN}.env generated. Admin password: $PANEL_ADMIN_PASSWORD${NC}"

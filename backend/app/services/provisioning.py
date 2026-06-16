@@ -145,7 +145,17 @@ def provision_single_item(
             client.tariff_id = tariff_id
         NotificationLog.query.filter(
             NotificationLog.client_id == client.id,
-            NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
+            NotificationLog.kind.in_(
+                (
+                    "traffic_80",
+                    "traffic_95",
+                    "traffic_exhausted",
+                    "expiry_3d",
+                    "expiry_1d",
+                    "expiry_1h",
+                    "expired",
+                )
+            ),
         ).delete(synchronize_session=False)
         extended_clients_with_state.append((client, was_enabled))
     else:
@@ -235,7 +245,17 @@ def apply_tariff_for_user(
 
             NotificationLog.query.filter(
                 NotificationLog.client_id == client.id,
-                NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
+                NotificationLog.kind.in_(
+                    (
+                        "traffic_80",
+                        "traffic_95",
+                        "traffic_exhausted",
+                        "expiry_3d",
+                        "expiry_1d",
+                        "expiry_1h",
+                        "expired",
+                    )
+                ),
             ).delete(synchronize_session=False)
             extended_clients_with_state.append((client, was_enabled))
         else:

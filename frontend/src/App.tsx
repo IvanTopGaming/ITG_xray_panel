@@ -13,6 +13,7 @@ import System from '@/pages/System';
 import Statistics from '@/pages/Statistics';
 import Panels from '@/pages/Panels';
 import Bot from '@/pages/Bot';
+import Monitoring from '@/pages/Monitoring';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,6 +49,7 @@ function App() {
           >
             <Route index element={<Dashboard />} />
             <Route path="statistics" element={<Statistics />} />
+            <Route path="monitoring" element={<Monitoring />} />
             <Route path="panels" element={<Panels />} />
             <Route path="routing" element={<Routing />} />
             <Route path="bot" element={<Bot />} />

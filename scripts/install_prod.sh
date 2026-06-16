@@ -60,7 +60,7 @@ cat <<EOM
 ${GREEN}Done.${NC} Next steps:
   1. Edit .env — set PANEL_DOMAIN, SUB_DOMAIN and CORS_ORIGINS, and point their DNS here.
   2. docker compose pull
-  3. docker compose up -d backend frontend redis xray socket-proxy
+  3. docker compose up -d backend frontend redis xray socket-proxy metrics
        (everything except caddy and the bot)
   4. bash scripts/generate_certs.sh
        Issues the TLS cert on :80 and starts caddy. Needs certbot + DNS pointing here.

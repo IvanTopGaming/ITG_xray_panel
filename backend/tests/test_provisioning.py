@@ -524,4 +524,27 @@ def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
     assert "traffic_80" not in kinds
     assert "traffic_95" not in kinds
     assert "traffic_exhausted" not in kinds
-    assert "expiry_1d" in kinds
+    assert "expiry_1d" not in kinds
+
+
+def test_apply_extend_clears_expiry_notification_log(app, db, basic_setup):
+    from app.models import NotificationLog
+
+    tariff = basic_setup
+    now_ms = int(_time.time() * 1000)
+    client = _make_client(
+        db,
+        telegram_id=42,
+        inbound_tag="DE-vless",
+        expiry_ms=now_ms + 5 * 86400_000,
+        limit_bytes=10_000_000_000,
+    )
+    db.session.add(NotificationLog(telegram_id=42, client_id=client.id, kind="expiry_3d"))
+    db.session.add(NotificationLog(telegram_id=42, client_id=client.id, kind="expired"))
+    db.session.commit()
+
+    with patch("app.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(42, tariff, source="trial")
+
+    assert NotificationLog.query.filter_by(client_id=client.id, kind="expiry_3d").count() == 0
+    assert NotificationLog.query.filter_by(client_id=client.id, kind="expired").count() == 0

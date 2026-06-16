@@ -332,3 +332,31 @@ export interface BotSettingsUpdate {
   device_limit_enabled?: boolean;
   device_limit_per_user?: number;
 }
+
+export interface SnapPoint {
+  metric: string;
+  scope: string;
+  entity: string;
+  name?: string;
+  ts: number;
+  value: number;
+}
+
+export interface ProcRow {
+  pid: number;
+  comm: string;
+  cpu_pct: number;
+  rss_bytes: number;
+}
+
+export interface MonitoringSnapshot {
+  series: SnapPoint[];
+  procs: ProcRow[];
+}
+
+export interface SeriesAgg {
+  Ts: number;
+  Avg: number;
+  Min: number;
+  Max: number;
+}
