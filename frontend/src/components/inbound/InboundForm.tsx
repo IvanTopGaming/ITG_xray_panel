@@ -440,25 +440,25 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
         )}
       </div>
 
-      {isSecurityAvailable && (
-        <div className="grid grid-cols-2 gap-4">
+      <div className={`grid gap-4 ${isSecurityAvailable ? 'grid-cols-2' : 'grid-cols-1'}`}>
+        {isSecurityAvailable && (
           <Select
             label="Security"
             {...register('security')}
             value={security}
             options={securityOptions}
           />
-          <Select
-            label="Routing Profile"
-            {...register('routing_profile_id')}
-            value={String(routingProfileId ?? '')}
-            options={[
-              { value: '', label: 'None (Direct)' },
-              ...(profiles?.map((p) => ({ value: String(p.id), label: p.name })) || []),
-            ]}
-          />
-        </div>
-      )}
+        )}
+        <Select
+          label="Routing Profile"
+          {...register('routing_profile_id')}
+          value={String(routingProfileId ?? '')}
+          options={[
+            { value: '', label: 'None (Direct)' },
+            ...(profiles?.map((p) => ({ value: String(p.id), label: p.name })) || []),
+          ]}
+        />
+      </div>
 
       <div className="grid grid-cols-1">
         <Input
