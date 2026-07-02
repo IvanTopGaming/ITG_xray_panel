@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from app.extensions import db, limiter
-from app.models import Inbound, Client, ClientDevice, TelegramUser
+from app.models import Inbound, Client, ClientDevice, TelegramUser, TariffItem
 from app.api.subscription import build_aggregate_sub_url
 from app.utils import (
     token_required,
@@ -37,6 +37,7 @@ from app.services.stats import (
     bulk_delete_users,
 )
 from app.services import sub_cache
+from app.services.tariffs import purge_tariff_items
 
 bp = Blueprint("inbound", __name__)
 MAX_CLIENT_ID_LEN = 128
@@ -477,11 +478,17 @@ def delete_inbound(tag):
         from app.services.panel_proxy import proxy_delete_inbound
 
         try:
-            return jsonify(proxy_delete_inbound(panel_id, tag))
+            result = proxy_delete_inbound(panel_id, tag)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception:
             return jsonify({"error": "Remote panel error"}), 502
+        purge = purge_tariff_items(TariffItem.panel_id == panel_id, TariffItem.inbound_tag == tag)
+        db.session.commit()
+        if isinstance(result, dict):
+            result["removed_tariff_items"] = purge["removed"]
+            result["disabled_tariffs"] = purge["disabled_tariffs"]
+        return jsonify(result)
 
     try:
         ib = Inbound.query.filter_by(tag=tag).first()
@@ -492,12 +499,22 @@ def delete_inbound(tag):
             sub_cache.invalidate_all_for_inbound(deleted_tag)
         except Exception:
             pass
+        purge = purge_tariff_items(TariffItem.inbound_tag == deleted_tag, TariffItem.panel_id.is_(None))
         db.session.delete(ib)
 
         generate_config_file()
         db.session.commit()
         restart_xray_container()
-        return jsonify({"status": "deleted"}), 200
+        return (
+            jsonify(
+                {
+                    "status": "deleted",
+                    "removed_tariff_items": purge["removed"],
+                    "disabled_tariffs": purge["disabled_tariffs"],
+                }
+            ),
+            200,
+        )
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400

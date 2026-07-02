@@ -4,7 +4,8 @@ import requests
 from flask import Blueprint, request, jsonify
 
 from app.extensions import db, get_redis
-from app.models import LinkedPanel, SystemSetting
+from app.models import LinkedPanel, SystemSetting, TariffItem
+from app.services.tariffs import purge_tariff_items
 from app.utils import token_required, admin_or_bot_token_required
 
 bp = Blueprint("panels", __name__)
@@ -199,6 +200,7 @@ def delete_panel(panel_id):
         if not panel:
             return jsonify({"error": "Panel not found"}), 404
 
+        purge = purge_tariff_items(TariffItem.panel_id == panel_id)
         db.session.delete(panel)
         db.session.commit()
 
@@ -209,7 +211,16 @@ def delete_panel(panel_id):
             except Exception:
                 pass
 
-        return jsonify({"ok": True}), 200
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "removed_tariff_items": purge["removed"],
+                    "disabled_tariffs": purge["disabled_tariffs"],
+                }
+            ),
+            200,
+        )
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500

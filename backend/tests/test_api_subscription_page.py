@@ -335,15 +335,17 @@ def test_format_date_localized_ru_en(app):
 def test_page_days_left_rounds_up_and_localized_date(app, user_three_keys):
     import re
 
-    from app.api.subscription import render_aggregate_subscription_page
-    from app.models import TelegramUser
+    from app.api.subscription import render_aggregate_subscription_page, _format_date_localized
+    from app.models import Client, TelegramUser
 
     with app.app_context():
         user = TelegramUser.query.filter_by(telegram_id=800).first()
+        expected_date = _format_date_localized(Client.query.filter_by(id="c1").first().expiry_time, "ru")
         html_doc = render_aggregate_subscription_page(user, "ru", "https://s/api/sub/u/x")
         m = re.search(r"осталось (\d+) дн", html_doc)
         assert m and int(m.group(1)) == 12
-        assert "июн" in html_doc
+        assert expected_date in html_doc
+        assert re.search(r"[а-я]{3,}", expected_date)
         assert not re.search(r"\d{4}-\d{2}-\d{2}", html_doc)
 
 

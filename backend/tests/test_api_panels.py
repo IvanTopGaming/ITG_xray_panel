@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 import jwt as jwt_lib
 import pytest
 
-from app.models import Admin, LinkedPanel, SystemSetting
+from app.models import Admin, LinkedPanel, SystemSetting, Tariff, TariffItem
 from app.utils import SECRET_KEY
 
 
@@ -365,6 +365,47 @@ def test_delete_panel_cleans_redis(mock_get_redis, client, admin_token, db):
 def test_delete_panel_not_found(client, admin_token):
     resp = client.delete("/api/panels/9999", headers=_auth(admin_token))
     assert resp.status_code == 404
+
+
+def _make_tariff(db, name="T", enabled=True, is_trial=False):
+    tariff = Tariff(name=name, price_rub=100, period_days=30, enabled=enabled, is_trial=is_trial)
+    db.session.add(tariff)
+    db.session.commit()
+    return tariff
+
+
+def _add_item(db, tariff_id, tag, panel_id=None, order=0):
+    item = TariffItem(tariff_id=tariff_id, inbound_tag=tag, traffic_gb=0, panel_id=panel_id, sort_order=order)
+    db.session.add(item)
+    db.session.commit()
+    return item
+
+
+def test_delete_panel_purges_its_tariff_items_and_keeps_others(client, admin_token, db):
+    panel = _make_panel(db, name="doomed")
+    other = _make_panel(db, name="survivor", url="https://s.example.com")
+    tariff = _make_tariff(db, name="Mixed")
+    local_id = _add_item(db, tariff.id, "local-in", panel_id=None, order=0).id
+    doomed_id = _add_item(db, tariff.id, "remote-in", panel_id=panel.id, order=1).id
+    other_id = _add_item(db, tariff.id, "other-in", panel_id=other.id, order=2).id
+
+    resp = client.delete(f"/api/panels/{panel.id}", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    assert resp.get_json()["removed_tariff_items"] == 1
+    assert TariffItem.query.filter_by(id=doomed_id).count() == 0
+    assert TariffItem.query.filter_by(id=local_id).count() == 1
+    assert TariffItem.query.filter_by(id=other_id).count() == 1
+
+
+def test_delete_panel_disables_emptied_tariff(client, admin_token, db):
+    panel = _make_panel(db, name="solo")
+    tariff = _make_tariff(db, name="OnlyRemote")
+    _add_item(db, tariff.id, "remote-in", panel_id=panel.id)
+
+    resp = client.delete(f"/api/panels/{panel.id}", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    assert tariff.id in resp.get_json()["disabled_tariffs"]
+    assert db.session.get(Tariff, tariff.id).enabled is False
 
 
 @patch("app.api.panels.requests.get")
