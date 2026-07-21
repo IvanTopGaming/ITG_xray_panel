@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import socket
 import time
@@ -6,6 +7,7 @@ from flask import Blueprint, request, jsonify
 from app.extensions import db, limiter
 from app.models import Outbound, Balancer, Client
 from app.utils import token_required, normalize_tag
+from app.services.egress import allocate_bind_ip
 from app.services.xray import generate_config_file, restart_xray_container
 
 bp = Blueprint("outbound", __name__)
@@ -117,6 +119,34 @@ def _extract_outbound_probe_target(protocol, settings):
     return "", 0
 
 
+def _normalize_ip(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(ipaddress.IPv4Address(raw))
+    except ValueError:
+        raise ValueError("Invalid IPv4 address")
+
+
+def _assign_egress_fields(ob, protocol, public_ip, gateway, *, current_tag=None):
+    if not public_ip:
+        ob.public_ip = None
+        ob.gateway = None
+        ob.send_through = None
+        return
+    if protocol != "freedom":
+        raise ValueError("Dedicated egress IP is only supported on freedom outbounds")
+    dup = Outbound.query.filter_by(public_ip=public_ip).first()
+    if dup and dup.tag != current_tag:
+        raise ValueError("public_ip already assigned to another outbound")
+    ob.public_ip = public_ip
+    ob.gateway = gateway or None
+    if not ob.send_through:
+        used = [o.send_through for o in Outbound.query.filter(Outbound.send_through.isnot(None)).all()]
+        ob.send_through = allocate_bind_ip(used)
+
+
 def _probe_outbound(host, port, timeout_sec=1.5):
     started = time.perf_counter()
     with socket.create_connection((host, port), timeout=timeout_sec):
@@ -137,6 +167,9 @@ def get_outbounds():
                 "settings": json.loads(o.settings),
                 "streamSettings": json.loads(o.stream_settings),
                 "mux": json.loads(o.mux),
+                "send_through": o.send_through or "",
+                "public_ip": o.public_ip or "",
+                "gateway": o.gateway or "",
             }
             for o in outbounds
         ]
@@ -236,6 +269,9 @@ def create_outbound():
             stream_settings=json.dumps(stream_settings),
             mux=json.dumps(mux),
         )
+        public_ip = _normalize_ip(data.get("public_ip"))
+        gateway = _normalize_ip(data.get("gateway"))
+        _assign_egress_fields(new_ob, protocol, public_ip, gateway)
         db.session.add(new_ob)
         generate_config_file()
         db.session.commit()
@@ -275,6 +311,10 @@ def update_outbound(tag):
             ob.mux = json.dumps(data["mux"])
         if "enable" in data:
             ob.enable = _parse_bool(data.get("enable"), bool(getattr(ob, "enable", True)))
+        if "public_ip" in data or "gateway" in data:
+            public_ip = _normalize_ip(data["public_ip"]) if "public_ip" in data else (ob.public_ip or "")
+            gateway = _normalize_ip(data["gateway"]) if "gateway" in data else (ob.gateway or "")
+            _assign_egress_fields(ob, ob.protocol, public_ip, gateway, current_tag=ob.tag)
         generate_config_file()
         db.session.commit()
         restart_xray_container()

@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 20
+CURRENT_DB_VERSION = 21
 CURRENT_BOT_TEXTS_VERSION = 17
 
 
@@ -580,6 +580,9 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("outbound", "settings", "TEXT NOT NULL DEFAULT '{}'"),
         ("outbound", "stream_settings", "TEXT NOT NULL DEFAULT '{}'"),
         ("outbound", "mux", "TEXT NOT NULL DEFAULT '{}'"),
+        ("outbound", "send_through", "VARCHAR(50)"),
+        ("outbound", "public_ip", "VARCHAR(50)"),
+        ("outbound", "gateway", "VARCHAR(50)"),
         ("balancer", "enable", "BOOLEAN NOT NULL DEFAULT 1"),
         ("balancer", "selector", "TEXT NOT NULL DEFAULT '[]'"),
         ("balancer", "strategy", "VARCHAR(20) DEFAULT 'random'"),

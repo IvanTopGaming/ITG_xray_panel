@@ -27,6 +27,9 @@ class Outbound(db.Model):
     settings = db.Column(db.Text, nullable=False, default="{}")
     stream_settings = db.Column(db.Text, nullable=False, default="{}")
     mux = db.Column(db.Text, nullable=False, default="{}")
+    send_through = db.Column(db.String(50), nullable=True)
+    public_ip = db.Column(db.String(50), nullable=True)
+    gateway = db.Column(db.String(50), nullable=True)
 
 
 class Balancer(db.Model):

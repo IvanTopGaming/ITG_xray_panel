@@ -858,15 +858,16 @@ def generate_config_file(validate=True):
                 is_system_outbound = ob.tag in ["direct", "block", "api"]
                 if not is_system_outbound and not _flag_enabled(getattr(ob, "enable", True), True):
                     continue
-                outbounds_json.append(
-                    {
-                        "tag": ob.tag,
-                        "protocol": ob.protocol,
-                        "settings": json.loads(ob.settings),
-                        "streamSettings": json.loads(ob.stream_settings),
-                        "mux": json.loads(ob.mux) if ob.mux else {},
-                    }
-                )
+                ob_json = {
+                    "tag": ob.tag,
+                    "protocol": ob.protocol,
+                    "settings": json.loads(ob.settings),
+                    "streamSettings": json.loads(ob.stream_settings),
+                    "mux": json.loads(ob.mux) if ob.mux else {},
+                }
+                if getattr(ob, "send_through", None):
+                    ob_json["sendThrough"] = ob.send_through
+                outbounds_json.append(ob_json)
 
                 if not is_system_outbound:
                     observed_tags.append(ob.tag)

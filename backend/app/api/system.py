@@ -1,5 +1,6 @@
 import psutil
 import datetime
+import hmac
 import os
 import signal
 import sqlite3
@@ -11,6 +12,7 @@ from flask import Blueprint, after_this_request, jsonify, request, send_file, Re
 from app.utils import token_required, admin_or_federation_token_required
 from app.extensions import limiter, db
 from app.models import SystemSetting
+from app.services.egress import build_bind_ips, build_host_script
 from app.services.xray import (
     restart_xray_container,
     update_geo_db,
@@ -355,5 +357,33 @@ def geo_update():
     try:
         update_geo_db()
         return jsonify({"status": "updated"}), 200
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/system/egress/bind-ips", methods=["GET"])
+def egress_bind_ips():
+    expected = os.environ.get("EGRESS_INTERNAL_TOKEN", "")
+    if not expected:
+        return jsonify({"error": "egress token not configured"}), 503
+    provided = request.headers.get("X-Egress-Token", "")
+    if not hmac.compare_digest(provided, expected):
+        return jsonify({"error": "forbidden"}), 403
+    return jsonify(build_bind_ips())
+
+
+@bp.route("/system/egress/host-script", methods=["GET"])
+@token_required
+def egress_host_script():
+    try:
+        iface = request.args.get("iface") or None
+        script = build_host_script(iface)
+        return Response(
+            script,
+            mimetype="text/plain",
+            headers={"Content-Disposition": "attachment; filename=egress-setup.sh"},
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500

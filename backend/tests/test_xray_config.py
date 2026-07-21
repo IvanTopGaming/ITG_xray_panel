@@ -707,6 +707,33 @@ class TestGenerateConfigFile:
         assert http_ib["settings"]["allowTransparent"] is False
         assert "accounts" not in http_ib["settings"]
 
+    def test_send_through_in_generated_outbound(self):
+        from app.services.xray import generate_config_file
+
+        db.session.add(
+            Outbound(
+                tag="ded-1",
+                protocol="freedom",
+                enable=True,
+                settings="{}",
+                stream_settings="{}",
+                mux="{}",
+                send_through="172.28.0.240",
+                public_ip="203.0.113.7",
+                gateway="203.0.113.1",
+            )
+        )
+        db.session.commit()
+
+        generate_config_file()
+        cfg = self._read_config()
+
+        ded = next(o for o in cfg["outbounds"] if o["tag"] == "ded-1")
+        assert ded["sendThrough"] == "172.28.0.240"
+        assert "public_ip" not in ded
+        assert "gateway" not in ded
+        assert "public_ip" not in json.dumps(cfg)
+
 
 class TestGetSystemSettings:
     def test_returns_defaults_when_no_rows(self, app, db):

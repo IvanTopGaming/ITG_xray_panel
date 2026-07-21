@@ -66,6 +66,7 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 - **Bulk actions** — select users across inbounds **and** linked panels, then delete / enable / disable / reset traffic / shift expiry / adjust the traffic cap / toggle Vision flow in one shot. Cross-panel batches are proxied to the owning panel and report any unreachable one without aborting the rest.
 - **Traffic statistics** — hourly snapshots kept indefinitely, charts with period filtering (1h → all-time), top destination domains, per-panel breakdown.
 - **Routing** — outbound servers, weighted balancers with fallback, per-user route overrides.
+- **Dedicated egress IP** — send one client's traffic out through a rented secondary IP on the same host. A freedom outbound binds an internal source IP (`sendThrough`), a privileged sidecar keeps that IP aliased inside Xray's netns across restarts, and a panel-generated host script wires the public alias + a self-cleaning SNAT chain (+ policy routing). Assign it to a user with the existing per-user route override; the backend stays fully isolated and only serves the data.
 - **Device limits** — optional per-client / per-inbound device cap with HWID-aware subscription delivery.
 
 ### 🤝 Subscriptions & Federation
@@ -89,6 +90,7 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 - **Hidden behind a secret path** — everything outside `/<PANEL_SECRET_PATH>/` returns `404`; the bare domain serves a decoy.
 - **Instant session kill** — changing the admin password immediately invalidates every active JWT.
 - **Locked-down Docker socket** — only the exact container ops the backend needs are exposed, via `tecnativa/docker-socket-proxy`.
+- **Per-machine monitoring** — a lightweight metrics agent on each host feeds a live CPU / memory / network dashboard (network read from the host netns, not the sidecar).
 - **Backup & restore** — admin-only DB snapshot export/import.
 
 ---
@@ -192,8 +194,10 @@ New settings are picked up within ~60 s — no restart needed.
 | `redis`        | Rate limiter, subscription cache, bot pub/sub channel                               |
 | `socket-proxy` | Locked-down Docker socket (only the ops `backend` needs)                            |
 | `bot`          | Aiogram Telegram bot — runs on the master only                                      |
+| `metrics`      | Per-host metrics agent (CPU / RAM / network) feeding the monitoring dashboard        |
+| `xray-egress`  | Optional sidecar (opt-in via `--profile egress`) that keeps dedicated-egress bind-IPs aliased in Xray's netns |
 
-Three networks: `panel-net` (the only one with internet egress) plus two `internal: true` segments — `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy) — so the Docker-socket proxy is reachable only by `backend`, and neither it nor Redis can reach the internet.
+Networks are split for isolation: `panel-net` (fixed `172.28.0.0/24`, the only segment with internet egress) plus four `internal: true` segments — `redis-net` (backend ↔ redis ↔ bot), `dockersock-net` (backend ↔ socket-proxy), and `metrics-net` / `metrics-xray-net` for the monitoring agent — so the Docker-socket proxy is reachable only by `backend`, and neither it nor Redis can reach the internet.
 
 </details>
 
@@ -253,6 +257,8 @@ SQLite at `./db_data/panel.db`, ~20 tables, with a custom schema-versioned migra
 | `RATELIMIT_STORAGE_URI` | `redis://redis:6379/0`    | Redis URI (`memory://` only for local domains)               |
 | `CORS_ORIGINS`          | `https://${PANEL_DOMAIN}` | Comma-separated allowed origins                              |
 | `TELEGRAM_PROXY_URL`    | empty                     | HTTP/SOCKS5 proxy the bot uses to reach Telegram             |
+| `EGRESS_INTERNAL_TOKEN` | empty                     | Shared token between `backend` and the `xray-egress` sidecar (only for dedicated egress IP) |
+| `EGRESS_UPLINK_IFACE`   | `eth0`                    | Host uplink NIC baked into the generated egress host-script  |
 | `*_IMAGE`               | from `versions.json`      | Image pins for each service                                  |
 
 > **Local vs production gating.** When `PANEL_DOMAIN` is `localhost`, `*.local`, or a literal IP, the validator relaxes (weak `SECRET_KEY`, default `admin:admin`, and `memory://` are allowed). For any real domain all three are enforced on startup, and the backend refuses to start if a check fails.
@@ -270,6 +276,19 @@ bash scripts/generate_certs.sh
 ```
 
 It stops Caddy, issues a Let's Encrypt **SAN cert** for `PANEL_DOMAIN` (+ `SUB_DOMAIN` if set) over the standalone challenge on the freed `:80`, installs it into `./certs`, and brings Caddy back. **Renewal is the same command** — re-run it before the 90-day expiry (no cron; you stay in control). For local domains, `scripts/generate_local_cert.sh` writes a self-signed cert instead.
+
+---
+
+## 🌐 Dedicated egress IP
+
+Give a specific client its own public IP without a second server — rent a **secondary IP** on the same host and route that user through it. The panel is the source of truth; the host networking is applied once by a generated script (the `backend` never touches the host).
+
+1. Attach the rented IP to the VM, set `EGRESS_INTERNAL_TOKEN` (+ `EGRESS_UPLINK_IFACE` if your NIC isn't `eth0`) in `.env`, and bring the stack up **with the sidecar**: `docker compose --profile egress up -d`. The sidecar is opt-in, so existing deployments are unaffected.
+2. **Routing → Outbounds → New (freedom)** → enter the **Public IP** (and **Gateway** if the IP is on a separate gateway). The internal bind-IP is auto-assigned.
+3. **System → Download host script** → run it on the host as root (`bash egress-setup.sh`). Idempotent — re-run it after any egress change. It aliases the public IP and installs a self-cleaning `EGRESS_SNAT` chain (+ policy routing).
+4. Assign the client's per-user route (`preferred_outbound`) to that outbound. Verify with `curl https://ifconfig.me` from the client — it shows the dedicated IP, while everyone else still exits the primary one.
+
+> First upgrade to a build with this feature recreates `panel-net` on its fixed `172.28.0.0/24` subnet, so it needs a one-time `docker compose down && up -d` (brief downtime) rather than a plain `up -d`.
 
 ---
 
@@ -295,7 +314,7 @@ Stream settings are stored as one JSON blob per inbound; UI-only keys (`ssMethod
 cd backend && uv sync
 uv run python run.py           # dev server :5000
 uvx ruff check backend/ tg_bot/    # lint     (CI uses ruff format --check)
-uv run pytest tests/               # 830+ unit + API tests
+uv run pytest tests/               # 970+ unit + API tests
 
 # Frontend
 cd frontend && npm install

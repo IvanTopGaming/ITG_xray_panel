@@ -186,6 +186,22 @@ export default function System() {
     }
   };
 
+  const downloadEgressScript = async () => {
+    try {
+      const res = await api.get('/system/egress/host-script', { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'egress-setup.sh');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Failed to download egress script');
+    }
+  };
+
   const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -493,6 +509,20 @@ export default function System() {
                     </div>
                     View Configuration
                   </Button>
+                  <Button
+                    variant="secondary"
+                    className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
+                    onClick={downloadEgressScript}
+                  >
+                    <div className="p-2 bg-black/20 rounded-lg mr-3">
+                      <Download size={16} />
+                    </div>
+                    Download Egress Host Script
+                  </Button>
+                  <p className="text-xs text-gray-500 px-1">
+                    Run this on the host (as root) after changing dedicated egress IPs. The{' '}
+                    <code>xray-egress</code> sidecar must be running.
+                  </p>
 
                   <div className="h-px bg-white/10 my-2" />
 

@@ -137,7 +137,17 @@ class TestGetOutbounds:
     def test_outbound_shape(self, client, auth_headers, admin, seed_outbounds):
         resp = client.get("/api/outbounds", headers=auth_headers)
         item = next(o for o in resp.get_json() if o["tag"] == "direct")
-        assert set(item.keys()) == {"tag", "protocol", "enable", "settings", "streamSettings", "mux"}
+        assert set(item.keys()) == {
+            "tag",
+            "protocol",
+            "enable",
+            "settings",
+            "streamSettings",
+            "mux",
+            "send_through",
+            "public_ip",
+            "gateway",
+        }
         assert item["protocol"] == "freedom"
         assert item["enable"] is True
 
@@ -824,6 +834,160 @@ class TestDeleteBalancer:
         resp = client.delete("/api/balancers/bal-del", headers=auth_headers)
         assert resp.status_code == 200
         assert db.session.get(Client, "uuid-2").preferred_outbound is None
+
+
+class TestEgressFields:
+    def test_create_egress_outbound_auto_assigns_bind_ip(self, client, auth_headers, admin):
+        resp = client.post(
+            "/api/outbounds",
+            json={"tag": "ded-a", "protocol": "freedom", "public_ip": "203.0.113.10"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201
+
+        listing = client.get("/api/outbounds", headers=auth_headers).get_json()
+        ded = next(o for o in listing if o["tag"] == "ded-a")
+        assert ded["public_ip"] == "203.0.113.10"
+        assert ded["send_through"] == "172.28.0.128"
+
+    def test_public_ip_rejected_on_non_freedom(self, client, auth_headers, admin):
+        resp = client.post(
+            "/api/outbounds",
+            json={"tag": "ded-b", "protocol": "socks", "public_ip": "203.0.113.11"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+    def test_duplicate_public_ip_rejected(self, client, auth_headers, admin):
+        client.post(
+            "/api/outbounds",
+            json={"tag": "ded-c", "protocol": "freedom", "public_ip": "203.0.113.12"},
+            headers=auth_headers,
+        )
+        resp = client.post(
+            "/api/outbounds",
+            json={"tag": "ded-d", "protocol": "freedom", "public_ip": "203.0.113.12"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+    def test_invalid_public_ip_rejected(self, client, auth_headers, admin):
+        resp = client.post(
+            "/api/outbounds",
+            json={"tag": "ded-e", "protocol": "freedom", "public_ip": "not-an-ip"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+    def test_create_freedom_without_public_ip_leaves_egress_fields_empty(self, client, auth_headers, admin):
+        resp = client.post(
+            "/api/outbounds",
+            json={"tag": "ded-f", "protocol": "freedom"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201
+        listing = client.get("/api/outbounds", headers=auth_headers).get_json()
+        ded = next(o for o in listing if o["tag"] == "ded-f")
+        assert ded["public_ip"] == ""
+        assert ded["send_through"] == ""
+        assert ded["gateway"] == ""
+
+    def test_create_with_gateway(self, client, auth_headers, admin):
+        resp = client.post(
+            "/api/outbounds",
+            json={
+                "tag": "ded-g",
+                "protocol": "freedom",
+                "public_ip": "203.0.113.20",
+                "gateway": "203.0.113.1",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201
+        listing = client.get("/api/outbounds", headers=auth_headers).get_json()
+        ded = next(o for o in listing if o["tag"] == "ded-g")
+        assert ded["gateway"] == "203.0.113.1"
+
+    def test_update_sets_public_ip_and_auto_assigns_send_through(self, client, auth_headers, admin, seed_outbounds):
+        resp = client.put(
+            "/api/outbounds/proxy-de",
+            headers=auth_headers,
+            json={"protocol": "freedom", "public_ip": "203.0.113.30"},
+        )
+        assert resp.status_code == 200
+        ob = Outbound.query.filter_by(tag="proxy-de").first()
+        assert ob.public_ip == "203.0.113.30"
+        assert ob.send_through == "172.28.0.128"
+
+    def test_update_clearing_public_ip_nulls_egress_fields(self, client, auth_headers, admin):
+        client.post(
+            "/api/outbounds",
+            json={"tag": "ded-h", "protocol": "freedom", "public_ip": "203.0.113.40"},
+            headers=auth_headers,
+        )
+        resp = client.put(
+            "/api/outbounds/ded-h",
+            headers=auth_headers,
+            json={"public_ip": ""},
+        )
+        assert resp.status_code == 200
+        ob = Outbound.query.filter_by(tag="ded-h").first()
+        assert ob.public_ip is None
+        assert ob.gateway is None
+        assert ob.send_through is None
+
+    def test_update_gateway_only_preserves_public_ip_and_send_through(self, client, auth_headers, admin):
+        client.post(
+            "/api/outbounds",
+            json={"tag": "ded-gw", "protocol": "freedom", "public_ip": "203.0.113.70"},
+            headers=auth_headers,
+        )
+        resp = client.put(
+            "/api/outbounds/ded-gw",
+            headers=auth_headers,
+            json={"gateway": "203.0.113.1"},
+        )
+        assert resp.status_code == 200
+        listing = client.get("/api/outbounds", headers=auth_headers).get_json()
+        ded = next(o for o in listing if o["tag"] == "ded-gw")
+        assert ded["public_ip"] == "203.0.113.70"
+        assert ded["send_through"] == "172.28.0.128"
+        assert ded["gateway"] == "203.0.113.1"
+
+    def test_update_duplicate_public_ip_rejected(self, client, auth_headers, admin):
+        client.post(
+            "/api/outbounds",
+            json={"tag": "ded-i", "protocol": "freedom", "public_ip": "203.0.113.50"},
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/outbounds",
+            json={"tag": "ded-j", "protocol": "freedom", "public_ip": "203.0.113.51"},
+            headers=auth_headers,
+        )
+        resp = client.put(
+            "/api/outbounds/ded-j",
+            headers=auth_headers,
+            json={"public_ip": "203.0.113.50"},
+        )
+        assert resp.status_code == 400
+        ob = Outbound.query.filter_by(tag="ded-j").first()
+        assert ob.public_ip == "203.0.113.51"
+
+    def test_update_same_outbound_same_public_ip_not_rejected(self, client, auth_headers, admin):
+        client.post(
+            "/api/outbounds",
+            json={"tag": "ded-k", "protocol": "freedom", "public_ip": "203.0.113.60"},
+            headers=auth_headers,
+        )
+        resp = client.put(
+            "/api/outbounds/ded-k",
+            headers=auth_headers,
+            json={"public_ip": "203.0.113.60", "gateway": "203.0.113.1"},
+        )
+        assert resp.status_code == 200
+        ob = Outbound.query.filter_by(tag="ded-k").first()
+        assert ob.gateway == "203.0.113.1"
 
 
 class TestHelpers:

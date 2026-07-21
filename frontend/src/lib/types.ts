@@ -107,6 +107,9 @@ export interface Outbound {
   settings: any;
   streamSettings: any;
   mux: any;
+  send_through?: string;
+  public_ip?: string;
+  gateway?: string;
 }
 
 export interface OutboundHealth {

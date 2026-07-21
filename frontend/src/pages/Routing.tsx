@@ -839,6 +839,8 @@ function OutboundEditor({ outbound, onClose }: { outbound: Outbound | null; onCl
   const [jsonStream, setJsonStream] = useState(
     JSON.stringify(outbound?.streamSettings || {}, null, 2)
   );
+  const [publicIp, setPublicIp] = useState(outbound?.public_ip || '');
+  const [gateway, setGateway] = useState(outbound?.gateway || '');
 
   const applyTemplate = (type: string) => {
     if (type === 'freedom') {
@@ -1003,7 +1005,13 @@ function OutboundEditor({ outbound, onClose }: { outbound: Outbound | null; onCl
     try {
       const settings = JSON.parse(jsonSettings);
       const streamSettings = JSON.parse(jsonStream);
-      mutation.mutate({ tag, protocol, settings, streamSettings });
+      mutation.mutate({
+        tag,
+        protocol,
+        settings,
+        streamSettings,
+        ...(protocol === 'freedom' ? { public_ip: publicIp, gateway } : {}),
+      });
     } catch (e) {
       toast.error('Invalid JSON format');
     }
@@ -1128,6 +1136,29 @@ function OutboundEditor({ outbound, onClose }: { outbound: Outbound | null; onCl
           onChange={(e) => setJsonStream(e.target.value)}
         />
       </div>
+
+      {protocol === 'freedom' && (
+        <div className="space-y-3 border-t border-white/5 pt-4">
+          <p className="text-sm font-semibold text-gray-300">Dedicated egress IP</p>
+          <Input
+            label="Public IP"
+            placeholder="e.g. 203.0.113.7"
+            value={publicIp}
+            onChange={(e) => setPublicIp(e.target.value)}
+          />
+          <Input
+            label="Gateway (only if the IP is on a separate gateway)"
+            placeholder="optional"
+            value={gateway}
+            onChange={(e) => setGateway(e.target.value)}
+          />
+          {outbound?.send_through && (
+            <p className="text-xs text-gray-500 font-mono">
+              internal bind-IP: {outbound.send_through} (auto-assigned)
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex justify-end pt-2">
         <Button onClick={handleSave} isLoading={mutation.isPending}>
