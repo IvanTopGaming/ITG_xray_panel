@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 21
+CURRENT_DB_VERSION = 22
 CURRENT_BOT_TEXTS_VERSION = 17
 
 
@@ -164,6 +164,29 @@ def _ensure_stats_tables(cursor: sqlite3.Cursor) -> int:
         created += 1
 
     return created
+
+
+def _ensure_node_traffic_table(cursor: sqlite3.Cursor) -> int:
+    if _table_exists(cursor, "node_traffic_snapshot"):
+        return 0
+    cursor.execute(
+        """
+        CREATE TABLE node_traffic_snapshot (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            panel_id    INTEGER NOT NULL,
+            entity_type TEXT    NOT NULL,
+            entity_id   TEXT    NOT NULL,
+            inbound_tag TEXT    NOT NULL DEFAULT '',
+            bucket      INTEGER NOT NULL,
+            up          INTEGER DEFAULT 0,
+            down        INTEGER DEFAULT 0,
+            CONSTRAINT uq_nts UNIQUE (panel_id, entity_type, entity_id, inbound_tag, bucket)
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_nts_panel_bucket ON node_traffic_snapshot (panel_id, bucket)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_nts_bucket ON node_traffic_snapshot (bucket)")
+    return 1
 
 
 def _ensure_stats_indexes(cursor: sqlite3.Cursor) -> int:
@@ -769,6 +792,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         old_version = _get_db_version(cursor)
 
         stats_tables = _ensure_stats_tables(cursor)
+        node_traffic_table = _ensure_node_traffic_table(cursor)
         stats_indexes = _ensure_stats_indexes(cursor)
         stats_cover_indexes = _ensure_stats_cover_indexes(cursor)
         linked_panel_table = _ensure_linked_panel_table(cursor)
@@ -793,6 +817,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "old_version": old_version,
             "new_version": CURRENT_DB_VERSION,
             "stats_tables_created": stats_tables,
+            "node_traffic_table_created": node_traffic_table,
             "stats_indexes_created": stats_indexes,
             "stats_cover_indexes_created": stats_cover_indexes,
             "linked_panel_table_created": linked_panel_table,
@@ -811,6 +836,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         }
         changed = (
             stats_tables > 0
+            or node_traffic_table > 0
             or stats_indexes > 0
             or stats_cover_indexes > 0
             or linked_panel_table > 0

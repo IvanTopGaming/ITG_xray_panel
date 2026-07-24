@@ -82,6 +82,34 @@ def _upsert_snapshot(entity_type, entity_id, inbound_tag, bucket, up_delta, down
     )
 
 
+def _upsert_node_snapshot(panel_id, entity_type, entity_id, inbound_tag, bucket, up_delta, down_delta):
+
+    if up_delta == 0 and down_delta == 0:
+        return
+    db.session.execute(
+        text(
+            """
+            INSERT INTO node_traffic_snapshot
+                (panel_id, entity_type, entity_id, inbound_tag, bucket, up, down)
+            VALUES
+                (:pid, :et, :eid, :itag, :bucket, :up, :down)
+            ON CONFLICT(panel_id, entity_type, entity_id, inbound_tag, bucket) DO UPDATE SET
+                up   = node_traffic_snapshot.up   + excluded.up,
+                down = node_traffic_snapshot.down + excluded.down
+            """
+        ),
+        {
+            "pid": int(panel_id),
+            "et": entity_type,
+            "eid": entity_id,
+            "itag": inbound_tag or "",
+            "bucket": bucket,
+            "up": int(up_delta),
+            "down": int(down_delta),
+        },
+    )
+
+
 def _upsert_domain_stat(date_str, domain, client_email, inbound_tag, count):
 
     db.session.execute(

@@ -24,13 +24,37 @@ def _ensure_schema_version():
         db.session.execute(text("UPDATE schema_version SET version = :v"), {"v": CURRENT_DB_VERSION})
 
 
+_MIGRATION_LOCK_KEY = 84920001
+
+
 def migrate_postgres_db(logger=None):
-    db.create_all()
-    dropped = _drop_foreign_keys()
-    _ensure_schema_version()
-    _seed_bot_texts_pg(force=False)
-    reseeded = _maybe_force_reseed_bot_texts_pg()
-    db.session.commit()
+    is_pg = db.engine.dialect.name == "postgresql"
+    lock_conn = None
+    try:
+        if is_pg:
+            lock_conn = db.engine.connect()
+            lock_conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+            lock_conn.commit()
+        db.create_all()
+        dropped = _drop_foreign_keys()
+        _ensure_schema_version()
+        _seed_bot_texts_pg(force=False)
+        reseeded = _maybe_force_reseed_bot_texts_pg()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    finally:
+        if lock_conn is not None:
+            try:
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+                lock_conn.commit()
+            except Exception:
+                pass
+            try:
+                lock_conn.close()
+            except Exception:
+                pass
     if logger:
         logger.warning(
             "Postgres schema init: %s FK constraint(s) dropped, schema_version=%s, bot_texts_reseeded=%s",

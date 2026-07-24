@@ -133,6 +133,23 @@ class TrafficSnapshot(db.Model):
     )
 
 
+class NodeTrafficSnapshot(db.Model):
+    __tablename__ = "node_traffic_snapshot"
+    id = db.Column(db.Integer, primary_key=True)
+    panel_id = db.Column(db.Integer, nullable=False)
+    entity_type = db.Column(db.String(10), nullable=False)
+    entity_id = db.Column(db.String(150), nullable=False)
+    inbound_tag = db.Column(db.String(50), nullable=False, default="")
+    bucket = db.Column(db.BigInteger, nullable=False)
+    up = db.Column(db.BigInteger, default=0)
+    down = db.Column(db.BigInteger, default=0)
+    __table_args__ = (
+        db.UniqueConstraint("panel_id", "entity_type", "entity_id", "inbound_tag", "bucket", name="uq_nts"),
+        db.Index("ix_nts_panel_bucket", "panel_id", "bucket"),
+        db.Index("ix_nts_bucket", "bucket"),
+    )
+
+
 class LinkedPanel(db.Model):
     __tablename__ = "linked_panel"
     id = db.Column(db.Integer, primary_key=True)
