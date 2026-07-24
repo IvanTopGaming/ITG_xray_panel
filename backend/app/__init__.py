@@ -32,7 +32,7 @@ from .jobs.notifications import (
 from .jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from .jobs.panels import poll_linked_panels
 from .services.version_check import fetch_latest
-from .panel_role import is_worker, is_sub
+from .panel_role import is_worker, is_sub, is_bot_api
 
 grpc_gevent.init_gevent()
 LOCAL_DEV_ORIGINS = [
@@ -207,7 +207,7 @@ def create_app():
     limiter.init_app(app)
     scheduler.init_app(app)
 
-    if not is_sub():
+    if not is_sub() and not is_bot_api():
         _ensure_scheduler_job("sync_traffic", sync_traffic_job, 10)
         _ensure_scheduler_job("check_limits", check_limits_job, 60)
         _ensure_scheduler_job("parse_logs", parse_access_logs, 15)
@@ -250,6 +250,9 @@ def create_app():
 
     if is_sub():
         app.register_blueprint(subscription.bp, url_prefix="/api")
+    elif is_bot_api():
+        app.register_blueprint(bot_service.bp, url_prefix="/api")
+        app.register_blueprint(billing_api.bp, url_prefix="/api")
     else:
         app.register_blueprint(auth.bp, url_prefix="/api")
         app.register_blueprint(inbound.bp, url_prefix="/api")
@@ -272,7 +275,7 @@ def create_app():
 
     register_readyz(app)
 
-    if not is_sub():
+    if not is_sub() and not is_bot_api():
         with app.app_context():
             try:
                 _migration_report = run_startup_migration(app, db_path)

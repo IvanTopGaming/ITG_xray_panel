@@ -14,6 +14,13 @@ bp = Blueprint("billing", __name__)
 @bp.route("/billing/checkout", methods=["POST"])
 @bot_service_token_required
 def checkout():
+    from app.panel_role import is_bot_api
+    from app.services.admin_proxy import proxy_to_admin
+
+    if is_bot_api():
+        body, status = proxy_to_admin("/api/billing/checkout")
+        return jsonify(body), status
+
     payload = request.get_json(silent=True) or {}
     try:
         telegram_id = int(payload["telegram_id"])
@@ -40,6 +47,11 @@ def checkout():
 @bp.route("/billing/yookassa/webhook", methods=["POST"])
 @limiter.limit("60 per minute")
 def yookassa_webhook():
+    from app.panel_role import is_bot_api
+
+    if is_bot_api():
+        return jsonify({"error": "not available"}), 404
+
     body = request.get_json(silent=True) or {}
     event = body.get("event")
     obj = body.get("object") or {}

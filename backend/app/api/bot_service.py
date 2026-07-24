@@ -147,6 +147,13 @@ def upsert_user():
 @bp.route("/bot-service/trial/activate", methods=["POST"])
 @bot_service_token_required
 def activate_trial():
+    from app.panel_role import is_bot_api
+    from app.services.admin_proxy import proxy_to_admin
+
+    if is_bot_api():
+        body, status = proxy_to_admin("/api/bot-service/trial/activate")
+        return jsonify(body), status
+
     payload = request.get_json(silent=True) or {}
     tg_id = payload.get("telegram_id")
     if not isinstance(tg_id, int) or isinstance(tg_id, bool):
