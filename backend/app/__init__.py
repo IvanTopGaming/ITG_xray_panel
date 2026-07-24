@@ -32,7 +32,7 @@ from .jobs.notifications import (
 from .jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from .jobs.panels import poll_linked_panels
 from .services.version_check import fetch_latest
-from .panel_role import is_worker
+from .panel_role import is_worker, is_sub
 
 grpc_gevent.init_gevent()
 LOCAL_DEV_ORIGINS = [
@@ -207,29 +207,30 @@ def create_app():
     limiter.init_app(app)
     scheduler.init_app(app)
 
-    _ensure_scheduler_job("sync_traffic", sync_traffic_job, 10)
-    _ensure_scheduler_job("check_limits", check_limits_job, 60)
-    _ensure_scheduler_job("parse_logs", parse_access_logs, 15)
-    _ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
-    if not is_worker():
-        _ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
-        _ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
-        _ensure_scheduler_job("reconcile_refunds", reconcile_refunds, 3600)
-        _ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
-        _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
-        _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
-        _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
-        _ensure_scheduler_job("check_latest_version", fetch_latest, 21600)
-    if not scheduler.running:
-        scheduler.start()
+    if not is_sub():
+        _ensure_scheduler_job("sync_traffic", sync_traffic_job, 10)
+        _ensure_scheduler_job("check_limits", check_limits_job, 60)
+        _ensure_scheduler_job("parse_logs", parse_access_logs, 15)
+        _ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
+        if not is_worker():
+            _ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
+            _ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
+            _ensure_scheduler_job("reconcile_refunds", reconcile_refunds, 3600)
+            _ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
+            _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
+            _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
+            _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
+            _ensure_scheduler_job("check_latest_version", fetch_latest, 21600)
+        if not scheduler.running:
+            scheduler.start()
 
-    if not is_worker():
-        try:
-            import gevent
+        if not is_worker():
+            try:
+                import gevent
 
-            gevent.spawn(fetch_latest)
-        except Exception:
-            pass
+                gevent.spawn(fetch_latest)
+            except Exception:
+                pass
 
     from .api import (
         auth,
@@ -247,20 +248,23 @@ def create_app():
         monitoring,
     )
 
-    app.register_blueprint(auth.bp, url_prefix="/api")
-    app.register_blueprint(inbound.bp, url_prefix="/api")
-    app.register_blueprint(outbound.bp, url_prefix="/api")
-    app.register_blueprint(routing.bp, url_prefix="/api")
-    app.register_blueprint(system.bp, url_prefix="/api")
-    app.register_blueprint(subscription.bp, url_prefix="/api")
-    app.register_blueprint(statistics.bp, url_prefix="/api")
-    if not is_worker():
-        app.register_blueprint(bot_admin.bp, url_prefix="/api")
-        app.register_blueprint(bot_service.bp, url_prefix="/api")
-        app.register_blueprint(billing_api.bp, url_prefix="/api")
-        app.register_blueprint(panels.bp, url_prefix="/api")
-    app.register_blueprint(federation.bp, url_prefix="/api")
-    app.register_blueprint(monitoring.bp, url_prefix="/api")
+    if is_sub():
+        app.register_blueprint(subscription.bp, url_prefix="/api")
+    else:
+        app.register_blueprint(auth.bp, url_prefix="/api")
+        app.register_blueprint(inbound.bp, url_prefix="/api")
+        app.register_blueprint(outbound.bp, url_prefix="/api")
+        app.register_blueprint(routing.bp, url_prefix="/api")
+        app.register_blueprint(system.bp, url_prefix="/api")
+        app.register_blueprint(subscription.bp, url_prefix="/api")
+        app.register_blueprint(statistics.bp, url_prefix="/api")
+        if not is_worker():
+            app.register_blueprint(bot_admin.bp, url_prefix="/api")
+            app.register_blueprint(bot_service.bp, url_prefix="/api")
+            app.register_blueprint(billing_api.bp, url_prefix="/api")
+            app.register_blueprint(panels.bp, url_prefix="/api")
+        app.register_blueprint(federation.bp, url_prefix="/api")
+        app.register_blueprint(monitoring.bp, url_prefix="/api")
 
     @app.get("/healthz")
     def healthz():
@@ -268,63 +272,64 @@ def create_app():
 
     register_readyz(app)
 
-    with app.app_context():
-        try:
-            _migration_report = run_startup_migration(app, db_path)
-            if _migration_report.get("bot_texts_force_reseeded"):
-                try:
-                    from app.services import bot_events
+    if not is_sub():
+        with app.app_context():
+            try:
+                _migration_report = run_startup_migration(app, db_path)
+                if _migration_report.get("bot_texts_force_reseeded"):
+                    try:
+                        from app.services import bot_events
 
-                    bot_events.publish("texts_changed", telegram_id=None, payload={"lang": None})
-                except Exception:
-                    app.logger.warning(
-                        "texts_changed publish after force-reseed failed",
-                        exc_info=True,
-                    )
-            db.session.remove()
-            db.engine.dispose()
+                        bot_events.publish("texts_changed", telegram_id=None, payload={"lang": None})
+                    except Exception:
+                        app.logger.warning(
+                            "texts_changed publish after force-reseed failed",
+                            exc_info=True,
+                        )
+                db.session.remove()
+                db.engine.dispose()
 
-            from .models import SystemSetting
-            import secrets
+                from .models import SystemSetting
+                import secrets
 
-            existing = SystemSetting.query.filter_by(key="bot_service_token").first()
-            if existing is None or not existing.value:
-                if existing is None:
-                    existing = SystemSetting(key="bot_service_token", value="")
-                    db.session.add(existing)
-                existing.value = secrets.token_urlsafe(32)
+                existing = SystemSetting.query.filter_by(key="bot_service_token").first()
+                if existing is None or not existing.value:
+                    if existing is None:
+                        existing = SystemSetting(key="bot_service_token", value="")
+                        db.session.add(existing)
+                    existing.value = secrets.token_urlsafe(32)
+                    db.session.commit()
+                    app.logger.info("Generated initial bot_service_token")
+
+                direct_ob = Outbound.query.filter_by(tag="direct").first()
+                block_ob = Outbound.query.filter_by(tag="block").first()
+                if not direct_ob:
+                    db.session.add(Outbound(tag="direct", protocol="freedom", enable=True))
+                elif not bool(getattr(direct_ob, "enable", True)):
+                    direct_ob.enable = True
+                if not block_ob:
+                    db.session.add(Outbound(tag="block", protocol="blackhole", enable=True))
+                elif not bool(getattr(block_ob, "enable", True)):
+                    block_ob.enable = True
                 db.session.commit()
-                app.logger.info("Generated initial bot_service_token")
 
-            direct_ob = Outbound.query.filter_by(tag="direct").first()
-            block_ob = Outbound.query.filter_by(tag="block").first()
-            if not direct_ob:
-                db.session.add(Outbound(tag="direct", protocol="freedom", enable=True))
-            elif not bool(getattr(direct_ob, "enable", True)):
-                direct_ob.enable = True
-            if not block_ob:
-                db.session.add(Outbound(tag="block", protocol="blackhole", enable=True))
-            elif not bool(getattr(block_ob, "enable", True)):
-                block_ob.enable = True
-            db.session.commit()
+                generate_config_file(validate=False)
 
-            generate_config_file(validate=False)
-
-            if not Admin.query.first():
-                user, pw = _resolve_admin_bootstrap_credentials(panel_host)
-                if user == "admin" and pw == "admin":
-                    app.logger.warning("Security warning: default admin credentials are in use for a local domain.")
-                db.session.add(
-                    Admin(
-                        username=user,
-                        password=generate_password_hash(pw),
-                        password_changed_at=int(time.time()),
+                if not Admin.query.first():
+                    user, pw = _resolve_admin_bootstrap_credentials(panel_host)
+                    if user == "admin" and pw == "admin":
+                        app.logger.warning("Security warning: default admin credentials are in use for a local domain.")
+                    db.session.add(
+                        Admin(
+                            username=user,
+                            password=generate_password_hash(pw),
+                            password_changed_at=int(time.time()),
+                        )
                     )
-                )
-                db.session.commit()
-        except Exception:
-            app.logger.exception("Startup error")
-            raise
+                    db.session.commit()
+            except Exception:
+                app.logger.exception("Startup error")
+                raise
 
     app.logger.info("backend ready (db=%s, scheduler started)", db_path)
     return app

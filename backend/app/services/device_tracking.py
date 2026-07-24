@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import Client, ClientDevice, Inbound
+from app.panel_role import is_sub
 
 GateState = str
 
@@ -47,6 +48,9 @@ def revoke_device(client_id: str, device_id: int) -> bool:
 
 
 def device_gate(client: Client, inbound: Inbound, headers: dict) -> Tuple[GateState, dict]:
+
+    if is_sub():
+        return ("ok", {})
 
     limit = effective_device_limit(client, inbound)
     hwid = (headers.get("x-hwid") or "").strip()
@@ -130,6 +134,9 @@ def _user_distinct_hwids(telegram_id):
 
 
 def user_device_gate(telegram_id, headers: dict):
+
+    if is_sub():
+        return ("ok", {})
 
     enabled, limit = subscription_device_settings()
     if not enabled:

@@ -1,0 +1,73 @@
+services:
+  sub-backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    container_name: panel-sub-backend
+    restart: always
+    environment:
+      - PANEL_ROLE=sub
+      - PYTHONUNBUFFERED=1
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - PROXY_DOMAIN=${PROXY_DOMAIN:-}
+      - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
+      - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:?RATELIMIT_STORAGE_URI is required}
+      - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "app:create_app()"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3).read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      sub-net:
+        aliases:
+          - backend
+
+  caddy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE is required}
+    container_name: panel-sub-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
+      - ./certs:/root/cert:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - PANEL_DOMAIN=${PANEL_DOMAIN:-}
+      - PROXY_DOMAIN=${PROXY_DOMAIN:-}
+      - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
+    env_file:
+      - .env
+    depends_on:
+      sub-backend:
+        condition: service_healthy
+    networks:
+      - sub-net
+
+networks:
+  sub-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
