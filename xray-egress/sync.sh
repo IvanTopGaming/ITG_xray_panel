@@ -2,9 +2,14 @@
 set -eu
 
 URL="${BIND_IPS_URL:-http://backend:5000/api/system/egress/bind-ips}"
-IFACE="${XRAY_IFACE:-eth0}"
 TOKEN="${EGRESS_INTERNAL_TOKEN:-}"
 INTERVAL="${EGRESS_SYNC_INTERVAL:-30}"
+
+IFACE="${XRAY_IFACE:-}"
+if [ -z "$IFACE" ]; then
+  IFACE=$(ip route | awk '/default/ {print $5}' | head -n1)
+  IFACE="${IFACE:-eth0}"
+fi
 
 while true; do
   resp="$(curl -fsS -H "X-Egress-Token: ${TOKEN}" "$URL" 2>/dev/null)" || { sleep "$INTERVAL"; continue; }

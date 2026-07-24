@@ -151,6 +151,10 @@ def _api_add_user_grpc(inbound_tag, client_obj):
         )
         return True
     except grpc.RpcError as e:
+        err_msg = str(e).lower()
+        if "already exists" in err_msg:
+            logger.info("gRPC add user skipped for %s/%s (already exists)", inbound_tag, client_obj.email)
+            return True
         logger.info("gRPC add user failed for %s/%s: %s", inbound_tag, client_obj.email, e)
         return False
 
@@ -171,6 +175,10 @@ def _api_remove_user_grpc(inbound_tag, email):
         )
         return True
     except grpc.RpcError as e:
+        err_msg = str(e).lower()
+        if "not found" in err_msg:
+            logger.info("gRPC remove user skipped for %s/%s (not found)", inbound_tag, email)
+            return True
         logger.info("gRPC remove user failed for %s/%s: %s", inbound_tag, email, e)
         return False
 

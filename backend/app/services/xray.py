@@ -227,6 +227,12 @@ def restart_xray_container():
         client = docker.from_env()
         container = client.containers.get(XRAY_CONTAINER_NAME)
         container.restart()
+        try:
+            client.containers.get("xray-egress").restart()
+        except docker.errors.NotFound:
+            pass
+        except docker.errors.DockerException as e:
+            logger.warning("xray-egress restart failed (non-fatal): %s", e)
     except docker.errors.DockerException as e:
         logger.error("Docker restart error: %s", e)
         raise RuntimeError("Failed to restart Xray container") from e
@@ -867,6 +873,12 @@ def generate_config_file(validate=True):
                 }
                 if getattr(ob, "send_through", None):
                     ob_json["sendThrough"] = ob.send_through
+                    try:
+                        ver = ipaddress.ip_address(ob.send_through).version
+                        if "domainStrategy" not in ob_json["settings"]:
+                            ob_json["settings"]["domainStrategy"] = "UseIPv4" if ver == 4 else "UseIPv6"
+                    except ValueError:
+                        pass
                 outbounds_json.append(ob_json)
 
                 if not is_system_outbound:

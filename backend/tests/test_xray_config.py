@@ -730,9 +730,56 @@ class TestGenerateConfigFile:
 
         ded = next(o for o in cfg["outbounds"] if o["tag"] == "ded-1")
         assert ded["sendThrough"] == "172.28.0.240"
+        assert ded["settings"]["domainStrategy"] == "UseIPv4"
         assert "public_ip" not in ded
         assert "gateway" not in ded
         assert "public_ip" not in json.dumps(cfg)
+
+    def test_send_through_ipv6_sets_use_ipv6(self):
+        from app.services.xray import generate_config_file
+
+        db.session.add(
+            Outbound(
+                tag="ded-6",
+                protocol="freedom",
+                enable=True,
+                settings="{}",
+                stream_settings="{}",
+                mux="{}",
+                send_through="2001:db8::10",
+                public_ip="2001:db8::7",
+            )
+        )
+        db.session.commit()
+
+        generate_config_file()
+        cfg = self._read_config()
+
+        ded = next(o for o in cfg["outbounds"] if o["tag"] == "ded-6")
+        assert ded["settings"]["domainStrategy"] == "UseIPv6"
+
+    def test_send_through_preserves_existing_domain_strategy(self):
+        from app.services.xray import generate_config_file
+
+        db.session.add(
+            Outbound(
+                tag="ded-as",
+                protocol="freedom",
+                enable=True,
+                settings=json.dumps({"domainStrategy": "AsIs"}),
+                stream_settings="{}",
+                mux="{}",
+                send_through="172.28.0.241",
+                public_ip="203.0.113.9",
+            )
+        )
+        db.session.commit()
+
+        generate_config_file()
+        cfg = self._read_config()
+
+        ded = next(o for o in cfg["outbounds"] if o["tag"] == "ded-as")
+        assert ded["settings"]["domainStrategy"] == "AsIs"
 
 
 class TestGetSystemSettings:

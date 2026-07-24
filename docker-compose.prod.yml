@@ -211,7 +211,6 @@ services:
     cap_add:
       - NET_ADMIN
     environment:
-      - XRAY_IFACE=eth0
       - BIND_IPS_URL=http://backend:5000/api/system/egress/bind-ips
       - EGRESS_INTERNAL_TOKEN=${EGRESS_INTERNAL_TOKEN:-}
     depends_on:
