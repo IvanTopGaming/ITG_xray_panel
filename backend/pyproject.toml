@@ -23,6 +23,8 @@ dependencies = [
     "pyyaml",
     "cryptography",
     "yookassa>=3.0,<4.0",
+    "psycopg2-binary==2.9.10",
+    "psycogreen==1.0.2",
 ]
 
 [dependency-groups]

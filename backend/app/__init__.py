@@ -2,6 +2,10 @@ import gevent.monkey
 
 gevent.monkey.patch_all()
 
+from app.pg_compat import patch_gevent_psycopg
+
+patch_gevent_psycopg()
+
 import os
 import re
 import time
@@ -79,6 +83,19 @@ def _cors_origins():
     return [f"https://{panel_host}"]
 
 
+def register_readyz(app):
+    from sqlalchemy import text as _text
+
+    @app.get("/readyz")
+    def readyz():
+        try:
+            db.session.execute(_text("SELECT 1"))
+            return {"status": "ready"}, 200
+        except Exception:
+            db.session.rollback()
+            return {"status": "unavailable"}, 503
+
+
 def _ensure_scheduler_job(job_id, func, seconds):
     if scheduler.get_job(job_id) is None:
 
@@ -144,7 +161,11 @@ def create_app():
     os.makedirs(db_folder, exist_ok=True)
 
     db_path = os.path.join(db_folder, "panel.db")
-    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_path}"
+
+    from app.db_config import database_uri, engine_options
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = database_uri(db_path)
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options(app.config["SQLALCHEMY_DATABASE_URI"])
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SCHEDULER_API_ENABLED"] = False
     app.config["SCHEDULER_JOB_DEFAULTS"] = {
@@ -163,6 +184,10 @@ def create_app():
         raise RuntimeError(
             "SECRET_KEY is missing or weak for non-local PANEL_DOMAIN. Use a random value with at least 32 characters."
         )
+
+    from app.db_config import validate_database_uri
+
+    validate_database_uri(app.config["SQLALCHEMY_DATABASE_URI"], _is_local_domain(panel_host))
 
     CORS(app, resources={r"/api/*": {"origins": _cors_origins()}})
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -227,6 +252,8 @@ def create_app():
     @app.get("/healthz")
     def healthz():
         return {"status": "ok"}, 200
+
+    register_readyz(app)
 
     with app.app_context():
         try:

@@ -61,9 +61,11 @@ def app():
     with app.app_context():
         _db.create_all()
         from app.models import FederationConfig
+        from app import register_readyz
 
         _db.session.add(FederationConfig(id=1))
         _db.session.commit()
+        register_readyz(app)
         yield app
         _db.session.remove()
         _db.drop_all()
