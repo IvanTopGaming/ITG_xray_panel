@@ -16,6 +16,8 @@ from werkzeug.security import generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from grpc.experimental import gevent as grpc_gevent
 from db_migration import migrate_sqlite_db
+from app.pg_migrate import migrate_postgres_db
+from app.db_config import is_postgres
 
 from .extensions import db, migrate, scheduler, limiter
 from .observability import setup_logging, init_request_logging, run_job_logged
@@ -152,6 +154,13 @@ def _resolve_admin_bootstrap_credentials(panel_host):
     return username, password
 
 
+def run_startup_migration(app, db_path):
+    if is_postgres(app.config["SQLALCHEMY_DATABASE_URI"]):
+        return migrate_postgres_db(logger=app.logger)
+    db.create_all()
+    return migrate_sqlite_db(db_path, logger=app.logger)
+
+
 def create_app():
     setup_logging()
     app = Flask(__name__)
@@ -257,8 +266,7 @@ def create_app():
 
     with app.app_context():
         try:
-            db.create_all()
-            _migration_report = migrate_sqlite_db(db_path, logger=app.logger)
+            _migration_report = run_startup_migration(app, db_path)
             if _migration_report.get("bot_texts_force_reseeded"):
                 try:
                     from app.services import bot_events
