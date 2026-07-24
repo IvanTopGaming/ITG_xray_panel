@@ -14,7 +14,6 @@ import System from '@/pages/System';
 import Statistics from '@/pages/Statistics';
 import Panels from '@/pages/Panels';
 import Bot from '@/pages/Bot';
-import Monitoring from '@/pages/Monitoring';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -52,10 +51,6 @@ function App() {
             <Route
               path="statistics"
               element={isWorker ? <Navigate to="/" replace /> : <Statistics />}
-            />
-            <Route
-              path="monitoring"
-              element={isWorker ? <Navigate to="/" replace /> : <Monitoring />}
             />
             <Route path="panels" element={isWorker ? <Navigate to="/" replace /> : <Panels />} />
             <Route path="routing" element={<Routing />} />

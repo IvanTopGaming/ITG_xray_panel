@@ -245,7 +245,6 @@ def create_app():
         billing as billing_api,
         panels,
         federation,
-        monitoring,
     )
 
     if is_sub():
@@ -267,7 +266,6 @@ def create_app():
             app.register_blueprint(billing_api.bp, url_prefix="/api")
             app.register_blueprint(panels.bp, url_prefix="/api")
         app.register_blueprint(federation.bp, url_prefix="/api")
-        app.register_blueprint(monitoring.bp, url_prefix="/api")
 
     @app.get("/healthz")
     def healthz():

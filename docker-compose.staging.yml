@@ -11,7 +11,6 @@ services:
       - xray_logs:/var/log/xray
     networks:
       - panel-net
-      - metrics-xray-net
 
   socket-proxy:
     image: ${SOCKET_PROXY_IMAGE:?SOCKET_PROXY_IMAGE is required}
@@ -83,7 +82,6 @@ services:
       - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
       - DOCKER_HOST=tcp://socket-proxy:2375
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
-      - METRICS_AGENT_URL=http://metrics:9100
     env_file:
       - .env
     command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "app:create_app()"
@@ -113,7 +111,6 @@ services:
       - panel-net
       - redis-net
       - dockersock-net
-      - metrics-net
 
   frontend:
     image: ghcr.io/ivantopgaming/panel-frontend:dev-latest
@@ -183,23 +180,6 @@ services:
       - panel-net
       - redis-net
 
-  metrics:
-    image: ghcr.io/ivantopgaming/panel-metrics:dev-latest
-    container_name: panel-metrics
-    restart: always
-    environment:
-      - XRAY_API_ADDR=xray:10085
-    volumes:
-      - metrics_data:/data
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-    networks:
-      - metrics-net
-      - metrics-xray-net
-    depends_on:
-      xray:
-        condition: service_started
-
 networks:
   panel-net:
     driver: bridge
@@ -209,16 +189,9 @@ networks:
   dockersock-net:
     driver: bridge
     internal: true
-  metrics-net:
-    driver: bridge
-    internal: true
-  metrics-xray-net:
-    driver: bridge
-    internal: true
 
 volumes:
   caddy_data:
   caddy_config:
   shared_config:
   xray_logs:
-  metrics_data:

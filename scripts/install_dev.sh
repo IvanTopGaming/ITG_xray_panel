@@ -43,7 +43,7 @@ else
     SECRET_KEY=$(gen_secret 48)
     PANEL_ADMIN_PASSWORD=$(gen_secret 16)
     cat > .env <<EOF
-# Container images (staging hardcodes :dev-latest for panel + metrics)
+# Container images (staging hardcodes :dev-latest for panel)
 XRAY_IMAGE=ghcr.io/xtls/xray-core:latest
 SOCKET_PROXY_IMAGE=tecnativa/docker-socket-proxy:latest
 REDIS_IMAGE=redis:alpine

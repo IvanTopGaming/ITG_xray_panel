@@ -90,7 +90,6 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 - **Hidden behind a secret path** — everything outside `/<PANEL_SECRET_PATH>/` returns `404`; the bare domain serves a decoy.
 - **Instant session kill** — changing the admin password immediately invalidates every active JWT.
 - **Locked-down Docker socket** — only the exact container ops the backend needs are exposed, via `tecnativa/docker-socket-proxy`.
-- **Per-machine monitoring** — a lightweight metrics agent on each host feeds a live CPU / memory / network dashboard (network read from the host netns, not the sidecar).
 - **Backup & restore** — admin-only DB snapshot export/import.
 
 ---
@@ -194,10 +193,9 @@ New settings are picked up within ~60 s — no restart needed.
 | `redis`        | Rate limiter, subscription cache, bot pub/sub channel                               |
 | `socket-proxy` | Locked-down Docker socket (only the ops `backend` needs)                            |
 | `bot`          | Aiogram Telegram bot — runs on the master only                                      |
-| `metrics`      | Per-host metrics agent (CPU / RAM / network) feeding the monitoring dashboard        |
 | `xray-egress`  | Optional sidecar (opt-in via `--profile egress`) that keeps dedicated-egress bind-IPs aliased in Xray's netns |
 
-Networks are split for isolation: `panel-net` (fixed `172.28.0.0/24`, the only segment with internet egress) plus four `internal: true` segments — `redis-net` (backend ↔ redis ↔ bot), `dockersock-net` (backend ↔ socket-proxy), and `metrics-net` / `metrics-xray-net` for the monitoring agent — so the Docker-socket proxy is reachable only by `backend`, and neither it nor Redis can reach the internet.
+Networks are split for isolation: `panel-net` (fixed `172.28.0.0/24`, the only segment with internet egress) plus two `internal: true` segments — `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy) — so the Docker-socket proxy is reachable only by `backend`, and neither it nor Redis can reach the internet.
 
 </details>
 

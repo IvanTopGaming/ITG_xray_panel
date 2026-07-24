@@ -127,21 +127,3 @@ jobs:
 
       - name: Run tests
         run: uv run pytest tests/ -q
-
-  metrics-agent:
-    name: Metrics agent (Go)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: metrics-agent
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: metrics-agent/go.sum
-
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...

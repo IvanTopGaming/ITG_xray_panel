@@ -8,7 +8,6 @@ import {
   BarChart3,
   Server,
   Bot as BotIcon,
-  Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore, AuthState } from '@/stores/authStore';
@@ -22,11 +21,10 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
   const logout = useAuthStore((state: AuthState) => state.logout);
   const { hasUpdates } = useVersionStatus();
 
-  const WORKER_HIDDEN = new Set(['/statistics', '/monitoring', '/panels', '/bot']);
+  const WORKER_HIDDEN = new Set(['/statistics', '/panels', '/bot']);
   const navItems = [
     { icon: LayoutDashboard, label: 'Panel', path: '/' },
     { icon: BarChart3, label: 'Stats', path: '/statistics' },
-    { icon: Activity, label: 'Monitoring', path: '/monitoring' },
     { icon: Server, label: 'Panels', path: '/panels' },
     { icon: RouteIcon, label: 'Routing', path: '/routing' },
     { icon: BotIcon, label: 'Bot', path: '/bot' },
