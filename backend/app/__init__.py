@@ -32,6 +32,7 @@ from .jobs.notifications import (
 from .jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from .jobs.panels import poll_linked_panels
 from .services.version_check import fetch_latest
+from .panel_role import is_worker
 
 grpc_gevent.init_gevent()
 LOCAL_DEV_ORIGINS = [
@@ -210,23 +211,25 @@ def create_app():
     _ensure_scheduler_job("check_limits", check_limits_job, 60)
     _ensure_scheduler_job("parse_logs", parse_access_logs, 15)
     _ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
-    _ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
-    _ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
-    _ensure_scheduler_job("reconcile_refunds", reconcile_refunds, 3600)
-    _ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
-    _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
-    _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
-    _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
-    _ensure_scheduler_job("check_latest_version", fetch_latest, 21600)
+    if not is_worker():
+        _ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
+        _ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
+        _ensure_scheduler_job("reconcile_refunds", reconcile_refunds, 3600)
+        _ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
+        _ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
+        _ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
+        _ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
+        _ensure_scheduler_job("check_latest_version", fetch_latest, 21600)
     if not scheduler.running:
         scheduler.start()
 
-    try:
-        import gevent
+    if not is_worker():
+        try:
+            import gevent
 
-        gevent.spawn(fetch_latest)
-    except Exception:
-        pass
+            gevent.spawn(fetch_latest)
+        except Exception:
+            pass
 
     from .api import (
         auth,
@@ -251,10 +254,11 @@ def create_app():
     app.register_blueprint(system.bp, url_prefix="/api")
     app.register_blueprint(subscription.bp, url_prefix="/api")
     app.register_blueprint(statistics.bp, url_prefix="/api")
-    app.register_blueprint(bot_admin.bp, url_prefix="/api")
-    app.register_blueprint(bot_service.bp, url_prefix="/api")
-    app.register_blueprint(billing_api.bp, url_prefix="/api")
-    app.register_blueprint(panels.bp, url_prefix="/api")
+    if not is_worker():
+        app.register_blueprint(bot_admin.bp, url_prefix="/api")
+        app.register_blueprint(bot_service.bp, url_prefix="/api")
+        app.register_blueprint(billing_api.bp, url_prefix="/api")
+        app.register_blueprint(panels.bp, url_prefix="/api")
     app.register_blueprint(federation.bp, url_prefix="/api")
     app.register_blueprint(monitoring.bp, url_prefix="/api")
 

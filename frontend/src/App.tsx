@@ -5,6 +5,7 @@ import 'react-toastify/dist/ReactToastify.css';
 
 import { useAuthStore, AuthState } from '@/stores/authStore';
 import { panelBase } from '@/lib/panelBase';
+import { isWorker } from '@/lib/panelRole';
 import { Layout } from '@/components/layout/Layout';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
@@ -48,11 +49,17 @@ function App() {
             }
           >
             <Route index element={<Dashboard />} />
-            <Route path="statistics" element={<Statistics />} />
-            <Route path="monitoring" element={<Monitoring />} />
-            <Route path="panels" element={<Panels />} />
+            <Route
+              path="statistics"
+              element={isWorker ? <Navigate to="/" replace /> : <Statistics />}
+            />
+            <Route
+              path="monitoring"
+              element={isWorker ? <Navigate to="/" replace /> : <Monitoring />}
+            />
+            <Route path="panels" element={isWorker ? <Navigate to="/" replace /> : <Panels />} />
             <Route path="routing" element={<Routing />} />
-            <Route path="bot" element={<Bot />} />
+            <Route path="bot" element={isWorker ? <Navigate to="/" replace /> : <Bot />} />
             <Route path="system" element={<System />} />
           </Route>
         </Routes>

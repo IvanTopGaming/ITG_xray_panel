@@ -86,6 +86,7 @@ services:
       - METRICS_AGENT_URL=http://metrics:9100
       - EGRESS_INTERNAL_TOKEN=${EGRESS_INTERNAL_TOKEN:-}
       - EGRESS_UPLINK_IFACE=${EGRESS_UPLINK_IFACE:-eth0}
+      - PANEL_ROLE=${PANEL_ROLE:-master}
     env_file:
       - .env
     command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "app:create_app()"
@@ -136,6 +137,7 @@ services:
         condition: service_healthy
     environment:
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - PANEL_ROLE=${PANEL_ROLE:-master}
     env_file:
       - .env
     networks:

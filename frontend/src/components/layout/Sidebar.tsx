@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { useAuthStore, AuthState } from '@/stores/authStore';
 import { motion } from 'framer-motion';
 import { useVersionStatus } from '@/hooks/useVersionStatus';
+import { isWorker } from '@/lib/panelRole';
 
 export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const location = useLocation();
@@ -21,6 +22,7 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
   const logout = useAuthStore((state: AuthState) => state.logout);
   const { hasUpdates } = useVersionStatus();
 
+  const WORKER_HIDDEN = new Set(['/statistics', '/monitoring', '/panels', '/bot']);
   const navItems = [
     { icon: LayoutDashboard, label: 'Panel', path: '/' },
     { icon: BarChart3, label: 'Stats', path: '/statistics' },
@@ -29,7 +31,7 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
     { icon: RouteIcon, label: 'Routing', path: '/routing' },
     { icon: BotIcon, label: 'Bot', path: '/bot' },
     { icon: Settings, label: 'System', path: '/system' },
-  ];
+  ].filter((item) => !(isWorker && WORKER_HIDDEN.has(item.path)));
 
   const handleNav = (path: string) => {
     navigate(path);
