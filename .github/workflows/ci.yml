@@ -90,6 +90,20 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pw
+          POSTGRES_DB: paneltest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       SECRET_KEY: test
       PANEL_DOMAIN: localhost
@@ -98,6 +112,7 @@ jobs:
       PROXY_DOMAIN: localhost
       PANEL_SECRET_PATH: /test
       RATELIMIT_STORAGE_URI: memory://
+      DATABASE_URL_TEST: postgresql+psycopg2://postgres:pw@localhost:5432/paneltest
     steps:
       - uses: actions/checkout@v4
 

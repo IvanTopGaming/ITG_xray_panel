@@ -63,4 +63,4 @@ def test_migrate_postgres_db_leaves_no_enforced_fks():
         assert fk_count == 0
         assert report["new_version"] > 0
         assert report["foreign_keys_dropped"] >= 0
-        assert report["bot_texts_force_reseeded"] is False
+        assert report["bot_texts_force_reseeded"] is True

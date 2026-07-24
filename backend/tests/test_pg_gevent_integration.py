@@ -6,6 +6,8 @@ import pytest
 DSN = os.getenv("DATABASE_URL_TEST", "").strip()
 pytestmark = pytest.mark.skipif(not DSN, reason="DATABASE_URL_TEST not set")
 
+PSYCOPG2_DSN = DSN.replace("postgresql+psycopg2://", "postgresql://")
+
 
 def test_psycopg2_yields_to_gevent_hub():
     from app.pg_compat import patch_gevent_psycopg
@@ -16,7 +18,7 @@ def test_psycopg2_yields_to_gevent_hub():
     import psycopg2
 
     def query():
-        conn = psycopg2.connect(DSN)
+        conn = psycopg2.connect(PSYCOPG2_DSN)
         try:
             cur = conn.cursor()
             cur.execute("SELECT pg_sleep(0.3)")
