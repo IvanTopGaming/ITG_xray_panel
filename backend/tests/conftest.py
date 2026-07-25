@@ -81,7 +81,7 @@ def app():
     with app.app_context():
         _db.create_all()
         from panel_core.models import FederationConfig
-        from panel_core import register_readyz
+        from panel_core.app_base import register_readyz
 
         _db.session.add(FederationConfig(id=1))
         _db.session.commit()

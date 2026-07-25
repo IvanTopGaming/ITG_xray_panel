@@ -14,7 +14,7 @@ def _env(monkeypatch, role):
 
 def test_sub_mode_mounts_only_subscription(monkeypatch):
     _env(monkeypatch, "sub")
-    with patch("panel_core.run_startup_migration") as m_mig:
+    with patch("panel_core.app_base.run_startup_migration") as m_mig:
         from panel_core import create_app
         from panel_core.extensions import scheduler
 
