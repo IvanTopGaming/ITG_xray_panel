@@ -18,12 +18,12 @@ from panel_core.xray.grpc_client import (
 )
 from panel_core.xray import (
     generate_config_file,
-    has_local_xray,
     restart_xray_container,
     _api_add_user_grpc,  # noqa: F401 — re-exported for consumers importing it from this module
     _api_remove_user_grpc,
 )
 from panel_core.xray.engine import ACCESS_LOG_PATH
+from panel_core.xray.gateway import get_xray_gateway
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
 
 ACCESS_LOG_OFFSET_PATH = f"{ACCESS_LOG_PATH}.offset"
@@ -466,17 +466,12 @@ def reset_user_traffic(tag, email):
     if not client:
         raise Exception("User not found")
     runtime_email = build_runtime_email(tag, email)
-    if has_local_xray():
-        _reset_user_counters_in_xray(tag, email, runtime_email)
+    gateway = get_xray_gateway()
+    if gateway.has_local_xray():
+        gateway.reset_user_counters(tag, email, runtime_email)
     client.up = 0
     client.down = 0
     db.session.commit()
-
-
-def _reset_user_counters_in_xray(tag, email, runtime_email):
-    from panel_core.xray import grpc_client
-
-    return grpc_client.reset_user_counters(tag, email, runtime_email)
 
 
 def reset_inbound_traffic(tag):
@@ -485,23 +480,19 @@ def reset_inbound_traffic(tag):
         raise Exception("Inbound not found")
     for client in ib.clients:
         reset_user_traffic(tag, client.email)
-    if has_local_xray():
-        _reset_inbound_counters_in_xray(tag)
+    gateway = get_xray_gateway()
+    if gateway.has_local_xray():
+        gateway.reset_inbound_counters(tag)
     ib.up = 0
     ib.down = 0
     db.session.commit()
-
-
-def _reset_inbound_counters_in_xray(tag):
-    from panel_core.xray import grpc_client
-
-    return grpc_client.reset_inbound_counters(tag)
 
 
 def bulk_delete_users(users_list):
     if not users_list:
         return 0
 
+    gateway = get_xray_gateway()
     grpc_removals = []
     restart_required = False
     deleted_count = 0
@@ -530,16 +521,16 @@ def bulk_delete_users(users_list):
         return 0
 
     db.session.commit()
-    generate_config_file()
+    gateway.apply_config()
 
     if restart_required:
-        restart_xray_container()
+        gateway.restart()
     else:
         grpc_failed = False
         for tag, email in grpc_removals:
-            if not _api_remove_user_grpc(tag, email):
+            if not gateway.remove_user(tag, email):
                 grpc_failed = True
         if grpc_failed:
-            restart_xray_container()
+            gateway.restart()
 
     return deleted_count

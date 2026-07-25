@@ -819,3 +819,68 @@ class TestCheckLimitsTransactionShape:
             f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
             f"This holds the SQLite write lock across gRPC calls. Order: {order}"
         )
+
+
+def test_reset_user_traffic_goes_through_the_gateway(app, db):
+    from unittest.mock import MagicMock, patch
+
+    from panel_core.extensions import db as _db
+    from panel_core.models import Client, Inbound
+    from panel_core.services.stats import reset_user_traffic
+
+    _db.session.add(Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}"))
+    _db.session.add(Client(id="c1", email="u1", inbound_tag="DE-vless", up=500, down=500, enable=True, expiry_time=0))
+    _db.session.commit()
+
+    gateway = MagicMock()
+    gateway.has_local_xray.return_value = True
+    with patch("panel_core.services.stats.get_xray_gateway", return_value=gateway):
+        reset_user_traffic("DE-vless", "u1")
+
+    gateway.reset_user_counters.assert_called_once()
+    client = Client.query.filter_by(inbound_tag="DE-vless", email="u1").first()
+    assert (client.up, client.down) == (0, 0)
+
+
+def test_reset_user_traffic_skips_xray_without_local_instance(app, db):
+    from unittest.mock import MagicMock, patch
+
+    from panel_core.extensions import db as _db
+    from panel_core.models import Client, Inbound
+    from panel_core.services.stats import reset_user_traffic
+
+    _db.session.add(Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}"))
+    _db.session.add(Client(id="c2", email="u2", inbound_tag="DE-vless", up=500, down=500, enable=True, expiry_time=0))
+    _db.session.commit()
+
+    gateway = MagicMock()
+    gateway.has_local_xray.return_value = False
+    with patch("panel_core.services.stats.get_xray_gateway", return_value=gateway):
+        reset_user_traffic("DE-vless", "u2")
+
+    gateway.reset_user_counters.assert_not_called()
+    client = Client.query.filter_by(inbound_tag="DE-vless", email="u2").first()
+    assert (client.up, client.down) == (0, 0)
+
+
+def test_bulk_delete_users_goes_through_the_gateway(app, db):
+    from unittest.mock import MagicMock, patch
+
+    from panel_core.extensions import db as _db
+    from panel_core.models import Client, Inbound
+    from panel_core.services.stats import bulk_delete_users
+
+    _db.session.add(Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}"))
+    _db.session.add(Client(id="c3", email="u3", inbound_tag="DE-vless", enable=True, expiry_time=0))
+    _db.session.commit()
+
+    gateway = MagicMock()
+    gateway.has_local_xray.return_value = True
+    gateway.remove_user.return_value = True
+    with patch("panel_core.services.stats.get_xray_gateway", return_value=gateway):
+        deleted = bulk_delete_users([{"tag": "DE-vless", "email": "u3"}])
+
+    assert deleted == 1
+    gateway.apply_config.assert_called_once()
+    gateway.remove_user.assert_called_once_with("DE-vless", "u3")
+    assert Client.query.filter_by(email="u3").first() is None
