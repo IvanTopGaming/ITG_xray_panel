@@ -13,7 +13,7 @@ from panel_core.utils import token_required, admin_or_federation_token_required
 from panel_core.extensions import limiter, db
 from panel_core.models import SystemSetting
 from panel_core.services.egress import build_bind_ips, build_host_script
-from panel_core.xray.engine import (
+from panel_core.xray import (
     restart_xray_container,
     update_geo_db,
     stream_xray_logs,

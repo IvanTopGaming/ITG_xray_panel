@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import RoutingProfile, Outbound, Balancer
 from panel_core.utils import token_required
-from panel_core.xray.engine import generate_config_file, restart_xray_container
+from panel_core.xray import generate_config_file, restart_xray_container
 
 bp = Blueprint("routing", __name__)
 

@@ -64,8 +64,8 @@ _COMMON_PATCHES = [
     "panel_core.api.inbound.restart_xray_container",
     "panel_core.xray.engine.generate_config_file",
     "panel_core.xray.engine.restart_xray_container",
-    "panel_core.services.stats._api_add_user_grpc",
-    "panel_core.services.stats._api_remove_user_grpc",
+    "panel_core.api.inbound._api_add_user_grpc",
+    "panel_core.api.inbound._api_remove_user_grpc",
     "panel_core.services.sub_cache.invalidate_user",
     "panel_core.services.sub_cache.invalidate_all_for_inbound",
 ]

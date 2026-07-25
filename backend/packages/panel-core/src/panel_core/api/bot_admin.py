@@ -25,8 +25,12 @@ from panel_core.models import (
 from panel_core.services import bot_events
 from panel_core.services.panel_proxy import fetch_panel_snapshot_live, get_panel_snapshot, proxy_update_user
 from panel_core.services.provisioning import apply_tariff_for_user, backfill_tariff
-from panel_core.services.stats import _api_remove_user_grpc, _api_add_user_grpc
-from panel_core.xray.engine import generate_config_file, restart_xray_container
+from panel_core.xray import (
+    generate_config_file,
+    restart_xray_container,
+    _api_add_user_grpc,
+    _api_remove_user_grpc,
+)
 from panel_core.utils import token_required
 
 bp = Blueprint("bot_admin", __name__)

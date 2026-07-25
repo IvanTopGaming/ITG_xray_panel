@@ -50,6 +50,16 @@ from panel_core.extensions import db as _db  # noqa: E402
 import panel_core.models  # noqa: E402, F401  -- registers tables with db.metadata
 
 
+@pytest.fixture(autouse=True)
+def _reset_xray_gateway():
+
+    from panel_core.xray import gateway as _gateway_module
+
+    _gateway_module.set_xray_gateway(None)
+    yield
+    _gateway_module.set_xray_gateway(None)
+
+
 @pytest.fixture(scope="function")
 def app():
 

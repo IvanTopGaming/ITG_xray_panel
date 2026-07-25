@@ -8,7 +8,7 @@ from panel_core.extensions import db, limiter
 from panel_core.models import Outbound, Balancer, Client
 from panel_core.utils import token_required, normalize_tag
 from panel_core.services.egress import allocate_bind_ip
-from panel_core.xray.engine import generate_config_file, restart_xray_container
+from panel_core.xray import generate_config_file, restart_xray_container
 
 bp = Blueprint("outbound", __name__)
 ALLOWED_BALANCER_STRATEGIES = {"random", "leastLoad", "leastPing"}

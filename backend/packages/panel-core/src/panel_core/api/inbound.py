@@ -15,11 +15,13 @@ from panel_core.utils import (
     normalize_email,
     parse_int,
 )
-from panel_core.xray.engine import (
+from panel_core.xray import (
     generate_config_file,
     restart_xray_container,
-    _normalize_fallback_dest,
+    _api_add_user_grpc,
+    _api_remove_user_grpc,
 )
+from panel_core.xray.engine import _normalize_fallback_dest
 from panel_core.xray.protocol import (
     _build_stream_settings,
     _validate_port,
@@ -32,8 +34,6 @@ from panel_core.xray.protocol import (
     inbound_supports_vless_flow,
 )
 from panel_core.services.stats import (
-    _api_add_user_grpc,
-    _api_remove_user_grpc,
     reset_user_traffic,
     reset_inbound_traffic,
     bulk_delete_users,

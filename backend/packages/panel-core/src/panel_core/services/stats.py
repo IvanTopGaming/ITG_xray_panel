@@ -15,14 +15,14 @@ from panel_core.xray.grpc_client import (
     stats_command_pb2_grpc,
     get_channel,
     _close_channel,
+)
+from panel_core.xray import (
+    generate_config_file,
+    restart_xray_container,
     _api_add_user_grpc,  # noqa: F401 — re-exported for consumers importing it from this module
     _api_remove_user_grpc,
 )
-from panel_core.xray.engine import (
-    generate_config_file,
-    restart_xray_container,
-    ACCESS_LOG_PATH,
-)
+from panel_core.xray.engine import ACCESS_LOG_PATH
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
 
 ACCESS_LOG_OFFSET_PATH = f"{ACCESS_LOG_PATH}.offset"

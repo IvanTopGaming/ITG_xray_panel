@@ -8,8 +8,7 @@ from panel_core.extensions import db
 from panel_core.models import Client, Inbound, LinkedPanel, NotificationLog
 from panel_core.services import sub_cache
 from panel_core.services.panel_proxy import fetch_panel_snapshot_live
-from panel_core.services.stats import _api_add_user_grpc
-from panel_core.xray.engine import generate_config_file, restart_xray_container
+from panel_core.xray import _api_add_user_grpc, generate_config_file, restart_xray_container
 from panel_core.xray.protocol import inbound_supports_vless_flow
 
 if TYPE_CHECKING:
