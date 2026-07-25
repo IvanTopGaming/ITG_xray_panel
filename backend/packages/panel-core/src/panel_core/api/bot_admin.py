@@ -156,6 +156,12 @@ def _validate_tariff_payload(payload):
         traffic = item.get("traffic_gb")
         if not isinstance(traffic, int) or traffic < 0:
             raise ValueError(f"items[{i}].traffic_gb must be a non-negative integer")
+        panel_id = item.get("panel_id")
+        if not isinstance(panel_id, int) or isinstance(panel_id, bool) or panel_id <= 0:
+            raise ValueError(
+                f"items[{i}].panel_id is required: this panel does not run Xray itself, so the item "
+                f"for inbound {tag!r} must name the node that will serve it. Pick a linked panel for this item."
+            )
 
 
 def _apply_items(tariff, items_payload):
@@ -301,6 +307,21 @@ def duplicate_tariff(tariff_id):
     src = db.session.get(Tariff, tariff_id)
     if src is None:
         return jsonify({"error": "tariff not found"}), 404
+
+    orphan_tags = sorted(item.inbound_tag for item in src.items if item.panel_id is None)
+    if orphan_tags:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"tariff {src.name!r} still has item(s) without panel_id ({', '.join(orphan_tags)}); "
+                        "copying them would create another tariff that provisions nothing. "
+                        "Set a panel_id on the source tariff first."
+                    )
+                }
+            ),
+            400,
+        )
 
     copy = Tariff(
         name=f"{src.name} (копия)",

@@ -133,12 +133,14 @@ def test_create_tariff_with_items(app_with_bot_api, db, client, auth_headers):
                     "inbound_tag": "DE-vless",
                     "label": "Germany",
                     "traffic_gb": 0,
+                    "panel_id": 1,
                     "sort_order": 0,
                 },
                 {
                     "inbound_tag": "MSK-vless",
                     "label": "Russia",
                     "traffic_gb": 70,
+                    "panel_id": 2,
                     "sort_order": 1,
                 },
             ],
@@ -148,7 +150,9 @@ def test_create_tariff_with_items(app_with_bot_api, db, client, auth_headers):
     body = resp.get_json()
     assert len(body["items"]) == 2
     assert body["items"][0]["inbound_tag"] == "DE-vless"
+    assert body["items"][0]["panel_id"] == 1
     assert body["items"][1]["inbound_tag"] == "MSK-vless"
+    assert body["items"][1]["panel_id"] == 2
 
 
 def test_create_tariff_rejects_missing_required(app_with_bot_api, db, client, auth_headers):
@@ -187,8 +191,8 @@ def test_create_tariff_rejects_duplicate_item_inbound(app_with_bot_api, db, clie
             "price_rub": 100,
             "period_days": 30,
             "items": [
-                {"inbound_tag": "X", "traffic_gb": 10, "sort_order": 0},
-                {"inbound_tag": "X", "traffic_gb": 20, "sort_order": 1},
+                {"inbound_tag": "X", "traffic_gb": 10, "panel_id": 1, "sort_order": 0},
+                {"inbound_tag": "X", "traffic_gb": 20, "panel_id": 1, "sort_order": 1},
             ],
         },
     )
@@ -241,22 +245,23 @@ def test_update_tariff_replaces_items(app_with_bot_api, db, client, auth_headers
     t = Tariff(name="X", price_rub=100, period_days=30)
     db.session.add(t)
     db.session.flush()
-    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="OLD", traffic_gb=10))
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="OLD", traffic_gb=10, panel_id=1))
     db.session.commit()
 
-    resp = client.put(
-        f"/api/bot/tariffs/{t.id}",
-        headers=auth_headers,
-        json={
-            "name": "X",
-            "price_rub": 100,
-            "period_days": 30,
-            "items": [
-                {"inbound_tag": "NEW1", "traffic_gb": 5, "sort_order": 0},
-                {"inbound_tag": "NEW2", "traffic_gb": 0, "sort_order": 1},
-            ],
-        },
-    )
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        resp = client.put(
+            f"/api/bot/tariffs/{t.id}",
+            headers=auth_headers,
+            json={
+                "name": "X",
+                "price_rub": 100,
+                "period_days": 30,
+                "items": [
+                    {"inbound_tag": "NEW1", "traffic_gb": 5, "panel_id": 1, "sort_order": 0},
+                    {"inbound_tag": "NEW2", "traffic_gb": 0, "panel_id": 1, "sort_order": 1},
+                ],
+            },
+        )
     assert resp.status_code == 200
     body = resp.get_json()
     tags = {item["inbound_tag"] for item in body["items"]}
@@ -342,8 +347,8 @@ def test_duplicate_tariff_copies_base_and_items(app_with_bot_api, db, client, au
     )
     db.session.add(t)
     db.session.flush()
-    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE", traffic_gb=0, sort_order=0))
-    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="RU", traffic_gb=70, sort_order=1))
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE", traffic_gb=0, panel_id=1, sort_order=0))
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="RU", traffic_gb=70, panel_id=2, sort_order=1))
     db.session.commit()
 
     resp = client.post(f"/api/bot/tariffs/{t.id}/duplicate", headers=auth_headers)
@@ -358,6 +363,7 @@ def test_duplicate_tariff_copies_base_and_items(app_with_bot_api, db, client, au
     assert body["is_trial"] is False
     item_tags = {i["inbound_tag"] for i in body["items"]}
     assert item_tags == {"DE", "RU"}
+    assert {i["inbound_tag"]: i["panel_id"] for i in body["items"]} == {"DE": 1, "RU": 2}
 
 
 def test_duplicate_trial_does_not_propagate_trial_flag(app_with_bot_api, db, client, auth_headers):
@@ -375,10 +381,80 @@ def test_duplicate_nonexistent_returns_404(app_with_bot_api, db, client, auth_he
     assert resp.status_code == 404
 
 
-def test_update_tariff_returns_backfill_summary_and_backfills_local_holder(app_with_bot_api, db, client, auth_headers):
+def _seed_holder(db, tariff, expiry):
     import uuid
 
+    from panel_core.models import Client
+
+    db.session.add(
+        Client(
+            id=str(uuid.uuid4()),
+            email="holder_DE",
+            inbound_tag="DE-vless",
+            telegram_id=42,
+            tariff_id=tariff.id,
+            limit_bytes=0,
+            expiry_time=expiry,
+            enable=True,
+        )
+    )
+    db.session.commit()
+
+
+def test_update_tariff_returns_backfill_summary_and_backfills_remote_holder(app_with_bot_api, db, client, auth_headers):
+    from panel_core.models import Inbound, LinkedPanel
+
+    db.session.add_all(
+        [
+            Inbound(tag="DE-vless", protocol="vless", port=20001, stream_settings="{}"),
+            LinkedPanel(
+                id=1,
+                name="node-1",
+                url="https://node1.example",
+                federation_token="tok",
+                created_at=int(time.time()),
+            ),
+        ]
+    )
+    db.session.flush()
+    t = Tariff(name="Standard", price_rub=150, period_days=30)
+    db.session.add(t)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE-vless", traffic_gb=0, panel_id=None, sort_order=0))
+    db.session.commit()
+
+    now = int(time.time() * 1000)
+    expiry = now + 10 * 86400_000
+    _seed_holder(db, t, expiry)
+
+    payload = {
+        "name": "Standard",
+        "price_rub": 150,
+        "period_days": 30,
+        "items": [{"inbound_tag": "MSK-vless", "traffic_gb": 70, "panel_id": 1}],
+    }
+    with (
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", return_value={"inbounds": []}),
+        patch("panel_core.services.panel_proxy.proxy_provision") as proxy,
+    ):
+        resp = client.put(f"/api/bot/tariffs/{t.id}", json=payload, headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert "backfill" in body
+    assert body["backfill"]["created_remote"] == 1
+    assert body["backfill"]["panels_unreachable"] == []
+    assert proxy.call_args.args[0] == 1
+    assert proxy.call_args.args[1] == 42
+    assert proxy.call_args.args[2] == "MSK-vless"
+    assert proxy.call_args.args[3]["expiry_ms"] == expiry
+    assert proxy.call_args.args[3]["limit_bytes"] == 70 * (1024**3)
+
+
+def test_backfill_of_a_legacy_local_item_still_creates_a_local_client(app_with_bot_api, db):
     from panel_core.models import Client, Inbound
+    from panel_core.services.provisioning import backfill_tariff
 
     db.session.add_all(
         [
@@ -390,42 +466,19 @@ def test_update_tariff_returns_backfill_summary_and_backfills_local_holder(app_w
     t = Tariff(name="Standard", price_rub=150, period_days=30)
     db.session.add(t)
     db.session.flush()
-    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE-vless", traffic_gb=0, sort_order=0))
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE-vless", traffic_gb=0, panel_id=None, sort_order=0))
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="MSK-vless", traffic_gb=70, panel_id=None, sort_order=1))
     db.session.commit()
 
     now = int(time.time() * 1000)
     expiry = now + 10 * 86400_000
-    db.session.add(
-        Client(
-            id=str(uuid.uuid4()),
-            email="holder_DE",
-            inbound_tag="DE-vless",
-            telegram_id=42,
-            tariff_id=t.id,
-            limit_bytes=0,
-            expiry_time=expiry,
-            enable=True,
-        )
-    )
-    db.session.commit()
+    _seed_holder(db, t, expiry)
 
-    payload = {
-        "name": "Standard",
-        "price_rub": 150,
-        "period_days": 30,
-        "items": [
-            {"inbound_tag": "DE-vless", "traffic_gb": 0},
-            {"inbound_tag": "MSK-vless", "traffic_gb": 70},
-        ],
-    }
     with patch("panel_core.services.provisioning._sync_after_provision"):
-        resp = client.put(f"/api/bot/tariffs/{t.id}", json=payload, headers=auth_headers)
+        summary = backfill_tariff(t)
 
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert "backfill" in body
-    assert body["backfill"]["created_local"] == 1
-    assert body["backfill"]["panels_unreachable"] == []
+    assert summary["created_local"] == 1
+    assert summary["panels_unreachable"] == []
 
     new = Client.query.filter_by(telegram_id=42, inbound_tag="MSK-vless").first()
     assert new is not None

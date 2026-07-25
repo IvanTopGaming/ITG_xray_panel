@@ -208,6 +208,37 @@ def build_base_app(role):
     return app
 
 
+def audit_tariff_items_without_panel_id(app):
+    from .models import Tariff, TariffItem
+    from .xray import has_local_xray
+
+    if has_local_xray():
+        return []
+
+    rows = (
+        db.session.query(Tariff.name, TariffItem.inbound_tag)
+        .join(TariffItem, TariffItem.tariff_id == Tariff.id)
+        .filter(TariffItem.panel_id.is_(None))
+        .order_by(Tariff.name, TariffItem.inbound_tag)
+        .all()
+    )
+    if not rows:
+        return []
+
+    by_tariff = {}
+    for name, tag in rows:
+        by_tariff.setdefault(name, []).append(tag)
+    listing = "; ".join(f"{name!r}: {', '.join(tags)}" for name, tags in by_tariff.items())
+
+    app.logger.warning(
+        "Tariff items without panel_id found on a role that runs no local Xray (%s). "
+        "These items point at no node: granting such a tariff will fail. "
+        "Set a panel_id on each item in Bot -> Tariffs. Nothing was changed automatically.",
+        listing,
+    )
+    return rows
+
+
 def bootstrap_defaults(app, db_path):
     panel_host = _panel_domain_host()
 
@@ -265,6 +296,11 @@ def bootstrap_defaults(app, db_path):
                     )
                 )
                 db.session.commit()
+
+            try:
+                audit_tariff_items_without_panel_id(app)
+            except Exception:
+                app.logger.warning("tariff panel_id audit failed", exc_info=True)
         except Exception:
             app.logger.exception("Startup error")
             raise
