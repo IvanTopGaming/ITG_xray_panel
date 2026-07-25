@@ -1,7 +1,7 @@
-def test_current_db_version_is_22():
+def test_current_db_version_is_23():
     from panel_core.db_migration import CURRENT_DB_VERSION
 
-    assert CURRENT_DB_VERSION == 22
+    assert CURRENT_DB_VERSION == 23
 
 
 def test_node_traffic_table_created_on_sqlite(tmp_path):

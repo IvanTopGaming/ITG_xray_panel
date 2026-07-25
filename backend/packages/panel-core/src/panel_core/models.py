@@ -410,3 +410,16 @@ class NotificationLog(db.Model):
     sent_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     __table_args__ = (db.Index("ix_notif_dedup", "telegram_id", "client_id", "kind", "sent_at"),)
+
+
+class NotificationClaim(db.Model):
+    __tablename__ = "notification_claim"
+
+    id = db.Column(db.Integer, primary_key=True)
+    telegram_id = db.Column(db.BigInteger, nullable=False)
+    tariff_id = db.Column(db.Integer, nullable=False, default=0)
+    scope = db.Column(db.String(200), nullable=False, default="")
+    kind = db.Column(db.String(32), nullable=False)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+    __table_args__ = (db.UniqueConstraint("telegram_id", "tariff_id", "scope", "kind", name="uq_notification_claim"),)
