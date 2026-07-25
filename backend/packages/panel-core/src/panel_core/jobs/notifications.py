@@ -72,4 +72,11 @@ def cleanup_bot_events() -> None:
         BotEvent.delivered_at.is_(None),
         BotEvent.created_at < now - dt.timedelta(days=30),
     ).delete(synchronize_session=False)
+
+    from panel_core.models import NotificationClaim
+
+    NotificationClaim.query.filter(
+        NotificationClaim.created_at < now - dt.timedelta(days=90),
+    ).delete(synchronize_session=False)
+
     db.session.commit()

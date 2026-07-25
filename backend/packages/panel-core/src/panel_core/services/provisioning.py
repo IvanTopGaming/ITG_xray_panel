@@ -210,6 +210,16 @@ def provision_single_item(
     return {"client": client.to_dict(), "expires_at_ms": expiry_ms}
 
 
+def clear_notification_claims(*, telegram_id: int, tariff_id: int | None) -> None:
+
+    from panel_core.models import NotificationClaim
+
+    NotificationClaim.query.filter(
+        NotificationClaim.telegram_id == telegram_id,
+        NotificationClaim.tariff_id == int(tariff_id or 0),
+    ).delete(synchronize_session=False)
+
+
 def apply_tariff_for_user(
     telegram_id: int,
     tariff: "Tariff",
@@ -290,6 +300,8 @@ def apply_tariff_for_user(
                 limit_bytes=limit_bytes,
             )
             new_clients.append(new_client)
+
+    clear_notification_claims(telegram_id=telegram_id, tariff_id=tariff.id)
 
     db.session.commit()
     _sync_after_provision(new_clients, extended_clients_with_state)

@@ -49,3 +49,22 @@ def test_keeps_undelivered_younger_than_30_days(app):
     with app.app_context():
         cleanup_bot_events()
         assert db.session.get(BotEvent, eid) is not None
+
+
+def test_cleanup_removes_stale_notification_claims(app, db):
+    import datetime as dt
+
+    from panel_core.jobs.notifications import cleanup_bot_events
+    from panel_core.models import NotificationClaim
+
+    with app.app_context():
+        old = NotificationClaim(telegram_id=1, tariff_id=1, scope="", kind="expiry_1d")
+        old.created_at = dt.datetime.utcnow() - dt.timedelta(days=91)
+        fresh = NotificationClaim(telegram_id=2, tariff_id=1, scope="", kind="expiry_1d")
+        db.session.add_all([old, fresh])
+        db.session.commit()
+
+        cleanup_bot_events()
+
+        remaining = [c.telegram_id for c in NotificationClaim.query.all()]
+    assert remaining == [2]

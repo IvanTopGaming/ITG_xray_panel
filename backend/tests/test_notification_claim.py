@@ -180,3 +180,25 @@ def test_claim_endpoint_scope_separates_nodes(app_with_service_api, db, client, 
     )
     assert de.get_json()["claimed"] is True
     assert nl.get_json()["claimed"] is True
+
+
+def test_provisioning_clears_claims_for_the_tariff(app, db):
+    claim_notification(telegram_id=42, kind="expiry_1d", tariff_id=7, scope="")
+    claim_notification(telegram_id=42, kind="expiry_1d", tariff_id=8, scope="")
+
+    from panel_core.services.provisioning import clear_notification_claims
+
+    clear_notification_claims(telegram_id=42, tariff_id=7)
+
+    remaining = {(c.tariff_id, c.kind) for c in NotificationClaim.query.all()}
+    assert remaining == {(8, "expiry_1d")}
+
+
+def test_claim_can_be_reacquired_after_reset(app, db):
+    from panel_core.services.provisioning import clear_notification_claims
+
+    first = claim_notification(telegram_id=42, kind="expiry_1d", tariff_id=7, scope="")
+    clear_notification_claims(telegram_id=42, tariff_id=7)
+    again = claim_notification(telegram_id=42, kind="expiry_1d", tariff_id=7, scope="")
+    assert first["claimed"] is True
+    assert again["claimed"] is True
