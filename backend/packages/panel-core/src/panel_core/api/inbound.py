@@ -34,7 +34,7 @@ from panel_core.xray.protocol import (
     stream_supports_vless_flow,
     inbound_supports_vless_flow,
 )
-from panel_core.services.stats import (
+from panel_core.services.traffic_store import (
     reset_user_traffic,
     reset_inbound_traffic,
     bulk_delete_users,

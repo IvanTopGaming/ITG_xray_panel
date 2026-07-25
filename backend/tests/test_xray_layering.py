@@ -63,11 +63,6 @@ ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE = {
     "roles": ALLOWED_HEAVY_ROLE_IMPORTERS,
 }
 
-KNOWN_HEAVY_IMPORT_VIOLATIONS = [
-    "api/inbound.py -> panel_core.services.stats -> panel_core.xray.engine",
-    "api/inbound.py -> panel_core.services.stats -> panel_core.xray.grpc_client",
-]
-
 
 def _heavy_root(module):
     for heavy in HEAVY_MODULES:
@@ -148,7 +143,7 @@ def test_only_worker_and_master_roles_import_heavy_modules():
 
 
 def test_api_layer_does_not_transitively_reach_heavy_modules():
-    assert _transitive_heavy_offenders("api") == KNOWN_HEAVY_IMPORT_VIOLATIONS
+    assert _transitive_heavy_offenders("api") == []
 
 
 def test_xray_package_does_not_transitively_reach_heavy_modules():
