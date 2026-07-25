@@ -28,6 +28,34 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4-alpine}
+    restart: unless-stopped
+    environment:
+      REDIS_PANEL_PASSWORD: ${REDIS_PANEL_PASSWORD:?REDIS_PANEL_PASSWORD is required}
+      REDIS_NODE_PASSWORD: ${REDIS_NODE_PASSWORD:?REDIS_NODE_PASSWORD is required}
+    volumes:
+      - ./redis/users.acl:/etc/redis/users.acl.template:ro
+    ports:
+      - "${REDIS_BIND:-0.0.0.0}:6379:6379"
+    entrypoint:
+      - "sh"
+      - "-c"
+      - >
+        sed -e "s|\$${REDIS_PANEL_PASSWORD}|$$REDIS_PANEL_PASSWORD|"
+        -e "s|\$${REDIS_NODE_PASSWORD}|$$REDIS_NODE_PASSWORD|"
+        /etc/redis/users.acl.template > /tmp/users.acl &&
+        exec redis-server --aclfile /tmp/users.acl --save "" --appendonly no
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -u redis://panel:$$REDIS_PANEL_PASSWORD@127.0.0.1:6379 ping | grep -q PONG",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   pg-backup:
     image: postgres:16
     restart: unless-stopped

@@ -1,0 +1,3 @@
+user default off
+user panel on >${REDIS_PANEL_PASSWORD} ~* &* +@all
+user node on >${REDIS_NODE_PASSWORD} -@all +publish &bot:events
