@@ -66,6 +66,11 @@ class _Collector(ast.NodeVisitor):
     visit_FunctionDef = _function
     visit_AsyncFunctionDef = _function
 
+    def visit_ClassDef(self, node):
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
 
 class CallGraph:
     def __init__(self):
