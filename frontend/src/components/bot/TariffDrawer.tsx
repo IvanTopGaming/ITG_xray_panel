@@ -166,6 +166,10 @@ export function TariffDrawer({
       setError('At least one inbound is required.');
       return;
     }
+    if (payload.items.some((it) => it.panel_id == null)) {
+      setError('Every included inbound needs a node selected.');
+      return;
+    }
     try {
       await onSave(payload);
       onClose();
@@ -301,6 +305,12 @@ export function TariffDrawer({
                 Each line provisions one inbound for the user when they buy this tariff. Add several
                 for multi-protocol bundles.
               </p>
+              {panels.length === 0 && (
+                <div className="mb-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-200">
+                  No linked panels yet. Link a panel node under Panels before adding tariff items —
+                  an item can't provision anywhere without one.
+                </div>
+              )}
               <div className="space-y-3">
                 {form.items.map((item, idx) => (
                   <ItemRow
@@ -315,7 +325,8 @@ export function TariffDrawer({
                 <button
                   type="button"
                   onClick={addItem}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/[0.10] bg-white/[0.02] py-4 text-base font-medium text-white/65 transition-colors hover:border-violet-500/30 hover:bg-violet-500/[0.05] hover:text-violet-200"
+                  disabled={panels.length === 0}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/[0.10] bg-white/[0.02] py-4 text-base font-medium text-white/65 transition-colors hover:border-violet-500/30 hover:bg-violet-500/[0.05] hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-white/[0.10] disabled:hover:bg-white/[0.02] disabled:hover:text-white/65"
                 >
                   <Plus size={16} />
                   Add inbound
@@ -525,10 +536,7 @@ function ItemRow({
   onRemove: () => void;
 }) {
   const filteredInbounds = useMemo(
-    () =>
-      allInbounds.filter((ib) =>
-        item.panel_id == null ? !ib.panel_id : ib.panel_id === item.panel_id
-      ),
+    () => (item.panel_id == null ? [] : allInbounds.filter((ib) => ib.panel_id === item.panel_id)),
     [allInbounds, item.panel_id]
   );
 
@@ -540,25 +548,54 @@ function ItemRow({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const itemLabel = item.inbound_tag.trim() || 'this inbound';
 
+  const panelMissing = item.panel_id == null;
+  const selectedPanel = useMemo(
+    () => (item.panel_id != null ? panels.find((p) => p.id === item.panel_id) : undefined),
+    [panels, item.panel_id]
+  );
+  const panelUnknown = item.panel_id != null && !selectedPanel;
+
+  const panelOptions = useMemo(
+    () => [
+      { value: '', label: panels.length ? 'Select a node...' : 'No linked panels' },
+      ...panels.map((p) => ({ value: String(p.id), label: p.name })),
+    ],
+    [panels]
+  );
+
   const inboundOptions = useMemo(
     () => [
-      { value: '', label: 'Pick an inbound...' },
+      { value: '', label: panelMissing ? 'Select a node first...' : 'Pick an inbound...' },
       ...filteredInbounds.map((i) => ({
         value: i.tag,
         label: i.label || `${i.tag}  ·  ${i.protocol} :${i.port}`,
       })),
     ],
-    [filteredInbounds]
+    [filteredInbounds, panelMissing]
   );
 
   const isUnknown = !!item.inbound_tag.trim() && !matchedInbound;
 
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-4">
+    <div
+      className={cn(
+        'rounded-xl border p-4',
+        panelMissing || panelUnknown
+          ? 'border-amber-500/30 bg-amber-500/[0.04]'
+          : 'border-white/[0.06] bg-white/[0.03]'
+      )}
+    >
       <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wider text-violet-300">
-          Inbound
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wider text-violet-300">
+            Inbound
+          </span>
+          {(panelMissing || panelUnknown) && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+              Needs a node
+            </span>
+          )}
+        </div>
         <button
           type="button"
           onClick={() => {
@@ -590,22 +627,36 @@ function ItemRow({
 
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
-          <Select
-            label="Panel"
-            value={item.panel_id != null ? String(item.panel_id) : 'local'}
-            onChange={(e) => {
-              const val = e.target.value === 'local' ? null : Number(e.target.value);
-              onChange({ ...item, panel_id: val, inbound_tag: '' });
-            }}
-            options={[
-              { value: 'local', label: 'Master (local)' },
-              ...(panels || []).map((p) => ({ value: String(p.id), label: p.name })),
-            ]}
-          />
+          <div>
+            <Select
+              label="Panel"
+              value={item.panel_id != null ? String(item.panel_id) : ''}
+              onChange={(e) => {
+                const val = e.target.value === '' ? null : Number(e.target.value);
+                onChange({ ...item, panel_id: val, inbound_tag: '' });
+              }}
+              options={panelOptions}
+            />
+            <p
+              className={cn(
+                'mt-2 text-sm leading-relaxed',
+                panelMissing || panelUnknown ? 'text-amber-300/90' : 'text-white/55'
+              )}
+            >
+              {panelUnknown
+                ? 'This node was unlinked — pick another before saving.'
+                : panelMissing
+                  ? panels.length
+                    ? 'Pick which node provisions this inbound.'
+                    : 'Link a panel under Panels first — there is nothing to pick.'
+                  : `Provisions on ${selectedPanel?.name}.`}
+            </p>
+          </div>
           <div>
             <Select
               label="Inbound"
               value={item.inbound_tag}
+              disabled={panelMissing}
               onChange={(e) => onChange({ ...item, inbound_tag: e.target.value })}
               options={inboundOptions}
             />
@@ -615,11 +666,13 @@ function ItemRow({
                 isUnknown ? 'text-amber-300/90' : 'text-white/55'
               )}
             >
-              {matchedInbound
-                ? `${matchedInbound.protocol} :${matchedInbound.port}`
-                : isUnknown
-                  ? `no inbound with this tag`
-                  : 'Pick from existing panel inbounds.'}
+              {panelMissing
+                ? 'Pick a node to see its inbounds.'
+                : matchedInbound
+                  ? `${matchedInbound.protocol} :${matchedInbound.port}`
+                  : isUnknown
+                    ? `no inbound with this tag`
+                    : 'Pick from existing panel inbounds.'}
             </p>
           </div>
         </div>
