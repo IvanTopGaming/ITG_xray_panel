@@ -1,4 +1,5 @@
-DATA_PLANE = {"sync_traffic", "check_limits", "parse_logs", "cleanup_stats"}
+DATA_PLANE = {"sync_traffic", "check_limits", "parse_logs"}
+DB_MAINTENANCE = {"cleanup_stats"}
 MASTER_ONLY = {
     "auto_renew_free_users",
     "poll_pending_payments",
@@ -34,10 +35,16 @@ def _job_ids(monkeypatch, role):
 def test_worker_registers_only_data_plane_crons(monkeypatch):
     ids = _job_ids(monkeypatch, "worker")
     assert DATA_PLANE.issubset(ids)
+    assert DB_MAINTENANCE.issubset(ids)
     assert ids.isdisjoint(MASTER_ONLY)
 
 
 def test_master_registers_master_crons(monkeypatch):
     ids = _job_ids(monkeypatch, "master")
-    assert DATA_PLANE.issubset(ids)
     assert MASTER_ONLY.issubset(ids)
+    assert DB_MAINTENANCE.issubset(ids)
+
+
+def test_master_registers_no_data_plane_crons(monkeypatch):
+    ids = _job_ids(monkeypatch, "master")
+    assert ids.isdisjoint(DATA_PLANE)

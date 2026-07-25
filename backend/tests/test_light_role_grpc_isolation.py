@@ -102,6 +102,9 @@ def test_light_roles_do_not_import_grpc_under_any_spelling(name):
 
 
 class _ExplodingGateway:
+    def has_local_xray(self):
+        return False
+
     def apply_config(self, validate=True):
         raise AssertionError("xray config write reached in a light role")
 

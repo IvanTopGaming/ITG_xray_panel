@@ -77,6 +77,23 @@ class _Sentinel:
         return None
 
 
+@pytest.mark.parametrize("module_name,role,expected", CASES, ids=[c[0] for c in CASES])
+def test_lazy_default_does_not_latch_and_preempt_the_role(module_name, role, expected, monkeypatch, tmp_path):
+    monkeypatch.setenv("PANEL_ROLE", role)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{module_name}-lazy.db")
+    monkeypatch.chdir(tmp_path)
+    _reset_scheduler()
+    gw.set_xray_gateway(None)
+
+    assert isinstance(gw.get_xray_gateway(), gw.LocalXrayGateway)
+    assert gw.xray_gateway_configured() is False
+
+    module = importlib.import_module(f"panel_core.roles.{module_name}")
+    module.create_app()
+
+    assert isinstance(gw.get_xray_gateway(), expected)
+
+
 def test_master_gateway_refuses_local_user_mutation(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "master")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/master-refuse.db")

@@ -18,6 +18,7 @@ from panel_core.xray.grpc_client import (
 )
 from panel_core.xray import (
     generate_config_file,
+    has_local_xray,
     restart_xray_container,
     _api_add_user_grpc,  # noqa: F401 — re-exported for consumers importing it from this module
     _api_remove_user_grpc,
@@ -473,6 +474,14 @@ def reset_user_traffic(tag, email):
     if not client:
         raise Exception("User not found")
     runtime_email = build_runtime_email(tag, email)
+    if has_local_xray():
+        _reset_user_counters_in_xray(tag, email, runtime_email)
+    client.up = 0
+    client.down = 0
+    db.session.commit()
+
+
+def _reset_user_counters_in_xray(tag, email, runtime_email):
     try:
         channel = get_channel()
         stub = stats_command_pb2_grpc.StatsServiceStub(channel)
@@ -484,9 +493,6 @@ def reset_user_traffic(tag, email):
         )
     except grpc.RpcError as e:
         logger.debug("Failed to reset user traffic counters for %s/%s: %s", tag, email, e)
-    client.up = 0
-    client.down = 0
-    db.session.commit()
 
 
 def reset_inbound_traffic(tag):
@@ -495,6 +501,14 @@ def reset_inbound_traffic(tag):
         raise Exception("Inbound not found")
     for client in ib.clients:
         reset_user_traffic(tag, client.email)
+    if has_local_xray():
+        _reset_inbound_counters_in_xray(tag)
+    ib.up = 0
+    ib.down = 0
+    db.session.commit()
+
+
+def _reset_inbound_counters_in_xray(tag):
     try:
         channel = get_channel()
         stub = stats_command_pb2_grpc.StatsServiceStub(channel)
@@ -504,9 +518,6 @@ def reset_inbound_traffic(tag):
         )
     except grpc.RpcError as e:
         logger.debug("Failed to reset inbound traffic counters for %s: %s", tag, e)
-    ib.up = 0
-    ib.down = 0
-    db.session.commit()
 
 
 def bulk_delete_users(users_list):

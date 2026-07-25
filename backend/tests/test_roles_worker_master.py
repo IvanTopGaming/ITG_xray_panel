@@ -73,9 +73,6 @@ def test_master_role_composition(monkeypatch, tmp_path):
         "panels",
     }
     assert _jobs() == {
-        ("sync_traffic", 10),
-        ("check_limits", 60),
-        ("parse_logs", 15),
         ("cleanup_stats", 86400),
         ("auto_renew_free_users", 900),
         ("poll_pending_payments", 30),

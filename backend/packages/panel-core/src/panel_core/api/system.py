@@ -14,6 +14,7 @@ from panel_core.extensions import limiter, db
 from panel_core.models import SystemSetting
 from panel_core.services.egress import build_bind_ips, build_host_script
 from panel_core.xray import (
+    has_local_xray,
     restart_xray_container,
     update_geo_db,
     stream_xray_logs,
@@ -36,6 +37,8 @@ SQLITE_HEADER = b"SQLite format 3\x00"
 DB_FILENAME = "panel.db"
 DB_BACKUP_SUFFIX = ".bak"
 XRAY_LOGS_UNSUPPORTED = "Xray logs are served by the node that runs Xray; this role has no local Xray instance."
+XRAY_RESTART_UNSUPPORTED = "Restarting Xray is done on the node that runs it; this role has no local Xray instance."
+XRAY_GEO_UNSUPPORTED = "Geo databases live on the node that runs Xray; this role has no local Xray instance."
 
 
 def _db_path():
@@ -112,6 +115,8 @@ def get_system_stats():
 @admin_or_federation_token_required
 @limiter.limit("5 per minute")
 def restart():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_RESTART_UNSUPPORTED}), 501
     try:
         restart_xray_container()
         return jsonify({"status": "restarted"}), 200
@@ -140,6 +145,8 @@ def system_version():
 @bp.route("/logs", methods=["GET"])
 @token_required
 def get_logs():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOGS_UNSUPPORTED}), 501
     try:
         lines = stream_xray_logs()
     except LocalXrayUnavailable:
@@ -363,6 +370,8 @@ def restore():
 @token_required
 @limiter.limit("10 per hour")
 def geo_update():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_GEO_UNSUPPORTED}), 501
     try:
         update_geo_db()
         return jsonify({"status": "updated"}), 200

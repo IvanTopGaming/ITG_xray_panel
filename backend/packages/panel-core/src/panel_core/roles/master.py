@@ -12,12 +12,7 @@ from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered
 from panel_core.jobs.panels import poll_linked_panels
 from panel_core.jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from panel_core.panel_role import ROLE_MASTER
-from panel_core.services.stats import (
-    check_limits_job,
-    cleanup_stats_job,
-    parse_access_logs,
-    sync_traffic_job,
-)
+from panel_core.services.stats import cleanup_stats_job
 from panel_core.services.version_check import fetch_latest
 from panel_core.xray.gateway import RemoteXrayGateway, set_xray_gateway, xray_gateway_configured
 
@@ -31,9 +26,6 @@ def create_app():
     if not xray_gateway_configured():
         set_xray_gateway(RemoteXrayGateway())
 
-    ensure_scheduler_job("sync_traffic", sync_traffic_job, 10)
-    ensure_scheduler_job("check_limits", check_limits_job, 60)
-    ensure_scheduler_job("parse_logs", parse_access_logs, 15)
     ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
     ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
     ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)

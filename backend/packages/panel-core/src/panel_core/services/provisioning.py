@@ -8,7 +8,13 @@ from panel_core.extensions import db
 from panel_core.models import Client, Inbound, LinkedPanel, NotificationLog
 from panel_core.services import sub_cache
 from panel_core.services.panel_proxy import fetch_panel_snapshot_live
-from panel_core.xray import _api_add_user_grpc, generate_config_file, restart_xray_container
+from panel_core.xray import (
+    _api_add_user_grpc,
+    generate_config_file,
+    has_local_xray,
+    restart_xray_container,
+)
+from panel_core.xray.gateway import LocalXrayUnavailable
 from panel_core.xray.protocol import inbound_supports_vless_flow
 
 if TYPE_CHECKING:
@@ -17,6 +23,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GB = 1024**3
+
+
+def _require_local_xray(what: str) -> None:
+    if has_local_xray():
+        return
+    raise LocalXrayUnavailable(
+        f"{what} requires a local Xray instance, which this role does not run. "
+        f"Set panel_id on the tariff item so the user is provisioned on a node."
+    )
 
 
 def _sync_after_provision(
@@ -80,6 +95,8 @@ def _create_client_for_item(
     expiry_ms: int,
     limit_bytes: int,
 ) -> Client:
+    _require_local_xray(f"creating a client on local inbound {item.inbound_tag!r} for tariff {tariff.name!r}")
+
     inbound = Inbound.query.filter_by(tag=item.inbound_tag).first()
     if inbound is None:
         raise ValueError(f"Inbound {item.inbound_tag!r} referenced by tariff item not found")
@@ -122,6 +139,8 @@ def provision_single_item(
     limit_bytes: int,
     tariff_id: int | None = None,
 ) -> dict:
+
+    _require_local_xray(f"provisioning local inbound {inbound_tag!r} for telegram_id {telegram_id}")
 
     now_ms = int(time.time() * 1000)
     inbound = Inbound.query.filter_by(tag=inbound_tag).first()
@@ -208,6 +227,10 @@ def apply_tariff_for_user(
 
     remote_items = [item for item in tariff.items if item.panel_id is not None]
     local_items = [item for item in tariff.items if item.panel_id is None]
+
+    if local_items:
+        tags = ", ".join(sorted(repr(item.inbound_tag) for item in local_items))
+        _require_local_xray(f"provisioning tariff {tariff.name!r} on local inbound(s) {tags}")
 
     for item in remote_items:
         from panel_core.services.panel_proxy import proxy_provision

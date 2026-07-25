@@ -16,13 +16,16 @@ MASTER_BLUEPRINTS = WORKER_BLUEPRINTS | {"bot_admin", "bot_service", "billing", 
 SUB_BLUEPRINTS = {"subscription"}
 BOT_BLUEPRINTS = {"bot_service", "billing"}
 
-WORKER_JOBS = {
+DATA_PLANE_JOBS = {
     ("sync_traffic", 10),
     ("check_limits", 60),
     ("parse_logs", 15),
+}
+DB_MAINTENANCE_JOBS = {
     ("cleanup_stats", 86400),
 }
-MASTER_JOBS = WORKER_JOBS | {
+WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS
+MASTER_JOBS = DB_MAINTENANCE_JOBS | {
     ("auto_renew_free_users", 900),
     ("poll_pending_payments", 30),
     ("reconcile_refunds", 3600),
@@ -100,6 +103,17 @@ def test_default_role_is_master(monkeypatch, tmp_path):
 
     app = panel_core.create_app()
     assert set(app.blueprints) == MASTER_BLUEPRINTS
+
+
+def test_master_registers_no_data_plane_jobs(monkeypatch, tmp_path):
+    _build("master", monkeypatch, tmp_path)
+    data_plane_ids = {job_id for job_id, _interval in DATA_PLANE_JOBS}
+    assert {job_id for job_id, _interval in _jobs()} & data_plane_ids == set()
+
+
+def test_worker_registers_every_data_plane_job(monkeypatch, tmp_path):
+    _build("worker", monkeypatch, tmp_path)
+    assert DATA_PLANE_JOBS <= _jobs()
 
 
 def test_role_env_is_read_case_insensitively(monkeypatch, tmp_path):

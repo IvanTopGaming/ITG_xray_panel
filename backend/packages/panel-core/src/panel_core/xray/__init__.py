@@ -2,6 +2,10 @@ from panel_core.xray.protocol import LOG_TAIL_LINES
 from panel_core.xray.gateway import get_xray_gateway
 
 
+def has_local_xray():
+    return get_xray_gateway().has_local_xray()
+
+
 def generate_config_file(validate: bool = True):
     return get_xray_gateway().apply_config(validate=validate)
 

@@ -5,6 +5,8 @@ from panel_core.xray.protocol import LOG_TAIL_LINES
 
 @runtime_checkable
 class XrayGateway(Protocol):
+    def has_local_xray(self) -> bool: ...
+
     def apply_config(self, validate: bool = True) -> None: ...
 
     def restart(self) -> None: ...
@@ -19,6 +21,9 @@ class XrayGateway(Protocol):
 
 
 class LocalXrayGateway:
+    def has_local_xray(self) -> bool:
+        return True
+
     def apply_config(self, validate: bool = True) -> None:
         from panel_core.xray import engine
 
@@ -51,6 +56,9 @@ class LocalXrayGateway:
 
 
 class NullXrayGateway:
+    def has_local_xray(self) -> bool:
+        return False
+
     def apply_config(self, validate: bool = True) -> None:
         return None
 
@@ -75,6 +83,9 @@ class LocalXrayUnavailable(RuntimeError):
 
 
 class RemoteXrayGateway:
+    def has_local_xray(self) -> bool:
+        return False
+
     def apply_config(self, validate: bool = True) -> None:
         return None
 
@@ -114,7 +125,6 @@ def xray_gateway_configured() -> bool:
 
 
 def get_xray_gateway() -> XrayGateway:
-    global _gateway
     if _gateway is None:
-        _gateway = LocalXrayGateway()
+        return LocalXrayGateway()
     return _gateway

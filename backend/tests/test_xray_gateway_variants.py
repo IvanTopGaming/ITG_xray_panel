@@ -93,6 +93,31 @@ def test_null_gateway_operations_are_noops():
     assert list(null.stream_logs(10)) == []
 
 
+@pytest.mark.parametrize(
+    "gateway_class,expected",
+    [
+        (gw.LocalXrayGateway, True),
+        (gw.NullXrayGateway, False),
+        (gw.RemoteXrayGateway, False),
+    ],
+    ids=["local", "null", "remote"],
+)
+def test_has_local_xray_reports_whether_a_local_instance_exists(gateway_class, expected):
+    assert gateway_class().has_local_xray() is expected
+
+
+def test_facade_has_local_xray_follows_the_installed_gateway():
+    import panel_core.xray as facade
+
+    gw.set_xray_gateway(gw.RemoteXrayGateway())
+    assert facade.has_local_xray() is False
+
+    gw.set_xray_gateway(gw.LocalXrayGateway())
+    assert facade.has_local_xray() is True
+
+    gw.set_xray_gateway(None)
+
+
 def test_remote_gateway_config_operations_are_noops():
     remote = gw.RemoteXrayGateway()
     assert remote.apply_config() is None
