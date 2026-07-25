@@ -325,7 +325,7 @@ def apply_tariff_for_user(
 
 def revoke_payment_access(telegram_id: int, tariff_id: int) -> dict:
 
-    from panel_core.services.stats import _api_remove_user_grpc
+    from panel_core.xray import _api_remove_user_grpc
 
     active_clients = Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id, enable=True).all()
     inbound_tags = {c.inbound_tag for c in active_clients}

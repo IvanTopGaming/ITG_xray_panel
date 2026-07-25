@@ -68,6 +68,63 @@ def test_light_role_boots_without_heavy_dependencies(role, tmp_path):
     assert leaked == [], f"panel_core.roles.{role} pulled heavy modules while booting: {leaked}\n\n{HINT}"
 
 
+REVOKE_PAYMENT_ACCESS_PROBE = f"""
+import sys
+import urllib.request
+urllib.request.urlopen = lambda *a, **kw: (_ for _ in ()).throw(
+    OSError("network disabled for the isolation probe")
+)
+from panel_core.roles.master import create_app
+app = create_app()
+from panel_core.extensions import db
+with app.app_context():
+    db.create_all()
+    from panel_core.services.provisioning import revoke_payment_access
+    result = revoke_payment_access(999999999, 999999999)
+print("RESULT:" + repr(result))
+leaked = sorted({{name for name in sys.modules if name.split(".")[0] in {HEAVY_MODULE_ROOTS!r}}})
+print("LEAKED:" + ",".join(leaked))
+"""
+
+REVOKE_PAYMENT_ACCESS_HINT = (
+    "revoke_payment_access() must reach _api_remove_user_grpc via panel_core.xray, not "
+    "panel_core.services.stats -- the latter imports panel_core.xray.grpc_client at module scope, "
+    "which pulls in the generated protobuf stubs (app.proxyman.*, app.stats.*) that only exist inside "
+    "the worker's Docker image. On the master role (no local Xray, no stubs) that import blows up the "
+    "moment a YooKassa refund is processed -- via the hourly reconcile_refunds cron or the unsigned "
+    "webhook, both of which run on this role."
+)
+
+
+def test_revoke_payment_access_does_not_pull_in_the_worker_grpc_stack(tmp_path):
+    env = {
+        **os.environ,
+        **BASE_ENV,
+        "PANEL_ROLE": "master",
+        "DATABASE_URL": f"sqlite:///{tmp_path}/revoke.db",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", REVOKE_PAYMENT_ACCESS_PROBE],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+
+    assert result.returncode == 0, (
+        f"revoke_payment_access() blew up on the master role:\n{result.stderr}\n\n{REVOKE_PAYMENT_ACCESS_HINT}"
+    )
+    assert "RESULT:" in result.stdout, f"probe produced no result marker; stdout={result.stdout!r}"
+
+    leaked_line = [line for line in result.stdout.splitlines() if line.startswith("LEAKED:")]
+    assert leaked_line, f"probe produced no leak marker; stdout={result.stdout!r} stderr={result.stderr!r}"
+    leaked = [name for name in leaked_line[0][len("LEAKED:") :].split(",") if name]
+    assert leaked == [], (
+        f"revoke_payment_access() pulled heavy modules on the master role: {leaked}\n\n{REVOKE_PAYMENT_ACCESS_HINT}"
+    )
+
+
 def test_worker_role_still_needs_the_heavy_stack():
     result = subprocess.run(
         [sys.executable, "-c", "import panel_core.roles.worker"],
