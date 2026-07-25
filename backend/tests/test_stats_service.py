@@ -834,7 +834,7 @@ def test_reset_user_traffic_goes_through_the_gateway(app, db):
 
     gateway = MagicMock()
     gateway.has_local_xray.return_value = True
-    with patch("panel_core.services.stats.get_xray_gateway", return_value=gateway):
+    with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
         reset_user_traffic("DE-vless", "u1")
 
     gateway.reset_user_counters.assert_called_once()
@@ -855,7 +855,7 @@ def test_reset_user_traffic_skips_xray_without_local_instance(app, db):
 
     gateway = MagicMock()
     gateway.has_local_xray.return_value = False
-    with patch("panel_core.services.stats.get_xray_gateway", return_value=gateway):
+    with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
         reset_user_traffic("DE-vless", "u2")
 
     gateway.reset_user_counters.assert_not_called()
@@ -877,7 +877,7 @@ def test_bulk_delete_users_goes_through_the_gateway(app, db):
     gateway = MagicMock()
     gateway.has_local_xray.return_value = True
     gateway.remove_user.return_value = True
-    with patch("panel_core.services.stats.get_xray_gateway", return_value=gateway):
+    with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
         deleted = bulk_delete_users([{"tag": "DE-vless", "email": "u3"}])
 
     assert deleted == 1

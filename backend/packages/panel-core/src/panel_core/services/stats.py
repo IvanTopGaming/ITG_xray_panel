@@ -4,10 +4,9 @@ import os
 import re
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
-from sqlalchemy import text
-from panel_core.models import Inbound, Client, DomainStat, NotificationLog
+from panel_core.models import Inbound, Client, NotificationLog
 from panel_core.extensions import db, scheduler
 from panel_core.xray.grpc_client import (
     grpc,
@@ -23,8 +22,18 @@ from panel_core.xray import (
     _api_remove_user_grpc,
 )
 from panel_core.xray.engine import ACCESS_LOG_PATH
-from panel_core.xray.gateway import get_xray_gateway
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
+from panel_core.services.traffic_store import (  # noqa: F401 — re-exported under the original names
+    _ten_min_bucket,
+    _upsert_snapshot,
+    _upsert_node_snapshot,
+    _upsert_domain_stat,
+    bulk_delete_users,
+    cleanup_old_domain_stats,
+    cleanup_stats_job,
+    reset_inbound_traffic,
+    reset_user_traffic,
+)
 
 ACCESS_LOG_OFFSET_PATH = f"{ACCESS_LOG_PATH}.offset"
 logger = logging.getLogger(__name__)
@@ -46,90 +55,6 @@ def _is_ip_address(s: str) -> bool:
         return True
     except ValueError:
         return False
-
-
-def _ten_min_bucket(dt: datetime) -> int:
-
-    floored = dt.replace(minute=(dt.minute // 10) * 10, second=0, microsecond=0)
-    return int(floored.timestamp())
-
-
-def _upsert_snapshot(entity_type, entity_id, inbound_tag, bucket, up_delta, down_delta):
-
-    if up_delta == 0 and down_delta == 0:
-        return
-    db.session.execute(
-        text(
-            """
-            INSERT INTO traffic_snapshot
-                (entity_type, entity_id, inbound_tag, bucket, up, down)
-            VALUES
-                (:et, :eid, :itag, :bucket, :up, :down)
-            ON CONFLICT(entity_type, entity_id, inbound_tag, bucket) DO UPDATE SET
-                up   = traffic_snapshot.up   + excluded.up,
-                down = traffic_snapshot.down + excluded.down
-            """
-        ),
-        {
-            "et": entity_type,
-            "eid": entity_id,
-            "itag": inbound_tag or "",
-            "bucket": bucket,
-            "up": int(up_delta),
-            "down": int(down_delta),
-        },
-    )
-
-
-def _upsert_node_snapshot(panel_id, entity_type, entity_id, inbound_tag, bucket, up_delta, down_delta):
-
-    if up_delta == 0 and down_delta == 0:
-        return
-    db.session.execute(
-        text(
-            """
-            INSERT INTO node_traffic_snapshot
-                (panel_id, entity_type, entity_id, inbound_tag, bucket, up, down)
-            VALUES
-                (:pid, :et, :eid, :itag, :bucket, :up, :down)
-            ON CONFLICT(panel_id, entity_type, entity_id, inbound_tag, bucket) DO UPDATE SET
-                up   = node_traffic_snapshot.up   + excluded.up,
-                down = node_traffic_snapshot.down + excluded.down
-            """
-        ),
-        {
-            "pid": int(panel_id),
-            "et": entity_type,
-            "eid": entity_id,
-            "itag": inbound_tag or "",
-            "bucket": bucket,
-            "up": int(up_delta),
-            "down": int(down_delta),
-        },
-    )
-
-
-def _upsert_domain_stat(date_str, domain, client_email, inbound_tag, count):
-
-    db.session.execute(
-        text(
-            """
-            INSERT INTO domain_stat
-                (date, domain, client_email, inbound_tag, hit_count)
-            VALUES
-                (:date, :domain, :email, :tag, :count)
-            ON CONFLICT(date, domain, client_email, inbound_tag) DO UPDATE SET
-                hit_count = domain_stat.hit_count + excluded.hit_count
-            """
-        ),
-        {
-            "date": date_str,
-            "domain": domain,
-            "email": client_email or "",
-            "tag": inbound_tag or "",
-            "count": int(count),
-        },
-    )
 
 
 def sync_traffic_stats():
@@ -429,18 +354,6 @@ def _parse_access_logs_logic():
         logger.info("Log parsing error: %s", e)
 
 
-def cleanup_old_domain_stats():
-
-    try:
-        cutoff = (datetime.now() - timedelta(days=90)).date().isoformat()
-        deleted = DomainStat.query.filter(DomainStat.date < cutoff).delete()
-        if deleted:
-            db.session.commit()
-            logger.info("Cleaned up %d old domain stat rows", deleted)
-    except Exception as e:
-        logger.info("Domain stat cleanup failed: %s", e)
-
-
 def sync_traffic_job():
     with scheduler.app.app_context():
         sync_traffic_stats()
@@ -454,83 +367,3 @@ def check_limits_job():
 def parse_access_logs():
     with scheduler.app.app_context():
         _parse_access_logs_logic()
-
-
-def cleanup_stats_job():
-    with scheduler.app.app_context():
-        cleanup_old_domain_stats()
-
-
-def reset_user_traffic(tag, email):
-    client = Client.query.filter_by(inbound_tag=tag, email=email).first()
-    if not client:
-        raise Exception("User not found")
-    runtime_email = build_runtime_email(tag, email)
-    gateway = get_xray_gateway()
-    if gateway.has_local_xray():
-        gateway.reset_user_counters(tag, email, runtime_email)
-    client.up = 0
-    client.down = 0
-    db.session.commit()
-
-
-def reset_inbound_traffic(tag):
-    ib = Inbound.query.filter_by(tag=tag).first()
-    if not ib:
-        raise Exception("Inbound not found")
-    for client in ib.clients:
-        reset_user_traffic(tag, client.email)
-    gateway = get_xray_gateway()
-    if gateway.has_local_xray():
-        gateway.reset_inbound_counters(tag)
-    ib.up = 0
-    ib.down = 0
-    db.session.commit()
-
-
-def bulk_delete_users(users_list):
-    if not users_list:
-        return 0
-
-    gateway = get_xray_gateway()
-    grpc_removals = []
-    restart_required = False
-    deleted_count = 0
-
-    for user in users_list:
-        tag = user.get("tag")
-        email = user.get("email")
-        if not tag or not email:
-            continue
-
-        client = Client.query.filter_by(inbound_tag=tag, email=email).first()
-        if not client:
-            continue
-
-        ib = Inbound.query.filter_by(tag=tag).first()
-        was_enabled = bool(client.enable)
-        db.session.delete(client)
-        deleted_count += 1
-
-        if ib and ib.protocol in ["vless", "vmess"] and was_enabled:
-            grpc_removals.append((tag, email))
-        else:
-            restart_required = True
-
-    if deleted_count == 0:
-        return 0
-
-    db.session.commit()
-    gateway.apply_config()
-
-    if restart_required:
-        gateway.restart()
-    else:
-        grpc_failed = False
-        for tag, email in grpc_removals:
-            if not gateway.remove_user(tag, email):
-                grpc_failed = True
-        if grpc_failed:
-            gateway.restart()
-
-    return deleted_count
