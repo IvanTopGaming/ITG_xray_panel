@@ -62,6 +62,7 @@ def emit_if_new(event_type, kind, client, extra) -> bool:
         "email": client.email,
         "inbound_tag": client.inbound_tag,
         "node": _node_id(),
+        "cycle": client.last_reset_time or 0,
         **extra,
         "tariff_id": client.tariff_id,
     }

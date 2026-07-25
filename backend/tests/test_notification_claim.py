@@ -202,3 +202,35 @@ def test_claim_can_be_reacquired_after_reset(app, db):
     again = claim_notification(telegram_id=42, kind="expiry_1d", tariff_id=7, scope="")
     assert first["claimed"] is True
     assert again["claimed"] is True
+
+
+def test_tariffless_expiry_claims_are_per_client(app, db):
+    first = claim_notification(
+        telegram_id=42, kind="expired", tariff_id=None, scope="de1.example.com/vless-reality/admin_de"
+    )
+    second = claim_notification(
+        telegram_id=42, kind="expired", tariff_id=None, scope="de1.example.com/vless-reality/admin_nl"
+    )
+    repeat = claim_notification(
+        telegram_id=42, kind="expired", tariff_id=None, scope="de1.example.com/vless-reality/admin_de"
+    )
+    assert first["claimed"] is True
+    assert second["claimed"] is True
+    assert repeat["claimed"] is False
+
+
+def test_real_tariff_expiry_still_collapses_across_nodes(app, db):
+    de = claim_notification(telegram_id=42, kind="expiry_1h", tariff_id=7, scope="")
+    nl = claim_notification(telegram_id=42, kind="expiry_1h", tariff_id=7, scope="")
+    assert de["claimed"] is True
+    assert nl["claimed"] is False
+
+
+def test_traffic_claim_is_reacquired_after_a_monthly_reset(app, db):
+    base = "de1.example.com/vless-reality/tg42_vless-reality"
+    first = claim_notification(telegram_id=42, kind="traffic_80", tariff_id=7, scope=f"{base}/1753000000000")
+    same_cycle = claim_notification(telegram_id=42, kind="traffic_80", tariff_id=7, scope=f"{base}/1753000000000")
+    next_cycle = claim_notification(telegram_id=42, kind="traffic_80", tariff_id=7, scope=f"{base}/1755678400000")
+    assert first["claimed"] is True
+    assert same_cycle["claimed"] is False
+    assert next_cycle["claimed"] is True

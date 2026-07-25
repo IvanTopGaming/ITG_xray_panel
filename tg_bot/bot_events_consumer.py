@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -47,14 +48,27 @@ def _redis_uri() -> Optional[str]:
 _NODE_EVENT_TYPES = ("expiry_notification", "traffic_notification")
 
 
+_SCOPE_MAX = 200
+
+
+def _bounded_scope(scope: str) -> str:
+    if len(scope) <= _SCOPE_MAX:
+        return scope
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+    return scope[: _SCOPE_MAX - len(digest) - 1] + "|" + digest
+
+
 def _claim_scope(etype: str, payload: dict) -> str:
-    if etype != "traffic_notification":
-        return ""
-    return "{}/{}/{}".format(
+    client_scope = "{}/{}/{}".format(
         payload.get("node", ""),
         payload.get("inbound_tag", ""),
         payload.get("email", ""),
     )
+    if etype == "traffic_notification":
+        return _bounded_scope("{}/{}".format(client_scope, payload.get("cycle") or 0))
+    if payload.get("tariff_id"):
+        return ""
+    return _bounded_scope(client_scope)
 
 
 async def _resolve_claim(etype, tg_id, payload, backend) -> tuple[bool, str, bool]:

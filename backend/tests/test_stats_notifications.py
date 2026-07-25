@@ -230,3 +230,33 @@ def test_expiry_payload_carries_node_and_no_presentation_fields(app, monkeypatch
     assert "lang" not in payload
     assert "renewable" not in payload
     assert payload["node"] == "nl1.example.com"
+
+
+def test_traffic_payload_carries_the_billing_cycle_marker(app, monkeypatch):
+    monkeypatch.setenv("PANEL_DOMAIN", "de1.example.com")
+    with app.app_context():
+        _inbound()
+        c = Client(
+            id=str(uuid.uuid4()),
+            email="u11",
+            inbound_tag="DE-vless",
+            telegram_id=79,
+            limit_bytes=100,
+            up=0,
+            down=0,
+            enable=True,
+            expiry_time=0,
+            reset_day=1,
+            last_reset_time=1753000000000,
+        )
+        db.session.add(c)
+        db.session.commit()
+        with (
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
+            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+        ):
+            sync_traffic_stats()
+
+    _event_type, _tg_id, payload = mock_publish.call_args.args
+    assert payload["cycle"] == 1753000000000
