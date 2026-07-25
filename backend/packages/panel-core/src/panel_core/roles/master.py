@@ -11,6 +11,7 @@ from panel_core.jobs.billing import auto_renew_free_users
 from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered_bot_events
 from panel_core.jobs.panels import poll_linked_panels
 from panel_core.jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
+from panel_core.panel_role import ROLE_MASTER
 from panel_core.services.stats import (
     check_limits_job,
     cleanup_stats_job,
@@ -24,7 +25,7 @@ grpc_gevent.init_gevent()
 
 
 def create_app():
-    app = build_base_app()
+    app = build_base_app(ROLE_MASTER)
     sqlite_path = db_path()
 
     if not xray_gateway_configured():

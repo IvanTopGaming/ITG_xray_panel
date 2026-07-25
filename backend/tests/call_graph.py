@@ -74,7 +74,12 @@ class CallGraph:
         self.imports = {}
         self.defs = {}
         self.routes = {}
-        for path in sorted(SRC.rglob("*.py")):
+        sources = sorted(SRC.rglob("*.py"))
+        assert sources, (
+            f"no python sources found under {SRC} — every call-graph guard would pass vacuously. "
+            "Point SRC at the package's new location."
+        )
+        for path in sources:
             _Collector(path, self).visit(ast.parse(path.read_text()))
 
     def _targets(self, caller, name):

@@ -50,6 +50,21 @@ from panel_core.extensions import db as _db  # noqa: E402
 import panel_core.models  # noqa: E402, F401  -- registers tables with db.metadata
 
 
+_PANEL_ROLE_UNSET = object()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    from panel_core.panel_role import ROLE_ENV
+
+    previous = os.environ.get(ROLE_ENV, _PANEL_ROLE_UNSET)
+    yield
+    if previous is _PANEL_ROLE_UNSET:
+        os.environ.pop(ROLE_ENV, None)
+    else:
+        os.environ[ROLE_ENV] = previous
+
+
 @pytest.fixture(autouse=True)
 def _reset_xray_gateway():
 

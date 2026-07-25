@@ -1,8 +1,13 @@
 import importlib
+import sys
+from unittest.mock import patch
 
 import pytest
 
+from grpc.experimental import gevent as grpc_gevent
+
 from tests.call_graph import call_graph
+from tests.import_graph import SRC, imported_modules
 
 GRPC_SINKS = {
     "panel_core.xray.grpc_client:get_channel",
@@ -45,16 +50,55 @@ def test_only_role_guarded_bot_endpoints_can_reach_xray_grpc():
     assert set(reaching) == ROLE_GUARDED_HANDLERS, FAILURE_HINT + f"\nreaching: {reaching}"
 
 
-def test_heavy_roles_initialise_grpc_gevent():
-    for name in ("worker", "master"):
-        module = importlib.import_module(f"panel_core.roles.{name}")
-        assert hasattr(module, "grpc_gevent")
+HEAVY_ROLES = ("worker", "master")
+LIGHT_ROLES = ("sub", "botapi")
+
+INIT_GEVENT_HINT = (
+    "Without grpc_gevent.init_gevent() every Xray gRPC call blocks the gunicorn gevent hub. "
+    "Keep the call at module scope in the role factory."
+)
 
 
-def test_light_roles_do_not_initialise_grpc_gevent():
-    for name in ("sub", "botapi"):
-        module = importlib.import_module(f"panel_core.roles.{name}")
-        assert not hasattr(module, "grpc_gevent")
+def _reimport_role(name):
+    module_name = f"panel_core.roles.{name}"
+    sys.modules.pop(module_name, None)
+    return importlib.import_module(module_name)
+
+
+def _role_source(name):
+    path = SRC / "roles" / f"{name}.py"
+    assert path.is_file(), f"{path} is missing — the role guard would check nothing"
+    return path
+
+
+@pytest.mark.parametrize("name", HEAVY_ROLES)
+def test_heavy_roles_initialise_grpc_gevent(name):
+    with patch.object(grpc_gevent, "init_gevent") as init_gevent:
+        _reimport_role(name)
+
+    assert init_gevent.call_count == 1, (
+        f"panel_core.roles.{name} must call grpc_gevent.init_gevent() when the module is set up "
+        f"(observed {init_gevent.call_count} calls). {INIT_GEVENT_HINT}"
+    )
+
+
+@pytest.mark.parametrize("name", LIGHT_ROLES)
+def test_light_roles_do_not_initialise_grpc_gevent(name):
+    with patch.object(grpc_gevent, "init_gevent") as init_gevent:
+        _reimport_role(name)
+
+    assert init_gevent.call_count == 0, (
+        f"panel_core.roles.{name} is a light role and must not call grpc_gevent.init_gevent()"
+    )
+
+
+@pytest.mark.parametrize("name", LIGHT_ROLES)
+def test_light_roles_do_not_import_grpc_under_any_spelling(name):
+    offenders = sorted(mod for mod in imported_modules(_role_source(name)) if mod == "grpc" or mod.startswith("grpc."))
+    assert offenders == [], (
+        f"panel_core.roles.{name} imports {offenders} — a light role must not pull grpc in, "
+        "regardless of how the import is spelled"
+    )
 
 
 class _ExplodingGateway:

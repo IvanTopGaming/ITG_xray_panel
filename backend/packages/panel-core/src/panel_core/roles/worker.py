@@ -7,6 +7,7 @@ from panel_core.app_base import (
     ensure_scheduler_job,
     start_scheduler,
 )
+from panel_core.panel_role import ROLE_WORKER
 from panel_core.services.stats import (
     check_limits_job,
     cleanup_stats_job,
@@ -19,7 +20,7 @@ grpc_gevent.init_gevent()
 
 
 def create_app():
-    app = build_base_app()
+    app = build_base_app(ROLE_WORKER)
     sqlite_path = db_path()
 
     if not xray_gateway_configured():

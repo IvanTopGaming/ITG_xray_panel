@@ -12,6 +12,7 @@ from panel_core.db_config import is_postgres
 
 from .extensions import db, migrate, scheduler, limiter
 from .observability import setup_logging, init_request_logging, run_job_logged
+from .panel_role import bind_role
 from .models import Admin, Outbound
 from .xray import generate_config_file
 
@@ -154,10 +155,12 @@ def db_path():
     return os.path.join(db_folder, "panel.db")
 
 
-def build_base_app():
+def build_base_app(role):
     setup_logging()
+    bound_role = bind_role(role)
     app = Flask("panel_core")
     init_request_logging(app)
+    app.logger.info("panel role bound (role=%s)", bound_role)
 
     sqlite_path = db_path()
 

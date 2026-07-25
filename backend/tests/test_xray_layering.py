@@ -80,10 +80,20 @@ def _heavy_targets(path):
     return sorted({root for mod in imported_modules(path) if (root := _heavy_root(mod))})
 
 
+def _package_sources(package):
+    root = SRC / package
+    paths = sorted(root.rglob("*.py"))
+    assert paths, (
+        f"no python sources found under {root} — this guard would pass vacuously. "
+        f"If the '{package}' package moved, point SRC/the guard at its new location."
+    )
+    return paths
+
+
 def _heavy_offenders(package):
     allowed = ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE.get(package, set())
     offenders = []
-    for path in sorted((SRC / package).rglob("*.py")):
+    for path in _package_sources(package):
         if path.name in allowed:
             continue
         for heavy in _heavy_targets(path):
@@ -94,7 +104,7 @@ def _heavy_offenders(package):
 def _transitive_heavy_offenders(package):
     allowed = ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE.get(package, set())
     offenders = set()
-    for path in sorted((SRC / package).rglob("*.py")):
+    for path in _package_sources(package):
         if path.name in allowed:
             continue
         for module, chain in import_chains(path).items():
