@@ -223,7 +223,7 @@ Networks are split for isolation: `panel-net` (fixed `172.28.0.0/24`, the only s
 <details>
 <summary><b>Database</b></summary>
 
-SQLite at `./db_data/panel.db`, ~20 tables, with a custom schema-versioned migration system (`backend/db_migration.py`) that runs idempotently on every backend startup. Storage stays small: `traffic_snapshot` is ~100 bytes per entity per hour, `domain_stat` is capped at 90 days, and bot events at 7d/30d. `GET /api/backup` streams a consistent SQLite snapshot (admin JWT only); `POST /api/restore` swaps one back in.
+SQLite at `./db_data/panel.db`, ~20 tables, with a custom schema-versioned migration system (`panel_core.db_migration`, standalone entrypoint `backend/migrate_db.py`) that runs idempotently on every backend startup. Storage stays small: `traffic_snapshot` is ~100 bytes per entity per hour, `domain_stat` is capped at 90 days, and bot events at 7d/30d. `GET /api/backup` streams a consistent SQLite snapshot (admin JWT only); `POST /api/restore` swaps one back in.
 
 </details>
 

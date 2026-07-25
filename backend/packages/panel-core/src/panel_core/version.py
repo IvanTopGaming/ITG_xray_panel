@@ -4,8 +4,8 @@ import os
 _HERE = os.path.dirname(__file__)
 _CANDIDATES = (
     "/app/versions.json",
-    os.path.join(_HERE, "..", "versions.json"),
-    os.path.join(_HERE, "..", "..", "versions.json"),
+    os.path.join(_HERE, "..", "..", "..", "..", "versions.json"),
+    os.path.join(_HERE, "..", "..", "..", "..", "..", "versions.json"),
 )
 
 

@@ -5,7 +5,7 @@ import time
 from flask import g, request
 
 _request_logger = logging.getLogger("app.requests")
-_jobs_logger = logging.getLogger("panel_core.jobs")
+_jobs_logger = logging.getLogger("app.jobs")
 
 _SLOW_REQUEST_MS = float(os.getenv("BACKEND_SLOW_REQUEST_MS", "1000"))
 

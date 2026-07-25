@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 
 import jwt
 import pytest
@@ -8,6 +9,7 @@ from panel_core.extensions import db
 from panel_core.models import Admin, SystemSetting
 from panel_core.services import bot_status
 from panel_core.utils import SECRET_KEY
+from panel_core import version as version_module
 from panel_core.version import get_app_version
 
 BOT_TOKEN = "secret-bot-token"
@@ -73,6 +75,14 @@ def test_reads_backend_field_from_given_file(tmp_path):
 
 def test_missing_file_falls_back_to_dev(tmp_path):
     assert get_app_version(str(tmp_path / "nope.json")) == "dev"
+
+
+def test_fallback_candidates_resolve_to_repo_root_versions_json():
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    expected = os.path.join(repo_root, "versions.json")
+    resolved = [os.path.abspath(p) for p in version_module._CANDIDATES]
+    assert expected in resolved
+    assert os.path.exists(expected)
 
 
 def test_bot_status_records_and_reads_fresh(monkeypatch):
