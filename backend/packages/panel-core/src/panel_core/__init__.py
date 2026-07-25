@@ -31,6 +31,15 @@ grpc_gevent.init_gevent()
 
 
 def create_app():
+    if is_sub():
+        from panel_core.roles import sub
+
+        return sub.create_app()
+    if is_bot_api():
+        from panel_core.roles import botapi
+
+        return botapi.create_app()
+
     app = build_base_app()
     sqlite_path = db_path()
 
