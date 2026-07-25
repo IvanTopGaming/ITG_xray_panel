@@ -10,7 +10,7 @@ from flask import Blueprint, request, Response
 from panel_core.extensions import limiter, db
 from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
-from panel_core.services.xray import stream_supports_vless_flow
+from panel_core.xray.protocol import stream_supports_vless_flow
 
 
 bp = Blueprint("subscription", __name__)

@@ -670,7 +670,7 @@ def _matrix_payload(proto, net, sec):
 
 @_pytest.mark.parametrize("proto,net,sec", _MATRIX, ids=lambda v: v if isinstance(v, str) else "")
 def test_link_matrix(proto, net, sec):
-    from panel_core.services.xray import _build_stream_settings
+    from panel_core.xray.protocol import _build_stream_settings
     from panel_core.api.subscription import (
         _build_share_links,
         _build_remote_link,

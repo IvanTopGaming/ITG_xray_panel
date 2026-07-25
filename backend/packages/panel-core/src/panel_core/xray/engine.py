@@ -18,21 +18,8 @@ from panel_core.models import (
 )
 from panel_core.extensions import db
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
-from panel_core.xray.protocol import (  # noqa: F401
-    ALLOWED_LOG_LEVELS,
+from panel_core.xray.protocol import (
     ALLOWED_ROUTING_RULE_KEYS,
-    DEFAULT_GEOIP_URL,
-    DEFAULT_GEOSITE_URL,
-    DEFAULT_LOG_LEVEL,
-    FALSY_VALUES,
-    PACKET_NETWORK_ALIASES,
-    TRUTHY_VALUES,
-    VALID_PACKET_NETWORKS,
-    VALID_STREAM_NETWORKS,
-    VALID_TLS_ALPN,
-    VALID_UTLS_FINGERPRINTS,
-    _CERT_PATH_PREFIX,
-    _build_stream_settings,
     _derive_reality_pubkey,
     _derive_wg_pubkey,
     _flag_enabled,
@@ -40,23 +27,13 @@ from panel_core.xray.protocol import (  # noqa: F401
     _normalize_wireguard_key,
     _parse_host_port,
     _validate_port,
-    generate_password,
-    generate_proxy_credentials,
-    generate_reality_keys,
-    generate_reality_short_id,
-    generate_shadowsocks_password,
-    generate_shadowsocks_user_key,
-    generate_wireguard_keys,
-    inbound_supports_vless_flow,
     is_shadowsocks_2022_method,
-    normalize_geo_data_url,
     normalize_packet_network,
     normalize_shadowsocks_2022_key,
     normalize_stream_network,
-    normalize_xray_log_level,
     stream_supports_vless_flow,
 )
-from panel_core.xray.settings import get_system_settings  # noqa: F401
+from panel_core.xray.settings import get_system_settings
 
 CONFIG_PATH = "/etc/xray/config.json"
 LOCK_PATH = "/etc/xray/config.lock"

@@ -18,7 +18,7 @@ from app.stats.command import (
 from common.protocol import user_pb2
 from common.serial import typed_message_pb2
 from proxy.vless import account_pb2
-from panel_core.services.xray import (
+from panel_core.xray.engine import (
     generate_config_file,
     restart_xray_container,
     ACCESS_LOG_PATH,

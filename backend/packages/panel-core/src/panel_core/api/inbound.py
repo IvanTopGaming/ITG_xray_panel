@@ -15,14 +15,16 @@ from panel_core.utils import (
     normalize_email,
     parse_int,
 )
-from panel_core.services.xray import (
+from panel_core.xray.engine import (
     generate_config_file,
     restart_xray_container,
+    _normalize_fallback_dest,
+)
+from panel_core.xray.protocol import (
     _build_stream_settings,
     _validate_port,
     _derive_reality_pubkey,
     _derive_wg_pubkey,
-    _normalize_fallback_dest,
     is_shadowsocks_2022_method,
     normalize_shadowsocks_2022_key,
     generate_shadowsocks_user_key,

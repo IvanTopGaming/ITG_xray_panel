@@ -12,7 +12,7 @@ from panel_core.utils import (
     normalize_email,
     normalize_tag,
 )
-from panel_core.services.xray import generate_config_file, restart_xray_container
+from panel_core.xray.engine import generate_config_file, restart_xray_container
 
 bp = Blueprint("auth", __name__)
 

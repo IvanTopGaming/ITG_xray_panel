@@ -13,12 +13,14 @@ from panel_core.utils import token_required, admin_or_federation_token_required
 from panel_core.extensions import limiter, db
 from panel_core.models import SystemSetting
 from panel_core.services.egress import build_bind_ips, build_host_script
-from panel_core.services.xray import (
+from panel_core.xray.engine import (
     restart_xray_container,
     update_geo_db,
     stream_xray_logs,
     generate_config_file,
-    get_system_settings,
+)
+from panel_core.xray.settings import get_system_settings
+from panel_core.xray.protocol import (
     normalize_geo_data_url,
     normalize_xray_log_level,
 )
@@ -205,7 +207,7 @@ def system_settings_update():
 @token_required
 @limiter.limit("30 per minute")
 def keys():
-    from panel_core.services.xray import (
+    from panel_core.xray.protocol import (
         generate_proxy_credentials,
         generate_reality_keys,
         generate_reality_short_id,
