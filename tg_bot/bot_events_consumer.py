@@ -37,10 +37,40 @@ async def _resolve_bot(source: BotSource) -> Bot:
 
 
 def _redis_uri() -> Optional[str]:
-    raw = (os.getenv("RATELIMIT_STORAGE_URI") or "").strip()
-    if raw.startswith("redis://"):
-        return raw
+    for env_name in ("BOT_EVENTS_REDIS_URI", "RATELIMIT_STORAGE_URI"):
+        raw = (os.getenv(env_name) or "").strip()
+        if raw.startswith(("redis://", "rediss://")):
+            return raw
     return None
+
+
+_NODE_EVENT_TYPES = ("expiry_notification", "traffic_notification")
+
+
+def _claim_scope(etype: str, payload: dict) -> str:
+    if etype != "traffic_notification":
+        return ""
+    return "{}/{}/{}".format(
+        payload.get("node", ""),
+        payload.get("inbound_tag", ""),
+        payload.get("email", ""),
+    )
+
+
+async def _resolve_claim(etype, tg_id, payload, backend) -> tuple[bool, str, bool]:
+    if backend is None:
+        return True, payload.get("lang", "ru"), bool(payload.get("renewable"))
+    try:
+        verdict = await backend.claim_notification(
+            telegram_id=int(tg_id),
+            kind=payload.get("kind", ""),
+            tariff_id=payload.get("tariff_id"),
+            scope=_claim_scope(etype, payload),
+        )
+    except Exception as exc:
+        logger.warning("claim failed for %s/%s: %s - sending anyway", tg_id, etype, exc)
+        return True, "ru", False
+    return bool(verdict.get("claimed")), verdict.get("lang", "ru"), bool(verdict.get("renewable"))
 
 
 def _format_expires_at(expires_at_ms: Optional[int]) -> str:
@@ -54,12 +84,19 @@ def _format_expires_at(expires_at_ms: Optional[int]) -> str:
     return d.strftime("%d.%m.%Y %H:%M")
 
 
-async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, middleware) -> None:
+async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, middleware, backend=None) -> None:
     bot = await _resolve_bot(bot_source)
     etype = event.get("type")
     tg_id = event.get("telegram_id")
     payload = event.get("payload") or {}
     lang = payload.get("lang", "ru")
+
+    if etype in _NODE_EVENT_TYPES:
+        claimed, lang, renewable = await _resolve_claim(etype, tg_id, payload, backend)
+        if not claimed:
+            return
+    else:
+        renewable = bool(payload.get("renewable"))
 
     if etype == "texts_changed":
         target_lang = payload.get("lang")
@@ -160,7 +197,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
 
         rows = []
         tariff_id = payload.get("tariff_id")
-        if payload.get("renewable") and tariff_id:
+        if renewable and tariff_id:
             renew_label = await i18n.t("notification.button.renew", lang)
             rows.append([_types.InlineKeyboardButton(text=renew_label, callback_data=f"buy:{tariff_id}")])
         home_label = await i18n.t("common.back_to_main", lang)
@@ -195,7 +232,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         )
         rows = []
         tariff_id = payload.get("tariff_id")
-        if payload.get("renewable") and tariff_id:
+        if renewable and tariff_id:
             renew_label = await i18n.t("notification.button.renew", lang)
             rows.append([_types.InlineKeyboardButton(text=renew_label, callback_data=f"buy:{tariff_id}")])
         home_label = await i18n.t("common.back_to_main", lang)
@@ -222,7 +259,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         logger.warning("bot_events.send to %s failed: %s", tg_id, exc)
 
 
-async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None) -> None:
+async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None, backend=None) -> None:
     uri = _redis_uri()
     if uri is None:
         logger.warning("bot_events_consumer: no redis URI; events disabled")
@@ -253,7 +290,7 @@ async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None) -> No
                     event = json.loads(raw["data"])
                 except Exception:
                     continue
-                await _handle(event, bot_source, i18n, middleware)
+                await _handle(event, bot_source, i18n, middleware, backend)
         except asyncio.CancelledError:
             return
         except Exception as exc:

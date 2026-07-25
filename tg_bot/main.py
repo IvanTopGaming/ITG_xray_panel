@@ -96,7 +96,7 @@ async def main() -> None:
 
     runtime_config.set_change_listener(on_runtime_change)
     refresh_task = asyncio.create_task(runtime_config.refresh_loop())
-    consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware))
+    consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware, backend=backend))
 
     logger.info("bot started, polling Telegram")
     try:
