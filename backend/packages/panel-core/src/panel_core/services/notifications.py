@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
+
 from panel_core.extensions import db
 from panel_core.models import (
+    NotificationClaim,
     NotificationLog,
     Tariff,
     TelegramUser,
@@ -64,6 +67,33 @@ def emit_if_new(event_type, kind, client, extra, *, lang_cache=None, renewable_c
     }
     bot_events.publish(event_type, client.telegram_id, payload)
     return True
+
+
+def claim_notification(*, telegram_id: int, kind: str, tariff_id: int | None, scope: str) -> dict:
+
+    normalized_tariff_id = int(tariff_id or 0)
+    normalized_scope = scope or ""
+
+    claimed = True
+    db.session.add(
+        NotificationClaim(
+            telegram_id=telegram_id,
+            tariff_id=normalized_tariff_id,
+            scope=normalized_scope,
+            kind=kind,
+        )
+    )
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        claimed = False
+
+    return {
+        "claimed": claimed,
+        "lang": _lookup_lang(telegram_id, {}),
+        "renewable": _is_renewable(tariff_id, telegram_id, {}) if tariff_id else False,
+    }
 
 
 def _lookup_lang(telegram_id: int, cache: dict[int, str]) -> str:

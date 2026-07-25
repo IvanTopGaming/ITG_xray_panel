@@ -2,7 +2,7 @@ from datetime import datetime
 import time
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import update
 
 from panel_core.extensions import db
@@ -427,3 +427,32 @@ def _serialize_tariff_for_bot(t, active_ids=frozenset(), inbound_labels=None):
             for i in t.items
         ],
     }
+
+
+@bp.route("/bot-service/notifications/claim", methods=["POST"])
+@bot_service_token_required
+def claim_notification_endpoint():
+
+    data = request.get_json(silent=True) or {}
+    telegram_id = data.get("telegram_id")
+    kind = data.get("kind")
+
+    if telegram_id is None or not kind:
+        return jsonify({"error": "telegram_id and kind are required"}), 400
+
+    from panel_core.services.notifications import claim_notification
+
+    try:
+        result = claim_notification(
+            telegram_id=int(telegram_id),
+            kind=str(kind),
+            tariff_id=data.get("tariff_id"),
+            scope=str(data.get("scope") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        current_app.logger.exception("notification claim failed")
+        return jsonify({"error": "internal server error"}), 500
+
+    return jsonify(result), 200
