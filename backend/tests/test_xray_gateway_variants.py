@@ -1,6 +1,77 @@
+import json
+import subprocess
+import sys
+
 import pytest
 
 from panel_core.xray import gateway as gw
+from tests.import_graph import SRC
+
+FORBIDDEN_MODULES = [
+    "panel_core.xray.engine",
+    "panel_core.xray.grpc_client",
+    "grpc",
+    "docker",
+    "filelock",
+]
+
+_ISOLATION_PROBE = """
+import importlib
+import json
+import sys
+import types
+
+src, forbidden = sys.argv[1], json.loads(sys.argv[2])
+
+pkg = types.ModuleType("panel_core")
+pkg.__path__ = [src]
+sys.modules["panel_core"] = pkg
+
+gateway = importlib.import_module("panel_core.xray.gateway")
+
+CALLS = [
+    ("apply_config", ()),
+    ("restart", ()),
+    ("add_user", ("tag", object())),
+    ("remove_user", ("tag", "a@b")),
+    ("stream_logs", (10,)),
+    ("update_geo", ()),
+]
+
+
+def leaked():
+    return sorted(name for name in forbidden if name in sys.modules)
+
+
+def exercise(instance, calls, consume):
+    for name, args in calls:
+        try:
+            result = getattr(instance, name)(*args)
+            if consume and name == "stream_logs":
+                list(result)
+        except Exception:
+            pass
+    return leaked()
+
+
+report = {"after_import": leaked()}
+report["null"] = exercise(gateway.NullXrayGateway(), CALLS, True)
+report["remote"] = exercise(gateway.RemoteXrayGateway(), CALLS, True)
+report["control"] = exercise(gateway.LocalXrayGateway(), [("apply_config", ())], False)
+
+print(json.dumps(report))
+"""
+
+
+def _run_isolation_probe():
+    result = subprocess.run(
+        [sys.executable, "-c", _ISOLATION_PROBE, str(SRC), json.dumps(FORBIDDEN_MODULES)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, f"the gateway isolation probe crashed:\n{result.stderr}"
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 def test_null_gateway_satisfies_protocol():
@@ -51,3 +122,20 @@ def test_remote_gateway_error_names_the_operation():
     with pytest.raises(gw.LocalXrayUnavailable) as excinfo:
         gw.RemoteXrayGateway().add_user("tag", object())
     assert "add_user" in str(excinfo.value)
+
+
+def test_remote_gateway_stream_logs_raises_eagerly_not_on_first_iteration():
+    with pytest.raises(gw.LocalXrayUnavailable):
+        gw.RemoteXrayGateway().stream_logs(10)
+
+
+def test_new_gateways_never_load_local_xray_machinery():
+    report = _run_isolation_probe()
+    assert report["after_import"] == []
+    assert report["null"] == []
+    assert report["remote"] == []
+
+
+def test_the_isolation_probe_is_not_vacuous():
+    report = _run_isolation_probe()
+    assert "panel_core.xray.engine" in report["control"]

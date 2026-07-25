@@ -54,7 +54,7 @@ class _Collector(ast.NodeVisitor):
             "calls": calls,
         }
         self.index.by_name.setdefault(node.name, set()).add(qualname)
-        self.index.defs.setdefault(self.mod, {})[node.name] = qualname
+        self.index.defs.setdefault(self.mod, {}).setdefault(node.name, set()).add(qualname)
         for decorator in node.decorator_list:
             source = ast.unparse(decorator)
             if re.match(r"bp\.\w+\(", source):
@@ -95,8 +95,8 @@ class CallGraph:
             if candidate in self.functions:
                 return {candidate}
         local = self.defs.get(module, {}).get(name)
-        if local is not None:
-            return {local}
+        if local:
+            return set(local)
         return self.by_name.get(name, set())
 
     def route_handlers(self, *modules):
