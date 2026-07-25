@@ -11,6 +11,10 @@ MISSING_STUBS_MARKER = "No module named 'app'"
 
 PROBE = """
 import sys
+import urllib.request
+urllib.request.urlopen = lambda *a, **kw: (_ for _ in ()).throw(
+    OSError("network disabled for the isolation probe")
+)
 from panel_core.roles.{module} import create_app
 create_app()
 leaked = sorted({{name for name in sys.modules if name.split('.')[0] in {roots!r}}})
@@ -26,6 +30,7 @@ BASE_ENV = {
     "PANEL_ADMIN_PASSWORD": "admin",
     "RATELIMIT_STORAGE_URI": "memory://",
 }
+PROBE_TIMEOUT_SECONDS = 60
 
 HINT = (
     "A light role regained a heavy import. The master, sub and bot-api must be able to fully boot "
@@ -40,13 +45,19 @@ HINT = (
 
 @pytest.mark.parametrize("role", LIGHT_ROLES)
 def test_light_role_boots_without_heavy_dependencies(role, tmp_path):
-    env = {**os.environ, **BASE_ENV, "PANEL_ROLE": PANEL_ROLE_BY_MODULE[role]}
+    env = {
+        **os.environ,
+        **BASE_ENV,
+        "PANEL_ROLE": PANEL_ROLE_BY_MODULE[role],
+        "DATABASE_URL": f"sqlite:///{tmp_path}/{role}.db",
+    }
     result = subprocess.run(
         [sys.executable, "-c", PROBE.format(module=role, roots=HEAVY_MODULE_ROOTS)],
         capture_output=True,
         text=True,
         cwd=str(tmp_path),
         env=env,
+        timeout=PROBE_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, f"booting panel_core.roles.{role} failed:\n{result.stderr}\n\n{HINT}"
