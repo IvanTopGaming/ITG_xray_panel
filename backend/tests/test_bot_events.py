@@ -64,3 +64,37 @@ def test_publish_leaves_delivered_at_null_when_redis_publish_fails(app, db):
         publish("payment_succeeded", telegram_id=42, payload={})
     row = BotEvent.query.one()
     assert row.delivered_at is None
+
+
+def test_event_bus_uri_prefers_dedicated_env(monkeypatch):
+    from panel_core.services.bot_events import event_bus_uri
+
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://local:6379/0")
+    monkeypatch.setenv("BOT_EVENTS_REDIS_URI", "redis://data-tier:6379/0")
+    assert event_bus_uri() == "redis://data-tier:6379/0"
+
+
+def test_event_bus_uri_falls_back_to_ratelimit_uri(monkeypatch):
+    from panel_core.services.bot_events import event_bus_uri
+
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://local:6379/0")
+    monkeypatch.delenv("BOT_EVENTS_REDIS_URI", raising=False)
+    assert event_bus_uri() == "redis://local:6379/0"
+
+
+def test_get_redis_accepts_rediss_scheme(monkeypatch):
+    from panel_core.services import bot_events
+
+    monkeypatch.setenv("BOT_EVENTS_REDIS_URI", "rediss://data-tier:6379/0")
+    with patch("redis.Redis.from_url") as from_url:
+        from_url.return_value = MagicMock()
+        client = bot_events._get_redis()
+    assert client is not None
+    assert from_url.call_args.args[0] == "rediss://data-tier:6379/0"
+
+
+def test_get_redis_rejects_non_redis_scheme(monkeypatch):
+    from panel_core.services import bot_events
+
+    monkeypatch.setenv("BOT_EVENTS_REDIS_URI", "memory://")
+    assert bot_events._get_redis() is None

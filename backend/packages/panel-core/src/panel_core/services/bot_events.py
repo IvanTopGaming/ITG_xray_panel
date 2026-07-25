@@ -11,6 +11,19 @@ logger = logging.getLogger(__name__)
 _REDIS_CHANNEL = "bot:events"
 
 
+_BUS_URI_ENV = "BOT_EVENTS_REDIS_URI"
+_FALLBACK_URI_ENV = "RATELIMIT_STORAGE_URI"
+_REDIS_SCHEMES = ("redis://", "rediss://")
+
+
+def event_bus_uri() -> str:
+
+    dedicated = (os.getenv(_BUS_URI_ENV, "") or "").strip()
+    if dedicated:
+        return dedicated
+    return (os.getenv(_FALLBACK_URI_ENV, "") or "").strip()
+
+
 def _get_redis():
 
     try:
@@ -18,8 +31,10 @@ def _get_redis():
     except ImportError:
         return None
 
-    uri = (os.getenv("RATELIMIT_STORAGE_URI", "") or "").strip()
-    if not uri.startswith("redis://"):
+    uri = event_bus_uri()
+    if not uri.startswith(_REDIS_SCHEMES):
+        if uri:
+            logger.warning("bot events bus URI %r is not a redis URI; events will not be published", uri)
         return None
     try:
         return redis_lib.Redis.from_url(uri, socket_connect_timeout=1)
