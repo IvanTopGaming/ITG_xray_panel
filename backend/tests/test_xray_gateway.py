@@ -77,6 +77,80 @@ def test_facade_delegates_stream_logs_and_update_geo():
     fake.update_geo.assert_called_once_with()
 
 
+def test_facade_stream_logs_without_arguments_uses_engine_default():
+    import panel_core.xray as facade
+    from panel_core.xray import engine
+
+    fake = MagicMock()
+    gw.set_xray_gateway(fake)
+
+    facade.stream_xray_logs()
+
+    fake.stream_logs.assert_called_once_with(engine.LOG_TAIL_LINES)
+
+
+def test_local_gateway_stream_logs_without_arguments_uses_engine_default(monkeypatch):
+    from panel_core.xray import engine
+
+    seen = {}
+    monkeypatch.setattr(engine, "stream_xray_logs", lambda tail_lines: seen.setdefault("tail", tail_lines))
+
+    gw.LocalXrayGateway().stream_logs()
+
+    assert seen == {"tail": engine.LOG_TAIL_LINES}
+
+
+@pytest.mark.parametrize(
+    "facade_name,gateway_name,args",
+    [
+        ("generate_config_file", "apply_config", ()),
+        ("restart_xray_container", "restart", ()),
+        ("stream_xray_logs", "stream_logs", ()),
+        ("update_geo_db", "update_geo", ()),
+        ("_api_add_user_grpc", "add_user", ("tag", "client")),
+        ("_api_remove_user_grpc", "remove_user", ("tag", "a@b")),
+    ],
+)
+def test_facade_propagates_gateway_return_value(facade_name, gateway_name, args):
+    import panel_core.xray as facade
+
+    sentinel = object()
+    fake = MagicMock()
+    getattr(fake, gateway_name).return_value = sentinel
+    gw.set_xray_gateway(fake)
+
+    assert getattr(facade, facade_name)(*args) is sentinel
+
+
+@pytest.mark.parametrize(
+    "facade_name,impl_module,impl_name",
+    [
+        ("generate_config_file", "panel_core.xray.engine", "generate_config_file"),
+        ("restart_xray_container", "panel_core.xray.engine", "restart_xray_container"),
+        ("stream_xray_logs", "panel_core.xray.engine", "stream_xray_logs"),
+        ("update_geo_db", "panel_core.xray.engine", "update_geo_db"),
+        ("_api_add_user_grpc", "panel_core.xray.grpc_client", "_api_add_user_grpc"),
+        ("_api_remove_user_grpc", "panel_core.xray.grpc_client", "_api_remove_user_grpc"),
+    ],
+)
+def test_facade_signature_matches_implementation(facade_name, impl_module, impl_name):
+    import importlib
+    import inspect
+
+    import panel_core.xray as facade
+
+    def shape(fn):
+        return [(p.name, p.kind, p.default) for p in inspect.signature(fn).parameters.values()]
+
+    impl = getattr(importlib.import_module(impl_module), impl_name)
+
+    assert shape(getattr(facade, facade_name)) == shape(impl)
+
+
+def test_local_gateway_satisfies_the_protocol():
+    assert isinstance(gw.LocalXrayGateway(), gw.XrayGateway)
+
+
 def test_local_gateway_delegates_to_engine(monkeypatch):
     from panel_core.xray import engine
 

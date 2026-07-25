@@ -1,3 +1,4 @@
+from panel_core.xray.engine import LOG_TAIL_LINES
 from panel_core.xray.gateway import get_xray_gateway
 
 
@@ -9,7 +10,7 @@ def restart_xray_container():
     return get_xray_gateway().restart()
 
 
-def stream_xray_logs(tail_lines):
+def stream_xray_logs(tail_lines=LOG_TAIL_LINES):
     return get_xray_gateway().stream_logs(tail_lines)
 
 
