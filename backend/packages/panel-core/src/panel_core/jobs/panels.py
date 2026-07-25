@@ -8,7 +8,7 @@ import gevent.pool
 from panel_core.extensions import db, get_redis
 from panel_core.models import LinkedPanel
 from panel_core.services.panel_proxy import FederationClient
-from panel_core.services.stats import _ten_min_bucket, _upsert_node_snapshot
+from panel_core.services.traffic_store import _ten_min_bucket, _upsert_node_snapshot
 
 logger = logging.getLogger(__name__)
 

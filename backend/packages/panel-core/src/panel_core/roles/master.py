@@ -1,5 +1,3 @@
-from grpc.experimental import gevent as grpc_gevent
-
 from panel_core.app_base import (
     bootstrap_defaults,
     build_base_app,
@@ -12,11 +10,9 @@ from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered
 from panel_core.jobs.panels import poll_linked_panels
 from panel_core.jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from panel_core.panel_role import ROLE_MASTER
-from panel_core.services.stats import cleanup_stats_job
+from panel_core.services.traffic_store import cleanup_stats_job
 from panel_core.services.version_check import fetch_latest
 from panel_core.xray.gateway import RemoteXrayGateway, set_xray_gateway, xray_gateway_configured
-
-grpc_gevent.init_gevent()
 
 
 def create_app():

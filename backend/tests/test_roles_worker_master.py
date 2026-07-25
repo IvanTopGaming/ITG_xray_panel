@@ -99,3 +99,35 @@ def test_worker_does_not_register_master_only_jobs(monkeypatch, tmp_path):
     ids = {job_id for job_id, _ in _jobs()}
     assert "poll_linked_panels" not in ids
     assert "poll_pending_payments" not in ids
+
+
+def test_master_module_does_not_import_stats_or_grpc():
+    import ast
+    from pathlib import Path
+
+    master = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core/roles/master.py"
+    tree = ast.parse(master.read_text())
+
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    assert "panel_core.services.stats" not in imported, "master must take cleanup from traffic_store, not the collector"
+    assert not any(name.startswith("grpc") for name in imported), (
+        "master runs RemoteXrayGateway and makes no gRPC calls; init_gevent() is worker-only"
+    )
+
+
+def test_panels_job_takes_snapshots_from_traffic_store():
+    import ast
+    from pathlib import Path
+
+    panels = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core/jobs/panels.py"
+    tree = ast.parse(panels.read_text())
+
+    modules = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+    assert "panel_core.services.stats" not in modules
+    assert "panel_core.services.traffic_store" in modules
