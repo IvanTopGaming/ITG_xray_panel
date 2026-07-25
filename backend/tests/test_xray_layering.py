@@ -56,6 +56,13 @@ HEAVY_MODULES = ("panel_core.xray.engine", "panel_core.xray.grpc_client") + HEAV
 
 ALLOWED_HEAVY_IMPORTERS = {"gateway.py", "engine.py", "grpc_client.py"}
 
+ALLOWED_HEAVY_ROLE_IMPORTERS = {"worker.py", "master.py"}
+
+ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE = {
+    "xray": ALLOWED_HEAVY_IMPORTERS,
+    "roles": ALLOWED_HEAVY_ROLE_IMPORTERS,
+}
+
 KNOWN_HEAVY_IMPORT_VIOLATIONS = [
     "api/inbound.py -> panel_core.services.stats -> panel_core.xray.engine",
     "api/inbound.py -> panel_core.services.stats -> panel_core.xray.grpc_client",
@@ -74,9 +81,10 @@ def _heavy_targets(path):
 
 
 def _heavy_offenders(package):
+    allowed = ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE.get(package, set())
     offenders = []
     for path in sorted((SRC / package).rglob("*.py")):
-        if package == "xray" and path.name in ALLOWED_HEAVY_IMPORTERS:
+        if path.name in allowed:
             continue
         for heavy in _heavy_targets(path):
             offenders.append(f"{package}/{path.name} -> {heavy}")
@@ -84,9 +92,10 @@ def _heavy_offenders(package):
 
 
 def _transitive_heavy_offenders(package):
+    allowed = ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE.get(package, set())
     offenders = set()
     for path in sorted((SRC / package).rglob("*.py")):
-        if package == "xray" and path.name in ALLOWED_HEAVY_IMPORTERS:
+        if path.name in allowed:
             continue
         for module, chain in import_chains(path).items():
             root = _heavy_root(module)
@@ -124,12 +133,20 @@ def test_only_gateway_imports_heavy_xray_modules_inside_xray_package():
     assert _heavy_offenders("xray") == []
 
 
+def test_only_worker_and_master_roles_import_heavy_modules():
+    assert _heavy_offenders("roles") == []
+
+
 def test_api_layer_does_not_transitively_reach_heavy_modules():
     assert _transitive_heavy_offenders("api") == KNOWN_HEAVY_IMPORT_VIOLATIONS
 
 
 def test_xray_package_does_not_transitively_reach_heavy_modules():
     assert _transitive_heavy_offenders("xray") == []
+
+
+def test_light_roles_do_not_transitively_reach_heavy_modules():
+    assert _transitive_heavy_offenders("roles") == []
 
 
 def test_xray_seam_imports_without_heavy_dependencies():

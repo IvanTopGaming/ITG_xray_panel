@@ -1,4 +1,5 @@
 import ast
+import re
 from collections import deque
 
 from tests.import_graph import SRC, module_name, package_name
@@ -56,7 +57,7 @@ class _Collector(ast.NodeVisitor):
         self.index.defs.setdefault(self.mod, {})[node.name] = qualname
         for decorator in node.decorator_list:
             source = ast.unparse(decorator)
-            if source.startswith("bp.route(") or source.startswith("bp.get(") or source.startswith("bp.post("):
+            if re.match(r"bp\.\w+\(", source):
                 self.index.routes.setdefault(self.mod, []).append(qualname)
         self.scope.append(node.name)
         self.generic_visit(node)

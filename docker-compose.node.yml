@@ -87,7 +87,7 @@ services:
       - PANEL_ROLE=${PANEL_ROLE:-worker}
     env_file:
       - .env
-    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core:create_app()"
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core.roles.worker:create_app()"
     logging:
       driver: json-file
       options:

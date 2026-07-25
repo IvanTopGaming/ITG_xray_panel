@@ -88,7 +88,7 @@ services:
       - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
     env_file:
       - .env
-    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core:create_app()"
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core.roles.master:create_app()"
     logging:
       driver: json-file
       options:

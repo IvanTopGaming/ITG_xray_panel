@@ -16,7 +16,7 @@ services:
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
     env_file:
       - .env
-    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core:create_app()"
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core.roles.botapi:create_app()"
     logging:
       driver: json-file
       options:
