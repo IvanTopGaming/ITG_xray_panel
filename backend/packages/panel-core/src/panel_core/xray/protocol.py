@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
 
 X25519_KEY_BYTES = 32
+LOG_TAIL_LINES = 300
 ALLOWED_LOG_LEVELS = {"debug", "info", "warning", "error", "none"}
 DEFAULT_GEOIP_URL = (
     os.getenv(
@@ -363,6 +364,16 @@ def _parse_host_port(value, field_name="fallback_address"):
     if not host:
         raise ValueError(f"{field_name} host is required")
     return host, _validate_port(port_str.strip())
+
+
+def _normalize_fallback_dest(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return _validate_port(raw)
+    host, port = _parse_host_port(raw)
+    return f"{host}:{port}"
 
 
 _CERT_PATH_PREFIX = "/etc/xray/"

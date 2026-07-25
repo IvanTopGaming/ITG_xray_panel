@@ -1,4 +1,4 @@
-from panel_core.xray.engine import LOG_TAIL_LINES
+from panel_core.xray.protocol import LOG_TAIL_LINES
 from panel_core.xray.gateway import get_xray_gateway
 
 

@@ -1,9 +1,39 @@
 import importlib
 import importlib.util
+import json
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
 from tests.import_graph import SRC, imported_modules
+
+HEAVY_RUNTIME_MODULES = (
+    "docker",
+    "grpc",
+    "filelock",
+    "app.proxyman",
+    "app.stats",
+    "common",
+    "proxy",
+)
+
+_SEAM_IMPORT_PROBE = """
+import importlib
+import json
+import sys
+import types
+
+pkg = types.ModuleType("panel_core")
+pkg.__path__ = [{src!r}]
+sys.modules["panel_core"] = pkg
+
+importlib.import_module("panel_core.xray")
+importlib.import_module("panel_core.xray.gateway")
+
+print(json.dumps(sorted(m for m in {forbidden!r} if m in sys.modules)))
+"""
 
 ENGINE_EXPORTS = [
     "generate_config_file",
@@ -27,10 +57,7 @@ HEAVY_MODULES = ("panel_core.xray.engine", "panel_core.xray.grpc_client")
 
 ALLOWED_HEAVY_IMPORTERS = {"gateway.py", "engine.py", "grpc_client.py"}
 
-KNOWN_HEAVY_IMPORT_VIOLATIONS = [
-    "api/inbound.py -> panel_core.xray.engine",
-    "xray/__init__.py -> panel_core.xray.engine",
-]
+KNOWN_HEAVY_IMPORT_VIOLATIONS = []
 
 
 def _heavy_targets(path):
@@ -81,6 +108,18 @@ def test_only_gateway_imports_heavy_xray_modules_inside_xray_package():
 
 def test_known_heavy_import_violations_do_not_grow():
     assert _heavy_offenders("api") + _heavy_offenders("xray") == KNOWN_HEAVY_IMPORT_VIOLATIONS
+
+
+def test_xray_seam_imports_without_heavy_dependencies():
+    probe = textwrap.dedent(_SEAM_IMPORT_PROBE).format(src=str(SRC), forbidden=list(HEAVY_RUNTIME_MODULES))
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, f"importing the xray seam failed:\n{result.stderr}"
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == []
 
 
 def test_protocol_and_settings_are_free_of_heavy_imports():

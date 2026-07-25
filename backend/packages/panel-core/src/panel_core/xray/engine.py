@@ -20,13 +20,13 @@ from panel_core.extensions import db
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
 from panel_core.xray.protocol import (
     ALLOWED_ROUTING_RULE_KEYS,
+    LOG_TAIL_LINES,
     _derive_reality_pubkey,
     _derive_wg_pubkey,
     _flag_enabled,
+    _normalize_fallback_dest,
     _normalize_reality_key,
     _normalize_wireguard_key,
-    _parse_host_port,
-    _validate_port,
     is_shadowsocks_2022_method,
     normalize_packet_network,
     normalize_shadowsocks_2022_key,
@@ -45,7 +45,6 @@ _CONFIG_BASE, _CONFIG_EXT = os.path.splitext(CONFIG_PATH)
 CANDIDATE_PATH = f"{_CONFIG_BASE}.candidate{_CONFIG_EXT}"
 ACCESS_LOG_PATH = "/var/log/xray/access.log"
 ERROR_LOG_PATH = "/var/log/xray/error.log"
-LOG_TAIL_LINES = 300
 logger = logging.getLogger(__name__)
 
 
@@ -200,16 +199,6 @@ def update_geo_db():
         except (requests.RequestException, OSError) as exc:
             raise RuntimeError(f"Failed to update {filename}") from exc
     restart_xray_container()
-
-
-def _normalize_fallback_dest(value):
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    if raw.isdigit():
-        return _validate_port(raw)
-    host, port = _parse_host_port(raw)
-    return f"{host}:{port}"
 
 
 def _wg_peer_ip(client_id, used):

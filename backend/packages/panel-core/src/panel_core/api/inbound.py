@@ -21,9 +21,9 @@ from panel_core.xray import (
     _api_add_user_grpc,
     _api_remove_user_grpc,
 )
-from panel_core.xray.engine import _normalize_fallback_dest
 from panel_core.xray.protocol import (
     _build_stream_settings,
+    _normalize_fallback_dest,
     _validate_port,
     _derive_reality_pubkey,
     _derive_wg_pubkey,
