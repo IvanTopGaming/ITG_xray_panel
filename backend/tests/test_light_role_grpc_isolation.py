@@ -50,8 +50,8 @@ def test_only_role_guarded_bot_endpoints_can_reach_xray_grpc():
     assert set(reaching) == ROLE_GUARDED_HANDLERS, FAILURE_HINT + f"\nreaching: {reaching}"
 
 
-HEAVY_ROLES = ("worker", "master")
-LIGHT_ROLES = ("sub", "botapi")
+HEAVY_ROLES = ("worker",)
+LIGHT_ROLES = ("sub", "botapi", "master")
 
 INIT_GEVENT_HINT = (
     "Without grpc_gevent.init_gevent() every Xray gRPC call blocks the gunicorn gevent hub. "
