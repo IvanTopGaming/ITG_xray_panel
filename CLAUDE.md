@@ -36,7 +36,7 @@ uvx ruff format --check backend/   # CI mode — no changes, exit 1 if dirty
 uv run pytest tests/                  # 850+ unit + integration tests
 ```
 
-`backend/tests/conftest.py` stubs gRPC modules in `sys.modules` before importing the app so tests run on a dev checkout without needing the protobuf bundle that ships only inside the Docker image.
+`backend/tests/conftest.py` stubs gRPC modules in `sys.modules` before importing the app so tests run on a dev checkout without needing the protobuf bundle that ships only inside the Docker image. That stub is global, so it would make any in-process check that `master`/`sub`/`botapi` import without `grpcio`/`protobuf`/`docker`/`filelock` pass vacuously — `tests/test_light_role_import_isolation.py` asserts exactly that in a **separate subprocess** instead, where the stub was never installed.
 
 ### Frontend (React/Vite)
 ```bash
@@ -105,7 +105,8 @@ Two Redis instances play different roles once nodes are split out. The `redis` a
   - `bot_service` — endpoints the bot itself calls (runtime-config, texts, users, trial, tariffs, payments) — bot service token only
 - `app/services/`
   - `xray.py` — generates Xray JSON config, gRPC user add/remove, traffic stats, log tailing. File lock `/etc/xray/config.lock` serializes concurrent writes
-  - `stats.py` — traffic collection, limit enforcement, monthly counter reset (clears `traffic_*` `NotificationLog` rows so warnings re-arm); `check_limits_and_reset` and `sync_traffic_stats` also emit `expiry_notification`/`traffic_notification` events inline (see `notifications.py` below and Bot event recovery buffer)
+  - `traffic_store.py` — pure SQL layer for traffic storage, usable by roles with **no local Xray**: snapshot upserts (`_ten_min_bucket`, `_upsert_snapshot`, `_upsert_node_snapshot`, `_upsert_domain_stat`), cleanup (`cleanup_old_domain_stats`, `cleanup_stats_job`), and the admin-surface counter resets (`reset_user_traffic`, `reset_inbound_traffic`, `bulk_delete_users`) that touch Xray only through `XrayGateway`
+  - `stats.py` — worker-side traffic collector: gRPC polling (`sync_traffic_stats`), limit enforcement + monthly reset (`check_limits_and_reset`), access-log parsing; re-exports the names above from `traffic_store` for backward-compatible imports and test patches. `check_limits_and_reset` and `sync_traffic_stats` also emit `expiry_notification`/`traffic_notification` events inline (see `notifications.py` below and Bot event recovery buffer)
   - `panel_proxy.py` — Panel Federation HTTP client: `FederationClient` talks to linked panels, proxies user/inbound CRUD operations to remote panels based on `TariffItem.panel_id` routing. `get_panel_snapshot` (cached, 60s TTL) vs `fetch_panel_snapshot_live` (live, no cache)
   - `sub_cache.py` — Redis-backed subscription response cache
   - `runtime_identity.py` — generates UUIDs / keys for protocols
@@ -315,6 +316,7 @@ All checks must pass before code reaches `main`. Run locally before pushing:
 | Prettier | `cd frontend && npm run format:check` |
 | Frontend build | `cd frontend && npm run build` |
 | Backend pytest | `cd backend && uv sync --frozen && uv run pytest tests/ -q` |
+| Bot pytest | `cd tg_bot && uv sync --frozen && uv run pytest tests/ -q` |
 | Dockerfile lint | hadolint (runs in CI only) |
 
 CI provisions uv via `astral-sh/setup-uv@v8.2.0` (there is no moving `v8` major tag — pin the exact version), then runs the commands above through `uvx` / `uv run`.
