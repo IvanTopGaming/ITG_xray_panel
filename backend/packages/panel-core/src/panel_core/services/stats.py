@@ -201,8 +201,6 @@ def sync_traffic_stats():
     try:
         from panel_core.services.notifications import emit_if_new, evaluate_traffic
 
-        lang_cache: dict = {}
-        renewable_cache: dict = {}
         for c, _up_d, _down_d in user_deltas:
             if c.telegram_id is None:
                 continue
@@ -220,8 +218,6 @@ def sync_traffic_stats():
                     "limit_kind": "per_inbound",
                     "pct": round(used_bytes / c.limit_bytes, 4),
                 },
-                lang_cache=lang_cache,
-                renewable_cache=renewable_cache,
             )
     except Exception as e:
         logger.warning("traffic notification pass failed: %s", e)
@@ -260,8 +256,6 @@ def check_limits_and_reset():
     try:
         from panel_core.services.notifications import emit_if_new, evaluate_expiry
 
-        expiry_lang_cache: dict = {}
-        expiry_renewable_cache: dict = {}
         for c in clients:
             if c.telegram_id is None:
                 continue
@@ -273,8 +267,6 @@ def check_limits_and_reset():
                 kind,
                 c,
                 {"expiry_time_ms": c.expiry_time},
-                lang_cache=expiry_lang_cache,
-                renewable_cache=expiry_renewable_cache,
             )
     except Exception as e:
         logger.warning("expiry notification pass failed: %s", e)

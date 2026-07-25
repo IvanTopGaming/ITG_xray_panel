@@ -113,6 +113,7 @@ def test_emit_if_new_publishes_once_then_dedups(app):
         assert payload["email"] == "x"
         assert payload["expiry_time_ms"] == 0
         assert payload["tariff_id"] is None
-        assert payload["renewable"] is False
-        assert payload["lang"] == "ru"
+        assert payload["inbound_tag"] == "vless-de"
+        assert "renewable" not in payload
+        assert "lang" not in payload
         assert NotificationLog.query.filter_by(client_id="cli-x", kind="expired").count() == 1

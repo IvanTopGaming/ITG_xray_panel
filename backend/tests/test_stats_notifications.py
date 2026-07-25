@@ -173,3 +173,60 @@ def test_check_limits_emits_3d_warning_without_disabling(app):
         assert db.session.get(Client, "cli-3d").enable is True
         assert mock_publish.call_count == 1
         assert mock_publish.call_args.args[2]["kind"] == "expiry_3d"
+
+
+def test_traffic_payload_carries_no_presentation_fields(app, monkeypatch):
+    monkeypatch.setenv("PANEL_DOMAIN", "de1.example.com")
+    with app.app_context():
+        _inbound()
+        c = Client(
+            id=str(uuid.uuid4()),
+            email="u9",
+            inbound_tag="DE-vless",
+            telegram_id=77,
+            limit_bytes=100,
+            up=0,
+            down=0,
+            enable=True,
+            expiry_time=0,
+        )
+        db.session.add(c)
+        db.session.commit()
+        with (
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
+            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+        ):
+            sync_traffic_stats()
+
+    _event_type, _tg_id, payload = mock_publish.call_args.args
+    assert "lang" not in payload
+    assert "renewable" not in payload
+    assert payload["node"] == "de1.example.com"
+    assert payload["inbound_tag"] == "DE-vless"
+
+
+def test_expiry_payload_carries_node_and_no_presentation_fields(app, monkeypatch):
+    monkeypatch.setenv("PANEL_DOMAIN", "nl1.example.com")
+    with app.app_context():
+        _inbound()
+        c = Client(
+            id=str(uuid.uuid4()),
+            email="u10",
+            inbound_tag="DE-vless",
+            telegram_id=78,
+            limit_bytes=0,
+            up=0,
+            down=0,
+            enable=True,
+            expiry_time=int(time.time() * 1000) + 1000,
+        )
+        db.session.add(c)
+        db.session.commit()
+        with patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish:
+            check_limits_and_reset()
+
+    _event_type, _tg_id, payload = mock_publish.call_args.args
+    assert "lang" not in payload
+    assert "renewable" not in payload
+    assert payload["node"] == "nl1.example.com"

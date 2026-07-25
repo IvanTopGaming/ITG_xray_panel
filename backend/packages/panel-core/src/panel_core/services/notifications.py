@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy.exc import IntegrityError
 
 from panel_core.extensions import db
@@ -48,25 +50,27 @@ def evaluate_expiry(client, now_ms: int) -> str | None:
     return None
 
 
-def emit_if_new(event_type, kind, client, extra, *, lang_cache=None, renewable_cache=None) -> bool:
+def emit_if_new(event_type, kind, client, extra) -> bool:
     already = NotificationLog.query.filter_by(telegram_id=client.telegram_id, client_id=client.id, kind=kind).first()
     if already is not None:
         return False
     db.session.add(NotificationLog(telegram_id=client.telegram_id, client_id=client.id, kind=kind))
     db.session.commit()
-    lang_cache = {} if lang_cache is None else lang_cache
-    renewable_cache = {} if renewable_cache is None else renewable_cache
     payload = {
         "kind": kind,
         "client_id": client.id,
         "email": client.email,
+        "inbound_tag": client.inbound_tag,
+        "node": _node_id(),
         **extra,
         "tariff_id": client.tariff_id,
-        "renewable": _is_renewable(client.tariff_id, client.telegram_id, renewable_cache),
-        "lang": _lookup_lang(client.telegram_id, lang_cache),
     }
     bot_events.publish(event_type, client.telegram_id, payload)
     return True
+
+
+def _node_id() -> str:
+    return (os.getenv("PANEL_DOMAIN", "") or "").strip()
 
 
 def claim_notification(*, telegram_id: int, kind: str, tariff_id: int | None, scope: str) -> dict:
