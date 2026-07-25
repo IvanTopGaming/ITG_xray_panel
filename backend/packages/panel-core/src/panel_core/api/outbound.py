@@ -8,9 +8,15 @@ from panel_core.extensions import db, limiter
 from panel_core.models import Outbound, Balancer, Client
 from panel_core.utils import token_required, normalize_tag
 from panel_core.services.egress import allocate_bind_ip
-from panel_core.xray import generate_config_file, restart_xray_container
+from panel_core.xray import generate_config_file, has_local_xray, restart_xray_container
 
 bp = Blueprint("outbound", __name__)
+XRAY_OUTBOUNDS_UNSUPPORTED = (
+    "Outbounds are configured on the node that runs Xray; this role has no local Xray instance."
+)
+XRAY_BALANCERS_UNSUPPORTED = (
+    "Balancers are configured on the node that runs Xray; this role has no local Xray instance."
+)
 ALLOWED_BALANCER_STRATEGIES = {"random", "leastLoad", "leastPing"}
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 FALSY_VALUES = {"0", "false", "no", "off"}
@@ -241,6 +247,8 @@ def get_outbounds_health():
 @token_required
 @limiter.limit("30 per minute")
 def create_outbound():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_OUTBOUNDS_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
     try:
         tag = normalize_tag(data.get("tag"))
@@ -288,6 +296,8 @@ def create_outbound():
 @token_required
 @limiter.limit("30 per minute")
 def update_outbound(tag):
+    if not has_local_xray():
+        return jsonify({"error": XRAY_OUTBOUNDS_UNSUPPORTED}), 501
     try:
         ob = Outbound.query.filter_by(tag=tag).first()
         if not ob:
@@ -330,6 +340,8 @@ def update_outbound(tag):
 @token_required
 @limiter.limit("30 per minute")
 def delete_outbound(tag):
+    if not has_local_xray():
+        return jsonify({"error": XRAY_OUTBOUNDS_UNSUPPORTED}), 501
     try:
         if tag in ["direct", "block"]:
             raise ValueError("System outbound")
@@ -392,6 +404,8 @@ def get_balancers():
 @token_required
 @limiter.limit("30 per minute")
 def create_balancer():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_BALANCERS_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
     try:
         tag = normalize_tag(data.get("tag"))
@@ -436,6 +450,8 @@ def create_balancer():
 @token_required
 @limiter.limit("30 per minute")
 def update_balancer(tag):
+    if not has_local_xray():
+        return jsonify({"error": XRAY_BALANCERS_UNSUPPORTED}), 501
     try:
         bal = Balancer.query.filter_by(tag=tag).first()
         if not bal:
@@ -487,6 +503,8 @@ def update_balancer(tag):
 @token_required
 @limiter.limit("30 per minute")
 def delete_balancer(tag):
+    if not has_local_xray():
+        return jsonify({"error": XRAY_BALANCERS_UNSUPPORTED}), 501
     try:
         bal = Balancer.query.filter_by(tag=tag).first()
         if not bal:

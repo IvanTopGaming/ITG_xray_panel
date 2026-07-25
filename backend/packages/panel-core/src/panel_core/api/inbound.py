@@ -17,6 +17,7 @@ from panel_core.utils import (
 )
 from panel_core.xray import (
     generate_config_file,
+    has_local_xray,
     restart_xray_container,
     _api_add_user_grpc,
     _api_remove_user_grpc,
@@ -54,6 +55,14 @@ ALLOWED_INBOUND_PROTOCOLS = {
 }
 PANEL_USER_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks", "wireguard"}
 ALLOWED_VLESS_FLOWS = {"", "xtls-rprx-vision"}
+XRAY_LOCAL_INBOUND_UNSUPPORTED = (
+    "Inbounds live on the node that runs Xray; this role has no local Xray instance. "
+    "Supply panel_id to route the operation to a node."
+)
+XRAY_LOCAL_USERS_UNSUPPORTED = (
+    "Proxy users live on the node that runs Xray; this role has no local Xray instance. "
+    "Supply panel_id on each user to route the operation to a node."
+)
 
 
 def _parse_bool(value, default=False):
@@ -226,6 +235,9 @@ def create_inbound():
             logging.getLogger(__name__).exception("proxy_create_inbound failed: %s", exc)
             return jsonify({"error": f"Remote panel error: {exc}"}), 502
 
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOCAL_INBOUND_UNSUPPORTED}), 501
+
     data = request.get_json(silent=True) or {}
     try:
         tag = normalize_tag(data.get("tag"))
@@ -285,6 +297,9 @@ def update_inbound(tag):
             return jsonify({"error": str(e)}), 400
         except Exception:
             return jsonify({"error": "Remote panel error"}), 502
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOCAL_INBOUND_UNSUPPORTED}), 501
 
     try:
         ib = Inbound.query.filter_by(tag=tag).first()
@@ -492,6 +507,9 @@ def delete_inbound(tag):
             result["disabled_tariffs"] = purge["disabled_tariffs"]
         return jsonify(result)
 
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOCAL_INBOUND_UNSUPPORTED}), 501
+
     try:
         ib = Inbound.query.filter_by(tag=tag).first()
         if not ib:
@@ -549,6 +567,9 @@ def add_user(tag):
             return jsonify({"error": str(e)}), 400
         except Exception:
             return jsonify({"error": "Remote panel error"}), 502
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
 
     try:
         data = request.get_json(silent=True) or {}
@@ -633,6 +654,9 @@ def update_user(tag):
             return jsonify({"error": str(e)}), 400
         except Exception:
             return jsonify({"error": "Remote panel error"}), 502
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
 
     try:
         data = request.get_json(silent=True) or {}
@@ -736,6 +760,9 @@ def delete_user_route(tag):
         except Exception:
             return jsonify({"error": "Remote panel error"}), 502
 
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
+
     try:
         ib = Inbound.query.filter_by(tag=tag).first()
         if ib and ib.protocol not in PANEL_USER_PROTOCOLS:
@@ -802,6 +829,8 @@ def bulk_delete_users_route():
 
         data = request.get_json(silent=True) or {}
         local, remote = _split_users_by_panel(data.get("users"))
+        if local and not has_local_xray():
+            return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
 
         deleted_count = 0
         errors = []
@@ -879,6 +908,8 @@ def bulk_enable_users_route():
             raise ValueError("enable field required")
         enable = _parse_bool(data["enable"])
         local, remote = _split_users_by_panel(data.get("users"))
+        if local and not has_local_xray():
+            return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
 
         count = 0
         errors = []
@@ -965,6 +996,8 @@ def bulk_adjust_days_route():
         if mode not in ("add", "subtract"):
             raise ValueError("mode must be 'add' or 'subtract'")
         local, remote = _split_users_by_panel(data.get("users"))
+        if local and not has_local_xray():
+            return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
 
         updated = 0
         skipped = 0
@@ -1028,6 +1061,8 @@ def bulk_adjust_traffic_route():
         if mode not in ("add", "subtract"):
             raise ValueError("mode must be 'add' or 'subtract'")
         local, remote = _split_users_by_panel(data.get("users"))
+        if local and not has_local_xray():
+            return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
 
         updated = 0
         skipped = 0
@@ -1095,6 +1130,8 @@ def bulk_set_flow_route():
         if flow not in ALLOWED_VLESS_FLOWS:
             raise ValueError("flow must be '' or 'xtls-rprx-vision'")
         local, remote = _split_users_by_panel(data.get("users"))
+        if local and not has_local_xray():
+            return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
 
         updated = 0
         skipped = 0

@@ -3,9 +3,13 @@ from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import RoutingProfile, Outbound, Balancer
 from panel_core.utils import token_required
-from panel_core.xray import generate_config_file, restart_xray_container
+from panel_core.xray import generate_config_file, has_local_xray, restart_xray_container
 
 bp = Blueprint("routing", __name__)
+
+XRAY_ROUTING_UNSUPPORTED = (
+    "Routing profiles are configured on the node that runs Xray; this role has no local Xray instance."
+)
 
 MAX_PROFILE_NAME_LEN = 50
 MAX_RULE_TEXT_LEN = 128
@@ -169,6 +173,8 @@ def get_profiles():
 @token_required
 @limiter.limit("30 per minute")
 def create_profile():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_ROUTING_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
     try:
         name = _normalize_profile_name(data.get("name"))
@@ -197,6 +203,8 @@ def create_profile():
 @token_required
 @limiter.limit("30 per minute")
 def update_profile(pid):
+    if not has_local_xray():
+        return jsonify({"error": XRAY_ROUTING_UNSUPPORTED}), 501
     try:
         p = db.session.get(RoutingProfile, pid)
         if not p:
@@ -231,6 +239,8 @@ def update_profile(pid):
 @token_required
 @limiter.limit("30 per minute")
 def delete_profile(pid):
+    if not has_local_xray():
+        return jsonify({"error": XRAY_ROUTING_UNSUPPORTED}), 501
     try:
         p = db.session.get(RoutingProfile, pid)
         if not p:

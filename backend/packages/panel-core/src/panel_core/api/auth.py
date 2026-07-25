@@ -12,9 +12,13 @@ from panel_core.utils import (
     normalize_email,
     normalize_tag,
 )
-from panel_core.xray import generate_config_file, restart_xray_container
+from panel_core.xray import generate_config_file, has_local_xray, restart_xray_container
 
 bp = Blueprint("auth", __name__)
+
+XRAY_PREFERRED_OUTBOUND_UNSUPPORTED = (
+    "Per-user outbound routing is applied on the node that runs Xray; this role has no local Xray instance."
+)
 
 
 _DUMMY_PASSWORD_HASH = generate_password_hash("constant-time-placeholder")
@@ -53,6 +57,8 @@ def login():
 @token_required
 @limiter.limit("30 per minute")
 def set_user_routing():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_PREFERRED_OUTBOUND_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
     try:
         email = normalize_email(data.get("email"))
