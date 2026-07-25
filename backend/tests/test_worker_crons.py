@@ -1,12 +1,11 @@
 DATA_PLANE = {"sync_traffic", "check_limits", "parse_logs"}
 DB_MAINTENANCE = {"cleanup_stats"}
+EVENT_BUS = {"cleanup_bot_events", "replay_undelivered_bot_events"}
 MASTER_ONLY = {
     "auto_renew_free_users",
     "poll_pending_payments",
     "reconcile_refunds",
     "cleanup_old_payments",
-    "cleanup_bot_events",
-    "replay_undelivered_bot_events",
     "poll_linked_panels",
     "check_latest_version",
 }
@@ -48,3 +47,13 @@ def test_master_registers_master_crons(monkeypatch):
 def test_master_registers_no_data_plane_crons(monkeypatch):
     ids = _job_ids(monkeypatch, "master")
     assert ids.isdisjoint(DATA_PLANE)
+
+
+def test_worker_registers_event_bus_crons(monkeypatch):
+    ids = _job_ids(monkeypatch, "worker")
+    assert EVENT_BUS.issubset(ids)
+
+
+def test_master_still_registers_event_bus_crons(monkeypatch):
+    ids = _job_ids(monkeypatch, "master")
+    assert EVENT_BUS.issubset(ids)

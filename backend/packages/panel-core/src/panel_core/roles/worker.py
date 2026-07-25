@@ -1,3 +1,5 @@
+import os
+
 from grpc.experimental import gevent as grpc_gevent
 
 from panel_core.app_base import (
@@ -7,6 +9,7 @@ from panel_core.app_base import (
     ensure_scheduler_job,
     start_scheduler,
 )
+from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered_bot_events
 from panel_core.panel_role import ROLE_WORKER
 from panel_core.services.stats import (
     check_limits_job,
@@ -30,6 +33,8 @@ def create_app():
     ensure_scheduler_job("check_limits", check_limits_job, 60)
     ensure_scheduler_job("parse_logs", parse_access_logs, 15)
     ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
+    ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
+    ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     start_scheduler()
 
     from panel_core.api import (
@@ -53,6 +58,12 @@ def create_app():
     app.register_blueprint(federation.bp, url_prefix="/api")
 
     bootstrap_defaults(app, sqlite_path)
+
+    if not (os.getenv("BOT_EVENTS_REDIS_URI", "") or "").strip():
+        app.logger.warning(
+            "BOT_EVENTS_REDIS_URI is not set - notification events will go to this node's local "
+            "Redis and never reach the bot. Point it at the data-tier Redis."
+        )
 
     app.logger.info("backend ready (db=%s, scheduler started)", sqlite_path)
     return app
