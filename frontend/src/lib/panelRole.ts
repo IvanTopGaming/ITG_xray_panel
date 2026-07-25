@@ -6,6 +6,14 @@ declare global {
 
 export type PanelRole = 'master' | 'worker';
 
-export const panelRole: PanelRole = window.__PANEL_ROLE__ === 'worker' ? 'worker' : 'master';
+const rawRole = String(window.__PANEL_ROLE__ || '')
+  .trim()
+  .toLowerCase();
+
+const ROLES_WITH_LOCAL_XRAY: ReadonlySet<string> = new Set(['worker']);
+
+export const panelRole: PanelRole = rawRole === 'worker' ? 'worker' : 'master';
 
 export const isWorker = panelRole === 'worker';
+
+export const hasLocalXray = ROLES_WITH_LOCAL_XRAY.has(rawRole);

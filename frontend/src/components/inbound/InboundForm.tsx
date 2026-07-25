@@ -8,6 +8,7 @@ import { Inbound, LinkedPanel, RoutingProfile } from '@/lib/types';
 import api from '@/lib/api';
 import { toast } from 'react-toastify';
 import { Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { hasLocalXray } from '@/lib/panelRole';
 import { useQuery } from '@tanstack/react-query';
 
 interface InboundFormProps {
@@ -80,6 +81,12 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
     queryFn: async () => (await api.get<LinkedPanel[]>('/panels')).data,
     enabled: !isEdit,
   });
+
+  useEffect(() => {
+    if (isEdit || hasLocalXray || targetPanelId != null) return;
+    const firstPanel = panels?.[0];
+    if (firstPanel) setTargetPanelId(firstPanel.id);
+  }, [isEdit, panels, targetPanelId]);
 
   const getDefaults = () => {
     if (inbound) {
@@ -396,7 +403,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
             setTargetPanelId(val);
           }}
           options={[
-            { value: 'local', label: 'Master (local)' },
+            ...(hasLocalXray ? [{ value: 'local', label: 'Master (local)' }] : []),
             ...panels.map((p) => ({ value: String(p.id), label: p.name })),
           ]}
         />

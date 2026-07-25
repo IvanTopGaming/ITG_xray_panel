@@ -30,6 +30,7 @@ import { Modal } from '@/components/ui/Modal';
 import { useLogStore } from '@/stores/logStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useVersionStatus } from '@/hooks/useVersionStatus';
+import { hasLocalXray } from '@/lib/panelRole';
 
 const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_RESTORE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
@@ -37,7 +38,7 @@ type SettingsTab = 'security' | 'core' | 'maintenance' | 'about';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'security', label: 'Security' },
-  { id: 'core', label: 'Core' },
+  ...(hasLocalXray ? [{ id: 'core' as SettingsTab, label: 'Core' }] : []),
   { id: 'maintenance', label: 'Maintenance' },
   { id: 'about', label: 'About' },
 ];
@@ -63,11 +64,12 @@ export default function System() {
   const [xrayLogLevel, setXrayLogLevel] = useState('info');
   const [geoipUrl, setGeoipUrl] = useState('');
   const [geositeUrl, setGeositeUrl] = useState('');
-  const [activeTab, setActiveTab] = useState<SettingsTab>('core');
+  const [activeTab, setActiveTab] = useState<SettingsTab>(hasLocalXray ? 'core' : 'security');
 
   const { data: systemSettings, isFetching: isSettingsFetching } = useQuery({
     queryKey: ['system-settings'],
     queryFn: async () => (await api.get('/system/settings')).data,
+    enabled: hasLocalXray,
   });
 
   useEffect(() => {
@@ -257,94 +259,100 @@ export default function System() {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 pb-10 items-start">
-      <div className="lg:col-span-2 relative group self-start order-2 lg:order-1">
-        <div className="absolute -inset-0.5 bg-gradient-to-r from-green-500/20 to-emerald-500/20 rounded-2xl blur opacity-75 group-hover:opacity-100 transition duration-1000"></div>
-        <div className="relative bg-[#0a0a0a] rounded-2xl flex flex-col h-[400px] md:h-[600px] border border-white/10 shadow-2xl overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between px-4 py-3 bg-[#151515] border-b border-white/5 gap-3">
-            <div className="flex items-center gap-4">
-              <div className="flex gap-2 shrink-0">
-                <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-                <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-                <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+    <div
+      className={`grid grid-cols-1 gap-8 pb-10 items-start ${
+        hasLocalXray ? 'lg:grid-cols-3' : 'max-w-xl mx-auto w-full'
+      }`}
+    >
+      {hasLocalXray && (
+        <div className="lg:col-span-2 relative group self-start order-2 lg:order-1">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-green-500/20 to-emerald-500/20 rounded-2xl blur opacity-75 group-hover:opacity-100 transition duration-1000"></div>
+          <div className="relative bg-[#0a0a0a] rounded-2xl flex flex-col h-[400px] md:h-[600px] border border-white/10 shadow-2xl overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between px-4 py-3 bg-[#151515] border-b border-white/5 gap-3">
+              <div className="flex items-center gap-4">
+                <div className="flex gap-2 shrink-0">
+                  <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
+                  <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                  <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+                </div>
+                <div className="text-xs font-mono text-gray-500 flex items-center gap-2 whitespace-nowrap">
+                  <Terminal size={12} /> root@xray-panel:~
+                </div>
               </div>
-              <div className="text-xs font-mono text-gray-500 flex items-center gap-2 whitespace-nowrap">
-                <Terminal size={12} /> root@xray-panel:~
+
+              <div className="relative w-full sm:w-auto">
+                <input
+                  type="text"
+                  name="system_fake_username"
+                  autoComplete="username"
+                  className="hidden"
+                  tabIndex={-1}
+                />
+                <input
+                  type="password"
+                  name="system_fake_password"
+                  autoComplete="current-password"
+                  className="hidden"
+                  tabIndex={-1}
+                />
+                <Search
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600"
+                  size={12}
+                />
+                <input
+                  type="text"
+                  name="system_log_search"
+                  placeholder="Search logs..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  className="w-full sm:w-48 bg-black/40 border border-white/10 rounded-lg pl-8 pr-3 py-1 text-[10px] font-mono text-gray-300 focus:outline-none focus:border-white/20 transition-all placeholder:text-gray-700"
+                />
               </div>
             </div>
 
-            <div className="relative w-full sm:w-auto">
-              <input
-                type="text"
-                name="system_fake_username"
-                autoComplete="username"
-                className="hidden"
-                tabIndex={-1}
-              />
-              <input
-                type="password"
-                name="system_fake_password"
-                autoComplete="current-password"
-                className="hidden"
-                tabIndex={-1}
-              />
-              <Search
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600"
-                size={12}
-              />
-              <input
-                type="text"
-                name="system_log_search"
-                placeholder="Search logs..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                className="w-full sm:w-48 bg-black/40 border border-white/10 rounded-lg pl-8 pr-3 py-1 text-[10px] font-mono text-gray-300 focus:outline-none focus:border-white/20 transition-all placeholder:text-gray-700"
-              />
+            <div className="flex-1 overflow-y-auto p-4 space-y-1 font-mono text-xs custom-scrollbar bg-[#0a0a0a]">
+              {filteredLogs.map((entry, i) => (
+                <div key={i} className="break-all leading-relaxed">
+                  <span className="text-gray-600 mr-3 select-none">[{formatTime(entry.ts)}]</span>
+                  <span
+                    className={
+                      entry.text.toLowerCase().includes('error')
+                        ? 'text-red-400'
+                        : entry.text.toLowerCase().includes('warning')
+                          ? 'text-yellow-400'
+                          : 'text-green-400/90'
+                    }
+                  >
+                    {entry.text}
+                  </span>
+                </div>
+              ))}
+              {filteredLogs.length === 0 && searchTerm && (
+                <div className="text-gray-600 italic text-center py-4">
+                  No logs matching &quot;{searchTerm}&quot;
+                </div>
+              )}
+              {isStreaming && !searchTerm && (
+                <div className="animate-pulse text-green-500 mt-2">_</div>
+              )}
+              <div ref={logEndRef} />
             </div>
-          </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-1 font-mono text-xs custom-scrollbar bg-[#0a0a0a]">
-            {filteredLogs.map((entry, i) => (
-              <div key={i} className="break-all leading-relaxed">
-                <span className="text-gray-600 mr-3 select-none">[{formatTime(entry.ts)}]</span>
-                <span
-                  className={
-                    entry.text.toLowerCase().includes('error')
-                      ? 'text-red-400'
-                      : entry.text.toLowerCase().includes('warning')
-                        ? 'text-yellow-400'
-                        : 'text-green-400/90'
-                  }
-                >
-                  {entry.text}
-                </span>
-              </div>
-            ))}
-            {filteredLogs.length === 0 && searchTerm && (
-              <div className="text-gray-600 italic text-center py-4">
-                No logs matching &quot;{searchTerm}&quot;
-              </div>
-            )}
-            {isStreaming && !searchTerm && (
-              <div className="animate-pulse text-green-500 mt-2">_</div>
-            )}
-            <div ref={logEndRef} />
-          </div>
-
-          <div className="p-4 bg-[#151515] border-t border-white/5">
-            <Button
-              className={`w-full font-mono text-xs h-10 ${isStreaming ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20' : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'}`}
-              onClick={toggleStream}
-            >
-              {isStreaming ? 'STOP PROCESS' : 'INITIALIZE LOG STREAM'}
-            </Button>
+            <div className="p-4 bg-[#151515] border-t border-white/5">
+              <Button
+                className={`w-full font-mono text-xs h-10 ${isStreaming ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20' : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'}`}
+                onClick={toggleStream}
+              >
+                {isStreaming ? 'STOP PROCESS' : 'INITIALIZE LOG STREAM'}
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="space-y-4 lg:sticky lg:top-6 self-start order-1 lg:order-2">
         <div className="flex gap-1 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05]">
@@ -405,7 +413,7 @@ export default function System() {
               </SettingsCard>
             )}
 
-            {activeTab === 'core' && (
+            {hasLocalXray && activeTab === 'core' && (
               <SettingsCard
                 title="Core Settings"
                 icon={<Database size={18} className="text-secondary" />}
@@ -485,57 +493,61 @@ export default function System() {
                       Restore Database
                     </Button>
                   </div>
-                  <Button
-                    variant="secondary"
-                    className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
-                    onClick={() => setConfirmGeoUpdate(true)}
-                    isLoading={updateGeoMutation.isPending}
-                  >
-                    <div className="p-2 bg-black/20 rounded-lg mr-3">
-                      <Database
-                        size={16}
-                        className={updateGeoMutation.isPending ? 'animate-spin' : ''}
-                      />
-                    </div>
-                    Update GeoIP
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
-                    onClick={fetchConfig}
-                  >
-                    <div className="p-2 bg-black/20 rounded-lg mr-3">
-                      <FileJson size={16} />
-                    </div>
-                    View Configuration
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
-                    onClick={downloadEgressScript}
-                  >
-                    <div className="p-2 bg-black/20 rounded-lg mr-3">
-                      <Download size={16} />
-                    </div>
-                    Download Egress Host Script
-                  </Button>
-                  <p className="text-xs text-gray-500 px-1">
-                    Run this on the host (as root) after changing dedicated egress IPs. The{' '}
-                    <code>xray-egress</code> sidecar must be running.
-                  </p>
+                  {hasLocalXray && (
+                    <>
+                      <Button
+                        variant="secondary"
+                        className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
+                        onClick={() => setConfirmGeoUpdate(true)}
+                        isLoading={updateGeoMutation.isPending}
+                      >
+                        <div className="p-2 bg-black/20 rounded-lg mr-3">
+                          <Database
+                            size={16}
+                            className={updateGeoMutation.isPending ? 'animate-spin' : ''}
+                          />
+                        </div>
+                        Update GeoIP
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
+                        onClick={fetchConfig}
+                      >
+                        <div className="p-2 bg-black/20 rounded-lg mr-3">
+                          <FileJson size={16} />
+                        </div>
+                        View Configuration
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
+                        onClick={downloadEgressScript}
+                      >
+                        <div className="p-2 bg-black/20 rounded-lg mr-3">
+                          <Download size={16} />
+                        </div>
+                        Download Egress Host Script
+                      </Button>
+                      <p className="text-xs text-gray-500 px-1">
+                        Run this on the host (as root) after changing dedicated egress IPs. The{' '}
+                        <code>xray-egress</code> sidecar must be running.
+                      </p>
 
-                  <div className="h-px bg-white/10 my-2" />
+                      <div className="h-px bg-white/10 my-2" />
 
-                  <Button
-                    variant="danger"
-                    className="w-full justify-start h-12"
-                    onClick={() => setConfirmRestart(true)}
-                  >
-                    <div className="p-2 bg-black/20 rounded-lg mr-3">
-                      <Power size={16} />
-                    </div>
-                    Restart Core
-                  </Button>
+                      <Button
+                        variant="danger"
+                        className="w-full justify-start h-12"
+                        onClick={() => setConfirmRestart(true)}
+                      >
+                        <div className="p-2 bg-black/20 rounded-lg mr-3">
+                          <Power size={16} />
+                        </div>
+                        Restart Core
+                      </Button>
+                    </>
+                  )}
                 </div>
               </SettingsCard>
             )}
@@ -602,27 +614,31 @@ export default function System() {
           </motion.div>
         </AnimatePresence>
 
-        <ConfirmationModal
-          isOpen={confirmRestart}
-          onClose={() => setConfirmRestart(false)}
-          onConfirm={() => restartMutation.mutate()}
-          title="Restart Xray Core"
-          description="Are you sure you want to restart the Xray Core service? All current connections will be dropped."
-          confirmText="Restart"
-        />
+        {hasLocalXray && (
+          <>
+            <ConfirmationModal
+              isOpen={confirmRestart}
+              onClose={() => setConfirmRestart(false)}
+              onConfirm={() => restartMutation.mutate()}
+              title="Restart Xray Core"
+              description="Are you sure you want to restart the Xray Core service? All current connections will be dropped."
+              confirmText="Restart"
+            />
 
-        <ConfirmationModal
-          isOpen={confirmGeoUpdate}
-          onClose={() => setConfirmGeoUpdate(false)}
-          onConfirm={() => {
-            updateGeoMutation.mutate();
-            setConfirmGeoUpdate(false);
-          }}
-          title="Update GeoIP / GeoSite"
-          description="Downloading updated geo databases will restart the Xray core. All active connections will be briefly interrupted."
-          confirmText="Update"
-          isLoading={updateGeoMutation.isPending}
-        />
+            <ConfirmationModal
+              isOpen={confirmGeoUpdate}
+              onClose={() => setConfirmGeoUpdate(false)}
+              onConfirm={() => {
+                updateGeoMutation.mutate();
+                setConfirmGeoUpdate(false);
+              }}
+              title="Update GeoIP / GeoSite"
+              description="Downloading updated geo databases will restart the Xray core. All active connections will be briefly interrupted."
+              confirmText="Update"
+              isLoading={updateGeoMutation.isPending}
+            />
+          </>
+        )}
 
         <ConfirmationModal
           isOpen={confirmPassword}
@@ -635,35 +651,37 @@ export default function System() {
           confirmVariant="primary"
         />
 
-        <Modal
-          isOpen={configModal}
-          onClose={() => setConfigModal(false)}
-          title="Current Xray Config"
-          maxWidth="max-w-4xl"
-        >
-          <div className="relative">
-            <div className="absolute top-2 right-2 z-10">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={copyConfig}
-                className={isCopied ? 'text-green-400 border-green-400/30' : ''}
-              >
-                {isCopied ? (
-                  <Check size={16} className="mr-2" />
-                ) : (
-                  <Copy size={16} className="mr-2" />
-                )}
-                {isCopied ? 'Copied' : 'Copy'}
-              </Button>
+        {hasLocalXray && (
+          <Modal
+            isOpen={configModal}
+            onClose={() => setConfigModal(false)}
+            title="Current Xray Config"
+            maxWidth="max-w-4xl"
+          >
+            <div className="relative">
+              <div className="absolute top-2 right-2 z-10">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={copyConfig}
+                  className={isCopied ? 'text-green-400 border-green-400/30' : ''}
+                >
+                  {isCopied ? (
+                    <Check size={16} className="mr-2" />
+                  ) : (
+                    <Copy size={16} className="mr-2" />
+                  )}
+                  {isCopied ? 'Copied' : 'Copy'}
+                </Button>
+              </div>
+              <div className="bg-[#0a0a0a] rounded-xl p-4 border border-white/10 overflow-auto max-h-[70vh] custom-scrollbar">
+                <pre className="text-xs font-mono text-gray-300 leading-relaxed whitespace-pre-wrap">
+                  {configContent}
+                </pre>
+              </div>
             </div>
-            <div className="bg-[#0a0a0a] rounded-xl p-4 border border-white/10 overflow-auto max-h-[70vh] custom-scrollbar">
-              <pre className="text-xs font-mono text-gray-300 leading-relaxed whitespace-pre-wrap">
-                {configContent}
-              </pre>
-            </div>
-          </div>
-        </Modal>
+          </Modal>
+        )}
       </div>
     </div>
   );

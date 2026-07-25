@@ -5,7 +5,7 @@ import 'react-toastify/dist/ReactToastify.css';
 
 import { useAuthStore, AuthState } from '@/stores/authStore';
 import { panelBase } from '@/lib/panelBase';
-import { isWorker } from '@/lib/panelRole';
+import { hasLocalXray, isWorker } from '@/lib/panelRole';
 import { Layout } from '@/components/layout/Layout';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
@@ -53,7 +53,10 @@ function App() {
               element={isWorker ? <Navigate to="/" replace /> : <Statistics />}
             />
             <Route path="panels" element={isWorker ? <Navigate to="/" replace /> : <Panels />} />
-            <Route path="routing" element={<Routing />} />
+            <Route
+              path="routing"
+              element={hasLocalXray ? <Routing /> : <Navigate to="/" replace />}
+            />
             <Route path="bot" element={isWorker ? <Navigate to="/" replace /> : <Bot />} />
             <Route path="system" element={<System />} />
           </Route>

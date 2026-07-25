@@ -53,8 +53,16 @@ import { toast } from 'react-toastify';
 import { QRCodeCanvas } from 'qrcode.react';
 import { motion, AnimatePresence, animate, useMotionValue } from 'framer-motion';
 import { Select } from '@/components/ui/Select';
+import { hasLocalXray } from '@/lib/panelRole';
 
 const KEY_SEP = '\0';
+
+const USER_ACTION_GRID_COLS: Record<number, string> = {
+  4: 'grid-cols-4',
+  5: 'grid-cols-5',
+  6: 'grid-cols-6',
+  7: 'grid-cols-7',
+};
 
 const makeUserKey = (panelId: number | null | undefined, tag: string, email: string) =>
   `${panelId ?? ''}${KEY_SEP}${tag}${KEY_SEP}${email}`;
@@ -281,10 +289,12 @@ export default function Dashboard() {
   const { data: outbounds } = useQuery({
     queryKey: ['outbounds'],
     queryFn: async () => (await api.get<Outbound[]>('/outbounds')).data,
+    enabled: hasLocalXray,
   });
   const { data: balancers } = useQuery({
     queryKey: ['balancers'],
     queryFn: async () => (await api.get<Balancer[]>('/balancers')).data,
+    enabled: hasLocalXray,
   });
 
   const { data: panels } = useQuery<LinkedPanel[]>({
@@ -361,6 +371,8 @@ export default function Dashboard() {
       {} as Record<string, number>
     );
   }, [inbounds, now]);
+
+  const canCreateInbound = hasLocalXray || (panels?.length ?? 0) > 0;
 
   const routeOptions = useMemo(() => {
     const enabledOutboundTags = new Set(
@@ -596,34 +608,38 @@ export default function Dashboard() {
 
       <BulkToolbar selectedUsers={selectedUsers} clearSelection={clearSelection} />
 
-      <motion.div
-        className="fixed bottom-6 right-6 md:bottom-8 md:right-8 z-30"
-        initial={{ scale: 0, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ delay: 0.3, type: 'spring', stiffness: 400, damping: 25 }}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-      >
-        <Button
-          onClick={() => setCreateModal(true)}
-          className="h-14 w-14 md:w-auto md:px-7 rounded-full shadow-[0_0_32px_rgba(208,188,255,0.35)] bg-primary text-[#381E72] font-bold text-base border-2 border-white/20 flex items-center justify-center"
+      {canCreateInbound && (
+        <motion.div
+          className="fixed bottom-6 right-6 md:bottom-8 md:right-8 z-30"
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ delay: 0.3, type: 'spring', stiffness: 400, damping: 25 }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
         >
-          <Plus size={22} className="md:mr-2" />
-          <span className="hidden md:inline">New Inbound</span>
-        </Button>
-      </motion.div>
+          <Button
+            onClick={() => setCreateModal(true)}
+            className="h-14 w-14 md:w-auto md:px-7 rounded-full shadow-[0_0_32px_rgba(208,188,255,0.35)] bg-primary text-[#381E72] font-bold text-base border-2 border-white/20 flex items-center justify-center"
+          >
+            <Plus size={22} className="md:mr-2" />
+            <span className="hidden md:inline">New Inbound</span>
+          </Button>
+        </motion.div>
+      )}
 
-      <Modal
-        isOpen={createModal}
-        onClose={() => setCreateModal(false)}
-        title="New Inbound"
-        maxWidth="max-w-2xl"
-      >
-        <InboundForm
-          onSuccess={() => setCreateModal(false)}
-          onCancel={() => setCreateModal(false)}
-        />
-      </Modal>
+      {canCreateInbound && (
+        <Modal
+          isOpen={createModal}
+          onClose={() => setCreateModal(false)}
+          title="New Inbound"
+          maxWidth="max-w-2xl"
+        >
+          <InboundForm
+            onSuccess={() => setCreateModal(false)}
+            onCancel={() => setCreateModal(false)}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1124,6 +1140,7 @@ function InboundCard({
       ? panels?.find((p) => p.id === inbound.panel_id)?.status === 'offline'
       : false;
   const panelQs = inbound.panel_id != null ? `?panel_id=${inbound.panel_id}` : '';
+  const localUnsupported = inbound.panel_id == null && !hasLocalXray;
 
   const protocolBadge =
     PROTOCOL_COLORS[inbound.protocol] || 'bg-white/10 text-gray-300 border-white/10';
@@ -1238,26 +1255,30 @@ function InboundCard({
           >
             <RotateCcw size={13} className="mr-1.5" /> Reset
           </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setEditModal(true)}
-            disabled={panelOffline}
-            title={panelOffline ? 'Panel is offline' : undefined}
-            className="w-full lg:w-auto justify-center"
-          >
-            <Edit size={13} className="mr-1.5" /> Config
-          </Button>
-          <Button
-            variant="danger"
-            size="sm"
-            onClick={() => setConfirmDelete(true)}
-            disabled={panelOffline}
-            title={panelOffline ? 'Panel is offline' : undefined}
-            className="col-span-2 md:col-span-1 w-full lg:w-auto justify-center"
-          >
-            <Trash2 size={13} />
-          </Button>
+          {!localUnsupported && (
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setEditModal(true)}
+                disabled={panelOffline}
+                title={panelOffline ? 'Panel is offline' : undefined}
+                className="w-full lg:w-auto justify-center"
+              >
+                <Edit size={13} className="mr-1.5" /> Config
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => setConfirmDelete(true)}
+                disabled={panelOffline}
+                title={panelOffline ? 'Panel is offline' : undefined}
+                className="col-span-2 md:col-span-1 w-full lg:w-auto justify-center"
+              >
+                <Trash2 size={13} />
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1281,6 +1302,7 @@ function InboundCard({
                       panelQs={panelQs}
                       panelOffline={panelOffline}
                       panels={panels}
+                      localUnsupported={localUnsupported}
                     />
                   ))}
                 </AnimatePresence>
@@ -1292,27 +1314,29 @@ function InboundCard({
                 )}
               </div>
 
-              <div className="mt-5 pt-5 border-t border-white/[0.05] flex flex-col md:flex-row gap-2.5">
-                <Input
-                  placeholder={panelOffline ? 'Panel is offline' : 'New user email / username'}
-                  value={userEmail}
-                  onChange={(e) => setUserEmail(e.target.value)}
-                  onKeyDown={(e) =>
-                    e.key === 'Enter' && userEmail && !panelOffline && addUserMutation.mutate()
-                  }
-                  disabled={panelOffline}
-                  className="bg-black/20 border-white/[0.07] hover:border-white/15 h-10"
-                />
-                <Button
-                  className="h-10 px-5 bg-white/[0.07] hover:bg-white/[0.12] text-white border border-white/[0.09] w-full md:w-auto shrink-0"
-                  onClick={() => userEmail && addUserMutation.mutate()}
-                  isLoading={addUserMutation.isPending}
-                  disabled={panelOffline}
-                  title={panelOffline ? 'Panel is offline' : undefined}
-                >
-                  <Plus size={16} className="mr-1.5" /> Add User
-                </Button>
-              </div>
+              {!localUnsupported && (
+                <div className="mt-5 pt-5 border-t border-white/[0.05] flex flex-col md:flex-row gap-2.5">
+                  <Input
+                    placeholder={panelOffline ? 'Panel is offline' : 'New user email / username'}
+                    value={userEmail}
+                    onChange={(e) => setUserEmail(e.target.value)}
+                    onKeyDown={(e) =>
+                      e.key === 'Enter' && userEmail && !panelOffline && addUserMutation.mutate()
+                    }
+                    disabled={panelOffline}
+                    className="bg-black/20 border-white/[0.07] hover:border-white/15 h-10"
+                  />
+                  <Button
+                    className="h-10 px-5 bg-white/[0.07] hover:bg-white/[0.12] text-white border border-white/[0.09] w-full md:w-auto shrink-0"
+                    onClick={() => userEmail && addUserMutation.mutate()}
+                    isLoading={addUserMutation.isPending}
+                    disabled={panelOffline}
+                    title={panelOffline ? 'Panel is offline' : undefined}
+                  >
+                    <Plus size={16} className="mr-1.5" /> Add User
+                  </Button>
+                </div>
+              )}
             </>
           ) : (
             <div className="py-8 border-2 border-dashed border-white/[0.07] rounded-2xl text-center bg-white/[0.01]">
@@ -1372,6 +1396,7 @@ function UserRow({
   panelQs,
   panelOffline,
   panels,
+  localUnsupported,
 }: {
   client: Client;
   inbound: Inbound;
@@ -1382,6 +1407,7 @@ function UserRow({
   panelQs: string;
   panelOffline: boolean;
   panels?: LinkedPanel[];
+  localUnsupported: boolean;
 }) {
   const [qr, setQr] = useState(false);
   const [edit, setEdit] = useState(false);
@@ -1394,6 +1420,7 @@ function UserRow({
   const [revokeLoading, setRevokeLoading] = useState(false);
 
   const effectiveDeviceLimit = client.device_limit ?? inbound.device_limit ?? 0;
+  const actionCount = 4 + (hasLocalXray ? 1 : 0) + (localUnsupported ? 0 : 2);
 
   useEffect(() => {
     setSelectedRoute(client.preferred_outbound || '');
@@ -1682,7 +1709,7 @@ function UserRow({
             )}
           </div>
 
-          <div className="grid grid-cols-7 gap-1 sm:flex">
+          <div className={cn('grid gap-1 sm:flex', USER_ACTION_GRID_COLS[actionCount])}>
             <Button
               variant="secondary"
               size="icon"
@@ -1716,26 +1743,30 @@ function UserRow({
             >
               <Link2 size={13} />
             </Button>
-            <Button
-              variant="secondary"
-              size="icon"
-              className="h-8 w-full sm:w-8 text-indigo-400 hover:text-indigo-200 hover:bg-indigo-500/10"
-              onClick={() => setRoutingModal(true)}
-              disabled={panelOffline}
-              title={panelOffline ? 'Panel is offline' : 'Route'}
-            >
-              <Network size={13} />
-            </Button>
-            <Button
-              variant="secondary"
-              size="icon"
-              className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
-              onClick={() => setEdit(true)}
-              disabled={panelOffline}
-              title={panelOffline ? 'Panel is offline' : 'Edit'}
-            >
-              <Edit size={13} />
-            </Button>
+            {hasLocalXray && (
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-8 w-full sm:w-8 text-indigo-400 hover:text-indigo-200 hover:bg-indigo-500/10"
+                onClick={() => setRoutingModal(true)}
+                disabled={panelOffline}
+                title={panelOffline ? 'Panel is offline' : 'Route'}
+              >
+                <Network size={13} />
+              </Button>
+            )}
+            {!localUnsupported && (
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
+                onClick={() => setEdit(true)}
+                disabled={panelOffline}
+                title={panelOffline ? 'Panel is offline' : 'Edit'}
+              >
+                <Edit size={13} />
+              </Button>
+            )}
             <Button
               variant="secondary"
               size="icon"
@@ -1746,16 +1777,18 @@ function UserRow({
             >
               <RotateCcw size={13} />
             </Button>
-            <Button
-              variant="secondary"
-              size="icon"
-              className="h-8 w-full sm:w-8 text-red-500/60 hover:text-red-400 hover:bg-red-500/10"
-              onClick={() => setConfirmDel(true)}
-              disabled={panelOffline}
-              title={panelOffline ? 'Panel is offline' : 'Delete'}
-            >
-              <Trash2 size={13} />
-            </Button>
+            {!localUnsupported && (
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-8 w-full sm:w-8 text-red-500/60 hover:text-red-400 hover:bg-red-500/10"
+                onClick={() => setConfirmDel(true)}
+                disabled={panelOffline}
+                title={panelOffline ? 'Panel is offline' : 'Delete'}
+              >
+                <Trash2 size={13} />
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -1839,34 +1872,37 @@ function UserRow({
         />
       </Modal>
 
-      <Modal
-        isOpen={routingModal}
-        onClose={() => setRoutingModal(false)}
-        title="Preferred Route"
-        maxWidth="max-w-sm"
-      >
-        <div className="space-y-4 pt-2">
-          <p className="text-sm text-gray-400">
-            Select a specific server or balancer for this user. This overrides global routing rules.
-          </p>
-          <Select
-            options={routeOptions}
-            value={selectedRoute}
-            onChange={(e) => setSelectedRoute(e.target.value)}
-          />
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="ghost" onClick={() => setRoutingModal(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => routingMutation.mutate(selectedRoute)}
-              isLoading={routingMutation.isPending}
-            >
-              Save Preference
-            </Button>
+      {hasLocalXray && (
+        <Modal
+          isOpen={routingModal}
+          onClose={() => setRoutingModal(false)}
+          title="Preferred Route"
+          maxWidth="max-w-sm"
+        >
+          <div className="space-y-4 pt-2">
+            <p className="text-sm text-gray-400">
+              Select a specific server or balancer for this user. This overrides global routing
+              rules.
+            </p>
+            <Select
+              options={routeOptions}
+              value={selectedRoute}
+              onChange={(e) => setSelectedRoute(e.target.value)}
+            />
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setRoutingModal(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => routingMutation.mutate(selectedRoute)}
+                isLoading={routingMutation.isPending}
+              >
+                Save Preference
+              </Button>
+            </div>
           </div>
-        </div>
-      </Modal>
+        </Modal>
+      )}
 
       <ConfirmationModal
         isOpen={confirmDel}
