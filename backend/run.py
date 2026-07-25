@@ -1,4 +1,4 @@
-from app import create_app
+from panel_core import create_app
 
 app = create_app()
 

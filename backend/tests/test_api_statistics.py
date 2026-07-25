@@ -4,15 +4,15 @@ import uuid
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, Client, DomainStat, Inbound, TrafficSnapshot
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin, Client, DomainStat, Inbound, TrafficSnapshot
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app(app):
 
-    from app.api import statistics as stats_api
+    from panel_core.api import statistics as stats_api
 
     if not any(bp.name == "statistics" for bp in app.blueprints.values()):
         app.register_blueprint(stats_api.bp, url_prefix="/api")
@@ -570,7 +570,7 @@ class TestDomainUsers:
 
 class TestTopDomainsCoveringIndex:
     def test_models_define_cover_indexes(self, app):
-        from app.models import DomainStat, TrafficSnapshot
+        from panel_core.models import DomainStat, TrafficSnapshot
 
         ds_indexes = {ix.name: [c.name for c in ix.columns] for ix in DomainStat.__table__.indexes}
         ts_indexes = {ix.name: [c.name for c in ix.columns] for ix in TrafficSnapshot.__table__.indexes}
@@ -594,8 +594,8 @@ class TestTopDomainsCoveringIndex:
     def test_top_domains_query_uses_covering_index(self, app, client, admin_token):
         from sqlalchemy import text
 
-        from app.api.statistics import _top_domains_sql
-        from app.extensions import db
+        from panel_core.api.statistics import _top_domains_sql
+        from panel_core.extensions import db
 
         _seed_domain_stat("example.com", "2026-06-01", 5)
 

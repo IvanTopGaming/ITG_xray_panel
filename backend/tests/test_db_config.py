@@ -1,5 +1,5 @@
 import pytest
-from app.db_config import database_uri, engine_options, is_postgres, validate_database_uri
+from panel_core.db_config import database_uri, engine_options, is_postgres, validate_database_uri
 
 
 def test_database_uri_defaults_to_sqlite(monkeypatch):

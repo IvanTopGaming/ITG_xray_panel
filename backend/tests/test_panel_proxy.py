@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from app.models import LinkedPanel
-from app.services.panel_proxy import (
+from panel_core.models import LinkedPanel
+from panel_core.services.panel_proxy import (
     FederationClient,
     _get_panel_or_raise,
     fetch_panel_snapshot_live,
@@ -177,13 +177,13 @@ class TestGetPanelOrRaise:
 
 class TestGetPanelSnapshot:
     def test_returns_none_when_redis_unavailable(self, app):
-        with patch("app.services.panel_proxy.get_redis", return_value=None):
+        with patch("panel_core.services.panel_proxy.get_redis", return_value=None):
             assert get_panel_snapshot(1) is None
 
     def test_returns_none_on_cache_miss(self, app):
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
-        with patch("app.services.panel_proxy.get_redis", return_value=mock_redis):
+        with patch("panel_core.services.panel_proxy.get_redis", return_value=mock_redis):
             assert get_panel_snapshot(42) is None
         mock_redis.get.assert_called_once_with("panel:42:snapshot")
 
@@ -193,14 +193,14 @@ class TestGetPanelSnapshot:
         data = {"inbounds": [{"tag": "vless-in"}]}
         mock_redis = MagicMock()
         mock_redis.get.return_value = _json.dumps(data).encode()
-        with patch("app.services.panel_proxy.get_redis", return_value=mock_redis):
+        with patch("panel_core.services.panel_proxy.get_redis", return_value=mock_redis):
             result = get_panel_snapshot(7)
         assert result == data
 
     def test_returns_none_on_redis_error(self, app):
         mock_redis = MagicMock()
         mock_redis.get.side_effect = Exception("connection refused")
-        with patch("app.services.panel_proxy.get_redis", return_value=mock_redis):
+        with patch("panel_core.services.panel_proxy.get_redis", return_value=mock_redis):
             assert get_panel_snapshot(1) is None
 
 
@@ -219,7 +219,7 @@ class TestProxyCreateUser:
         user_data = {"email": "carol", "id": "uuid-99"}
         expected = {"created": True}
 
-        with patch("app.services.panel_proxy.FederationClient") as MockClient:
+        with patch("panel_core.services.panel_proxy.FederationClient") as MockClient:
             instance = MockClient.return_value
             instance.create_user.return_value = expected
 
@@ -242,7 +242,7 @@ class TestProxyDeleteUser:
         panel = _make_panel(db, name="proxy-delete-user")
         expected = {"deleted": True}
 
-        with patch("app.services.panel_proxy.FederationClient") as MockClient:
+        with patch("panel_core.services.panel_proxy.FederationClient") as MockClient:
             instance = MockClient.return_value
             instance.delete_user.return_value = expected
             instance.snapshot.return_value = {}
@@ -264,7 +264,7 @@ class TestProxyBulkSetFlow:
         users = [{"tag": "vless-in", "email": "a"}]
         expected = {"status": "ok", "updated": 1, "skipped": 0}
 
-        with patch("app.services.panel_proxy.FederationClient") as MockClient:
+        with patch("panel_core.services.panel_proxy.FederationClient") as MockClient:
             instance = MockClient.return_value
             instance.bulk_set_flow.return_value = expected
             instance.snapshot.return_value = {}
@@ -280,7 +280,7 @@ class TestFetchPanelSnapshotLive:
         panel = _make_panel(db, name="snapshot-live")
         expected = {"inbounds": [{"tag": "x", "clients": []}]}
 
-        with patch("app.services.panel_proxy.FederationClient") as MockClient:
+        with patch("panel_core.services.panel_proxy.FederationClient") as MockClient:
             instance = MockClient.return_value
             instance.snapshot.return_value = expected
 
@@ -297,7 +297,7 @@ class TestFetchPanelSnapshotLive:
 
 class TestRefreshPanelCache:
     def test_failure_is_swallowed_and_db_untouched(self, app, db):
-        from app.services.panel_proxy import _refresh_panel_cache
+        from panel_core.services.panel_proxy import _refresh_panel_cache
 
         panel = _make_panel(db, name="refresh-fail")
         mock_redis = MagicMock()
@@ -305,8 +305,8 @@ class TestRefreshPanelCache:
         mock_client.snapshot.side_effect = requests.ConnectionError("boom")
 
         with (
-            patch("app.services.panel_proxy.FederationClient", return_value=mock_client),
-            patch("app.services.panel_proxy.get_redis", return_value=mock_redis),
+            patch("panel_core.services.panel_proxy.FederationClient", return_value=mock_client),
+            patch("panel_core.services.panel_proxy.get_redis", return_value=mock_redis),
             patch.object(db.session, "commit") as mock_commit,
         ):
             _refresh_panel_cache(panel)
@@ -316,7 +316,7 @@ class TestRefreshPanelCache:
         mock_redis.setex.assert_any_call(f"panel:{panel.id}:status", 120, "offline")
 
     def test_success_writes_redis_and_skips_db_commit(self, app, db):
-        from app.services.panel_proxy import _refresh_panel_cache
+        from panel_core.services.panel_proxy import _refresh_panel_cache
 
         panel = _make_panel(db, name="refresh-ok")
         mock_redis = MagicMock()
@@ -324,8 +324,8 @@ class TestRefreshPanelCache:
         mock_client.snapshot.return_value = {"inbounds": []}
 
         with (
-            patch("app.services.panel_proxy.FederationClient", return_value=mock_client),
-            patch("app.services.panel_proxy.get_redis", return_value=mock_redis),
+            patch("panel_core.services.panel_proxy.FederationClient", return_value=mock_client),
+            patch("panel_core.services.panel_proxy.get_redis", return_value=mock_redis),
             patch.object(db.session, "commit") as mock_commit,
         ):
             _refresh_panel_cache(panel)
@@ -336,7 +336,7 @@ class TestRefreshPanelCache:
         assert f"panel:{panel.id}:status" in keys
 
     def test_proxy_provision_returns_result_when_refresh_fails(self, app, db):
-        from app.services.panel_proxy import proxy_provision
+        from panel_core.services.panel_proxy import proxy_provision
 
         panel = _make_panel(db, name="prov-refresh-fail")
         mock_client = MagicMock()
@@ -344,8 +344,8 @@ class TestRefreshPanelCache:
         mock_client.snapshot.side_effect = requests.ConnectionError("boom")
 
         with (
-            patch("app.services.panel_proxy.FederationClient", return_value=mock_client),
-            patch("app.services.panel_proxy.get_redis", return_value=MagicMock()),
+            patch("panel_core.services.panel_proxy.FederationClient", return_value=mock_client),
+            patch("panel_core.services.panel_proxy.get_redis", return_value=MagicMock()),
         ):
             result = proxy_provision(panel.id, 42, "vless-in", {"expiry_ms": 1})
 

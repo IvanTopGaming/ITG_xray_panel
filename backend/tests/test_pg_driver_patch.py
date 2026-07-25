@@ -1,5 +1,5 @@
 def test_patch_gevent_psycopg_is_idempotent_and_installs_callback():
-    from app.pg_compat import patch_gevent_psycopg
+    from panel_core.pg_compat import patch_gevent_psycopg
 
     patch_gevent_psycopg()
     patch_gevent_psycopg()
@@ -21,7 +21,7 @@ def test_patch_gevent_psycopg_no_raise_without_driver(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     from importlib import reload
-    import app.pg_compat as m
+    import panel_core.pg_compat as m
 
     reload(m)
     m.patch_gevent_psycopg()

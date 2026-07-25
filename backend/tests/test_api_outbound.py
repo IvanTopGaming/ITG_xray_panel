@@ -5,9 +5,9 @@ from unittest.mock import patch
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, Outbound, Balancer, Client, Inbound
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin, Outbound, Balancer, Client, Inbound
+from panel_core.utils import SECRET_KEY
 
 
 def _make_token(admin):
@@ -28,7 +28,7 @@ def _make_token(admin):
 @pytest.fixture
 def app(app):
 
-    from app.api import outbound as outbound_api
+    from panel_core.api import outbound as outbound_api
 
     if not any(bp_name == "outbound" for bp_name in app.blueprints):
         app.register_blueprint(outbound_api.bp, url_prefix="/api")
@@ -77,8 +77,8 @@ def seed_outbounds(app):
 @pytest.fixture(autouse=True)
 def _mock_xray():
     with (
-        patch("app.api.outbound.generate_config_file"),
-        patch("app.api.outbound.restart_xray_container"),
+        patch("panel_core.api.outbound.generate_config_file"),
+        patch("panel_core.api.outbound.restart_xray_container"),
     ):
         yield
 
@@ -162,7 +162,7 @@ class TestGetOutboundsHealth:
 
     def test_health_probes_socks(self, client, auth_headers, admin, seed_outbounds):
 
-        with patch("app.api.outbound._probe_outbound", return_value=42):
+        with patch("panel_core.api.outbound._probe_outbound", return_value=42):
             resp = client.get("/api/outbounds/health", headers=auth_headers)
         data = resp.get_json()
         proxy = next(o for o in data if o["tag"] == "proxy-de")
@@ -171,7 +171,7 @@ class TestGetOutboundsHealth:
         assert proxy["endpoint"] == "1.2.3.4:1080"
 
     def test_health_probe_failure(self, client, auth_headers, admin, seed_outbounds):
-        with patch("app.api.outbound._probe_outbound", side_effect=OSError("refused")):
+        with patch("panel_core.api.outbound._probe_outbound", side_effect=OSError("refused")):
             resp = client.get("/api/outbounds/health", headers=auth_headers)
         data = resp.get_json()
         proxy = next(o for o in data if o["tag"] == "proxy-de")
@@ -310,7 +310,7 @@ class TestCreateOutbound:
 class TestCreateOutboundValidationGate:
     def test_rejected_config_does_not_persist(self, client, auth_headers, admin):
         with patch(
-            "app.api.outbound.generate_config_file",
+            "panel_core.api.outbound.generate_config_file",
             side_effect=ValueError("Xray rejected the config: boom"),
         ):
             resp = client.post(
@@ -327,7 +327,7 @@ class TestCreateOutboundValidationGate:
         assert Outbound.query.filter_by(tag="test-reject").first() is None
 
     def test_accepted_config_persists(self, client, auth_headers, admin):
-        with patch("app.api.outbound.generate_config_file"):
+        with patch("panel_core.api.outbound.generate_config_file"):
             resp = client.post(
                 "/api/outbounds",
                 headers=auth_headers,

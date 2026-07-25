@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.egress import allocate_bind_ip, get_bind_prefix, get_pool_range
+from panel_core.services.egress import allocate_bind_ip, get_bind_prefix, get_pool_range
 
 
 def test_pool_defaults():

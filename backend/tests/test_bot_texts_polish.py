@@ -5,7 +5,7 @@ import tempfile
 import pytest
 import yaml
 
-from db_migration import CURRENT_BOT_TEXTS_VERSION, _maybe_force_reseed_bot_texts, _seed_bot_texts
+from panel_core.db_migration import CURRENT_BOT_TEXTS_VERSION, _maybe_force_reseed_bot_texts, _seed_bot_texts
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def test_seed_with_force_overwrites_existing_row(seeded_db):
 
 def _load_yaml():
     here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, "..", "app", "data", "bot_texts_defaults.yaml")
+    path = os.path.join(here, "..", "packages", "panel-core", "src", "panel_core", "data", "bot_texts_defaults.yaml")
     with open(path, "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 

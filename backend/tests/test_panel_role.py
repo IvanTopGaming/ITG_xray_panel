@@ -17,7 +17,7 @@ def test_is_worker(monkeypatch, value, expected):
         monkeypatch.delenv("PANEL_ROLE", raising=False)
     else:
         monkeypatch.setenv("PANEL_ROLE", value)
-    from app.panel_role import is_worker
+    from panel_core.panel_role import is_worker
 
     assert is_worker() is expected
 
@@ -31,7 +31,7 @@ def test_is_sub(monkeypatch, value, expected):
         monkeypatch.delenv("PANEL_ROLE", raising=False)
     else:
         monkeypatch.setenv("PANEL_ROLE", value)
-    from app.panel_role import is_sub
+    from panel_core.panel_role import is_sub
 
     assert is_sub() is expected
 
@@ -54,6 +54,6 @@ def test_is_bot_api(monkeypatch, value, expected):
         monkeypatch.delenv("PANEL_ROLE", raising=False)
     else:
         monkeypatch.setenv("PANEL_ROLE", value)
-    from app.panel_role import is_bot_api
+    from panel_core.panel_role import is_bot_api
 
     assert is_bot_api() is expected

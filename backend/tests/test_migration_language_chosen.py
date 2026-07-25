@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from db_migration import CURRENT_DB_VERSION, _ensure_schema_columns
+from panel_core.db_migration import CURRENT_DB_VERSION, _ensure_schema_columns
 
 
 @pytest.fixture

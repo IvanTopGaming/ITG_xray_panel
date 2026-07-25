@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 
 
 def test_tariff_create_minimal(app, db):
-    from app.models import Tariff
+    from panel_core.models import Tariff
 
     t = Tariff(name="Standard", price_rub=150, period_days=30)
     db.session.add(t)
@@ -18,7 +18,7 @@ def test_tariff_create_minimal(app, db):
 
 
 def test_tariff_visibility_values(app, db):
-    from app.models import Tariff
+    from panel_core.models import Tariff
 
     for v in ("public", "private", "archived"):
         t = Tariff(name=f"t-{v}", price_rub=100, period_days=30, visibility=v)
@@ -27,7 +27,7 @@ def test_tariff_visibility_values(app, db):
 
 
 def test_tariff_item_attached_to_tariff(app, db):
-    from app.models import Tariff, TariffItem
+    from panel_core.models import Tariff, TariffItem
 
     t = Tariff(name="Standard", price_rub=150, period_days=30)
     db.session.add(t)
@@ -47,7 +47,7 @@ def test_tariff_item_attached_to_tariff(app, db):
 
 
 def test_tariff_item_cascade_delete(app, db):
-    from app.models import Tariff, TariffItem
+    from panel_core.models import Tariff, TariffItem
 
     t = Tariff(name="Standard", price_rub=150, period_days=30)
     db.session.add(t)
@@ -62,7 +62,7 @@ def test_tariff_item_cascade_delete(app, db):
 
 
 def test_user_tariff_access_free(app, db):
-    from app.models import Tariff, UserTariffAccess
+    from panel_core.models import Tariff, UserTariffAccess
 
     t = Tariff(name="Free", price_rub=0, period_days=30)
     db.session.add(t)
@@ -80,7 +80,7 @@ def test_user_tariff_access_free(app, db):
 
 
 def test_user_tariff_access_unique_per_user(app, db):
-    from app.models import Tariff, UserTariffAccess
+    from panel_core.models import Tariff, UserTariffAccess
 
     t = Tariff(name="X", price_rub=100, period_days=30)
     db.session.add(t)
@@ -94,7 +94,7 @@ def test_user_tariff_access_unique_per_user(app, db):
 
 
 def test_user_tariff_access_billing_values(app, db):
-    from app.models import Tariff, UserTariffAccess
+    from panel_core.models import Tariff, UserTariffAccess
 
     t = Tariff(name="Y", price_rub=100, period_days=30)
     db.session.add(t)
@@ -106,7 +106,7 @@ def test_user_tariff_access_billing_values(app, db):
 
 
 def test_payment_create(app, db):
-    from app.models import Payment, Tariff
+    from panel_core.models import Payment, Tariff
 
     t = Tariff(name="Standard", price_rub=150, period_days=30)
     db.session.add(t)
@@ -127,7 +127,7 @@ def test_payment_create(app, db):
 
 
 def test_payment_yookassa_id_unique(app, db):
-    from app.models import Payment, Tariff
+    from panel_core.models import Payment, Tariff
 
     t = Tariff(name="Standard", price_rub=150, period_days=30)
     db.session.add(t)
@@ -159,7 +159,7 @@ def test_payment_yookassa_id_unique(app, db):
 
 
 def test_bot_text_create(app, db):
-    from app.models import BotText
+    from panel_core.models import BotText
 
     bt = BotText(key="welcome.title", lang="ru", text="Привет")
     db.session.add(bt)
@@ -168,7 +168,7 @@ def test_bot_text_create(app, db):
 
 
 def test_bot_text_composite_pk(app, db):
-    from app.models import BotText
+    from panel_core.models import BotText
 
     db.session.add(BotText(key="k", lang="ru", text="ru-text"))
     db.session.add(BotText(key="k", lang="en", text="en-text"))
@@ -182,7 +182,7 @@ def test_bot_text_composite_pk(app, db):
 
 
 def test_bot_event_create(app, db):
-    from app.models import BotEvent
+    from panel_core.models import BotEvent
 
     e = BotEvent(
         type="payment_succeeded",
@@ -197,7 +197,7 @@ def test_bot_event_create(app, db):
 
 
 def test_bot_event_broadcast_no_telegram_id(app, db):
-    from app.models import BotEvent
+    from panel_core.models import BotEvent
 
     e = BotEvent(type="texts_changed", telegram_id=None, payload={"lang": "ru"})
     db.session.add(e)
@@ -206,7 +206,7 @@ def test_bot_event_broadcast_no_telegram_id(app, db):
 
 
 def test_telegram_user_create(app, db):
-    from app.models import TelegramUser
+    from panel_core.models import TelegramUser
 
     u = TelegramUser(telegram_id=12345, username="ivan", language="ru")
     db.session.add(u)
@@ -218,7 +218,7 @@ def test_telegram_user_create(app, db):
 
 
 def test_telegram_user_pk_is_telegram_id(app, db):
-    from app.models import TelegramUser
+    from panel_core.models import TelegramUser
 
     db.session.add(TelegramUser(telegram_id=1))
     db.session.commit()
@@ -230,7 +230,7 @@ def test_telegram_user_pk_is_telegram_id(app, db):
 
 
 def test_telegram_user_language_default(app, db):
-    from app.models import TelegramUser
+    from panel_core.models import TelegramUser
 
     u = TelegramUser(telegram_id=99)
     db.session.add(u)
@@ -239,7 +239,7 @@ def test_telegram_user_language_default(app, db):
 
 
 def test_notification_log_create(app, db):
-    from app.models import Client, Inbound, NotificationLog
+    from panel_core.models import Client, Inbound, NotificationLog
 
     inbound = Inbound(tag="X", protocol="vless", port=443, stream_settings="{}")
     db.session.add(inbound)
@@ -269,7 +269,7 @@ def test_notification_log_create(app, db):
 
 
 def test_notification_log_kinds(app, db):
-    from app.models import Client, Inbound, NotificationLog
+    from panel_core.models import Client, Inbound, NotificationLog
 
     inbound = Inbound(tag="X", protocol="vless", port=443, stream_settings="{}")
     db.session.add(inbound)
@@ -300,7 +300,7 @@ def test_notification_log_kinds(app, db):
 
 
 def test_client_billing_columns_exist_and_nullable(app, db):
-    from app.models import Client, Inbound
+    from panel_core.models import Client, Inbound
 
     inbound = Inbound(tag="CB1", protocol="vless", port=4451, stream_settings="{}")
     db.session.add(inbound)
@@ -323,7 +323,7 @@ def test_client_billing_columns_exist_and_nullable(app, db):
 
 
 def test_client_with_telegram_and_tariff(app, db):
-    from app.models import Client, Inbound, Tariff
+    from panel_core.models import Client, Inbound, Tariff
 
     inbound = Inbound(tag="CB2", protocol="vless", port=4452, stream_settings="{}")
     db.session.add(inbound)
@@ -351,7 +351,7 @@ def test_client_with_telegram_and_tariff(app, db):
 
 
 def test_client_query_by_telegram_id(app, db):
-    from app.models import Client, Inbound
+    from panel_core.models import Client, Inbound
 
     inbound = Inbound(tag="CB3", protocol="vless", port=4453, stream_settings="{}")
     db.session.add(inbound)

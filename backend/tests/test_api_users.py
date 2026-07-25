@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
-from app.models import (
+from panel_core.models import (
     Admin,
     Client,
     Inbound,
@@ -38,7 +38,7 @@ class _SqlOrderRecorder:
 
 @pytest.fixture
 def app_with_admin(app):
-    from app.api import bot_admin
+    from panel_core.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
         app.register_blueprint(bot_admin.bp, url_prefix="/api")
@@ -50,7 +50,7 @@ def admin_headers(app_with_admin, db):
     admin = Admin(username="admin", password="x", password_changed_at=0)
     db.session.add(admin)
     db.session.commit()
-    from app.utils import SECRET_KEY
+    from panel_core.utils import SECRET_KEY
 
     token = jwt_lib.encode(
         {
@@ -139,7 +139,7 @@ def test_grant_paid_creates_access_row(app_with_admin, db, client, admin_headers
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
 
-    with patch("app.api.bot_admin.bot_events.publish") as mock_publish:
+    with patch("panel_core.api.bot_admin.bot_events.publish") as mock_publish:
         resp = client.post(
             "/api/bot/users/42/grants",
             headers=admin_headers,
@@ -184,8 +184,8 @@ def test_grant_gift_provisions_once(app_with_admin, db, client, admin_headers, t
     db.session.commit()
 
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.api.bot_admin.bot_events.publish") as mock_publish,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.api.bot_admin.bot_events.publish") as mock_publish,
     ):
         resp = client.post(
             "/api/bot/users/42/grants",
@@ -217,8 +217,8 @@ def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_hea
     db.session.commit()
 
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.api.bot_admin.bot_events.publish") as mock_publish,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.api.bot_admin.bot_events.publish") as mock_publish,
     ):
         resp = client.post(
             "/api/bot/users/42/grants",
@@ -266,7 +266,7 @@ def test_grant_upsert_replaces_existing(app_with_admin, db, client, admin_header
     db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.provisioning._sync_after_provision"):
         resp = client.post(
             "/api/bot/users/42/grants",
             headers=admin_headers,
@@ -346,9 +346,9 @@ def test_revoke_tariff_disables_clients_and_removes_grant(
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True) as remove,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True) as remove,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -383,9 +383,9 @@ def test_revoke_tariff_idempotent_when_nothing_to_revoke(
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -412,9 +412,9 @@ def test_revoke_tariff_restarts_when_grpc_fails(app_with_admin, db, client, admi
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", side_effect=[False, True]),
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=[False, True]),
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -460,9 +460,9 @@ def test_revoke_tariff_restarts_for_non_vless_protocol(app_with_admin, db, clien
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{t.id}", headers=admin_headers)
 
@@ -490,10 +490,10 @@ def test_block_user_disables_and_removes_via_grpc(app_with_admin, db, client, ad
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True) as remove,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True) as remove,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -519,10 +519,10 @@ def test_block_user_restarts_when_grpc_fails(app_with_admin, db, client, admin_h
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", side_effect=[False, True]),
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=[False, True]),
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -554,10 +554,10 @@ def test_block_user_restarts_for_non_vless_protocol(app_with_admin, db, client, 
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -573,10 +573,10 @@ def test_block_user_no_clients_skips_xray_touch(app_with_admin, db, client, admi
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -603,10 +603,10 @@ def test_block_user_grpc_calls_precede_all_sql_writes(
 
     with (
         _SqlOrderRecorder(order),
-        patch("app.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -637,9 +637,9 @@ def test_revoke_tariff_grpc_calls_precede_all_sql_writes(
 
     with (
         _SqlOrderRecorder(order),
-        patch("app.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -680,12 +680,12 @@ def test_block_user_disables_remote_clients(app_with_admin, db, client, admin_he
         ]
     }
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -716,12 +716,12 @@ def test_block_user_remote_failure_is_best_effort(app_with_admin, db, client, ad
         ]
     }
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -765,12 +765,12 @@ def test_block_user_remote_partial_success(app_with_admin, db, client, admin_hea
         return {}
 
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", side_effect=_proxy),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=_proxy),
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -795,11 +795,11 @@ def test_unblock_re_enables_clients_with_time_left(app_with_admin, db, client, a
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_add_user_grpc", return_value=True) as add,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
+        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True) as add,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
     ):
         resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
 
@@ -823,11 +823,11 @@ def test_unblock_does_not_restore_grants(app_with_admin, db, client, admin_heade
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_add_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
+        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
     ):
         resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
 
@@ -843,11 +843,11 @@ def test_unblock_restarts_for_non_vless(app_with_admin, db, client, admin_header
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_add_user_grpc") as add,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
+        patch("panel_core.api.bot_admin._api_add_user_grpc") as add,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
     ):
         resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
 
@@ -891,12 +891,12 @@ def test_unblock_re_enables_remote_clients_with_time(app_with_admin, db, client,
         ]
     }
     with (
-        patch("app.api.bot_admin._api_add_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
     ):
         resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
 
@@ -912,11 +912,11 @@ def test_unblock_no_clients_is_idempotent(app_with_admin, db, client, admin_head
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_add_user_grpc") as add,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
+        patch("panel_core.api.bot_admin._api_add_user_grpc") as add,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
     ):
         resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
 
@@ -945,12 +945,12 @@ def test_unblock_remote_failure_is_best_effort(app_with_admin, db, client, admin
         ]
     }
     with (
-        patch("app.api.bot_admin._api_add_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
+        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
     ):
         resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
 
@@ -968,11 +968,11 @@ def test_unblock_restarts_when_grpc_add_fails(app_with_admin, db, client, admin_
     db.session.commit()
 
     with (
-        patch("app.api.bot_admin._api_add_user_grpc", return_value=False) as add,
-        patch("app.api.bot_admin.generate_config_file") as regen,
-        patch("app.api.bot_admin.restart_xray_container") as restart,
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
+        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=False) as add,
+        patch("panel_core.api.bot_admin.generate_config_file") as regen,
+        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
     ):
         resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
 
@@ -1016,11 +1016,11 @@ def test_revoke_tariff_disables_remote_clients_for_that_tariff(
         ]
     }
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -1053,11 +1053,11 @@ def test_revoke_tariff_remote_failure_is_best_effort(
         ]
     }
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -1090,11 +1090,11 @@ def test_revoke_tariff_leaves_remote_client_of_other_tariff(
         ]
     }
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
+        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -1114,11 +1114,11 @@ def test_revoke_tariff_reports_unreachable_panel(app_with_admin, db, client, adm
 
     unreachable = [{"panel_id": 7, "panel_name": "Child-A", "error": "panel offline"}]
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, unreachable)),
-        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, unreachable)),
+        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
     ):
         resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
 
@@ -1137,12 +1137,12 @@ def test_block_user_reports_unreachable_panel(app_with_admin, db, client, admin_
 
     unreachable = [{"panel_id": 5, "panel_name": "Child-C", "error": "panel offline"}]
     with (
-        patch("app.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("app.api.bot_admin.generate_config_file"),
-        patch("app.api.bot_admin.restart_xray_container"),
-        patch("app.api.bot_admin.bot_events.publish"),
-        patch("app.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, unreachable)),
-        patch("app.api.bot_admin.proxy_update_user", return_value={}) as prox,
+        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
+        patch("panel_core.api.bot_admin.generate_config_file"),
+        patch("panel_core.api.bot_admin.restart_xray_container"),
+        patch("panel_core.api.bot_admin.bot_events.publish"),
+        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, unreachable)),
+        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
     ):
         resp = client.post("/api/bot/users/42/block", headers=admin_headers)
 
@@ -1169,7 +1169,7 @@ def _add_linked_panel(db, *, pid, name, enable=True):
 
 def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin, db):
 
-    from app.api.bot_admin import _remote_clients_by_telegram_id_live
+    from panel_core.api.bot_admin import _remote_clients_by_telegram_id_live
 
     _add_linked_panel(db, pid=1, name="Child-A")
     _add_linked_panel(db, pid=2, name="Child-B")
@@ -1186,7 +1186,7 @@ def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin
             return snap_a
         raise ValueError("panel offline")
 
-    with patch("app.api.bot_admin.fetch_panel_snapshot_live", side_effect=_fetch):
+    with patch("panel_core.api.bot_admin.fetch_panel_snapshot_live", side_effect=_fetch):
         bucket, unreachable = _remote_clients_by_telegram_id_live()
 
     assert list(bucket.keys()) == [42]
@@ -1197,7 +1197,7 @@ def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin
 
 def test_live_enumeration_scopes_to_given_panel_ids(app_with_admin, db):
 
-    from app.api.bot_admin import _remote_clients_by_telegram_id_live
+    from panel_core.api.bot_admin import _remote_clients_by_telegram_id_live
 
     _add_linked_panel(db, pid=1, name="Child-A")
     _add_linked_panel(db, pid=2, name="Child-B")
@@ -1209,7 +1209,7 @@ def test_live_enumeration_scopes_to_given_panel_ids(app_with_admin, db):
         fetched.append(panel_id)
         return {"inbounds": []}
 
-    with patch("app.api.bot_admin.fetch_panel_snapshot_live", side_effect=_fetch):
+    with patch("panel_core.api.bot_admin.fetch_panel_snapshot_live", side_effect=_fetch):
         bucket, unreachable = _remote_clients_by_telegram_id_live(panel_ids={1})
 
     assert fetched == [1]

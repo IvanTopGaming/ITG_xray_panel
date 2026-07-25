@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from app.extensions import db
-from app.models import Client, ClientDevice, Inbound, SystemSetting, TelegramUser
+from panel_core.extensions import db
+from panel_core.models import Client, ClientDevice, Inbound, SystemSetting, TelegramUser
 
 
 REALITY_STREAM = json.dumps(
@@ -31,25 +31,25 @@ WS_TLS_STREAM = json.dumps(
 
 
 def test_protocol_tag_reality():
-    from app.api.subscription import _protocol_tag
+    from panel_core.api.subscription import _protocol_tag
 
     assert _protocol_tag("vless", {"network": "tcp", "security": "reality"}) == "Reality"
 
 
 def test_protocol_tag_vless_ws():
-    from app.api.subscription import _protocol_tag
+    from panel_core.api.subscription import _protocol_tag
 
     assert _protocol_tag("vless", {"network": "ws", "security": "tls"}) == "VLESS-WS"
 
 
 def test_protocol_tag_plain_vless():
-    from app.api.subscription import _protocol_tag
+    from panel_core.api.subscription import _protocol_tag
 
     assert _protocol_tag("vless", {"network": "tcp", "security": "tls"}) == "VLESS"
 
 
 def test_protocol_tag_trojan_vmess_ss():
-    from app.api.subscription import _protocol_tag
+    from panel_core.api.subscription import _protocol_tag
 
     assert _protocol_tag("trojan", {"network": "tcp", "security": "tls"}) == "Trojan"
     assert _protocol_tag("vmess", {"network": "ws", "security": "none"}) == "VMess-WS"
@@ -57,14 +57,14 @@ def test_protocol_tag_trojan_vmess_ss():
 
 
 def test_protocol_tag_accepts_json_string():
-    from app.api.subscription import _protocol_tag
+    from panel_core.api.subscription import _protocol_tag
 
     assert _protocol_tag("vless", REALITY_STREAM) == "Reality"
 
 
 @pytest.fixture
 def app(app):
-    from app.api import subscription as sub_api
+    from panel_core.api import subscription as sub_api
 
     if "subscription" not in app.blueprints:
         app.register_blueprint(sub_api.bp, url_prefix="/api")
@@ -137,7 +137,7 @@ def user_three_keys(app):
 
 
 def test_user_page_nodes_collects_local(app, user_three_keys):
-    from app.api.subscription import _user_page_nodes
+    from panel_core.api.subscription import _user_page_nodes
 
     with app.app_context():
         nodes = _user_page_nodes(800)
@@ -162,14 +162,14 @@ def test_user_page_nodes_collects_local(app, user_three_keys):
 
 
 def test_user_page_nodes_empty_user(app):
-    from app.api.subscription import _user_page_nodes
+    from panel_core.api.subscription import _user_page_nodes
 
     with app.app_context():
         assert _user_page_nodes(999999) == []
 
 
 def test_device_summary_hidden_without_limit(app, user_three_keys):
-    from app.api.subscription import _user_device_summary
+    from panel_core.api.subscription import _user_device_summary
 
     with app.app_context():
         assert _user_device_summary(800) is None
@@ -178,7 +178,7 @@ def test_device_summary_hidden_without_limit(app, user_three_keys):
 def test_device_summary_counts_unique_hwids(app, user_three_keys):
     import time
 
-    from app.api.subscription import _user_device_summary
+    from panel_core.api.subscription import _user_device_summary
 
     now_ms = int(time.time() * 1000)
     with app.app_context():
@@ -195,7 +195,7 @@ def test_device_summary_counts_unique_hwids(app, user_three_keys):
 
 
 def test_pick_lang_query_overrides_header(app):
-    from app.api.subscription import _pick_lang
+    from panel_core.api.subscription import _pick_lang
 
     assert _pick_lang("ru", "en-US,en;q=0.9") == "ru"
     assert _pick_lang("EN", "ru") == "en"
@@ -203,7 +203,7 @@ def test_pick_lang_query_overrides_header(app):
 
 
 def test_pick_lang_accept_language_fallback(app):
-    from app.api.subscription import _pick_lang
+    from panel_core.api.subscription import _pick_lang
 
     assert _pick_lang("", "ru-RU,ru;q=0.9,en;q=0.8") == "ru"
     assert _pick_lang("", "en-GB,en;q=0.9") == "en"
@@ -211,14 +211,14 @@ def test_pick_lang_accept_language_fallback(app):
 
 
 def test_page_strings_have_both_langs(app):
-    from app.api.subscription import _PAGE_STRINGS
+    from panel_core.api.subscription import _PAGE_STRINGS
 
     assert set(_PAGE_STRINGS.keys()) == {"en", "ru"}
     assert set(_PAGE_STRINGS["en"].keys()) == set(_PAGE_STRINGS["ru"].keys())
 
 
 def test_render_page_contains_nodes_and_brand(app, user_three_keys):
-    from app.api.subscription import render_aggregate_subscription_page
+    from panel_core.api.subscription import render_aggregate_subscription_page
 
     with app.app_context():
         db.session.add(SystemSetting(key="brand_name", value="ACME VPN"))
@@ -242,7 +242,7 @@ def test_render_page_contains_nodes_and_brand(app, user_three_keys):
 def test_render_page_ru_and_devices_card(app, user_three_keys):
     import time
 
-    from app.api.subscription import render_aggregate_subscription_page
+    from panel_core.api.subscription import render_aggregate_subscription_page
 
     now_ms = int(time.time() * 1000)
     with app.app_context():
@@ -324,7 +324,7 @@ def test_browser_with_ua_clash_gets_yaml(http_client, user_three_keys):
 def test_format_date_localized_ru_en(app):
     import time as _t
 
-    from app.api.subscription import _format_date_localized
+    from panel_core.api.subscription import _format_date_localized
 
     ms = int(_t.mktime(_t.struct_time((2026, 6, 18, 12, 0, 0, 0, 0, -1))) * 1000)
     assert _format_date_localized(ms, "ru") == "18 июня"
@@ -335,8 +335,8 @@ def test_format_date_localized_ru_en(app):
 def test_page_days_left_rounds_up_and_localized_date(app, user_three_keys):
     import re
 
-    from app.api.subscription import render_aggregate_subscription_page, _format_date_localized
-    from app.models import Client, TelegramUser
+    from panel_core.api.subscription import render_aggregate_subscription_page, _format_date_localized
+    from panel_core.models import Client, TelegramUser
 
     with app.app_context():
         user = TelegramUser.query.filter_by(telegram_id=800).first()
@@ -350,8 +350,8 @@ def test_page_days_left_rounds_up_and_localized_date(app, user_three_keys):
 
 
 def test_render_page_escapes_brand_and_shows_offline_dot(app, user_three_keys):
-    from app.api.subscription import render_aggregate_subscription_page
-    from app.models import SystemSetting, TelegramUser
+    from panel_core.api.subscription import render_aggregate_subscription_page
+    from panel_core.models import SystemSetting, TelegramUser
 
     with app.app_context():
         db.session.add(SystemSetting(key="brand_name", value="<script>x</script>"))
@@ -366,8 +366,8 @@ def test_render_page_escapes_brand_and_shows_offline_dot(app, user_three_keys):
 def test_render_page_expired_node(app):
     import time
 
-    from app.api.subscription import render_aggregate_subscription_page
-    from app.models import Client, Inbound, TelegramUser
+    from panel_core.api.subscription import render_aggregate_subscription_page
+    from panel_core.models import Client, Inbound, TelegramUser
 
     now = int(time.time() * 1000)
     with app.app_context():

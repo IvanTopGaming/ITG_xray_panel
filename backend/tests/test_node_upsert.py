@@ -1,8 +1,8 @@
 def test_upsert_node_snapshot_accumulates_sqlite(app):
     from sqlalchemy import text
 
-    from app.extensions import db
-    from app.services.stats import _upsert_node_snapshot
+    from panel_core.extensions import db
+    from panel_core.services.stats import _upsert_node_snapshot
 
     _upsert_node_snapshot(3, "user", "tg1_vless", "vless", 1000, 10, 20)
     _upsert_node_snapshot(3, "user", "tg1_vless", "vless", 1000, 5, 7)
@@ -17,8 +17,8 @@ def test_upsert_node_snapshot_accumulates_sqlite(app):
 def test_upsert_node_snapshot_zero_is_noop(app):
     from sqlalchemy import text
 
-    from app.extensions import db
-    from app.services.stats import _upsert_node_snapshot
+    from panel_core.extensions import db
+    from panel_core.services.stats import _upsert_node_snapshot
 
     _upsert_node_snapshot(3, "user", "x", "vless", 1000, 0, 0)
     db.session.commit()

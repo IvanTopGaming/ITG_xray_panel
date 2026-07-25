@@ -1,7 +1,7 @@
 import datetime as dt
 from unittest.mock import MagicMock, patch
 
-from app.models import BotEvent
+from panel_core.models import BotEvent
 
 
 def _aged(seconds_old: int) -> dt.datetime:
@@ -10,7 +10,7 @@ def _aged(seconds_old: int) -> dt.datetime:
 
 def test_replay_picks_up_old_undelivered_and_marks_them(app, db):
 
-    from app.jobs.notifications import replay_undelivered_bot_events
+    from panel_core.jobs.notifications import replay_undelivered_bot_events
 
     event = BotEvent(type="payment_succeeded", telegram_id=42, payload={})
     db.session.add(event)
@@ -19,7 +19,7 @@ def test_replay_picks_up_old_undelivered_and_marks_them(app, db):
     db.session.commit()
 
     fake_redis = MagicMock()
-    with patch("app.jobs.notifications._get_redis", return_value=fake_redis):
+    with patch("panel_core.jobs.notifications._get_redis", return_value=fake_redis):
         replay_undelivered_bot_events()
 
     fake_redis.publish.assert_called_once()
@@ -29,13 +29,13 @@ def test_replay_picks_up_old_undelivered_and_marks_them(app, db):
 
 def test_replay_skips_recent_events_to_avoid_racing_publish(app, db):
 
-    from app.jobs.notifications import replay_undelivered_bot_events
+    from panel_core.jobs.notifications import replay_undelivered_bot_events
 
     db.session.add(BotEvent(type="payment_succeeded", telegram_id=42, payload={}))
     db.session.commit()
 
     fake_redis = MagicMock()
-    with patch("app.jobs.notifications._get_redis", return_value=fake_redis):
+    with patch("panel_core.jobs.notifications._get_redis", return_value=fake_redis):
         replay_undelivered_bot_events()
 
     fake_redis.publish.assert_not_called()
@@ -43,7 +43,7 @@ def test_replay_skips_recent_events_to_avoid_racing_publish(app, db):
 
 def test_replay_skips_already_delivered(app, db):
 
-    from app.jobs.notifications import replay_undelivered_bot_events
+    from panel_core.jobs.notifications import replay_undelivered_bot_events
 
     e = BotEvent(type="t", telegram_id=42, payload={})
     db.session.add(e)
@@ -53,7 +53,7 @@ def test_replay_skips_already_delivered(app, db):
     db.session.commit()
 
     fake_redis = MagicMock()
-    with patch("app.jobs.notifications._get_redis", return_value=fake_redis):
+    with patch("panel_core.jobs.notifications._get_redis", return_value=fake_redis):
         replay_undelivered_bot_events()
 
     fake_redis.publish.assert_not_called()
@@ -61,7 +61,7 @@ def test_replay_skips_already_delivered(app, db):
 
 def test_replay_keeps_delivered_at_null_when_publish_fails(app, db):
 
-    from app.jobs.notifications import replay_undelivered_bot_events
+    from panel_core.jobs.notifications import replay_undelivered_bot_events
 
     e = BotEvent(type="payment_succeeded", telegram_id=42, payload={})
     db.session.add(e)
@@ -71,7 +71,7 @@ def test_replay_keeps_delivered_at_null_when_publish_fails(app, db):
 
     fake_redis = MagicMock()
     fake_redis.publish.side_effect = ConnectionError("redis down")
-    with patch("app.jobs.notifications._get_redis", return_value=fake_redis):
+    with patch("panel_core.jobs.notifications._get_redis", return_value=fake_redis):
         replay_undelivered_bot_events()
 
     refreshed = db.session.get(BotEvent, e.id)
@@ -80,7 +80,7 @@ def test_replay_keeps_delivered_at_null_when_publish_fails(app, db):
 
 def test_replay_noop_when_redis_unconfigured(app, db):
 
-    from app.jobs.notifications import replay_undelivered_bot_events
+    from panel_core.jobs.notifications import replay_undelivered_bot_events
 
     e = BotEvent(type="t", telegram_id=42, payload={})
     db.session.add(e)
@@ -88,7 +88,7 @@ def test_replay_noop_when_redis_unconfigured(app, db):
     e.created_at = _aged(120)
     db.session.commit()
 
-    with patch("app.jobs.notifications._get_redis", return_value=None):
+    with patch("panel_core.jobs.notifications._get_redis", return_value=None):
         replay_undelivered_bot_events()
 
     refreshed = db.session.get(BotEvent, e.id)

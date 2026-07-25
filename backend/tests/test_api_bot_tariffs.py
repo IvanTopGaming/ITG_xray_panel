@@ -4,14 +4,14 @@ from unittest.mock import patch
 import jwt
 import pytest
 
-from app.models import Admin, Tariff, TariffItem
-from app.utils import SECRET_KEY
+from panel_core.models import Admin, Tariff, TariffItem
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app_with_bot_api(app):
 
-    from app.api import bot_admin
+    from panel_core.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
         app.register_blueprint(bot_admin.bp, url_prefix="/api")
@@ -206,7 +206,7 @@ def test_create_trial_when_none_exists(app_with_bot_api, db, client, auth_header
 
 
 def test_create_trial_rejected_when_one_exists(app_with_bot_api, db, client, auth_headers):
-    from app.models import Tariff
+    from panel_core.models import Tariff
 
     db.session.add(Tariff(name="ExistingTrial", price_rub=0, period_days=1, is_trial=True))
     db.session.commit()
@@ -378,7 +378,7 @@ def test_duplicate_nonexistent_returns_404(app_with_bot_api, db, client, auth_he
 def test_update_tariff_returns_backfill_summary_and_backfills_local_holder(app_with_bot_api, db, client, auth_headers):
     import uuid
 
-    from app.models import Client, Inbound
+    from panel_core.models import Client, Inbound
 
     db.session.add_all(
         [
@@ -418,7 +418,7 @@ def test_update_tariff_returns_backfill_summary_and_backfills_local_holder(app_w
             {"inbound_tag": "MSK-vless", "traffic_gb": 70},
         ],
     }
-    with patch("app.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.provisioning._sync_after_provision"):
         resp = client.put(f"/api/bot/tariffs/{t.id}", json=payload, headers=auth_headers)
 
     assert resp.status_code == 200

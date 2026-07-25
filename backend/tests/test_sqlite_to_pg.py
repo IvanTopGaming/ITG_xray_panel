@@ -9,9 +9,9 @@ pg_only = pytest.mark.skipif(not DSN, reason="DATABASE_URL_TEST not set")
 def _build_source_sqlite(path):
     from sqlalchemy import create_engine, insert
 
-    from app.extensions import db
-    import app.models  # noqa: F401
-    from app.models import Admin, BotText, Client, SystemSetting
+    from panel_core.extensions import db
+    import panel_core.models  # noqa: F401
+    from panel_core.models import Admin, BotText, Client, SystemSetting
 
     eng = create_engine(f"sqlite:///{path}")
     db.metadata.create_all(eng)
@@ -73,7 +73,7 @@ def test_import_copies_rows_and_coerces_types(tmp_path):
 def test_import_resets_integer_pk_sequence(tmp_path):
     from sqlalchemy import create_engine, insert, text
 
-    from app.models import Admin
+    from panel_core.models import Admin
 
     src_path = str(tmp_path / "panel.db")
     _build_source_sqlite(src_path)

@@ -6,7 +6,7 @@ import pytest
 import requests
 from flask import Flask
 
-from app.observability import init_request_logging, run_job_logged, setup_logging
+from panel_core.observability import init_request_logging, run_job_logged, setup_logging
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +87,7 @@ class TestRequestLogging:
         assert [r for r in caplog.records if r.name == "app.requests"]
 
     def test_slow_request_logged_as_warning(self, caplog, monkeypatch):
-        import app.observability as obs
+        import panel_core.observability as obs
 
         monkeypatch.setattr(obs, "_SLOW_REQUEST_MS", 0.0)
         app = self._make_app()
@@ -106,18 +106,18 @@ class TestRequestLogging:
 
 class TestRunJobLogged:
     def test_logs_duration_at_info(self, caplog):
-        with caplog.at_level(logging.DEBUG, logger="app.jobs"):
+        with caplog.at_level(logging.DEBUG, logger="panel_core.jobs"):
             run_job_logged("test_job", 60, lambda: None)
-        msgs = [r.getMessage() for r in caplog.records if r.name == "app.jobs"]
+        msgs = [r.getMessage() for r in caplog.records if r.name == "panel_core.jobs"]
         assert any("test_job" in m and "done in" in m for m in msgs)
 
     def test_warns_when_overrunning_interval(self, caplog):
         def _slow():
             time.sleep(0.01)
 
-        with caplog.at_level(logging.INFO, logger="app.jobs"):
+        with caplog.at_level(logging.INFO, logger="panel_core.jobs"):
             run_job_logged("test_job", 0.001, _slow)
-        records = [r for r in caplog.records if r.name == "app.jobs"]
+        records = [r for r in caplog.records if r.name == "panel_core.jobs"]
         assert records[0].levelno == logging.WARNING
         assert "overran" in records[0].getMessage()
 
@@ -125,16 +125,16 @@ class TestRunJobLogged:
         def _boom():
             raise RuntimeError("kaput")
 
-        with caplog.at_level(logging.INFO, logger="app.jobs"), pytest.raises(RuntimeError):
+        with caplog.at_level(logging.INFO, logger="panel_core.jobs"), pytest.raises(RuntimeError):
             run_job_logged("boom_job", 60, _boom)
-        msgs = [r.getMessage() for r in caplog.records if r.name == "app.jobs"]
+        msgs = [r.getMessage() for r in caplog.records if r.name == "panel_core.jobs"]
         assert any("boom_job" in m and "failed after" in m for m in msgs)
 
 
 class TestSqlTiming:
     def test_slow_sql_warns(self, app, db, caplog, monkeypatch):
         from sqlalchemy import text
-        import app.extensions as ext
+        import panel_core.extensions as ext
 
         monkeypatch.setattr(ext, "_SLOW_SQL_MS", 0.0)
         with caplog.at_level(logging.WARNING, logger="app.sql"):
@@ -158,22 +158,22 @@ class TestFederationTiming:
         return resp
 
     def test_success_logged_at_debug_with_duration(self, caplog):
-        from app.services.panel_proxy import FederationClient
+        from panel_core.services.panel_proxy import FederationClient
 
         client = FederationClient("https://child.example.com", "tok")
-        with caplog.at_level(logging.DEBUG, logger="app.services.panel_proxy"):
+        with caplog.at_level(logging.DEBUG, logger="panel_core.services.panel_proxy"):
             with patch.object(client._session, "get", return_value=self._resp()):
                 client.snapshot()
-        msgs = [r.getMessage() for r in caplog.records if r.name == "app.services.panel_proxy"]
+        msgs = [r.getMessage() for r in caplog.records if r.name == "panel_core.services.panel_proxy"]
         assert any("federation" in m and "ms" in m for m in msgs)
 
     def test_failure_logged_as_warning(self, caplog):
-        from app.services.panel_proxy import FederationClient
+        from panel_core.services.panel_proxy import FederationClient
 
         client = FederationClient("https://child.example.com", "tok")
-        with caplog.at_level(logging.WARNING, logger="app.services.panel_proxy"):
+        with caplog.at_level(logging.WARNING, logger="panel_core.services.panel_proxy"):
             with patch.object(client._session, "get", side_effect=requests.ConnectionError("boom")):
                 with pytest.raises(requests.ConnectionError):
                     client.snapshot()
-        msgs = [r.getMessage() for r in caplog.records if r.name == "app.services.panel_proxy"]
+        msgs = [r.getMessage() for r in caplog.records if r.name == "panel_core.services.panel_proxy"]
         assert any("failed" in m for m in msgs)

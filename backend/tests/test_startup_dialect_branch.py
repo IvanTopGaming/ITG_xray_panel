@@ -4,7 +4,7 @@ from unittest.mock import patch
 def _make_app(uri):
     from flask import Flask
 
-    from app.extensions import db  # noqa: F401
+    from panel_core.extensions import db  # noqa: F401
 
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = uri
@@ -13,13 +13,13 @@ def _make_app(uri):
 
 
 def test_sqlite_uri_uses_sqlite_migration():
-    from app import run_startup_migration
+    from panel_core import run_startup_migration
 
     app = _make_app("sqlite:///:memory:")
     with (
-        patch("app.migrate_sqlite_db", return_value={}) as m_sqlite,
-        patch("app.migrate_postgres_db", return_value={}) as m_pg,
-        patch("app.db.create_all") as m_create,
+        patch("panel_core.migrate_sqlite_db", return_value={}) as m_sqlite,
+        patch("panel_core.migrate_postgres_db", return_value={}) as m_pg,
+        patch("panel_core.db.create_all") as m_create,
     ):
         with app.app_context():
             run_startup_migration(app, "/tmp/panel.db")
@@ -29,12 +29,12 @@ def test_sqlite_uri_uses_sqlite_migration():
 
 
 def test_postgres_uri_uses_postgres_migration():
-    from app import run_startup_migration
+    from panel_core import run_startup_migration
 
     app = _make_app("postgresql+psycopg2://u:p@h/db")
     with (
-        patch("app.migrate_sqlite_db", return_value={}) as m_sqlite,
-        patch("app.migrate_postgres_db", return_value={"bot_texts_force_reseeded": False}) as m_pg,
+        patch("panel_core.migrate_sqlite_db", return_value={}) as m_sqlite,
+        patch("panel_core.migrate_postgres_db", return_value={"bot_texts_force_reseeded": False}) as m_pg,
     ):
         with app.app_context():
             run_startup_migration(app, "/tmp/panel.db")

@@ -2,9 +2,9 @@ import time
 import uuid
 from unittest.mock import MagicMock, patch
 
-from app.extensions import db
-from app.models import Client, Inbound
-from app.services.stats import check_limits_and_reset, sync_traffic_stats
+from panel_core.extensions import db
+from panel_core.models import Client, Inbound
+from panel_core.services.stats import check_limits_and_reset, sync_traffic_stats
 
 
 def _inbound():
@@ -43,9 +43,9 @@ def test_sync_traffic_emits_notification_at_80pct(app):
         db.session.add(c)
         db.session.commit()
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
-            patch("app.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
+            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
         ):
             sync_traffic_stats()
 
@@ -75,9 +75,9 @@ def test_sync_traffic_no_notification_below_threshold(app):
         db.session.add(c)
         db.session.commit()
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(10)),
-            patch("app.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(10)),
+            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
         ):
             sync_traffic_stats()
         mock_publish.assert_not_called()
@@ -100,9 +100,9 @@ def test_sync_traffic_notification_failure_does_not_break_accounting(app):
         db.session.add(c)
         db.session.commit()
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
-            patch("app.jobs.notifications.bot_events.publish", side_effect=RuntimeError("redis down")),
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
+            patch("panel_core.jobs.notifications.bot_events.publish", side_effect=RuntimeError("redis down")),
         ):
             sync_traffic_stats()
         db.session.expire_all()
@@ -129,11 +129,11 @@ def test_check_limits_emits_expired_and_disables(app):
         db.session.add(c)
         db.session.commit()
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats._api_remove_user_grpc", return_value=True),
-            patch("app.services.stats.generate_config_file"),
-            patch("app.services.stats.restart_xray_container"),
-            patch("app.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
+            patch("panel_core.services.stats.generate_config_file"),
+            patch("panel_core.services.stats.restart_xray_container"),
+            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
         ):
             check_limits_and_reset()
         db.session.expire_all()
@@ -162,11 +162,11 @@ def test_check_limits_emits_3d_warning_without_disabling(app):
         db.session.add(c)
         db.session.commit()
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats._api_remove_user_grpc", return_value=True),
-            patch("app.services.stats.generate_config_file"),
-            patch("app.services.stats.restart_xray_container"),
-            patch("app.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
+            patch("panel_core.services.stats.generate_config_file"),
+            patch("panel_core.services.stats.restart_xray_container"),
+            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
         ):
             check_limits_and_reset()
         db.session.expire_all()

@@ -3,14 +3,14 @@ import pytest
 
 import jwt as jwt_lib
 
-from app.models import Admin, BotText
-from app.utils import SECRET_KEY
+from panel_core.models import Admin, BotText
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app_with_admin(app):
 
-    from app.api import bot_admin
+    from panel_core.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
         app.register_blueprint(bot_admin.bp, url_prefix="/api")
@@ -129,7 +129,7 @@ def test_put_text_publishes_event(app_with_admin, db, client, admin_headers):
 
     from unittest.mock import patch
 
-    with patch("app.services.bot_events.publish") as mock_publish:
+    with patch("panel_core.services.bot_events.publish") as mock_publish:
         client.put(
             "/api/bot/texts/welcome.title",
             headers=admin_headers,

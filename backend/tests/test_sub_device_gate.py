@@ -1,9 +1,9 @@
 import contextlib
 import uuid
 
-from app.models import Client, Inbound, SystemSetting
-from app.services import device_tracking
-from app.services.device_tracking import device_gate, user_device_gate
+from panel_core.models import Client, Inbound, SystemSetting
+from panel_core.services import device_tracking
+from panel_core.services.device_tracking import device_gate, user_device_gate
 
 
 def _make_inbound(db, *, tag="DE-vless", device_limit=1, port=10001):
@@ -80,7 +80,7 @@ def test_device_gate_master_mode_still_hits_db(app, db, monkeypatch):
 
     assert state == "ok"
     assert headers.get("x-hwid-active") == "true"
-    from app.models import ClientDevice
+    from panel_core.models import ClientDevice
 
     assert ClientDevice.query.filter_by(client_id=client.id, hwid="hwid-1").first() is not None
 
@@ -97,6 +97,6 @@ def test_user_device_gate_master_mode_still_hits_db(app, db, monkeypatch):
 
     assert state == "ok"
     assert headers.get("x-hwid-active") == "true"
-    from app.models import ClientDevice
+    from panel_core.models import ClientDevice
 
     assert ClientDevice.query.filter_by(hwid="hwid-1").first() is not None

@@ -9,7 +9,7 @@ pg_only = pytest.mark.skipif(not DSN, reason="DATABASE_URL_TEST not set")
 def _pg_ctx():
     from flask import Flask
 
-    from app.extensions import db
+    from panel_core.extensions import db
 
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = DSN
@@ -22,17 +22,17 @@ def _pg_ctx():
 def test_snapshot_upsert_accumulates_on_conflict():
     from sqlalchemy import text
 
-    import app.models  # noqa: F401
+    import panel_core.models  # noqa: F401
 
     app, db = _pg_ctx()
     with app.app_context():
         db.session.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
         db.session.commit()
-        from app.pg_migrate import migrate_postgres_db
+        from panel_core.pg_migrate import migrate_postgres_db
 
         migrate_postgres_db()
 
-        from app.services.stats import _upsert_snapshot
+        from panel_core.services.stats import _upsert_snapshot
 
         _upsert_snapshot("user", 1, "tag", 1000, 10, 20)
         _upsert_snapshot("user", 1, "tag", 1000, 5, 7)
@@ -49,17 +49,17 @@ def test_snapshot_upsert_accumulates_on_conflict():
 def test_domain_stat_upsert_accumulates_on_conflict():
     from sqlalchemy import text
 
-    import app.models  # noqa: F401
+    import panel_core.models  # noqa: F401
 
     app, db = _pg_ctx()
     with app.app_context():
         db.session.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
         db.session.commit()
-        from app.pg_migrate import migrate_postgres_db
+        from panel_core.pg_migrate import migrate_postgres_db
 
         migrate_postgres_db()
 
-        from app.services.stats import _upsert_domain_stat
+        from panel_core.services.stats import _upsert_domain_stat
 
         _upsert_domain_stat("2026-07-24", "example.com", "u@x", "tag", 3)
         _upsert_domain_stat("2026-07-24", "example.com", "u@x", "tag", 4)
@@ -75,17 +75,17 @@ def test_domain_stat_upsert_accumulates_on_conflict():
 def test_node_snapshot_upsert_accumulates_on_conflict():
     from sqlalchemy import text
 
-    import app.models  # noqa: F401
+    import panel_core.models  # noqa: F401
 
     app, db = _pg_ctx()
     with app.app_context():
         db.session.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
         db.session.commit()
-        from app.pg_migrate import migrate_postgres_db
+        from panel_core.pg_migrate import migrate_postgres_db
 
         migrate_postgres_db()
 
-        from app.services.stats import _upsert_node_snapshot
+        from panel_core.services.stats import _upsert_node_snapshot
 
         _upsert_node_snapshot(3, "user", "tg1_vless", "vless", 1000, 10, 20)
         _upsert_node_snapshot(3, "user", "tg1_vless", "vless", 1000, 5, 7)

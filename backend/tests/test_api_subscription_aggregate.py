@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from app.extensions import db
-from app.models import Client, Inbound, TelegramUser
+from panel_core.extensions import db
+from panel_core.models import Client, Inbound, TelegramUser
 
 
 REALITY_STREAM = json.dumps(
@@ -24,7 +24,7 @@ REALITY_STREAM = json.dumps(
 
 @pytest.fixture
 def app(app):
-    from app.api import subscription as sub_api
+    from panel_core.api import subscription as sub_api
 
     if "subscription" not in app.blueprints:
         app.register_blueprint(sub_api.bp, url_prefix="/api")
@@ -70,7 +70,7 @@ def user_with_two_keys(app):
 
 
 def test_aggregate_collects_all_local_keys(app, user_with_two_keys):
-    from app.api.subscription import get_subscription_content_for_user
+    from panel_core.api.subscription import get_subscription_content_for_user
 
     with app.app_context():
         links = get_subscription_content_for_user(700)
@@ -83,7 +83,7 @@ def test_aggregate_collects_all_local_keys(app, user_with_two_keys):
 
 def test_aggregate_clash_merges_proxies(app, user_with_two_keys):
     import yaml
-    from app.api.subscription import generate_clash_config_for_user
+    from panel_core.api.subscription import generate_clash_config_for_user
 
     with app.app_context():
         doc = generate_clash_config_for_user(700)
@@ -99,7 +99,7 @@ def test_aggregate_clash_merges_proxies(app, user_with_two_keys):
 
 def test_aggregate_singbox_merges_outbounds(app, user_with_two_keys):
     import json as _json
-    from app.api.subscription import generate_singbox_config_for_user
+    from panel_core.api.subscription import generate_singbox_config_for_user
 
     with app.app_context():
         doc = generate_singbox_config_for_user(700)
@@ -122,8 +122,8 @@ def test_aggregate_singbox_merges_outbounds(app, user_with_two_keys):
 
 
 def test_aggregate_headers_pick_nearest_to_exhaustion(app):
-    from app.api.subscription import _aggregate_user_headers
-    from app.models import Client
+    from panel_core.api.subscription import _aggregate_user_headers
+    from panel_core.models import Client
 
     gb = 1024**3
     a = Client(
@@ -154,8 +154,8 @@ def test_aggregate_headers_pick_nearest_to_exhaustion(app):
 
 
 def test_aggregate_headers_all_unlimited(app):
-    from app.api.subscription import _aggregate_user_headers
-    from app.models import Client
+    from panel_core.api.subscription import _aggregate_user_headers
+    from panel_core.models import Client
 
     a = Client(id="a", email="a", inbound_tag="x", enable=True, up=5, down=5, limit_bytes=0, expiry_time=0)
     headers = _aggregate_user_headers([a])
@@ -185,8 +185,8 @@ def test_endpoint_does_not_collide_with_per_client_route(client, user_with_two_k
 
 def test_aggregate_header_counts_remote_child_panel_key(client, app, user_with_two_keys, monkeypatch):
 
-    from app.models import LinkedPanel
-    from app.services import panel_proxy
+    from panel_core.models import LinkedPanel
+    from panel_core.services import panel_proxy
 
     gb = 1024**3
     with app.app_context():
@@ -240,7 +240,7 @@ def test_aggregate_header_counts_remote_child_panel_key(client, app, user_with_t
 
 
 def test_invalidate_user_aggregate_clears_token_keys(app, user_with_two_keys, monkeypatch):
-    from app.services import sub_cache
+    from panel_core.services import sub_cache
 
     store = {}
 
@@ -265,8 +265,8 @@ def test_invalidate_user_aggregate_clears_token_keys(app, user_with_two_keys, mo
 
 
 def test_aggregate_header_profile_title_default(app):
-    from app.api.subscription import _aggregate_user_headers
-    from app.models import Client
+    from panel_core.api.subscription import _aggregate_user_headers
+    from panel_core.models import Client
 
     c = Client(id="x", email="x", inbound_tag="t", enable=True, up=0, down=0, limit_bytes=0, expiry_time=0)
     headers = _aggregate_user_headers([c])
@@ -275,9 +275,9 @@ def test_aggregate_header_profile_title_default(app):
 
 
 def test_aggregate_header_profile_title_ascii_brand(app):
-    from app.api.subscription import _aggregate_user_headers
-    from app.models import Client, SystemSetting
-    from app.extensions import db
+    from panel_core.api.subscription import _aggregate_user_headers
+    from panel_core.models import Client, SystemSetting
+    from panel_core.extensions import db
 
     db.session.add(SystemSetting(key="brand_name", value="ACME VPN"))
     db.session.commit()
@@ -289,9 +289,9 @@ def test_aggregate_header_profile_title_ascii_brand(app):
 def test_aggregate_header_profile_title_unicode_brand_is_base64(app):
     import base64
 
-    from app.api.subscription import _aggregate_user_headers
-    from app.models import Client, SystemSetting
-    from app.extensions import db
+    from panel_core.api.subscription import _aggregate_user_headers
+    from panel_core.models import Client, SystemSetting
+    from panel_core.extensions import db
 
     db.session.add(SystemSetting(key="brand_name", value="МойВПН"))
     db.session.commit()
@@ -308,9 +308,9 @@ def test_aggregate_header_profile_title_accented_latin_is_base64(app):
 
     import base64
 
-    from app.api.subscription import _aggregate_user_headers
-    from app.models import Client, SystemSetting
-    from app.extensions import db
+    from panel_core.api.subscription import _aggregate_user_headers
+    from panel_core.models import Client, SystemSetting
+    from panel_core.extensions import db
 
     db.session.add(SystemSetting(key="brand_name", value="Café VPN"))
     db.session.commit()
@@ -325,8 +325,8 @@ def test_aggregate_header_profile_title_accented_latin_is_base64(app):
 def test_aggregate_blocks_new_device_over_limit(client, app, user_with_two_keys):
     import base64
 
-    from app.extensions import db
-    from app.models import SystemSetting
+    from panel_core.extensions import db
+    from panel_core.models import SystemSetting
 
     token = user_with_two_keys
     with app.app_context():
@@ -351,8 +351,8 @@ def test_aggregate_no_gate_when_toggle_off(client, user_with_two_keys):
 
 
 def test_browser_never_gated_even_over_limit(client, app, user_with_two_keys):
-    from app.extensions import db
-    from app.models import SystemSetting
+    from panel_core.extensions import db
+    from panel_core.models import SystemSetting
 
     token = user_with_two_keys
     with app.app_context():

@@ -2,8 +2,8 @@ import time
 import uuid
 
 
-from app.models import Client, ClientDevice, Inbound
-from app.services.device_tracking import device_gate, list_devices, revoke_device
+from panel_core.models import Client, ClientDevice, Inbound
+from panel_core.services.device_tracking import device_gate, list_devices, revoke_device
 
 
 def _make_inbound(db, *, tag="DE-vless", device_limit=0, port=10001):
@@ -210,7 +210,7 @@ def test_device_gate_no_hwid_unlimited_returns_ok(app, db):
 
 
 def _enable_user_device_limit(db, limit):
-    from app.models import SystemSetting
+    from panel_core.models import SystemSetting
 
     db.session.add(SystemSetting(key="device_limit_enabled", value="true"))
     db.session.add(SystemSetting(key="device_limit_per_user", value=str(limit)))
@@ -218,7 +218,7 @@ def _enable_user_device_limit(db, limit):
 
 
 def test_user_gate_off_passes(app, db):
-    from app.services.device_tracking import user_device_gate
+    from panel_core.services.device_tracking import user_device_gate
 
     _make_inbound(db)
     _make_client(db, telegram_id=70)
@@ -228,7 +228,7 @@ def test_user_gate_off_passes(app, db):
 
 
 def test_user_gate_no_hwid_with_limit_unsupported(app, db):
-    from app.services.device_tracking import user_device_gate
+    from panel_core.services.device_tracking import user_device_gate
 
     _make_inbound(db)
     _make_client(db, telegram_id=71)
@@ -239,8 +239,8 @@ def test_user_gate_no_hwid_with_limit_unsupported(app, db):
 
 
 def test_user_gate_registers_then_touches(app, db):
-    from app.models import ClientDevice
-    from app.services.device_tracking import user_device_gate
+    from panel_core.models import ClientDevice
+    from panel_core.services.device_tracking import user_device_gate
 
     _make_inbound(db)
     c = _make_client(db, telegram_id=72)
@@ -254,7 +254,7 @@ def test_user_gate_registers_then_touches(app, db):
 
 
 def test_user_gate_blocks_over_limit(app, db):
-    from app.services.device_tracking import user_device_gate
+    from panel_core.services.device_tracking import user_device_gate
 
     _make_inbound(db)
     _make_client(db, telegram_id=73)
@@ -266,7 +266,7 @@ def test_user_gate_blocks_over_limit(app, db):
 
 
 def test_user_gate_counts_across_multiple_keys(app, db):
-    from app.services.device_tracking import user_device_gate
+    from panel_core.services.device_tracking import user_device_gate
 
     _make_inbound(db, tag="DE-vless")
     _make_inbound(db, tag="NL-vless", port=10002)
@@ -278,15 +278,15 @@ def test_user_gate_counts_across_multiple_keys(app, db):
 
 
 def test_subscription_device_settings_defaults(app, db):
-    from app.services.device_tracking import subscription_device_settings
+    from panel_core.services.device_tracking import subscription_device_settings
 
     enabled, limit = subscription_device_settings()
     assert enabled is False and limit == 0
 
 
 def test_subscription_device_settings_reads_values(app, db):
-    from app.models import SystemSetting
-    from app.services.device_tracking import subscription_device_settings
+    from panel_core.models import SystemSetting
+    from panel_core.services.device_tracking import subscription_device_settings
 
     db.session.add(SystemSetting(key="device_limit_enabled", value="true"))
     db.session.add(SystemSetting(key="device_limit_per_user", value="4"))

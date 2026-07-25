@@ -6,16 +6,16 @@ from unittest.mock import patch
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, Inbound, Client, Tariff, TariffItem
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin, Inbound, Client, Tariff, TariffItem
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app(app):
 
-    from app.api import inbound as inbound_api
-    from app.api import federation as federation_api
+    from panel_core.api import inbound as inbound_api
+    from panel_core.api import federation as federation_api
 
     if not any(bp.name == "inbound" for bp in app.blueprints.values()):
         app.register_blueprint(inbound_api.bp, url_prefix="/api")
@@ -60,14 +60,14 @@ def auth_headers(admin):
 
 
 _COMMON_PATCHES = [
-    "app.api.inbound.generate_config_file",
-    "app.api.inbound.restart_xray_container",
-    "app.services.xray.generate_config_file",
-    "app.services.xray.restart_xray_container",
-    "app.services.stats._api_add_user_grpc",
-    "app.services.stats._api_remove_user_grpc",
-    "app.services.sub_cache.invalidate_user",
-    "app.services.sub_cache.invalidate_all_for_inbound",
+    "panel_core.api.inbound.generate_config_file",
+    "panel_core.api.inbound.restart_xray_container",
+    "panel_core.services.xray.generate_config_file",
+    "panel_core.services.xray.restart_xray_container",
+    "panel_core.services.stats._api_add_user_grpc",
+    "panel_core.services.stats._api_remove_user_grpc",
+    "panel_core.services.sub_cache.invalidate_user",
+    "panel_core.services.sub_cache.invalidate_all_for_inbound",
 ]
 
 
@@ -162,7 +162,7 @@ class TestGetInbounds:
 
     def test_client_sub_url_exposed(self, app, client, auth_headers, monkeypatch):
 
-        from app.models import TelegramUser
+        from panel_core.models import TelegramUser
 
         monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
         monkeypatch.delenv("SUB_DOMAIN", raising=False)
@@ -381,7 +381,7 @@ class TestDeleteInbound:
         assert TariffItem.query.filter_by(id=local_id).count() == 0
         assert TariffItem.query.filter_by(id=remote_id).count() == 1
 
-    @patch("app.services.panel_proxy.proxy_delete_inbound")
+    @patch("panel_core.services.panel_proxy.proxy_delete_inbound")
     def test_delete_remote_inbound_purges_panel_items(self, mock_proxy, app, client, auth_headers):
         mock_proxy.return_value = {"status": "deleted"}
         tariff = Tariff(name="Rem", price_rub=100, period_days=30)
@@ -661,7 +661,7 @@ class TestDeleteUser:
 
 
 class TestResetTraffic:
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_single_reset(self, mock_reset, app, client, auth_headers):
         _make_inbound(tag="rst-ib", port=1501)
         _make_client(inbound_tag="rst-ib", email="rst-user")
@@ -673,7 +673,7 @@ class TestResetTraffic:
         assert resp.status_code == 200
         mock_reset.assert_called_once_with("rst-ib", "rst-user")
 
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_bulk_reset(self, mock_reset, app, client, auth_headers):
         _make_inbound(tag="brst-ib", port=1502)
         _make_client(inbound_tag="brst-ib", email="u1")
@@ -800,7 +800,7 @@ class TestAuth:
 
 
 class TestBulkDelete:
-    @patch("app.api.inbound.bulk_delete_users", return_value=2)
+    @patch("panel_core.api.inbound.bulk_delete_users", return_value=2)
     def test_bulk_delete(self, mock_bd, app, client, auth_headers):
         _make_inbound(tag="bd-ib", port=1701)
         _make_client(inbound_tag="bd-ib", email="d1")
@@ -913,7 +913,7 @@ class TestBulkAdjustTraffic:
 
 
 class TestResetInboundTraffic:
-    @patch("app.api.inbound.reset_inbound_traffic")
+    @patch("panel_core.api.inbound.reset_inbound_traffic")
     def test_reset_inbound_traffic(self, mock_reset, app, client, auth_headers):
         _make_inbound(tag="rit-ib", port=1401)
         resp = client.post("/api/inbounds/rit-ib/reset-traffic", headers=auth_headers)
@@ -931,9 +931,9 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-local", email="loc1")
 
         with (
-            patch("app.api.inbound.bulk_delete_users", return_value=1) as mock_local,
+            patch("panel_core.api.inbound.bulk_delete_users", return_value=1) as mock_local,
             patch(
-                "app.services.panel_proxy.proxy_bulk_delete_users",
+                "panel_core.services.panel_proxy.proxy_bulk_delete_users",
                 return_value={"status": "deleted", "count": 2},
             ) as mock_remote,
         ):
@@ -962,9 +962,9 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-local2", email="keep")
 
         with (
-            patch("app.api.inbound.bulk_delete_users", return_value=1),
+            patch("panel_core.api.inbound.bulk_delete_users", return_value=1),
             patch(
-                "app.services.panel_proxy.proxy_bulk_delete_users",
+                "panel_core.services.panel_proxy.proxy_bulk_delete_users",
                 side_effect=ValueError("Panel 'child' is offline"),
             ),
         ):
@@ -989,7 +989,7 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-en", email="e1", enable=False)
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_enable_users",
+            "panel_core.services.panel_proxy.proxy_bulk_enable_users",
             return_value={"status": "ok", "count": 3},
         ) as mock_remote:
             resp = client.post(
@@ -1015,7 +1015,7 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-adj", email="a1", expiry_time=now_ms)
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_adjust_days",
+            "panel_core.services.panel_proxy.proxy_bulk_adjust_days",
             return_value={"status": "ok", "updated": 2, "skipped": 1},
         ) as mock_remote:
             resp = client.post(
@@ -1042,7 +1042,7 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-tr", email="t1", limit_bytes=1024**3)
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_adjust_traffic",
+            "panel_core.services.panel_proxy.proxy_bulk_adjust_traffic",
             return_value={"status": "ok", "updated": 1, "skipped": 0},
         ) as mock_remote:
             resp = client.post(
@@ -1062,13 +1062,13 @@ class TestBulkCrossPanelRouting:
         assert resp.get_json()["updated"] == 2
         mock_remote.assert_called_once_with(6, [{"tag": "rem-in", "email": "r1"}], 5, "add")
 
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_bulk_reset_routes_remote_group(self, mock_local, app, client, auth_headers):
         _make_inbound(tag="xp-rst", port=2106)
         _make_client(inbound_tag="xp-rst", email="rs1")
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_reset_traffic",
+            "panel_core.services.panel_proxy.proxy_bulk_reset_traffic",
             return_value={"status": "reset"},
         ) as mock_remote:
             resp = client.post(
@@ -1086,10 +1086,10 @@ class TestBulkCrossPanelRouting:
         mock_local.assert_called_once_with("xp-rst", "rs1")
         mock_remote.assert_called_once_with(3, [{"tag": "rem-in", "email": "r1"}])
 
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_single_reset_with_panel_id_proxies(self, mock_local, app, client, auth_headers):
         with patch(
-            "app.services.panel_proxy.proxy_bulk_reset_traffic",
+            "panel_core.services.panel_proxy.proxy_bulk_reset_traffic",
             return_value={"status": "reset"},
         ) as mock_remote:
             resp = client.post(
@@ -1194,7 +1194,7 @@ class TestBulkSetFlow:
         _make_client(inbound_tag="fl-loc", email="f1", flow="")
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_set_flow",
+            "panel_core.services.panel_proxy.proxy_bulk_set_flow",
             return_value={"status": "ok", "updated": 2, "skipped": 1},
         ) as mock_remote:
             resp = client.post(

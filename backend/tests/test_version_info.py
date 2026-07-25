@@ -4,11 +4,11 @@ import json
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, SystemSetting
-from app.services import bot_status
-from app.utils import SECRET_KEY
-from app.version import get_app_version
+from panel_core.extensions import db
+from panel_core.models import Admin, SystemSetting
+from panel_core.services import bot_status
+from panel_core.utils import SECRET_KEY
+from panel_core.version import get_app_version
 
 BOT_TOKEN = "secret-bot-token"
 
@@ -30,8 +30,8 @@ def _make_token(admin):
 @pytest.fixture
 def app(app):
 
-    from app.api import system as system_api
-    from app.api import bot_service as bot_service_api
+    from panel_core.api import system as system_api
+    from panel_core.api import bot_service as bot_service_api
 
     if "system" not in app.blueprints:
         app.register_blueprint(system_api.bp, url_prefix="/api")
@@ -99,7 +99,7 @@ def test_bot_status_ignores_blank(monkeypatch):
 
 
 def test_runtime_config_records_bot_version(client, bot_headers):
-    from app.services import bot_status
+    from panel_core.services import bot_status
 
     bot_status._STATE["version"] = None
     bot_status._STATE["reported_at"] = None
@@ -112,7 +112,7 @@ def test_runtime_config_records_bot_version(client, bot_headers):
 
 
 def test_version_check_populates_cache_on_success(monkeypatch):
-    from app.services import version_check
+    from panel_core.services import version_check
 
     version_check._CACHE["latest"] = None
     version_check._CACHE["checked_at"] = None
@@ -129,7 +129,7 @@ def test_version_check_populates_cache_on_success(monkeypatch):
 
 
 def test_version_check_keeps_previous_on_failure(monkeypatch):
-    from app.services import version_check
+    from panel_core.services import version_check
 
     version_check._CACHE["latest"] = {"backend": "1.1.1"}
     version_check._CACHE["checked_at"] = 1.0
@@ -143,9 +143,9 @@ def test_version_check_keeps_previous_on_failure(monkeypatch):
 
 
 def test_version_endpoint_shape(client, auth_headers, monkeypatch):
-    from app.services import bot_status, version_check
+    from panel_core.services import bot_status, version_check
 
-    monkeypatch.setattr("app.api.system.get_app_version", lambda: "2.1.10")
+    monkeypatch.setattr("panel_core.api.system.get_app_version", lambda: "2.1.10")
     version_check._CACHE["latest"] = {"backend": "2.1.11", "bot": "2.1.3"}
     version_check._CACHE["checked_at"] = 4242.0
     bot_status._STATE["version"] = None

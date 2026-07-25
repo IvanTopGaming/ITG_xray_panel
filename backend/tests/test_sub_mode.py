@@ -14,9 +14,9 @@ def _env(monkeypatch, role):
 
 def test_sub_mode_mounts_only_subscription(monkeypatch):
     _env(monkeypatch, "sub")
-    with patch("app.run_startup_migration") as m_mig:
-        from app import create_app
-        from app.extensions import scheduler
+    with patch("panel_core.run_startup_migration") as m_mig:
+        from panel_core import create_app
+        from panel_core.extensions import scheduler
 
         app = create_app()
         rules = {r.rule for r in app.url_map.iter_rules()}
@@ -34,8 +34,8 @@ def test_sub_mode_mounts_only_subscription(monkeypatch):
 
 def test_master_mode_unchanged(monkeypatch):
     _env(monkeypatch, "master")
-    from app import create_app
-    from app.extensions import scheduler
+    from panel_core import create_app
+    from panel_core.extensions import scheduler
 
     app = create_app()
     rules = {r.rule for r in app.url_map.iter_rules()}

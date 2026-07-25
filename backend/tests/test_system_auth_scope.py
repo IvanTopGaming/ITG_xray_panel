@@ -3,14 +3,14 @@ import time
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, SystemSetting
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin, SystemSetting
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app(app):
-    from app.api import system as system_api
+    from panel_core.api import system as system_api
 
     if not any(bp.name == "system" for bp in app.blueprints.values()):
         app.register_blueprint(system_api.bp, url_prefix="/api")
@@ -73,7 +73,7 @@ def test_restore_rejects_bot_service_token(client, bot_token):
 
 def test_backup_accepts_admin_jwt(client, admin_token, tmp_path, monkeypatch):
 
-    monkeypatch.setattr("app.api.system._db_path", lambda: str(tmp_path / "nope.db"))
+    monkeypatch.setattr("panel_core.api.system._db_path", lambda: str(tmp_path / "nope.db"))
     resp = client.get(
         "/api/backup",
         headers={"Authorization": f"Bearer {admin_token}"},

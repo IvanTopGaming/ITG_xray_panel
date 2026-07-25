@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.jobs.notifications import evaluate_traffic
+from panel_core.jobs.notifications import evaluate_traffic
 
 
 def _c(**kw):
@@ -33,7 +33,7 @@ def test_traffic_returns_highest_crossed():
     assert evaluate_traffic(_c(limit_bytes=100, up=96, down=0)) == "traffic_95"
 
 
-from app.jobs.notifications import evaluate_expiry
+from panel_core.jobs.notifications import evaluate_expiry
 
 _DAY = 86400 * 1000
 _HOUR = 3600 * 1000
@@ -75,9 +75,9 @@ def test_expired_bucket():
 
 from unittest.mock import patch
 
-from app.extensions import db
-from app.models import Client, Inbound, NotificationLog
-from app.jobs.notifications import emit_if_new
+from panel_core.extensions import db
+from panel_core.models import Client, Inbound, NotificationLog
+from panel_core.jobs.notifications import emit_if_new
 
 
 def test_emit_if_new_publishes_once_then_dedups(app):
@@ -98,7 +98,7 @@ def test_emit_if_new_publishes_once_then_dedups(app):
         db.session.add(c)
         db.session.commit()
 
-        with patch("app.jobs.notifications.bot_events.publish") as mock_publish:
+        with patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish:
             r1 = emit_if_new("expiry_notification", "expired", c, {"expiry_time_ms": c.expiry_time})
             r2 = emit_if_new("expiry_notification", "expired", c, {"expiry_time_ms": c.expiry_time})
 

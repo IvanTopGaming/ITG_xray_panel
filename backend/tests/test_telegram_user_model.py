@@ -1,4 +1,4 @@
-from app.models import TelegramUser
+from panel_core.models import TelegramUser
 
 
 def test_language_chosen_defaults_to_false(app, db):

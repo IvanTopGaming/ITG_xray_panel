@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from db_migration import _ensure_billing_tables
+from panel_core.db_migration import _ensure_billing_tables
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def test_ensure_billing_tables_idempotent(fresh_db):
 
 
 def test_alter_client_billing_columns_adds_two_columns(fresh_db):
-    from db_migration import _alter_client_billing_columns
+    from panel_core.db_migration import _alter_client_billing_columns
 
     path, conn, cursor = fresh_db
 
@@ -75,7 +75,7 @@ def test_alter_client_billing_columns_adds_two_columns(fresh_db):
 
 
 def test_alter_client_billing_columns_idempotent(fresh_db):
-    from db_migration import _alter_client_billing_columns
+    from panel_core.db_migration import _alter_client_billing_columns
 
     path, conn, cursor = fresh_db
     _alter_client_billing_columns(cursor)
@@ -84,7 +84,7 @@ def test_alter_client_billing_columns_idempotent(fresh_db):
 
 
 def test_seed_bot_texts_empty_yaml_no_op(fresh_db, tmp_path):
-    from db_migration import _ensure_billing_tables, _seed_bot_texts
+    from panel_core.db_migration import _ensure_billing_tables, _seed_bot_texts
 
     path, conn, cursor = fresh_db
     _ensure_billing_tables(cursor)
@@ -99,7 +99,7 @@ def test_seed_bot_texts_empty_yaml_no_op(fresh_db, tmp_path):
 
 
 def test_seed_bot_texts_inserts_new_keys(fresh_db, tmp_path):
-    from db_migration import _ensure_billing_tables, _seed_bot_texts
+    from panel_core.db_migration import _ensure_billing_tables, _seed_bot_texts
 
     path, conn, cursor = fresh_db
     _ensure_billing_tables(cursor)
@@ -126,7 +126,7 @@ menu.keys:
 
 
 def test_seed_bot_texts_does_not_overwrite_existing(fresh_db, tmp_path):
-    from db_migration import _ensure_billing_tables, _seed_bot_texts
+    from panel_core.db_migration import _ensure_billing_tables, _seed_bot_texts
 
     path, conn, cursor = fresh_db
     _ensure_billing_tables(cursor)
@@ -151,7 +151,7 @@ def test_seed_bot_texts_does_not_overwrite_existing(fresh_db, tmp_path):
 
 def test_migrate_full_pipeline_to_v10(fresh_db):
 
-    from db_migration import CURRENT_DB_VERSION, migrate_sqlite_db
+    from panel_core.db_migration import CURRENT_DB_VERSION, migrate_sqlite_db
 
     path, conn, cursor = fresh_db
 
@@ -191,7 +191,7 @@ def test_migrate_full_pipeline_to_v10(fresh_db):
 
 def test_migrate_idempotent_on_v10(fresh_db):
 
-    from db_migration import CURRENT_DB_VERSION, migrate_sqlite_db
+    from panel_core.db_migration import CURRENT_DB_VERSION, migrate_sqlite_db
 
     path, conn, cursor = fresh_db
     cursor.execute("PRAGMA user_version = 9")
@@ -209,7 +209,7 @@ def test_migrate_idempotent_on_v10(fresh_db):
 
 def test_alter_client_billing_columns_skips_when_client_table_absent():
 
-    from db_migration import _alter_client_billing_columns
+    from panel_core.db_migration import _alter_client_billing_columns
     import tempfile
     import sqlite3
 

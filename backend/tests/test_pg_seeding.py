@@ -9,7 +9,7 @@ pg_only = pytest.mark.skipif(not DSN, reason="DATABASE_URL_TEST not set")
 def _pg_app():
     from flask import Flask
 
-    from app.extensions import db
+    from panel_core.extensions import db
 
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = DSN
@@ -21,7 +21,7 @@ def _pg_app():
 def _reset_and_create(db):
     from sqlalchemy import text
 
-    import app.models  # noqa: F401
+    import panel_core.models  # noqa: F401
 
     db.session.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
     db.session.commit()
@@ -35,7 +35,7 @@ def test_seed_inserts_defaults_and_is_idempotent():
     app, db = _pg_app()
     with app.app_context():
         _reset_and_create(db)
-        from app.pg_migrate import _seed_bot_texts_pg
+        from panel_core.pg_migrate import _seed_bot_texts_pg
 
         first = _seed_bot_texts_pg(force=False)
         db.session.commit()
@@ -56,7 +56,7 @@ def test_force_seed_preserves_customized_rows():
     app, db = _pg_app()
     with app.app_context():
         _reset_and_create(db)
-        from app.pg_migrate import _seed_bot_texts_pg
+        from panel_core.pg_migrate import _seed_bot_texts_pg
 
         _seed_bot_texts_pg(force=False)
         db.session.commit()
@@ -80,12 +80,12 @@ def test_force_seed_preserves_customized_rows():
 def test_maybe_force_reseed_bumps_version_and_purges_removed_keys():
     from sqlalchemy import text
 
-    from db_migration import CURRENT_BOT_TEXTS_VERSION, _REMOVED_BOT_TEXT_KEYS
+    from panel_core.db_migration import CURRENT_BOT_TEXTS_VERSION, _REMOVED_BOT_TEXT_KEYS
 
     app, db = _pg_app()
     with app.app_context():
         _reset_and_create(db)
-        from app.pg_migrate import _maybe_force_reseed_bot_texts_pg
+        from panel_core.pg_migrate import _maybe_force_reseed_bot_texts_pg
 
         if _REMOVED_BOT_TEXT_KEYS:
             db.session.execute(
@@ -120,12 +120,12 @@ def test_migrate_postgres_db_seeds_bot_texts():
     with app.app_context():
         from sqlalchemy import text as _t
 
-        import app.models  # noqa: F401
+        import panel_core.models  # noqa: F401
 
         db.session.execute(_t("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
         db.session.commit()
 
-        from app.pg_migrate import migrate_postgres_db
+        from panel_core.pg_migrate import migrate_postgres_db
 
         report = migrate_postgres_db()
         n = db.session.execute(text("SELECT count(*) FROM bot_text")).scalar()

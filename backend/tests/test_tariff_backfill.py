@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.models import Client, Inbound, LinkedPanel, Tariff, TariffItem
-from app.services.provisioning import backfill_tariff
+from panel_core.models import Client, Inbound, LinkedPanel, Tariff, TariffItem
+from panel_core.services.provisioning import backfill_tariff
 
 _GB = 1024**3
 
@@ -55,9 +55,9 @@ def test_federation_holder_without_local_client_gets_remote_key(app, db, fed_tar
     }
 
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
-        patch("app.services.panel_proxy.proxy_provision") as pp,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
+        patch("panel_core.services.panel_proxy.proxy_provision") as pp,
     ):
         summary = backfill_tariff(fed_tariff)
 
@@ -78,9 +78,9 @@ def test_idempotent_skips_holders_who_already_have_remote_key(app, db, fed_tarif
         2: _snap({"hiks": [_cl(42, fed_tariff.id, expiry_time=now_ms + 86400_000)]}),
     }
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
-        patch("app.services.panel_proxy.proxy_provision") as pp,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
+        patch("panel_core.services.panel_proxy.proxy_provision") as pp,
     ):
         summary = backfill_tariff(fed_tariff)
 
@@ -102,9 +102,9 @@ def test_skips_expired_and_disabled_remote_holders(app, db, fed_tariff, now_ms):
         2: _snap({"hiks": []}),
     }
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
-        patch("app.services.panel_proxy.proxy_provision") as pp,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
+        patch("panel_core.services.panel_proxy.proxy_provision") as pp,
     ):
         summary = backfill_tariff(fed_tariff)
 
@@ -121,9 +121,9 @@ def test_unreachable_panel_reported_and_others_processed(app, db, fed_tariff, no
         return _snap({"hiks": [_cl(99, fed_tariff.id, expiry_time=expiry)]})
 
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=_fetch),
-        patch("app.services.panel_proxy.proxy_provision") as pp,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=_fetch),
+        patch("panel_core.services.panel_proxy.proxy_provision") as pp,
     ):
         summary = backfill_tariff(fed_tariff)
 
@@ -139,18 +139,18 @@ def test_inherits_max_expiry_across_panels_and_unlimited_wins(app, db, fed_tarif
         2: _snap({"hiks": []}),
     }
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
-        patch("app.services.panel_proxy.proxy_provision") as pp,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
+        patch("panel_core.services.panel_proxy.proxy_provision") as pp,
     ):
         backfill_tariff(fed_tariff)
     assert pp.call_args[0][3]["expiry_ms"] == earlier
 
     snaps[1] = _snap({"gateway": [_cl(7, fed_tariff.id, expiry_time=0)]})
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
-        patch("app.services.panel_proxy.proxy_provision") as pp2,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
+        patch("panel_core.services.panel_proxy.proxy_provision") as pp2,
     ):
         backfill_tariff(fed_tariff)
     assert pp2.call_args[0][3]["expiry_ms"] == 0
@@ -188,9 +188,9 @@ def test_local_holder_gets_local_key(app, db, now_ms):
 
     snaps = {2: _snap({"hiks": []})}
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
-        patch("app.services.panel_proxy.proxy_provision") as pp,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
+        patch("panel_core.services.panel_proxy.proxy_provision") as pp,
     ):
         summary = backfill_tariff(t)
 
@@ -208,9 +208,9 @@ def test_provision_failure_counted_and_does_not_abort(app, db, fed_tariff, now_m
         2: _snap({"hiks": []}),
     }
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
-        patch("app.services.panel_proxy.proxy_provision", side_effect=RuntimeError("child error")),
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
+        patch("panel_core.services.panel_proxy.proxy_provision", side_effect=RuntimeError("child error")),
     ):
         summary = backfill_tariff(fed_tariff)
 

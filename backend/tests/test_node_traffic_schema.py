@@ -1,5 +1,5 @@
 def test_current_db_version_is_22():
-    from db_migration import CURRENT_DB_VERSION
+    from panel_core.db_migration import CURRENT_DB_VERSION
 
     assert CURRENT_DB_VERSION == 22
 
@@ -7,7 +7,7 @@ def test_current_db_version_is_22():
 def test_node_traffic_table_created_on_sqlite(tmp_path):
     import sqlite3
 
-    from db_migration import migrate_sqlite_db
+    from panel_core.db_migration import migrate_sqlite_db
 
     db_path = str(tmp_path / "panel.db")
     migrate_sqlite_db(db_path)
@@ -18,6 +18,6 @@ def test_node_traffic_table_created_on_sqlite(tmp_path):
 
 
 def test_node_traffic_model_registered(app):
-    from app.extensions import db
+    from panel_core.extensions import db
 
     assert "node_traffic_snapshot" in db.metadata.tables

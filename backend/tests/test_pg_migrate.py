@@ -4,7 +4,7 @@ import pytest
 
 
 def test_drop_foreign_keys_noop_on_sqlite(app):
-    from app.pg_migrate import _drop_foreign_keys
+    from panel_core.pg_migrate import _drop_foreign_keys
 
     assert _drop_foreign_keys() == 0
 
@@ -12,9 +12,9 @@ def test_drop_foreign_keys_noop_on_sqlite(app):
 def test_ensure_schema_version_sets_current(app):
     from sqlalchemy import text
 
-    from app.extensions import db
-    from app.pg_migrate import _ensure_schema_version
-    from db_migration import CURRENT_DB_VERSION
+    from panel_core.extensions import db
+    from panel_core.pg_migrate import _ensure_schema_version
+    from panel_core.db_migration import CURRENT_DB_VERSION
 
     _ensure_schema_version()
     db.session.commit()
@@ -25,9 +25,9 @@ def test_ensure_schema_version_sets_current(app):
 def test_ensure_schema_version_is_idempotent(app):
     from sqlalchemy import text
 
-    from app.extensions import db
-    from app.pg_migrate import _ensure_schema_version
-    from db_migration import CURRENT_DB_VERSION
+    from panel_core.extensions import db
+    from panel_core.pg_migrate import _ensure_schema_version
+    from panel_core.db_migration import CURRENT_DB_VERSION
 
     _ensure_schema_version()
     _ensure_schema_version()
@@ -45,9 +45,9 @@ pg_only = pytest.mark.skipif(not DSN, reason="DATABASE_URL_TEST not set")
 def test_migrate_postgres_db_leaves_no_enforced_fks():
     from sqlalchemy import text
 
-    from app.extensions import db
-    import app.models  # noqa: F401
-    from app.pg_migrate import migrate_postgres_db
+    from panel_core.extensions import db
+    import panel_core.models  # noqa: F401
+    from panel_core.pg_migrate import migrate_postgres_db
 
     from flask import Flask
 

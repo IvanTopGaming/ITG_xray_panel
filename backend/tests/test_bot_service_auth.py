@@ -4,9 +4,9 @@ import jwt
 import pytest
 from flask import jsonify
 
-from app.extensions import db
-from app.models import Admin, SystemSetting
-from app.utils import SECRET_KEY, bot_service_token_required
+from panel_core.extensions import db
+from panel_core.models import Admin, SystemSetting
+from panel_core.utils import SECRET_KEY, bot_service_token_required
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def test_no_token_setting_returns_500(app_with_route, db):
 @pytest.fixture
 def app(app):
 
-    from app.api import bot_admin
+    from panel_core.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
         app.register_blueprint(bot_admin.bp, url_prefix="/api")

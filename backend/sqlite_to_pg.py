@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, func, insert, select, text
 
-from app.extensions import db
-import app.models  # noqa: F401
+from panel_core.extensions import db
+import panel_core.models  # noqa: F401
 
 
 def _drop_foreign_keys(engine):

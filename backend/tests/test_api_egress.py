@@ -3,15 +3,15 @@ import time
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin
-from app.services.egress import build_bind_ips  # noqa: F401
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin
+from panel_core.services.egress import build_bind_ips  # noqa: F401
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app(app):
-    from app.api import system as system_api
+    from panel_core.api import system as system_api
 
     if not any(bp.name == "system" for bp in app.blueprints.values()):
         app.register_blueprint(system_api.bp, url_prefix="/api")

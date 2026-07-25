@@ -1,8 +1,8 @@
 import time
 from unittest.mock import MagicMock, patch
 
-from app.models import LinkedPanel
-from app.jobs.panels import poll_linked_panels
+from panel_core.models import LinkedPanel
+from panel_core.jobs.panels import poll_linked_panels
 
 
 def _make_panel(db, *, name="p1", status="online", last_poll=None, last_error=None):
@@ -35,8 +35,8 @@ def test_poll_skips_db_write_when_status_unchanged(app, db):
     mock_redis = MagicMock()
 
     with (
-        patch("app.jobs.panels.FederationClient", return_value=_client_mock()),
-        patch("app.jobs.panels.get_redis", return_value=mock_redis),
+        patch("panel_core.jobs.panels.FederationClient", return_value=_client_mock()),
+        patch("panel_core.jobs.panels.get_redis", return_value=mock_redis),
         patch.object(db.session, "commit") as mock_commit,
     ):
         poll_linked_panels()
@@ -52,10 +52,10 @@ def test_poll_commits_on_status_change(app, db):
 
     with (
         patch(
-            "app.jobs.panels.FederationClient",
+            "panel_core.jobs.panels.FederationClient",
             return_value=_client_mock(snapshot={"timestamp": 1781200000}),
         ),
-        patch("app.jobs.panels.get_redis", return_value=MagicMock()),
+        patch("panel_core.jobs.panels.get_redis", return_value=MagicMock()),
     ):
         poll_linked_panels()
 
@@ -70,8 +70,8 @@ def test_poll_offline_commits_once_then_skips(app, db):
     failing = _client_mock(exc=RuntimeError("conn refused"))
 
     with (
-        patch("app.jobs.panels.FederationClient", return_value=failing),
-        patch("app.jobs.panels.get_redis", return_value=MagicMock()),
+        patch("panel_core.jobs.panels.FederationClient", return_value=failing),
+        patch("panel_core.jobs.panels.get_redis", return_value=MagicMock()),
     ):
         poll_linked_panels()
         db.session.refresh(panel)

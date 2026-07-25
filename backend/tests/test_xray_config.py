@@ -4,8 +4,8 @@ import uuid
 import pytest
 from unittest.mock import patch
 
-from app.extensions import db
-from app.models import Client, Inbound, Outbound, RoutingProfile, SystemSetting
+from panel_core.extensions import db
+from panel_core.models import Client, Inbound, Outbound, RoutingProfile, SystemSetting
 
 
 def _reality_keys():
@@ -31,7 +31,7 @@ def _reality_keys():
 
 class TestBuildStreamSettings:
     def test_vless_reality(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         pk, pub = _reality_keys()
         inp = {
@@ -62,7 +62,7 @@ class TestBuildStreamSettings:
 
     def test_invalid_reality_fingerprint_rejected(self):
         import pytest
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         pk, pub = _reality_keys()
         inp = {
@@ -78,13 +78,13 @@ class TestBuildStreamSettings:
 
     def test_invalid_alpn_rejected(self):
         import pytest
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         with pytest.raises(ValueError, match="Invalid ALPN"):
             _build_stream_settings({"protocol": "vless", "network": "tcp", "security": "tls", "tlsAlpn": "bogusalpn"})
 
     def test_valid_alpn_accepted(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         result = _build_stream_settings(
             {"protocol": "vless", "network": "tcp", "security": "tls", "tlsAlpn": "h2,http/1.1"}
@@ -93,7 +93,7 @@ class TestBuildStreamSettings:
 
     def test_invalid_utls_fingerprint_rejected(self):
         import pytest
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         with pytest.raises(ValueError, match="TLS fingerprint"):
             _build_stream_settings(
@@ -106,7 +106,7 @@ class TestBuildStreamSettings:
             )
 
     def test_websocket_transport(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "vless",
@@ -123,7 +123,7 @@ class TestBuildStreamSettings:
         assert ws["headers"]["Host"] == "cdn.example.com"
 
     def test_websocket_path_slash_prefix(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "vless",
@@ -138,7 +138,7 @@ class TestBuildStreamSettings:
 
         import base64
         import secrets
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         method = "2022-blake3-aes-128-gcm"
         key = base64.b64encode(secrets.token_bytes(16)).decode()
@@ -157,7 +157,7 @@ class TestBuildStreamSettings:
         assert result["ssNetwork"] == "tcp,udp"
 
     def test_grpc_transport(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "vless",
@@ -170,7 +170,7 @@ class TestBuildStreamSettings:
         assert result["grpcSettings"]["serviceName"] == "my-grpc"
 
     def test_socks_auth_keys(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "socks",
@@ -187,7 +187,7 @@ class TestBuildStreamSettings:
         assert result["security"] == "none"
 
     def test_socks_auth_partial_raises(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "socks",
@@ -200,7 +200,7 @@ class TestBuildStreamSettings:
             _build_stream_settings(inp)
 
     def test_reality_invalid_private_key_raises(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "vless",
@@ -212,7 +212,7 @@ class TestBuildStreamSettings:
             _build_stream_settings(inp)
 
     def test_tls_settings(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "vless",
@@ -231,7 +231,7 @@ class TestBuildStreamSettings:
         assert tls["certificates"][0]["certificateFile"] == "/etc/xray/certs/cert.pem"
 
     def test_tls_cert_path_outside_etc_xray_rejected(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "vless",
@@ -244,7 +244,7 @@ class TestBuildStreamSettings:
             _build_stream_settings(inp)
 
     def test_httpupgrade_transport(self):
-        from app.services.xray import _build_stream_settings
+        from panel_core.services.xray import _build_stream_settings
 
         inp = {
             "protocol": "vless",
@@ -267,11 +267,11 @@ class TestGenerateConfigFile:
         self.db = db
         self.tmp_path = tmp_path
         self._patches = [
-            patch("app.services.xray.LOCK_PATH", str(tmp_path / "config.lock")),
-            patch("app.services.xray.CONFIG_PATH", str(tmp_path / "config.json")),
-            patch("app.services.xray.CANDIDATE_PATH", str(tmp_path / "config.json.candidate")),
-            patch("app.services.xray._validate_xray_config"),
-            patch("app.services.xray.restart_xray_container"),
+            patch("panel_core.services.xray.LOCK_PATH", str(tmp_path / "config.lock")),
+            patch("panel_core.services.xray.CONFIG_PATH", str(tmp_path / "config.json")),
+            patch("panel_core.services.xray.CANDIDATE_PATH", str(tmp_path / "config.json.candidate")),
+            patch("panel_core.services.xray._validate_xray_config"),
+            patch("panel_core.services.xray.restart_xray_container"),
         ]
         for p in self._patches:
             p.start()
@@ -308,7 +308,7 @@ class TestGenerateConfigFile:
             return json.load(f)
 
     def test_generates_valid_json_with_inbound_and_client(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -370,18 +370,18 @@ class TestGenerateConfigFile:
     def test_logs_regeneration_duration(self, caplog):
         import logging as _logging
 
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
-        with caplog.at_level(_logging.INFO, logger="app.services.xray"):
+        with caplog.at_level(_logging.INFO, logger="panel_core.services.xray"):
             generate_config_file()
 
-        msgs = [r.getMessage() for r in caplog.records if r.name == "app.services.xray"]
+        msgs = [r.getMessage() for r in caplog.records if r.name == "panel_core.services.xray"]
         assert any("config regenerated" in m and "ms" in m for m in msgs)
 
     def test_clears_incompatible_flow_in_generated_config(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -410,7 +410,7 @@ class TestGenerateConfigFile:
 
         import base64
         import secrets
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -458,7 +458,7 @@ class TestGenerateConfigFile:
         assert ss_ib["settings"]["password"]
 
     def test_includes_enabled_excludes_disabled(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -496,7 +496,7 @@ class TestGenerateConfigFile:
         assert disabled_uuid not in client_ids
 
     def test_trojan_inbound(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -525,7 +525,7 @@ class TestGenerateConfigFile:
         assert clients[0]["password"] == client_pw
 
     def test_socks_inbound_with_auth(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -554,7 +554,7 @@ class TestGenerateConfigFile:
         assert "authPass" not in ss
 
     def test_routing_profile_rules_included(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -598,7 +598,7 @@ class TestGenerateConfigFile:
 
     def test_proxy_outbound_does_not_create_implicit_catch_all(self):
 
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -662,7 +662,7 @@ class TestGenerateConfigFile:
         assert "in-direct" not in routed[0].get("inboundTag", [])
 
     def test_port_443_gets_sockopt(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -679,7 +679,7 @@ class TestGenerateConfigFile:
         assert sockopt["acceptProxyProtocol"] is True
 
     def test_empty_db_produces_valid_config(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -691,7 +691,7 @@ class TestGenerateConfigFile:
         assert cfg["routing"]["rules"][0]["inboundTag"] == ["api"]
 
     def test_http_inbound_no_auth(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         self._seed_outbounds()
 
@@ -708,7 +708,7 @@ class TestGenerateConfigFile:
         assert "accounts" not in http_ib["settings"]
 
     def test_send_through_in_generated_outbound(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         db.session.add(
             Outbound(
@@ -736,7 +736,7 @@ class TestGenerateConfigFile:
         assert "public_ip" not in json.dumps(cfg)
 
     def test_send_through_ipv6_sets_use_ipv6(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         db.session.add(
             Outbound(
@@ -759,7 +759,7 @@ class TestGenerateConfigFile:
         assert ded["settings"]["domainStrategy"] == "UseIPv6"
 
     def test_send_through_preserves_existing_domain_strategy(self):
-        from app.services.xray import generate_config_file
+        from panel_core.services.xray import generate_config_file
 
         db.session.add(
             Outbound(
@@ -784,7 +784,7 @@ class TestGenerateConfigFile:
 
 class TestGetSystemSettings:
     def test_returns_defaults_when_no_rows(self, app, db):
-        from app.services.xray import get_system_settings
+        from panel_core.services.xray import get_system_settings
 
         result = get_system_settings()
 
@@ -793,7 +793,7 @@ class TestGetSystemSettings:
         assert result["geositeUrl"].startswith("http")
 
     def test_reads_overrides_from_db(self, app, db):
-        from app.services.xray import get_system_settings
+        from panel_core.services.xray import get_system_settings
 
         db.session.add(SystemSetting(key="xray_log_level", value="warning"))
         db.session.add(SystemSetting(key="geoip_url", value="https://custom.example.com/geoip.dat"))
@@ -807,7 +807,7 @@ class TestGetSystemSettings:
         assert result["geositeUrl"] == "https://custom.example.com/geosite.dat"
 
     def test_invalid_log_level_falls_back(self, app, db):
-        from app.services.xray import get_system_settings, DEFAULT_LOG_LEVEL
+        from panel_core.services.xray import get_system_settings, DEFAULT_LOG_LEVEL
 
         db.session.add(SystemSetting(key="xray_log_level", value="bogus"))
         db.session.commit()
@@ -816,7 +816,7 @@ class TestGetSystemSettings:
         assert result["xrayLogLevel"] == DEFAULT_LOG_LEVEL
 
     def test_invalid_url_falls_back(self, app, db):
-        from app.services.xray import get_system_settings, DEFAULT_GEOIP_URL
+        from panel_core.services.xray import get_system_settings, DEFAULT_GEOIP_URL
 
         db.session.add(SystemSetting(key="geoip_url", value="not-a-url"))
         db.session.commit()
@@ -828,14 +828,14 @@ class TestGetSystemSettings:
 
 class TestDeriveRealityPubkey:
     def test_derives_matching_public_key(self):
-        from app.services.xray import _derive_reality_pubkey
+        from panel_core.services.xray import _derive_reality_pubkey
 
         pk, expected_pub = _reality_keys()
         derived = _derive_reality_pubkey(pk)
         assert derived == expected_pub
 
     def test_returns_empty_for_invalid_key(self):
-        from app.services.xray import _derive_reality_pubkey
+        from panel_core.services.xray import _derive_reality_pubkey
 
         assert _derive_reality_pubkey("garbage") == ""
         assert _derive_reality_pubkey("") == ""
@@ -844,19 +844,19 @@ class TestDeriveRealityPubkey:
 
 class TestNormalisationHelpers:
     def test_normalize_xray_log_level_valid(self):
-        from app.services.xray import normalize_xray_log_level
+        from panel_core.services.xray import normalize_xray_log_level
 
         for level in ("debug", "info", "warning", "error", "none"):
             assert normalize_xray_log_level(level) == level
 
     def test_normalize_xray_log_level_invalid(self):
-        from app.services.xray import normalize_xray_log_level
+        from panel_core.services.xray import normalize_xray_log_level
 
         with pytest.raises(ValueError, match="Invalid Xray log level"):
             normalize_xray_log_level("trace")
 
     def test_normalize_stream_network(self):
-        from app.services.xray import normalize_stream_network
+        from panel_core.services.xray import normalize_stream_network
 
         assert normalize_stream_network("ws") == "ws"
         assert normalize_stream_network("GRPC") == "grpc"
@@ -864,14 +864,14 @@ class TestNormalisationHelpers:
         assert normalize_stream_network("") == "tcp"
 
     def test_normalize_packet_network(self):
-        from app.services.xray import normalize_packet_network
+        from panel_core.services.xray import normalize_packet_network
 
         assert normalize_packet_network("tcp") == "tcp"
         assert normalize_packet_network("udp,tcp") == "tcp,udp"
         assert normalize_packet_network("invalid") == "tcp"
 
     def test_flag_enabled(self):
-        from app.services.xray import _flag_enabled
+        from panel_core.services.xray import _flag_enabled
 
         assert _flag_enabled(True) is True
         assert _flag_enabled(False) is False
@@ -883,11 +883,11 @@ class TestNormalisationHelpers:
 
 class TestValidateXrayConfig:
     def test_skips_when_binary_absent(self):
-        from app.services import xray
+        from panel_core.services import xray
 
         with (
-            patch("app.services.xray.os.path.exists", return_value=False),
-            patch("app.services.xray.subprocess.run") as run,
+            patch("panel_core.services.xray.os.path.exists", return_value=False),
+            patch("panel_core.services.xray.subprocess.run") as run,
         ):
             xray._validate_xray_config("/tmp/cfg.json")
             run.assert_not_called()
@@ -895,12 +895,12 @@ class TestValidateXrayConfig:
     def test_accepts_valid_config(self):
         from unittest.mock import MagicMock
 
-        from app.services import xray
+        from panel_core.services import xray
 
         ok = MagicMock(returncode=0, stderr=b"", stdout=b"Configuration OK.")
         with (
-            patch("app.services.xray.os.path.exists", return_value=True),
-            patch("app.services.xray.subprocess.run", return_value=ok) as run,
+            patch("panel_core.services.xray.os.path.exists", return_value=True),
+            patch("panel_core.services.xray.subprocess.run", return_value=ok) as run,
         ):
             xray._validate_xray_config("/tmp/cfg.json")
             assert run.call_count == 1
@@ -908,12 +908,12 @@ class TestValidateXrayConfig:
     def test_rejects_bad_config_fail_closed(self):
         from unittest.mock import MagicMock
 
-        from app.services import xray
+        from panel_core.services import xray
 
         bad = MagicMock(returncode=1, stderr=b"infra/conf: something broke", stdout=b"")
         with (
-            patch("app.services.xray.os.path.exists", return_value=True),
-            patch("app.services.xray.subprocess.run", return_value=bad),
+            patch("panel_core.services.xray.os.path.exists", return_value=True),
+            patch("panel_core.services.xray.subprocess.run", return_value=bad),
         ):
             with pytest.raises(ValueError, match="Xray rejected the config"):
                 xray._validate_xray_config("/tmp/cfg.json")
@@ -922,13 +922,13 @@ class TestValidateXrayConfig:
         import subprocess as sp
         from unittest.mock import MagicMock
 
-        from app.services import xray
+        from panel_core.services import xray
 
         ok = MagicMock(returncode=0, stderr=b"", stdout=b"Configuration OK.")
         side = [sp.TimeoutExpired(cmd="xray", timeout=xray.VALIDATE_TIMEOUT_S), ok]
         with (
-            patch("app.services.xray.os.path.exists", return_value=True),
-            patch("app.services.xray.subprocess.run", side_effect=side) as run,
+            patch("panel_core.services.xray.os.path.exists", return_value=True),
+            patch("panel_core.services.xray.subprocess.run", side_effect=side) as run,
         ):
             xray._validate_xray_config("/tmp/cfg.json")
             assert run.call_count == 2
@@ -936,12 +936,12 @@ class TestValidateXrayConfig:
     def test_fails_closed_on_persistent_timeout(self):
         import subprocess as sp
 
-        from app.services import xray
+        from panel_core.services import xray
 
         side = sp.TimeoutExpired(cmd="xray", timeout=xray.VALIDATE_TIMEOUT_S)
         with (
-            patch("app.services.xray.os.path.exists", return_value=True),
-            patch("app.services.xray.subprocess.run", side_effect=side),
+            patch("panel_core.services.xray.os.path.exists", return_value=True),
+            patch("panel_core.services.xray.subprocess.run", side_effect=side),
         ):
             with pytest.raises(ValueError, match="timed out"):
                 xray._validate_xray_config("/tmp/cfg.json")

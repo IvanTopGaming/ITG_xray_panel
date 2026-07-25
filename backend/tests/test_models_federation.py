@@ -3,7 +3,7 @@ import time
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models import FederationConfig, LinkedPanel
+from panel_core.models import FederationConfig, LinkedPanel
 
 
 def test_linked_panel_creation(app, db):

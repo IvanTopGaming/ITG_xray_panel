@@ -46,8 +46,8 @@ os.environ.setdefault("RATELIMIT_STORAGE_URI", "memory://")
 import pytest  # noqa: E402
 from flask import Flask  # noqa: E402
 
-from app.extensions import db as _db  # noqa: E402
-import app.models  # noqa: E402, F401  -- registers tables with db.metadata
+from panel_core.extensions import db as _db  # noqa: E402
+import panel_core.models  # noqa: E402, F401  -- registers tables with db.metadata
 
 
 @pytest.fixture(scope="function")
@@ -60,8 +60,8 @@ def app():
     _db.init_app(app)
     with app.app_context():
         _db.create_all()
-        from app.models import FederationConfig
-        from app import register_readyz
+        from panel_core.models import FederationConfig
+        from panel_core import register_readyz
 
         _db.session.add(FederationConfig(id=1))
         _db.session.commit()

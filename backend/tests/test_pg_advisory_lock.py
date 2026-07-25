@@ -11,9 +11,9 @@ def test_migrate_releases_advisory_lock():
     from flask import Flask
     from sqlalchemy import text
 
-    from app.extensions import db
-    import app.models  # noqa: F401
-    from app.pg_migrate import migrate_postgres_db
+    from panel_core.extensions import db
+    import panel_core.models  # noqa: F401
+    from panel_core.pg_migrate import migrate_postgres_db
 
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = DSN
@@ -32,9 +32,9 @@ def test_migrate_exception_path_releases_lock_after_rollback(monkeypatch):
     from flask import Flask
     from sqlalchemy import text
 
-    from app.extensions import db
-    import app.models  # noqa: F401
-    import app.pg_migrate as pg_migrate_module
+    from panel_core.extensions import db
+    import panel_core.models  # noqa: F401
+    import panel_core.pg_migrate as pg_migrate_module
 
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = DSN

@@ -4,15 +4,15 @@ import time
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, Payment, Tariff, TariffItem
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin, Payment, Tariff, TariffItem
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app(app):
 
-    from app.api import bot_admin
+    from panel_core.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
         app.register_blueprint(bot_admin.bp, url_prefix="/api")

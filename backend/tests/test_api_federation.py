@@ -3,7 +3,7 @@ import time
 import jwt as jwt_lib
 import pytest
 
-from app.models import (
+from panel_core.models import (
     Admin,
     Client,
     FederationConfig,
@@ -14,7 +14,7 @@ from app.models import (
 
 @pytest.fixture
 def app_with_federation(app):
-    from app.api import federation
+    from panel_core.api import federation
 
     if not any(bp.name == "federation" for bp in app.blueprints.values()):
         app.register_blueprint(federation.bp, url_prefix="/api")
@@ -26,7 +26,7 @@ def admin_headers(app_with_federation, db):
     admin = Admin(username="admin", password="x", password_changed_at=0)
     db.session.add(admin)
     db.session.commit()
-    from app.utils import SECRET_KEY
+    from panel_core.utils import SECRET_KEY
 
     token = jwt_lib.encode(
         {

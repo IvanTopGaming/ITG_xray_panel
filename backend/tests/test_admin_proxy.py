@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 def test_proxy_returns_503_without_admin_url(app, monkeypatch):
     monkeypatch.delenv("ADMIN_BACKEND_URL", raising=False)
-    from app.services.admin_proxy import proxy_to_admin
+    from panel_core.services.admin_proxy import proxy_to_admin
 
     with app.test_request_context("/api/bot-service/trial/activate", method="POST", json={"telegram_id": 1}):
         body, status = proxy_to_admin("/api/bot-service/trial/activate")
@@ -13,7 +13,7 @@ def test_proxy_returns_503_without_admin_url(app, monkeypatch):
 
 def test_proxy_forwards_and_returns_upstream(app, monkeypatch):
     monkeypatch.setenv("ADMIN_BACKEND_URL", "http://admin:5000")
-    from app.services import admin_proxy
+    from panel_core.services import admin_proxy
 
     class _Resp:
         status_code = 200
@@ -33,7 +33,7 @@ def test_proxy_forwards_and_returns_upstream(app, monkeypatch):
 
 def test_proxy_returns_503_on_connection_error(app, monkeypatch):
     monkeypatch.setenv("ADMIN_BACKEND_URL", "http://admin:5000")
-    from app.services import admin_proxy
+    from panel_core.services import admin_proxy
 
     with app.test_request_context("/api/bot-service/trial/activate", method="POST", json={"telegram_id": 1}):
         with patch.object(admin_proxy.requests, "request", side_effect=admin_proxy.requests.RequestException("down")):

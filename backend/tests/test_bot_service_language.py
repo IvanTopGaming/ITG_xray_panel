@@ -1,12 +1,12 @@
 import pytest
 
-from app.extensions import db as _db
-from app.models import SystemSetting, TelegramUser
+from panel_core.extensions import db as _db
+from panel_core.models import SystemSetting, TelegramUser
 
 
 @pytest.fixture
 def app_with_bot_service(app):
-    from app.api import bot_service
+    from panel_core.api import bot_service
 
     if not any(bp.name == "bot_service" for bp in app.blueprints.values()):
         app.register_blueprint(bot_service.bp, url_prefix="/api")
@@ -68,7 +68,7 @@ from unittest.mock import patch
 def test_set_language_persists_choice(http, svc_headers, db):
     db.session.add(TelegramUser(telegram_id=601, language="ru", language_chosen=False))
     db.session.commit()
-    with patch("app.api.bot_service.bot_events.publish") as pub:
+    with patch("panel_core.api.bot_service.bot_events.publish") as pub:
         resp = http.post(
             "/api/bot-service/users/601/language",
             json={"language": "en"},

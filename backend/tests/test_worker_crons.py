@@ -20,8 +20,8 @@ def _job_ids(monkeypatch, role):
     monkeypatch.setenv("PANEL_ADMIN_USER", "admin")
     monkeypatch.setenv("PANEL_ADMIN_PASSWORD", "admin")
     monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
-    from app import create_app
-    from app.extensions import scheduler
+    from panel_core import create_app
+    from panel_core.extensions import scheduler
 
     create_app()
     ids = {j.id for j in scheduler.get_jobs()}

@@ -10,7 +10,7 @@ PSYCOPG2_DSN = DSN.replace("postgresql+psycopg2://", "postgresql://")
 
 
 def test_psycopg2_yields_to_gevent_hub():
-    from app.pg_compat import patch_gevent_psycopg
+    from panel_core.pg_compat import patch_gevent_psycopg
 
     patch_gevent_psycopg()
 

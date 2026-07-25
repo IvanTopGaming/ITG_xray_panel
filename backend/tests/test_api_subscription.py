@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.extensions import db
-from app.models import Client, Inbound, SystemSetting
+from panel_core.extensions import db
+from panel_core.models import Client, Inbound, SystemSetting
 
 
 VLESS_STREAM = json.dumps(
@@ -29,7 +29,7 @@ TEST_UUID = "11111111-1111-1111-1111-111111111111"
 @pytest.fixture
 def app(app):
 
-    from app.api import subscription as sub_api
+    from panel_core.api import subscription as sub_api
 
     if not any(bp_name == "subscription" for bp_name in app.blueprints):
         app.register_blueprint(sub_api.bp, url_prefix="/api")
@@ -100,10 +100,10 @@ def seed_disabled(app):
     return disabled_uuid
 
 
-_PATCH_PANEL = "app.services.panel_proxy.get_panel_snapshot"
-_PATCH_DEVICE_GATE = "app.services.device_tracking.device_gate"
-_PATCH_SUB_CACHE_GET = "app.services.sub_cache.get"
-_PATCH_SUB_CACHE_SET = "app.services.sub_cache.set"
+_PATCH_PANEL = "panel_core.services.panel_proxy.get_panel_snapshot"
+_PATCH_DEVICE_GATE = "panel_core.services.device_tracking.device_gate"
+_PATCH_SUB_CACHE_GET = "panel_core.services.sub_cache.get"
+_PATCH_SUB_CACHE_SET = "panel_core.services.sub_cache.set"
 
 
 def _device_gate_ok(client_obj, inbound_obj, headers):
@@ -126,7 +126,7 @@ def _browser_ua():
 
 class TestShareLinkFlowCompat:
     def test_drops_flow_on_xhttp_stream(self):
-        from app.api.subscription import _build_share_links
+        from panel_core.api.subscription import _build_share_links
 
         links = _build_share_links(
             "example.com",
@@ -141,7 +141,7 @@ class TestShareLinkFlowCompat:
         assert "flow=" not in links[0]
 
     def test_keeps_flow_on_tcp_reality_stream(self):
-        from app.api.subscription import _build_share_links
+        from panel_core.api.subscription import _build_share_links
 
         links = _build_share_links(
             "example.com",
@@ -156,7 +156,7 @@ class TestShareLinkFlowCompat:
         assert "flow=xtls-rprx-vision" in links[0]
 
     def test_drops_flow_on_tcp_without_tls(self):
-        from app.api.subscription import _build_share_links
+        from panel_core.api.subscription import _build_share_links
 
         links = _build_share_links(
             "example.com",
@@ -171,7 +171,7 @@ class TestShareLinkFlowCompat:
         assert "flow=" not in links[0]
 
     def test_clash_proxy_drops_flow_on_xhttp_stream(self):
-        from app.api.subscription import _build_clash_proxy
+        from panel_core.api.subscription import _build_clash_proxy
 
         node = _build_clash_proxy(
             "XH",
@@ -185,7 +185,7 @@ class TestShareLinkFlowCompat:
         assert "flow" not in node
 
     def test_singbox_outbound_drops_flow_on_xhttp_stream(self):
-        from app.api.subscription import _build_singbox_outbound
+        from panel_core.api.subscription import _build_singbox_outbound
 
         ob = _build_singbox_outbound(
             "XH",
@@ -512,7 +512,7 @@ class TestSubCacheHit:
 
 
 def test_extract_transport_path_host_reads_nested_and_flat():
-    from app.api.subscription import _extract_transport_path_host
+    from panel_core.api.subscription import _extract_transport_path_host
 
     assert _extract_transport_path_host(
         {"network": "xhttp", "xhttpSettings": {"path": "/realpath", "host": "edge.example.com"}}
@@ -532,7 +532,7 @@ def test_extract_transport_path_host_reads_nested_and_flat():
 def test_local_xhttp_link_includes_path_and_host(app):
 
     from urllib.parse import urlparse, parse_qs
-    from app.api.subscription import _get_local_subscription_content
+    from panel_core.api.subscription import _get_local_subscription_content
 
     with app.app_context():
         ib = Inbound(
@@ -566,7 +566,7 @@ def test_local_xhttp_link_includes_path_and_host(app):
 def test_remote_xhttp_link_includes_path_and_host():
 
     from urllib.parse import urlparse, parse_qs
-    from app.api.subscription import _build_remote_link
+    from panel_core.api.subscription import _build_remote_link
 
     ib_data = {
         "protocol": "vless",
@@ -600,7 +600,7 @@ def test_remote_xhttp_link_includes_path_and_host():
 
 def test_local_and_remote_builders_are_unified():
 
-    from app.api.subscription import _build_share_links, _build_remote_link
+    from panel_core.api.subscription import _build_share_links, _build_remote_link
 
     stream = {
         "network": "xhttp",
@@ -670,8 +670,8 @@ def _matrix_payload(proto, net, sec):
 
 @_pytest.mark.parametrize("proto,net,sec", _MATRIX, ids=lambda v: v if isinstance(v, str) else "")
 def test_link_matrix(proto, net, sec):
-    from app.services.xray import _build_stream_settings
-    from app.api.subscription import (
+    from panel_core.services.xray import _build_stream_settings
+    from panel_core.api.subscription import (
         _build_share_links,
         _build_remote_link,
         _apply_clash_transport,
@@ -736,8 +736,8 @@ def test_clash_and_singbox_for_user_merge_federation_nodes(app):
 
     import yaml as _yaml
     from unittest.mock import patch
-    from app.models import LinkedPanel
-    from app.api.subscription import generate_clash_config_for_user, generate_singbox_config_for_user
+    from panel_core.models import LinkedPanel
+    from panel_core.api.subscription import generate_clash_config_for_user, generate_singbox_config_for_user
 
     TG = 880017
     remote_snapshot = {
@@ -801,7 +801,7 @@ def test_clash_and_singbox_for_user_merge_federation_nodes(app):
         )
         db.session.commit()
 
-        with patch("app.services.panel_proxy.get_panel_snapshot", return_value=remote_snapshot):
+        with patch("panel_core.services.panel_proxy.get_panel_snapshot", return_value=remote_snapshot):
             clash = generate_clash_config_for_user(TG)
             singbox = generate_singbox_config_for_user(TG)
 

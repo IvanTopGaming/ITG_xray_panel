@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.extensions import db
-from app.models import Payment, SystemSetting, Tariff, TariffItem
+from panel_core.extensions import db
+from panel_core.models import Payment, SystemSetting, Tariff, TariffItem
 
 
 @pytest.fixture
@@ -57,13 +57,13 @@ def _insert_pending(app, tariff_id, age_seconds=600, yk_id="yk-poll-1"):
 
 def test_poll_promotes_succeeded_payments(app, tariff):
     pid = _insert_pending(app, tariff)
-    from app.jobs.payments import poll_pending_payments
+    from panel_core.jobs.payments import poll_pending_payments
 
     with (
         app.app_context(),
-        patch("app.jobs.payments.yookassa.Payment.find_one") as mock_find,
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish"),
+        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish"),
     ):
         mock_find.return_value = SimpleNamespace(status="succeeded")
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
@@ -74,13 +74,13 @@ def test_poll_promotes_succeeded_payments(app, tariff):
 
 def test_poll_marks_cancelled(app, tariff):
     pid = _insert_pending(app, tariff)
-    from app.jobs.payments import poll_pending_payments
+    from panel_core.jobs.payments import poll_pending_payments
 
     with (
         app.app_context(),
-        patch("app.jobs.payments.yookassa.Payment.find_one") as mock_find,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
-        patch("app.jobs.payments.bot_events.publish") as mock_publish_local,
+        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish_local,
     ):
         mock_find.return_value = SimpleNamespace(status="canceled")
         poll_pending_payments()
@@ -99,12 +99,12 @@ def test_poll_cancel_event_carries_chat_coords(app, tariff):
         p.message_id = 555
         db.session.commit()
 
-    from app.jobs.payments import poll_pending_payments
+    from panel_core.jobs.payments import poll_pending_payments
 
     with (
         app.app_context(),
-        patch("app.jobs.payments.yookassa.Payment.find_one") as mock_find,
-        patch("app.jobs.payments.bot_events.publish") as mock_publish,
+        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
     ):
         mock_find.return_value = SimpleNamespace(status="canceled")
         poll_pending_payments()
@@ -118,9 +118,9 @@ def test_poll_cancel_event_carries_chat_coords(app, tariff):
 
 def test_poll_skips_payments_younger_than_30s(app, tariff):
     pid = _insert_pending(app, tariff, age_seconds=10)
-    from app.jobs.payments import poll_pending_payments
+    from panel_core.jobs.payments import poll_pending_payments
 
-    with app.app_context(), patch("app.jobs.payments.yookassa.Payment.find_one") as mock_find:
+    with app.app_context(), patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find:
         mock_find.return_value = SimpleNamespace(status="succeeded")
         poll_pending_payments()
     mock_find.assert_not_called()
@@ -130,9 +130,9 @@ def test_poll_skips_payments_younger_than_30s(app, tariff):
 
 def test_poll_skips_payments_older_than_24h(app, tariff):
     _insert_pending(app, tariff, age_seconds=25 * 3600)
-    from app.jobs.payments import poll_pending_payments
+    from panel_core.jobs.payments import poll_pending_payments
 
-    with app.app_context(), patch("app.jobs.payments.yookassa.Payment.find_one") as mock_find:
+    with app.app_context(), patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find:
         mock_find.return_value = SimpleNamespace(status="succeeded")
         poll_pending_payments()
     mock_find.assert_not_called()
@@ -141,7 +141,7 @@ def test_poll_skips_payments_older_than_24h(app, tariff):
 def test_poll_swallows_individual_failures(app, tariff):
     pid_a = _insert_pending(app, tariff, yk_id="yk-a")
     pid_b = _insert_pending(app, tariff, yk_id="yk-b")
-    from app.jobs.payments import poll_pending_payments
+    from panel_core.jobs.payments import poll_pending_payments
 
     def find_side_effect(yk_id):
         if yk_id == "yk-a":
@@ -150,9 +150,9 @@ def test_poll_swallows_individual_failures(app, tariff):
 
     with (
         app.app_context(),
-        patch("app.jobs.payments.yookassa.Payment.find_one", side_effect=find_side_effect),
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish"),
+        patch("panel_core.jobs.payments.yookassa.Payment.find_one", side_effect=find_side_effect),
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish"),
     ):
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         poll_pending_payments()
@@ -181,12 +181,12 @@ def _insert_succeeded(app, tariff_id, age_days=1, yk_id="yk-succ-1"):
 
 def test_reconcile_revokes_refunded(app, tariff):
     pid = _insert_succeeded(app, tariff)
-    from app.jobs.payments import reconcile_refunds
+    from panel_core.jobs.payments import reconcile_refunds
 
     with (
         app.app_context(),
-        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
         mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="150.00"))
         reconcile_refunds()
@@ -197,11 +197,11 @@ def test_reconcile_revokes_refunded(app, tariff):
 
 def test_reconcile_ignores_unrefunded(app, tariff):
     pid = _insert_succeeded(app, tariff)
-    from app.jobs.payments import reconcile_refunds
+    from panel_core.jobs.payments import reconcile_refunds
 
     with (
         app.app_context(),
-        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
     ):
         mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="0.00"))
         reconcile_refunds()
@@ -211,11 +211,11 @@ def test_reconcile_ignores_unrefunded(app, tariff):
 
 def test_reconcile_skips_old_succeeded(app, tariff):
     pid = _insert_succeeded(app, tariff, age_days=31)
-    from app.jobs.payments import reconcile_refunds
+    from panel_core.jobs.payments import reconcile_refunds
 
     with (
         app.app_context(),
-        patch("app.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
     ):
         mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="150.00"))
         reconcile_refunds()
@@ -226,9 +226,9 @@ def test_reconcile_skips_old_succeeded(app, tariff):
 
 def test_cleanup_cancels_stale_pending(app, tariff):
     pid = _insert_pending(app, tariff, age_seconds=25 * 3600)
-    from app.jobs.payments import cleanup_old_payments
+    from panel_core.jobs.payments import cleanup_old_payments
 
-    with app.app_context(), patch("app.jobs.payments.bot_events.publish"):
+    with app.app_context(), patch("panel_core.jobs.payments.bot_events.publish"):
         cleanup_old_payments()
         assert db.session.get(Payment, pid).status == "cancelled"
 
@@ -244,9 +244,9 @@ def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
             p.message_id = msg
         db.session.commit()
 
-    from app.jobs.payments import cleanup_old_payments
+    from panel_core.jobs.payments import cleanup_old_payments
 
-    with app.app_context(), patch("app.jobs.payments.bot_events.publish") as mock_publish:
+    with app.app_context(), patch("panel_core.jobs.payments.bot_events.publish") as mock_publish:
         cleanup_old_payments()
 
     events = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "payment_cancelled"]
@@ -261,7 +261,7 @@ def test_cleanup_deletes_ancient_cancelled(app, tariff):
     with app.app_context():
         db.session.get(Payment, pid).status = "cancelled"
         db.session.commit()
-    from app.jobs.payments import cleanup_old_payments
+    from panel_core.jobs.payments import cleanup_old_payments
 
     with app.app_context():
         cleanup_old_payments()

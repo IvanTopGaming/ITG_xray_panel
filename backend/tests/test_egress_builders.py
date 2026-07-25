@@ -1,8 +1,8 @@
 import pytest
 
-from app.extensions import db
-from app.models import Outbound
-from app.services.egress import build_bind_ips, build_host_script
+from panel_core.extensions import db
+from panel_core.models import Outbound
+from panel_core.services.egress import build_bind_ips, build_host_script
 
 
 @pytest.fixture

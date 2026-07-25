@@ -1,7 +1,7 @@
 from unittest.mock import patch, MagicMock
 
-from app.models import BotEvent
-from app.services.bot_events import publish
+from panel_core.models import BotEvent
+from panel_core.services.bot_events import publish
 
 
 def test_publish_inserts_bot_event_row(app, db):
@@ -15,7 +15,7 @@ def test_publish_inserts_bot_event_row(app, db):
 
 
 def test_publish_attempts_redis_publish(app, db):
-    with patch("app.services.bot_events._get_redis") as mock_get_redis:
+    with patch("panel_core.services.bot_events._get_redis") as mock_get_redis:
         fake_redis = MagicMock()
         mock_get_redis.return_value = fake_redis
         publish("payment_succeeded", telegram_id=42, payload={"amount": 100})
@@ -27,7 +27,7 @@ def test_publish_attempts_redis_publish(app, db):
 
 def test_publish_swallows_redis_error(app, db):
 
-    with patch("app.services.bot_events._get_redis") as mock_get_redis:
+    with patch("panel_core.services.bot_events._get_redis") as mock_get_redis:
         fake_redis = MagicMock()
         fake_redis.publish.side_effect = ConnectionError("redis down")
         mock_get_redis.return_value = fake_redis
@@ -39,7 +39,7 @@ def test_publish_swallows_redis_error(app, db):
 
 def test_publish_when_redis_unavailable_returns_none(app, db):
 
-    with patch("app.services.bot_events._get_redis") as mock_get_redis:
+    with patch("panel_core.services.bot_events._get_redis") as mock_get_redis:
         mock_get_redis.return_value = None
         publish("texts_changed", telegram_id=None, payload={})
     assert BotEvent.query.count() == 1
@@ -47,7 +47,7 @@ def test_publish_when_redis_unavailable_returns_none(app, db):
 
 def test_publish_marks_delivered_at_on_successful_redis_publish(app, db):
 
-    with patch("app.services.bot_events._get_redis") as mock_get_redis:
+    with patch("panel_core.services.bot_events._get_redis") as mock_get_redis:
         fake_redis = MagicMock()
         mock_get_redis.return_value = fake_redis
         publish("payment_succeeded", telegram_id=42, payload={})
@@ -57,7 +57,7 @@ def test_publish_marks_delivered_at_on_successful_redis_publish(app, db):
 
 def test_publish_leaves_delivered_at_null_when_redis_publish_fails(app, db):
 
-    with patch("app.services.bot_events._get_redis") as mock_get_redis:
+    with patch("panel_core.services.bot_events._get_redis") as mock_get_redis:
         fake_redis = MagicMock()
         fake_redis.publish.side_effect = ConnectionError("redis down")
         mock_get_redis.return_value = fake_redis

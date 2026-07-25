@@ -1,11 +1,11 @@
 import pytest
 
-from app.models import BotText, SystemSetting, Tariff, TelegramUser
+from panel_core.models import BotText, SystemSetting, Tariff, TelegramUser
 
 
 @pytest.fixture
 def app_with_service_api(app, db):
-    from app.api import bot_service
+    from panel_core.api import bot_service
 
     if not any(bp.name == "bot_service" for bp in app.blueprints.values()):
         app.register_blueprint(bot_service.bp, url_prefix="/api")
@@ -166,7 +166,7 @@ def test_get_user_state_trial_used_no_active(app_with_service_api, db, client, s
 def test_get_user_state_with_active_clients(app_with_service_api, db, client, service_headers):
     import time
 
-    from app.models import Client, Inbound
+    from panel_core.models import Client, Inbound
 
     inbound = Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}")
     db.session.add(inbound)
@@ -200,7 +200,7 @@ def test_get_user_state_requires_token(app_with_service_api, db, client):
 
 
 def test_bot_service_lists_tariffs_filtered(app_with_service_api, db, client, service_headers):
-    from app.models import Tariff, TariffItem, UserTariffAccess
+    from panel_core.models import Tariff, TariffItem, UserTariffAccess
 
     with app_with_service_api.app_context():
         public = Tariff(
@@ -261,7 +261,7 @@ def test_bot_service_lists_tariffs_filtered(app_with_service_api, db, client, se
 
 
 def test_bot_service_tariffs_no_for_param_all_inactive(app_with_service_api, db, client, service_headers):
-    from app.models import Tariff, TariffItem
+    from panel_core.models import Tariff, TariffItem
 
     with app_with_service_api.app_context():
         t = Tariff(
@@ -285,7 +285,7 @@ def test_bot_service_tariffs_no_for_param_all_inactive(app_with_service_api, db,
 
 
 def test_bot_service_tariffs_user_with_no_clients_all_inactive(app_with_service_api, db, client, service_headers):
-    from app.models import Tariff, TariffItem, TelegramUser
+    from panel_core.models import Tariff, TariffItem, TelegramUser
 
     with app_with_service_api.app_context():
         t = Tariff(
@@ -309,7 +309,7 @@ def test_bot_service_tariffs_user_with_no_clients_all_inactive(app_with_service_
 
 
 def test_bot_service_tariffs_active_permanent_client_marks_active(app_with_service_api, db, client, service_headers):
-    from app.models import Client, Inbound, Tariff, TariffItem, TelegramUser
+    from panel_core.models import Client, Inbound, Tariff, TariffItem, TelegramUser
 
     with app_with_service_api.app_context():
         inbound = Inbound(tag="vless-de", protocol="vless", port=10001, stream_settings="{}")
@@ -348,7 +348,7 @@ def test_bot_service_tariffs_active_permanent_client_marks_active(app_with_servi
 def test_bot_service_tariffs_future_expiry_client_marks_active(app_with_service_api, db, client, service_headers):
     import time
 
-    from app.models import Client, Inbound, Tariff, TariffItem, TelegramUser
+    from panel_core.models import Client, Inbound, Tariff, TariffItem, TelegramUser
 
     with app_with_service_api.app_context():
         inbound = Inbound(tag="vless-de", protocol="vless", port=10001, stream_settings="{}")
@@ -387,7 +387,7 @@ def test_bot_service_tariffs_future_expiry_client_marks_active(app_with_service_
 def test_bot_service_tariffs_expired_client_does_not_mark_active(app_with_service_api, db, client, service_headers):
     import time
 
-    from app.models import Client, Inbound, Tariff, TariffItem, TelegramUser
+    from panel_core.models import Client, Inbound, Tariff, TariffItem, TelegramUser
 
     with app_with_service_api.app_context():
         inbound = Inbound(tag="vless-de", protocol="vless", port=10001, stream_settings="{}")
@@ -424,7 +424,7 @@ def test_bot_service_tariffs_expired_client_does_not_mark_active(app_with_servic
 
 
 def test_bot_service_tariffs_disabled_client_does_not_mark_active(app_with_service_api, db, client, service_headers):
-    from app.models import Client, Inbound, Tariff, TariffItem, TelegramUser
+    from panel_core.models import Client, Inbound, Tariff, TariffItem, TelegramUser
 
     with app_with_service_api.app_context():
         inbound = Inbound(tag="vless-de", protocol="vless", port=10001, stream_settings="{}")
@@ -461,7 +461,7 @@ def test_bot_service_tariffs_disabled_client_does_not_mark_active(app_with_servi
 
 
 def test_bot_service_tariffs_only_owning_tariff_marked_active(app_with_service_api, db, client, service_headers):
-    from app.models import Client, Inbound, Tariff, TariffItem, TelegramUser
+    from panel_core.models import Client, Inbound, Tariff, TariffItem, TelegramUser
 
     with app_with_service_api.app_context():
         inbound = Inbound(tag="vless-de", protocol="vless", port=10001, stream_settings="{}")
@@ -510,7 +510,7 @@ def test_bot_service_tariffs_only_owning_tariff_marked_active(app_with_service_a
 
 
 def test_bot_service_tariffs_item_includes_inbound_label_fallback(app_with_service_api, db, client, service_headers):
-    from app.models import Inbound, Tariff, TariffItem
+    from panel_core.models import Inbound, Tariff, TariffItem
 
     with app_with_service_api.app_context():
         db.session.add(Inbound(tag="de-vless", protocol="vless", port=20001, stream_settings="{}", label="Germany"))
@@ -546,7 +546,7 @@ def test_bot_service_tariffs_item_includes_inbound_label_fallback(app_with_servi
 def test_bot_service_tariffs_inbound_label_resolves_from_linked_panel(
     app_with_service_api, db, client, service_headers, monkeypatch
 ):
-    from app.models import LinkedPanel, Tariff, TariffItem
+    from panel_core.models import LinkedPanel, Tariff, TariffItem
 
     with app_with_service_api.app_context():
         panel = LinkedPanel(
@@ -580,7 +580,7 @@ def test_bot_service_tariffs_inbound_label_resolves_from_linked_panel(
             return {"inbounds": [{"tag": "gateway", "label": "🇩🇪 Gateway"}]}
         return None
 
-    monkeypatch.setattr("app.services.panel_proxy.get_panel_snapshot", fake_snapshot)
+    monkeypatch.setattr("panel_core.services.panel_proxy.get_panel_snapshot", fake_snapshot)
 
     resp = client.get("/api/bot-service/tariffs", headers=service_headers)
     assert resp.status_code == 200
