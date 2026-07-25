@@ -1,5 +1,4 @@
 import importlib
-import importlib.util
 import json
 import subprocess
 import sys
@@ -7,7 +6,7 @@ import textwrap
 
 import pytest
 
-from tests.import_graph import SRC, imported_modules
+from tests.import_graph import SRC, import_chains, imported_modules
 
 HEAVY_RUNTIME_MODULES = (
     "docker",
@@ -53,20 +52,25 @@ ENGINE_CONSTANTS = [
     "LOG_TAIL_LINES",
 ]
 
-HEAVY_MODULES = ("panel_core.xray.engine", "panel_core.xray.grpc_client")
+HEAVY_MODULES = ("panel_core.xray.engine", "panel_core.xray.grpc_client") + HEAVY_RUNTIME_MODULES
 
 ALLOWED_HEAVY_IMPORTERS = {"gateway.py", "engine.py", "grpc_client.py"}
 
-KNOWN_HEAVY_IMPORT_VIOLATIONS = []
+KNOWN_HEAVY_IMPORT_VIOLATIONS = [
+    "api/inbound.py -> panel_core.services.stats -> panel_core.xray.engine",
+    "api/inbound.py -> panel_core.services.stats -> panel_core.xray.grpc_client",
+]
+
+
+def _heavy_root(module):
+    for heavy in HEAVY_MODULES:
+        if module == heavy or module.startswith(f"{heavy}."):
+            return heavy
+    return None
 
 
 def _heavy_targets(path):
-    targets = set()
-    for mod in imported_modules(path):
-        for heavy in HEAVY_MODULES:
-            if mod == heavy or mod.startswith(f"{heavy}."):
-                targets.add(heavy)
-    return sorted(targets)
+    return sorted({root for mod in imported_modules(path) if (root := _heavy_root(mod))})
 
 
 def _heavy_offenders(package):
@@ -77,6 +81,22 @@ def _heavy_offenders(package):
         for heavy in _heavy_targets(path):
             offenders.append(f"{package}/{path.name} -> {heavy}")
     return offenders
+
+
+def _transitive_heavy_offenders(package):
+    offenders = set()
+    for path in sorted((SRC / package).rglob("*.py")):
+        if package == "xray" and path.name in ALLOWED_HEAVY_IMPORTERS:
+            continue
+        for module, chain in import_chains(path).items():
+            root = _heavy_root(module)
+            if root is None:
+                continue
+            hops = chain[1:-1]
+            if any(_heavy_root(hop) for hop in hops):
+                continue
+            offenders.add(" -> ".join([f"{package}/{path.name}"] + hops + [root]))
+    return sorted(offenders)
 
 
 @pytest.mark.parametrize("name", ENGINE_EXPORTS)
@@ -97,17 +117,19 @@ def test_old_services_xray_module_is_gone():
 
 
 def test_api_layer_does_not_import_heavy_xray_modules():
-    expected = [v for v in KNOWN_HEAVY_IMPORT_VIOLATIONS if v.startswith("api/")]
-    assert _heavy_offenders("api") == expected
+    assert _heavy_offenders("api") == []
 
 
 def test_only_gateway_imports_heavy_xray_modules_inside_xray_package():
-    expected = [v for v in KNOWN_HEAVY_IMPORT_VIOLATIONS if v.startswith("xray/")]
-    assert _heavy_offenders("xray") == expected
+    assert _heavy_offenders("xray") == []
 
 
-def test_known_heavy_import_violations_do_not_grow():
-    assert _heavy_offenders("api") + _heavy_offenders("xray") == KNOWN_HEAVY_IMPORT_VIOLATIONS
+def test_api_layer_does_not_transitively_reach_heavy_modules():
+    assert _transitive_heavy_offenders("api") == KNOWN_HEAVY_IMPORT_VIOLATIONS
+
+
+def test_xray_package_does_not_transitively_reach_heavy_modules():
+    assert _transitive_heavy_offenders("xray") == []
 
 
 def test_xray_seam_imports_without_heavy_dependencies():

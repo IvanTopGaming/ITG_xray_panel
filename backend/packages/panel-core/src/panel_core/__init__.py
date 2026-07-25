@@ -23,7 +23,7 @@ from .extensions import db, migrate, scheduler, limiter
 from .observability import setup_logging, init_request_logging, run_job_logged
 from .models import Admin, Outbound
 from .xray import generate_config_file
-from .xray.gateway import LocalXrayGateway, set_xray_gateway
+from .xray.gateway import LocalXrayGateway, set_xray_gateway, xray_gateway_configured
 from .services.stats import sync_traffic_job, check_limits_job, parse_access_logs, cleanup_stats_job
 from .jobs.billing import auto_renew_free_users
 from .jobs.notifications import (
@@ -207,7 +207,8 @@ def create_app():
     migrate.init_app(app, db)
     limiter.init_app(app)
     scheduler.init_app(app)
-    set_xray_gateway(LocalXrayGateway())
+    if not xray_gateway_configured():
+        set_xray_gateway(LocalXrayGateway())
 
     if not is_sub() and not is_bot_api():
         _ensure_scheduler_job("sync_traffic", sync_traffic_job, 10)

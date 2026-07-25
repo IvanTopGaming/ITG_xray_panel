@@ -1,4 +1,4 @@
-from typing import Optional, Protocol, runtime_checkable
+from typing import Iterator, Optional, Protocol, runtime_checkable
 
 from panel_core.xray.protocol import LOG_TAIL_LINES
 
@@ -13,9 +13,9 @@ class XrayGateway(Protocol):
 
     def remove_user(self, inbound_tag: str, email: str) -> bool: ...
 
-    def stream_logs(self, tail_lines: int = LOG_TAIL_LINES): ...
+    def stream_logs(self, tail_lines: int = LOG_TAIL_LINES) -> Iterator[str]: ...
 
-    def update_geo(self): ...
+    def update_geo(self) -> None: ...
 
 
 class LocalXrayGateway:
@@ -39,12 +39,12 @@ class LocalXrayGateway:
 
         return grpc_client._api_remove_user_grpc(inbound_tag, email)
 
-    def stream_logs(self, tail_lines: int = LOG_TAIL_LINES):
+    def stream_logs(self, tail_lines: int = LOG_TAIL_LINES) -> Iterator[str]:
         from panel_core.xray import engine
 
         return engine.stream_xray_logs(tail_lines)
 
-    def update_geo(self):
+    def update_geo(self) -> None:
         from panel_core.xray import engine
 
         return engine.update_geo_db()
@@ -56,6 +56,10 @@ _gateway = None
 def set_xray_gateway(gateway: Optional[XrayGateway]) -> None:
     global _gateway
     _gateway = gateway
+
+
+def xray_gateway_configured() -> bool:
+    return _gateway is not None
 
 
 def get_xray_gateway() -> XrayGateway:

@@ -60,6 +60,16 @@ def _reset_xray_gateway():
     _gateway_module.set_xray_gateway(None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_grpc_channel():
+
+    from panel_core.xray import grpc_client as _grpc_client_module
+
+    _grpc_client_module._close_channel()
+    yield
+    _grpc_client_module._close_channel()
+
+
 @pytest.fixture(scope="function")
 def app():
 

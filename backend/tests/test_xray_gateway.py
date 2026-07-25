@@ -186,3 +186,35 @@ def test_local_gateway_delegates_to_grpc_client(monkeypatch):
     assert local.remove_user("tag-a", "a@b") is True
 
     assert calls == {"add": ("tag-a", "obj"), "remove": ("tag-a", "a@b")}
+
+
+def test_gateway_configured_predicate():
+    gw.set_xray_gateway(None)
+    assert gw.xray_gateway_configured() is False
+    gw.set_xray_gateway(MagicMock())
+    assert gw.xray_gateway_configured() is True
+
+
+def _build_app():
+    from panel_core import create_app
+    from panel_core.extensions import scheduler
+
+    try:
+        create_app()
+    finally:
+        scheduler.remove_all_jobs()
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+
+
+def test_create_app_does_not_clobber_an_installed_gateway():
+    fake = MagicMock()
+    gw.set_xray_gateway(fake)
+    _build_app()
+    assert gw.get_xray_gateway() is fake
+
+
+def test_create_app_installs_local_gateway_when_none_set():
+    gw.set_xray_gateway(None)
+    _build_app()
+    assert isinstance(gw.get_xray_gateway(), gw.LocalXrayGateway)
