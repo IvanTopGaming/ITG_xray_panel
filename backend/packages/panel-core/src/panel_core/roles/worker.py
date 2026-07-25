@@ -8,10 +8,10 @@ from panel_core.app_base import (
     start_scheduler,
 )
 from panel_core.services.stats import (
-    sync_traffic_job,
     check_limits_job,
-    parse_access_logs,
     cleanup_stats_job,
+    parse_access_logs,
+    sync_traffic_job,
 )
 from panel_core.xray.gateway import LocalXrayGateway, set_xray_gateway, xray_gateway_configured
 

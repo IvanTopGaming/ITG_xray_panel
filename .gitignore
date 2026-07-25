@@ -32,6 +32,9 @@ yarn-error.log
 .superpowers/
 
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 *.log

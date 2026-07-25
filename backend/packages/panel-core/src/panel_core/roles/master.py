@@ -12,10 +12,10 @@ from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered
 from panel_core.jobs.panels import poll_linked_panels
 from panel_core.jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from panel_core.services.stats import (
-    sync_traffic_job,
     check_limits_job,
-    parse_access_logs,
     cleanup_stats_job,
+    parse_access_logs,
+    sync_traffic_job,
 )
 from panel_core.services.version_check import fetch_latest
 from panel_core.xray.gateway import LocalXrayGateway, set_xray_gateway, xray_gateway_configured
