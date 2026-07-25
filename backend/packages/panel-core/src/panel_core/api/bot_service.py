@@ -240,7 +240,7 @@ def get_user_state(tg_id):
     else:
         expires_at_ms = None
 
-    from panel_core.api.subscription import build_aggregate_sub_url
+    from panel_core.services.sub_links import build_aggregate_sub_url
 
     sub_url = build_aggregate_sub_url(user.sub_token) if user else None
 

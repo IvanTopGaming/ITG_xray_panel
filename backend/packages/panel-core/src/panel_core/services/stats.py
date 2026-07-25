@@ -198,7 +198,7 @@ def sync_traffic_stats():
     db.session.commit()
 
     try:
-        from panel_core.jobs.notifications import emit_if_new, evaluate_traffic
+        from panel_core.services.notifications import emit_if_new, evaluate_traffic
 
         lang_cache: dict = {}
         renewable_cache: dict = {}
@@ -257,7 +257,7 @@ def check_limits_and_reset():
             to_disable.append((c, "over_limit" if over_limit else "expired"))
 
     try:
-        from panel_core.jobs.notifications import emit_if_new, evaluate_expiry
+        from panel_core.services.notifications import emit_if_new, evaluate_expiry
 
         expiry_lang_cache: dict = {}
         expiry_renewable_cache: dict = {}

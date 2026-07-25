@@ -1186,7 +1186,7 @@ def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin
             return snap_a
         raise ValueError("panel offline")
 
-    with patch("panel_core.api.bot_admin.fetch_panel_snapshot_live", side_effect=_fetch):
+    with patch("panel_core.services.remote_clients.fetch_panel_snapshot_live", side_effect=_fetch):
         bucket, unreachable = _remote_clients_by_telegram_id_live()
 
     assert list(bucket.keys()) == [42]
@@ -1209,7 +1209,7 @@ def test_live_enumeration_scopes_to_given_panel_ids(app_with_admin, db):
         fetched.append(panel_id)
         return {"inbounds": []}
 
-    with patch("panel_core.api.bot_admin.fetch_panel_snapshot_live", side_effect=_fetch):
+    with patch("panel_core.services.remote_clients.fetch_panel_snapshot_live", side_effect=_fetch):
         bucket, unreachable = _remote_clients_by_telegram_id_live(panel_ids={1})
 
     assert fetched == [1]

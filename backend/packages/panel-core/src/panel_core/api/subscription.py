@@ -10,6 +10,7 @@ from flask import Blueprint, request, Response
 from panel_core.extensions import limiter, db
 from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
+from panel_core.services.sub_links import build_aggregate_sub_url  # noqa: F401 — re-exported under the original name
 from panel_core.xray.protocol import stream_supports_vless_flow
 
 
@@ -620,21 +621,6 @@ def _looks_like_browser(user_agent: str) -> bool:
         return False
 
     return any(token in ua for token in ("mozilla", "applewebkit", "gecko", "trident", "edg"))
-
-
-def build_aggregate_sub_url(token):
-
-    if not token:
-        return None
-    sub_domain = os.getenv("SUB_DOMAIN", "").strip()
-    if sub_domain:
-        return f"https://{sub_domain}/api/sub/u/{token}"
-    panel = os.getenv("PANEL_DOMAIN", "").strip()
-    if not panel:
-        return None
-    secret = os.getenv("PANEL_SECRET_PATH", "").strip("/")
-    base = f"https://{panel}/{secret}" if secret else f"https://{panel}"
-    return f"{base}/api/sub/u/{token}"
 
 
 @bp.route("/sub/u/<token>", methods=["GET"])

@@ -6,7 +6,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import Inbound, Client, ClientDevice, TelegramUser, TariffItem
-from panel_core.api.subscription import build_aggregate_sub_url
+from panel_core.services.sub_links import build_aggregate_sub_url
 from panel_core.utils import (
     token_required,
     admin_or_bot_token_required,

@@ -322,11 +322,11 @@ def revoke_payment_access(telegram_id: int, tariff_id: int) -> dict:
     )
     wanted = {(pid, tag) for pid, tag in remote_items}
     if wanted:
-        from panel_core.api.bot_admin import _remote_clients_by_telegram_id_live
         from panel_core.services.panel_proxy import proxy_update_user
+        from panel_core.services.remote_clients import remote_clients_by_telegram_id_live
 
         panel_ids = {pid for pid, _tag in remote_items}
-        remote_by_tg, unreachable = _remote_clients_by_telegram_id_live(panel_ids=panel_ids)
+        remote_by_tg, unreachable = remote_clients_by_telegram_id_live(panel_ids=panel_ids)
         panel_failures.extend(unreachable)
         for rc in remote_by_tg.get(telegram_id, []):
             if rc.get("tariff_id") != tariff_id:
