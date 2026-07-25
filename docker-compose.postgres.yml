@@ -40,7 +40,7 @@ services:
       - "sh"
       - "-c"
       - >
-        printf 'user default off\nuser panel on >%s ~* &* +@all\nuser node on >%s -@all +publish &bot:events\n'
+        printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +select &bot:events\n'
         "$$REDIS_PANEL_PASSWORD" "$$REDIS_NODE_PASSWORD" > /tmp/users.acl &&
         exec redis-server --aclfile /tmp/users.acl --save "" --appendonly no
     healthcheck:
