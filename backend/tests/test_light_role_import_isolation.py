@@ -5,6 +5,7 @@ import pytest
 
 LIGHT_ROLES = ("master", "sub", "botapi")
 HEAVY_MODULE_ROOTS = ("grpc", "google", "docker", "filelock")
+MISSING_STUBS_MARKER = "No module named 'app'"
 
 PROBE = """
 import sys
@@ -45,5 +46,15 @@ def test_worker_role_still_needs_the_heavy_stack():
     assert result.returncode != 0, (
         "panel_core.roles.worker imported cleanly outside Docker, which means it no longer needs the "
         "protobuf stubs. If that is intentional, this guard is obsolete -- but verify it deliberately, "
-        "because a silently-passing guard here would hide the very regression the light-role tests catch."
+        "because a silently-passing guard here would hide the very regression the light-role tests catch. "
+        "The other way to land here is an environment that does have the stubs: generated protobuf output "
+        "left in backend/app/, or pytest running inside the Docker image. Check that before touching the code."
+    )
+    assert MISSING_STUBS_MARKER in result.stderr, (
+        f"panel_core.roles.worker failed for the wrong reason, so this guard no longer proves anything:\n"
+        f"{result.stderr}\n\n"
+        f"It must fail with {MISSING_STUBS_MARKER!r} -- that is the proof the subprocess runs without the "
+        "protobuf stubs conftest.py injects, which is the only reason the light-role assertions above mean "
+        "anything. A different error (typically the module being renamed or moved to another package during "
+        "a package cut) still yields a non-zero exit code and would have kept this test vacuously green."
     )
