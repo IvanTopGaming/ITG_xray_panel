@@ -1,48 +1,34 @@
-import ast
-import pathlib
-
 import pytest
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "packages" / "panel-core" / "src" / "panel_core"
+from tests.import_graph import SRC, imported_modules
 
 
-def _imported_modules(path):
-    tree = ast.parse(path.read_text())
-    found = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            found.add(node.module)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                found.add(alias.name)
-    return found
+def _offenders(package, forbidden_prefix):
+    offenders = set()
+    for path in (SRC / package).rglob("*.py"):
+        for mod in imported_modules(path):
+            parts = mod.split(".")
+            if parts[: len(forbidden_prefix)] == forbidden_prefix:
+                offenders.add(f"{path.name} -> {'.'.join(parts[: len(forbidden_prefix) + 1])}")
+    return sorted(offenders)
 
 
 def test_services_do_not_import_api():
-    offenders = []
-    for path in (SRC / "services").rglob("*.py"):
-        for mod in _imported_modules(path):
-            if mod.startswith("panel_core.api"):
-                offenders.append(f"{path.name} -> {mod}")
-    assert offenders == []
+    assert _offenders("services", ["panel_core", "api"]) == []
 
 
 def test_services_do_not_import_jobs():
-    offenders = []
-    for path in (SRC / "services").rglob("*.py"):
-        for mod in _imported_modules(path):
-            if mod.startswith("panel_core.jobs"):
-                offenders.append(f"{path.name} -> {mod}")
-    assert offenders == []
+    assert _offenders("services", ["panel_core", "jobs"]) == []
 
 
 def test_api_modules_do_not_import_each_other():
-    offenders = []
+    offenders = set()
     for path in (SRC / "api").rglob("*.py"):
-        for mod in _imported_modules(path):
-            if mod.startswith("panel_core.api.") and not mod.endswith(path.stem):
-                offenders.append(f"{path.name} -> {mod}")
-    assert offenders == []
+        for mod in imported_modules(path):
+            parts = mod.split(".")
+            if len(parts) >= 3 and parts[:2] == ["panel_core", "api"] and parts[2] != path.stem:
+                offenders.add(f"{path.name} -> {'.'.join(parts[:3])}")
+    assert sorted(offenders) == []
 
 
 @pytest.mark.parametrize(
