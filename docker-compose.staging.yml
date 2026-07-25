@@ -82,6 +82,7 @@ services:
       - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
       - DOCKER_HOST=tcp://socket-proxy:2375
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
+      - PANEL_ROLE=master
     env_file:
       - .env
     command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core.roles.master:create_app()"
@@ -131,6 +132,7 @@ services:
         condition: service_healthy
     environment:
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - PANEL_ROLE=master
     env_file:
       - .env
     networks:
