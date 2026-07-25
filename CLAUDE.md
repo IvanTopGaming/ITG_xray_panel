@@ -88,6 +88,8 @@ bash scripts/generate_local_cert.sh   # self-signed cert for local domains
 
 Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only one with internet egress) plus two `internal: true` segments: `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy). The split (formerly a single `control-net`) keeps the Docker-socket proxy reachable only by `backend` and denies internet to both `socket-proxy` and `redis`. Key volumes: `shared_config:/etc/xray`, `xray_logs:/var/log/xray`, `./db_data:/app/db`, `./certs:/root/cert:ro`. Published ports on `caddy`: `80:80`, `443:443` (TCP only — there is no `443/udp` / HTTP-3).
 
+Two Redis instances play different roles once nodes are split out. The `redis` above is per-node private state (rate limiting + sub-cache, `RATELIMIT_STORAGE_URI`) and never leaves that node. The `bot:events` bus is separate: a data-tier Redis defined in `docker-compose.postgres.yml`, shared by master/bot-api/sub/bot and every node, addressed by `BOT_EVENTS_REDIS_URI` (defaults to `RATELIMIT_STORAGE_URI`, so anything sharing Redis with the master needs no extra config — only a node, whose `RATELIMIT_STORAGE_URI` points at its own local Redis, must set it explicitly). That data-tier Redis ACLs two users: `node` (publish-only into `bot:events`, nothing else) and `panel` (full access). See Bot event recovery buffer and Configuration below.
+
 ### Backend (`backend/`)
 - `app/__init__.py` — Flask app factory; registers blueprints, extensions, ProxyFix, APScheduler jobs
 - `app/models.py` — SQLAlchemy models (20 total). Core: `Admin`, `Inbound`, `Client`, `Outbound`, `RoutingProfile`, `Balancer`, `SystemSetting`, `TrafficSnapshot`, `DomainStat`, `LinkedPanel`, `FederationConfig`, `ClientDevice`. Billing/bot: `Tariff`, `TariffItem`, `UserTariffAccess`, `Payment`, `BotText`, `BotEvent`, `TelegramUser`, `NotificationLog`. **FK enforcement is OFF** — `extensions.py` sets WAL/synchronous/busy_timeout/temp_store but **not** `PRAGMA foreign_keys=ON`, so FK constraints are advisory (deleting a parent leaves dangling child refs rather than cascading/erroring; e.g. `delete_tariff_permanent` can orphan `Client.tariff_id`). Exception: deleting a `LinkedPanel` (`delete_panel`) or an `Inbound` (`delete_inbound`, local + remote-via-`panel_id`) app-level cascades the matching `TariffItem` rows through `services/tariffs.purge_tariff_items`, which also disables any tariff left with zero items — so a removed panel/inbound can no longer orphan a `TariffItem` and 500 provisioning.
@@ -101,7 +103,7 @@ Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only on
   - `bot_service` — endpoints the bot itself calls (runtime-config, texts, users, trial, tariffs, payments) — bot service token only
 - `app/services/`
   - `xray.py` — generates Xray JSON config, gRPC user add/remove, traffic stats, log tailing. File lock `/etc/xray/config.lock` serializes concurrent writes
-  - `stats.py` — traffic collection, limit enforcement, monthly counter reset (clears `traffic_*` `NotificationLog` rows so warnings re-arm)
+  - `stats.py` — traffic collection, limit enforcement, monthly counter reset (clears `traffic_*` `NotificationLog` rows so warnings re-arm); `check_limits_and_reset` and `sync_traffic_stats` also emit `expiry_notification`/`traffic_notification` events inline (see `notifications.py` below and Bot event recovery buffer)
   - `panel_proxy.py` — Panel Federation HTTP client: `FederationClient` talks to linked panels, proxies user/inbound CRUD operations to remote panels based on `TariffItem.panel_id` routing. `get_panel_snapshot` (cached, 60s TTL) vs `fetch_panel_snapshot_live` (live, no cache)
   - `sub_cache.py` — Redis-backed subscription response cache
   - `runtime_identity.py` — generates UUIDs / keys for protocols
@@ -109,12 +111,13 @@ Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only on
   - `billing.py` — YooKassa SDK wrapper, `create_checkout`, `apply_payment` (atomic claim via `UPDATE … WHERE status='pending'` to prevent double-provision)
   - `provisioning.py` — single gateway for tariff grants: extends an existing `Client` for the same (telegram_id, inbound_tag) or creates one; resets counters; clears `traffic_*` `NotificationLog`; proxies to linked panels via `panel_proxy`
   - `bot_events.py` — `publish(event_type, telegram_id, payload)`: dual-write to `bot_event` table and Redis pubsub channel `bot:events`. Marks `delivered_at` on successful Redis publish.
+  - `notifications.py` — `evaluate_expiry`/`evaluate_traffic` classify a client into a warning bucket (3d/1d/1h/expired; 80%/95%/exhausted); `emit_if_new` dedups via `NotificationLog` and publishes the bare fact only (no `lang`/`renewable` — a node can't resolve those) with `node` (the node's own `PANEL_DOMAIN`) and `inbound_tag` in the payload; `claim_notification` is the Postgres-backed atomic cross-node claim behind `NotificationClaim` (see Bot event recovery buffer)
   - `version_check.py` — `fetch_latest` (6h cron): pulls the published `versions.json` from GitHub and caches it in a `SystemSetting`, powering the "update available" indicator on the System → About tab
   - `bot_status.py` — small cache for the bot's reported version/health surfaced in the UI
 - `app/jobs/`
   - `billing.py` — `auto_renew_free_users` (free-tier renewal, pause+notify on archive/disable)
   - `payments.py` — `poll_pending_payments` (30s webhook fallback), `reconcile_refunds` (1h refund-webhook fallback → `billing.handle_refund` revokes access), `cleanup_old_payments` (24h, cancels stuck pending + publishes notification)
-  - `notifications.py` — `send_expiry_notifications`, `send_traffic_notifications`, `cleanup_bot_events`, `replay_undelivered_bot_events`
+  - `notifications.py` — `cleanup_bot_events`, `replay_undelivered_bot_events` (also registered on the worker role, not just master). There is no `send_expiry_notifications`/`send_traffic_notifications` cron — expiry and traffic warnings are emitted inline from `stats.py`'s `check_limits_and_reset` and `sync_traffic_stats` via `services/notifications.emit_if_new`
   - `panels.py` — `poll_linked_panels` (10s linked-panel health poll)
 
 ### Frontend (`frontend/src/`)
@@ -165,8 +168,8 @@ Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted fro
 
 | Job | Interval | What it does |
 |---|---|---|
-| `sync_traffic` | 10s | Per-user up/down from Xray gRPC; upserts `TrafficSnapshot` via raw SQL `ON CONFLICT DO UPDATE` |
-| `check_limits` | 60s | Removes expired/over-limit users |
+| `sync_traffic` | 10s | Per-user up/down from Xray gRPC; upserts `TrafficSnapshot` via raw SQL `ON CONFLICT DO UPDATE`; emits `traffic_notification` inline at 80%/95%/exhausted (dedup via `NotificationLog`) |
+| `check_limits` | 60s | Removes expired/over-limit users; emits `expiry_notification` inline at 3d/1d/1h/expired (dedup via `NotificationLog`) |
 | `parse_logs` | 15s | Tails Xray access logs into `DomainStat` (skips bare IPs) |
 | `cleanup_stats` | 24h | Deletes `DomainStat` rows > 90d |
 | `poll_linked_panels` | 10s | Pings each enabled `LinkedPanel`; fresh `status`/`last_poll` go to Redis every poll, the SQLite row is written **only on status/error change** (the panels API overlays the Redis values) |
@@ -174,11 +177,9 @@ Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted fro
 | `poll_pending_payments` | 30s | Webhook fallback; reconciles pending YooKassa payments older than 30s, younger than 24h |
 | `reconcile_refunds` | 1h | Refund-webhook fallback; re-checks the most recent succeeded payments (≤30d, capped 200) and revokes access on any YooKassa now reports refunded (via `billing.handle_refund`) |
 | `cleanup_old_payments` | 24h | Cancels `pending > 24h` (and publishes `payment_cancelled` so users find out); deletes terminal records `> 90d` |
-| `send_expiry_notifications` | 15m | 3d/1d/1h/expired warnings (dedup via `notification_log`, renew button shown only when tariff is still purchasable) |
-| `send_traffic_notifications` | 15m | 80%/95%/exhausted warnings (dedup + per-cycle re-arm) |
-| `replay_undelivered_bot_events` | 60s | Re-publishes any `bot_event` row with `delivered_at IS NULL` and `created_at < now - 30s` |
+| `replay_undelivered_bot_events` | 60s | Runs on **master and worker** roles; re-publishes any `bot_event` row with `delivered_at IS NULL` and `created_at < now - 30s` |
 | `check_latest_version` | 6h | Fetches the published `versions.json` from GitHub, caches it in a `SystemSetting` to drive the "update available" indicator on System → About |
-| `cleanup_bot_events` | 24h | Prunes delivered events > 7d, undelivered > 30d |
+| `cleanup_bot_events` | 24h | Runs on **master and worker** roles; prunes delivered `bot_event` rows > 7d, undelivered > 30d, and `NotificationClaim` rows > 90d |
 
 ### Backend error handling pattern
 All API handlers follow a two-catch pattern. `ValueError` is the type for user-facing validation errors — propagated as HTTP 400 with the message shown to the user. Bare `Exception` means an unexpected server fault and returns HTTP 500 with a generic message. Always raise `ValueError` (not `Exception`) for input validation failures so the error reaches the user.
@@ -216,6 +217,8 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
 - Else if a `Client` already exists for the same (telegram_id, inbound_tag): extend it — bump `expiry_time`, reset `up/down/last_reset_time`, refresh `limit_bytes`, set `enable=True`, clear `traffic_*` `NotificationLog` rows (so the new cycle's warnings can fire).
 - Otherwise create a new `Client` with a unique email (`tg<id>_<inbound_tag>` or `_<hex6>` on collision).
 
+Every call also clears that user's `NotificationClaim` rows for the tariff (`clear_notification_claims`), so the next expiry/traffic cycle can warn again after a renewal instead of staying suppressed by a stale cross-node claim.
+
 Single `_sync_after_provision` call after the loop: regenerates Xray config (or gRPC-patches for vless/vmess fast-path), restarts container if needed, and invalidates the Redis sub-cache. `backfill_tariff` idempotently ensures every active holder has a key on every tariff inbound (local + remote) without touching existing keys.
 
 ### Panel Federation
@@ -238,7 +241,9 @@ XTLS Vision (`xtls-rprx-vision`) is only valid on raw-TCP with TLS or REALITY �
 
 ### Bot event recovery buffer
 
-`services/bot_events.publish` writes a `BotEvent` row to SQLite *first*, then attempts `redis.publish('bot:events', …)`. On successful publish it sets `delivered_at = now`. The `replay_undelivered_bot_events` cron (60s) re-publishes any row older than 30 seconds with `delivered_at IS NULL`. Caveat: Redis `PUBLISH` succeeding with `subscriber_count=0` (e.g. bot is down) still marks `delivered_at` because we don't check the return code — the recovery buffer protects against Redis outages but **not** consumer outages. This is intentional (a temporary bot stop is the supported way to suppress a wave of grant notifications during bulk operations).
+`services/bot_events.publish` writes a `BotEvent` row to SQLite *first*, then attempts `redis.publish('bot:events', …)`. On successful publish it sets `delivered_at = now`. The `replay_undelivered_bot_events` cron (60s, runs on master and worker) re-publishes any row older than 30 seconds with `delivered_at IS NULL`. Caveat: Redis `PUBLISH` succeeding with `subscriber_count=0` (e.g. bot is down) still marks `delivered_at` because we don't check the return code — the recovery buffer protects against Redis outages but **not** consumer outages. This is intentional (a temporary bot stop is the supported way to suppress a wave of grant notifications during bulk operations).
+
+**Two-tier dedup for node-emitted notifications.** `expiry_notification`/`traffic_notification` (emitted inline from `check_limits_and_reset`/`sync_traffic_stats`, see Traffic enforcement) get a second, content-level dedup layer on top of delivery, because the same tariff can have items on several nodes racing to warn about the same threshold. The node-local `NotificationLog` suppresses repeats from that node's own crons (per `telegram_id`/`client_id`/`kind`). `NotificationClaim` in Postgres suppresses the cross-node duplicate: its unique key is `(telegram_id, tariff_id, scope, kind)`, with `tariff_id=0` meaning "no tariff" (Postgres treats `NULL != NULL`, so a nullable column would defeat the uniqueness constraint). `scope` is empty for expiry (one grant → one warning) and `"<node>/<inbound_tag>/<email>"` for traffic, because an inbound tag like `vless-reality` can exist on every node at once. The bot claims via `POST /api/bot-service/notifications/claim` (bot service token, `claim_notification` in `services/notifications.py`) before sending either warning — an unclaimed (already-sent) notification is dropped, and a successful claim also resolves `lang`/`renewable` server-side, since the node's bare-fact payload has neither. If bot-api is unreachable the message still sends, in Russian and without a renew button (`tg_bot/bot_events_consumer.py`'s `_resolve_claim` fails open). Claims are reset on renewal by `apply_tariff_for_user` (see Provisioning) and pruned after 90 days by `cleanup_bot_events`.
 
 ### Telegram user lifecycle
 
@@ -263,7 +268,7 @@ Protocol details live in `frontend/lib/protocols.ts` (UI-facing) and are seriali
 On startup, `direct` (freedom) and `block` (blackhole) outbounds are auto-created if missing. These are always re-enabled if disabled — do not delete them.
 
 ### Database migrations
-`panel_core.db_migration` (standalone entrypoint: `backend/migrate_db.py`) is a custom migration system (not Flask-Migrate). Current schema version is **`20`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count. When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
+`panel_core.db_migration` (standalone entrypoint: `backend/migrate_db.py`) is a custom migration system (not Flask-Migrate). Current schema version is **`23`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count. When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
 
 Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 17`. A bump triggers a one-shot **force-reseed** (only when `stored < CURRENT`): it DELETEs the `_REMOVED_BOT_TEXT_KEYS` tuple (purging orphan rows for keys dropped from the YAML) and then upserts every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` (~74 keys × RU/EN). The upsert **preserves admin-edited rows** — `bot_text.customized` (set to `1` whenever an admin saves a text via Bot → Texts) is honoured by `ON CONFLICT … DO UPDATE … WHERE customized = 0`, so a force-reseed refreshes only untouched defaults and never reverts customizations. On the v19 migration that added the column, rows whose stored text already diverged from the YAML default are back-filled `customized=1` to protect pre-existing edits. When you remove a key from the YAML, append it to `_REMOVED_BOT_TEXT_KEYS` (the purge ignores `customized`, since a removed key is dead regardless).
 
@@ -363,6 +368,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `SECRET_KEY`, `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`.
 - `XRAY_CORE_REF` — Xray-core version to compile into the Docker image (build-time only).
 - `RATELIMIT_STORAGE_URI` — Redis URI for rate limiting.
+- `BOT_EVENTS_REDIS_URI` — event-bus Redis URI for the `bot:events` channel (`redis://` or `rediss://`). Defaults to `RATELIMIT_STORAGE_URI`, so master/sub/bot need not set it. **Required on a node**: its `RATELIMIT_STORAGE_URI` points at its own local Redis, so this must be pointed at the shared data-tier Redis instead (`docker-compose.postgres.yml`), e.g. `redis://node:<REDIS_NODE_PASSWORD>@<data-vm>:6379/0`. That Redis ACLs two users: `node` (publish-only into `bot:events`) and `panel` (full access, used by master/bot-api/sub/bot).
 - `BACKEND_LOG_LEVEL` *(default INFO)* — backend log verbosity. Every API request (`app.requests`), scheduler job run with duration (`app.jobs`), and federation HTTP call is logged at INFO/DEBUG; `DEBUG` additionally echoes every SQL statement (`sqlalchemy.engine` + per-statement timings in `app.sql`). Slow thresholds: `BACKEND_SLOW_SQL_MS` (default 200) and `BACKEND_SLOW_REQUEST_MS` (default 1000) promote slow statements/requests to WARNING. The backend container has json-file log rotation (50 MB × 5).
 - `*_IMAGE` — per-service image pins (mirrors `versions.json`).
 
