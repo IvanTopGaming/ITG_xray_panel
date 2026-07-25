@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -164,3 +165,36 @@ def test_new_gateways_never_load_local_xray_machinery():
 def test_the_isolation_probe_is_not_vacuous():
     report = _run_isolation_probe()
     assert "panel_core.xray.engine" in report["control"]
+
+
+def test_local_gateway_resets_user_counters_via_grpc():
+    from panel_core.xray.gateway import LocalXrayGateway
+
+    with patch("panel_core.xray.grpc_client.reset_user_counters") as reset:
+        LocalXrayGateway().reset_user_counters("DE-vless", "u1", "DE-vless>>>u1")
+
+    reset.assert_called_once_with("DE-vless", "u1", "DE-vless>>>u1")
+
+
+def test_local_gateway_resets_inbound_counters_via_grpc():
+    from panel_core.xray.gateway import LocalXrayGateway
+
+    with patch("panel_core.xray.grpc_client.reset_inbound_counters") as reset:
+        LocalXrayGateway().reset_inbound_counters("DE-vless")
+
+    reset.assert_called_once_with("DE-vless")
+
+
+def test_null_and_remote_gateways_ignore_counter_resets():
+    from panel_core.xray.gateway import NullXrayGateway, RemoteXrayGateway
+
+    for gateway in (NullXrayGateway(), RemoteXrayGateway()):
+        assert gateway.reset_user_counters("DE-vless", "u1", "DE-vless>>>u1") is None
+        assert gateway.reset_inbound_counters("DE-vless") is None
+
+
+def test_gateway_protocol_covers_counter_resets():
+    from panel_core.xray.gateway import LocalXrayGateway, NullXrayGateway, RemoteXrayGateway, XrayGateway
+
+    for gateway in (LocalXrayGateway(), NullXrayGateway(), RemoteXrayGateway()):
+        assert isinstance(gateway, XrayGateway)

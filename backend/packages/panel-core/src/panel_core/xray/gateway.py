@@ -19,6 +19,10 @@ class XrayGateway(Protocol):
 
     def update_geo(self) -> None: ...
 
+    def reset_user_counters(self, inbound_tag: str, email: str, runtime_email: str) -> None: ...
+
+    def reset_inbound_counters(self, inbound_tag: str) -> None: ...
+
 
 class LocalXrayGateway:
     def has_local_xray(self) -> bool:
@@ -54,6 +58,16 @@ class LocalXrayGateway:
 
         return engine.update_geo_db()
 
+    def reset_user_counters(self, inbound_tag: str, email: str, runtime_email: str) -> None:
+        from panel_core.xray import grpc_client
+
+        return grpc_client.reset_user_counters(inbound_tag, email, runtime_email)
+
+    def reset_inbound_counters(self, inbound_tag: str) -> None:
+        from panel_core.xray import grpc_client
+
+        return grpc_client.reset_inbound_counters(inbound_tag)
+
 
 class NullXrayGateway:
     def has_local_xray(self) -> bool:
@@ -75,6 +89,12 @@ class NullXrayGateway:
         return iter(())
 
     def update_geo(self) -> None:
+        return None
+
+    def reset_user_counters(self, inbound_tag: str, email: str, runtime_email: str) -> None:
+        return None
+
+    def reset_inbound_counters(self, inbound_tag: str) -> None:
         return None
 
 
@@ -102,6 +122,12 @@ class RemoteXrayGateway:
         raise LocalXrayUnavailable(_unavailable_message("stream_logs"))
 
     def update_geo(self) -> None:
+        return None
+
+    def reset_user_counters(self, inbound_tag: str, email: str, runtime_email: str) -> None:
+        return None
+
+    def reset_inbound_counters(self, inbound_tag: str) -> None:
         return None
 
 
