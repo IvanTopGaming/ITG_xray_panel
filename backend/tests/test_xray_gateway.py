@@ -214,7 +214,7 @@ def test_create_app_does_not_clobber_an_installed_gateway():
     assert gw.get_xray_gateway() is fake
 
 
-def test_create_app_installs_local_gateway_when_none_set():
+def test_create_app_installs_remote_gateway_for_the_default_master_role():
     gw.set_xray_gateway(None)
     _build_app()
-    assert isinstance(gw.get_xray_gateway(), gw.LocalXrayGateway)
+    assert isinstance(gw.get_xray_gateway(), gw.RemoteXrayGateway)

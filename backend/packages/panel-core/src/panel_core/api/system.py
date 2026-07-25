@@ -19,6 +19,7 @@ from panel_core.xray import (
     stream_xray_logs,
     generate_config_file,
 )
+from panel_core.xray.gateway import LocalXrayUnavailable
 from panel_core.xray.settings import get_system_settings
 from panel_core.xray.protocol import (
     normalize_geo_data_url,
@@ -34,6 +35,7 @@ ALLOWED_BACKUP_EXTENSIONS = (".db", ".sqlite", ".sqlite3")
 SQLITE_HEADER = b"SQLite format 3\x00"
 DB_FILENAME = "panel.db"
 DB_BACKUP_SUFFIX = ".bak"
+XRAY_LOGS_UNSUPPORTED = "Xray logs are served by the node that runs Xray; this role has no local Xray instance."
 
 
 def _db_path():
@@ -138,8 +140,13 @@ def system_version():
 @bp.route("/logs", methods=["GET"])
 @token_required
 def get_logs():
+    try:
+        lines = stream_xray_logs()
+    except LocalXrayUnavailable:
+        return jsonify({"error": XRAY_LOGS_UNSUPPORTED}), 501
+
     def generate():
-        for line in stream_xray_logs():
+        for line in lines:
             clean_line = str(line).rstrip("\r\n")
             yield f"data: {clean_line}\n\n"
 

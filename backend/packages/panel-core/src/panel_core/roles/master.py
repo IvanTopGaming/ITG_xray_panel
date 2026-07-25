@@ -19,7 +19,7 @@ from panel_core.services.stats import (
     sync_traffic_job,
 )
 from panel_core.services.version_check import fetch_latest
-from panel_core.xray.gateway import LocalXrayGateway, set_xray_gateway, xray_gateway_configured
+from panel_core.xray.gateway import RemoteXrayGateway, set_xray_gateway, xray_gateway_configured
 
 grpc_gevent.init_gevent()
 
@@ -29,7 +29,7 @@ def create_app():
     sqlite_path = db_path()
 
     if not xray_gateway_configured():
-        set_xray_gateway(LocalXrayGateway())
+        set_xray_gateway(RemoteXrayGateway())
 
     ensure_scheduler_job("sync_traffic", sync_traffic_job, 10)
     ensure_scheduler_job("check_limits", check_limits_job, 60)
