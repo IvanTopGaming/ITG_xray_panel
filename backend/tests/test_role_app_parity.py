@@ -24,7 +24,11 @@ DATA_PLANE_JOBS = {
 DB_MAINTENANCE_JOBS = {
     ("cleanup_stats", 86400),
 }
-WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS
+EVENT_BUS_JOBS = {
+    ("replay_undelivered_bot_events", 60),
+    ("cleanup_bot_events", 86400),
+}
+WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS | EVENT_BUS_JOBS
 MASTER_JOBS = DB_MAINTENANCE_JOBS | {
     ("auto_renew_free_users", 900),
     ("poll_pending_payments", 30),

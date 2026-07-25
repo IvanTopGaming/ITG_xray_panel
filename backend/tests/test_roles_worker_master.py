@@ -46,6 +46,8 @@ def test_worker_role_composition(monkeypatch, tmp_path):
         ("check_limits", 60),
         ("parse_logs", 15),
         ("cleanup_stats", 86400),
+        ("replay_undelivered_bot_events", 60),
+        ("cleanup_bot_events", 86400),
     }
 
 
