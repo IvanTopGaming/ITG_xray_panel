@@ -1,6 +1,10 @@
 import subprocess
 import sys
 
+import pytest
+
+ROLES = ("master", "worker", "sub", "botapi")
+
 
 def test_bootstrap_is_idempotent():
     from panel_core.bootstrap import bootstrap_gevent
@@ -72,3 +76,35 @@ def test_dispatch_exposes_create_app():
     from panel_core import dispatch
 
     assert callable(dispatch.create_app)
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_every_role_installs_the_psycopg_wait_callback(role, monkeypatch, tmp_path):
+    from panel_core import pg_compat
+
+    monkeypatch.setenv("PANEL_ROLE", "bot" if role == "botapi" else role)
+    monkeypatch.setenv("SECRET_KEY", "x" * 40)
+    monkeypatch.setenv("PANEL_DOMAIN", "localhost")
+    monkeypatch.setenv("PANEL_SECRET_PATH", "/test")
+    monkeypatch.setenv("PANEL_ADMIN_USER", "admin")
+    monkeypatch.setenv("PANEL_ADMIN_PASSWORD", "admin")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{role}.db")
+
+    pg_compat._patched = False
+
+    import importlib
+
+    module = importlib.import_module(f"panel_core.roles.{role}")
+    module.create_app()
+
+    assert pg_compat._patched is True, (
+        f"role {role} built an app without installing the psycopg gevent wait callback; "
+        "without it every Postgres query blocks the whole gevent hub"
+    )
+
+    from panel_core.extensions import scheduler
+
+    scheduler.remove_all_jobs()
+    if scheduler.running:
+        scheduler.shutdown(wait=False)

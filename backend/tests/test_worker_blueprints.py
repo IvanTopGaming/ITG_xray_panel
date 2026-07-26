@@ -7,7 +7,7 @@ def _rules(monkeypatch, role):
     monkeypatch.setenv("PANEL_ADMIN_USER", "admin")
     monkeypatch.setenv("PANEL_ADMIN_PASSWORD", "admin")
     monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
-    from panel_core import create_app
+    from panel_core.dispatch import create_app
 
     app = create_app()
     from panel_core.extensions import scheduler

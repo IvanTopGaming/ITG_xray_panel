@@ -156,6 +156,10 @@ def db_path():
 
 
 def build_base_app(role):
+    from panel_core.pg_compat import patch_gevent_psycopg
+
+    patch_gevent_psycopg()
+
     setup_logging()
     bound_role = bind_role(role)
     app = Flask("panel_core")

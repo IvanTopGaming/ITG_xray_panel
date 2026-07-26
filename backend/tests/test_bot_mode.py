@@ -15,7 +15,7 @@ def _env(monkeypatch, role):
 def test_bot_mode_mounts_only_bot_and_billing(monkeypatch):
     _env(monkeypatch, "bot")
     with patch("panel_core.app_base.run_startup_migration") as m_mig:
-        from panel_core import create_app
+        from panel_core.dispatch import create_app
         from panel_core.extensions import scheduler
 
         app = create_app()
@@ -36,7 +36,7 @@ def test_bot_mode_mounts_only_bot_and_billing(monkeypatch):
 def test_bot_mode_gates_yookassa_webhook(monkeypatch):
     _env(monkeypatch, "bot")
     with patch("panel_core.app_base.run_startup_migration"):
-        from panel_core import create_app
+        from panel_core.dispatch import create_app
         from panel_core.extensions import scheduler
 
         app = create_app()

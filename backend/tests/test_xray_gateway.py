@@ -196,7 +196,7 @@ def test_gateway_configured_predicate():
 
 
 def _build_app():
-    from panel_core import create_app
+    from panel_core.dispatch import create_app
     from panel_core.extensions import scheduler
 
     try:
