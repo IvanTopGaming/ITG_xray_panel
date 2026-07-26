@@ -80,8 +80,10 @@ def _selectable_route_names():
     selected = {}
     for route in _routes():
         match = str(route.get("match") or "")
+        if not match:
+            continue
         needed = set(ENV_REF.findall(match))
-        if needed and needed <= visible:
+        if not needed or needed <= visible:
             selected[route.get("name")] = sorted(needed)
     return selected
 
@@ -116,6 +118,18 @@ def test_the_bot_host_caddy_does_not_reinject_the_whole_env_file():
         "variable in .env -- PANEL_DOMAIN, PROXY_DOMAIN and SUB_DOMAIN among them, plus DATABASE_URL "
         "and SECRET_KEY, which Caddy has no business holding. Pruning the `environment:` block does "
         f"not undo this.\n\n{WHY}"
+    )
+
+
+def test_the_bot_route_allowlists_only_the_webhook_path():
+    routes = {route.get("name"): route for route in _routes()}
+    assert "bot" in routes, f"caddy/routes.yaml no longer has a route named 'bot' (found {sorted(routes)})."
+    only_paths = routes["bot"].get("only_paths")
+    assert only_paths == ["/api/billing/yookassa/webhook"], (
+        f"the bot route's only_paths allowlist is {only_paths!r}, not exactly "
+        '["/api/billing/yookassa/webhook"]. only_paths is the mechanism that keeps the bot host from '
+        "publishing the rest of bot-api -- /bot-service/* and /api/billing/checkout -- on BOT_DOMAIN. "
+        "Neither of the route-selection guards above checks what a selected route actually exposes."
     )
 
 
