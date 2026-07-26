@@ -56,7 +56,7 @@ HEAVY_MODULES = ("panel_core.xray.engine", "panel_core.xray.grpc_client") + HEAV
 
 ALLOWED_HEAVY_IMPORTERS = {"gateway.py", "engine.py", "grpc_client.py"}
 
-ALLOWED_HEAVY_ROLE_IMPORTERS = {"worker.py", "master.py"}
+ALLOWED_HEAVY_ROLE_IMPORTERS = {"worker.py"}
 
 ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE = {
     "xray": ALLOWED_HEAVY_IMPORTERS,
@@ -138,7 +138,7 @@ def test_only_gateway_imports_heavy_xray_modules_inside_xray_package():
     assert _heavy_offenders("xray") == []
 
 
-def test_only_worker_and_master_roles_import_heavy_modules():
+def test_only_worker_role_imports_heavy_modules():
     assert _heavy_offenders("roles") == []
 
 

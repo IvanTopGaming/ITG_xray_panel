@@ -174,7 +174,7 @@ Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted fro
 | `sync_traffic` | 10s | Per-user up/down from Xray gRPC; upserts `TrafficSnapshot` via raw SQL `ON CONFLICT DO UPDATE`; emits `traffic_notification` inline at 80%/95%/exhausted (dedup via `NotificationLog`) |
 | `check_limits` | 60s | Removes expired/over-limit users; emits `expiry_notification` inline at 3d/1d/1h/expired (dedup via `NotificationLog`) |
 | `parse_logs` | 15s | Tails Xray access logs into `DomainStat` (skips bare IPs) |
-| `cleanup_stats` | 24h | Deletes `DomainStat` rows > 90d |
+| `cleanup_stats` | 24h | Runs on **master and worker** roles; deletes `DomainStat` rows > 90d |
 | `poll_linked_panels` | 10s | Pings each enabled `LinkedPanel`; fresh `status`/`last_poll` go to Redis every poll, the SQLite row is written **only on status/error change** (the panels API overlays the Redis values) |
 | `auto_renew_free_users` | 15m | Re-provisions due `billing='free'` grants; pauses + emits `access_paused` on tariff archive/disable (does **not** force-disable clients — they lapse via their own `expiry_time`) |
 | `poll_pending_payments` | 30s | Webhook fallback; reconciles pending YooKassa payments older than 30s, younger than 24h |
