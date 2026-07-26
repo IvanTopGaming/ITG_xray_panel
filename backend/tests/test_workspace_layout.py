@@ -147,7 +147,16 @@ def test_every_workspace_member_with_python_code_is_scanned():
     members = workspace_members()
     scanned = scanned_distributions()
 
-    missing = sorted(member.name for member in members if member_has_python_code(member) and member not in scanned)
+    carriers = [member for member in members if member_has_python_code(member)]
+    assert carriers, (
+        f"not one of the {len(members)} workspace members ships any python code: "
+        f"{sorted(member.name for member in members)}\n"
+        "That means discovery is broken, not that the layout is clean — every member would be "
+        "filtered out before the comparison and this guard would pass vacuously.\n"
+        f"workspace globs: {workspace_member_globs()}"
+    )
+
+    missing = sorted(member.name for member in carriers if member not in scanned)
 
     assert missing == [], (
         "these workspace members ship Python code that no guard scans, because their layout does not "
