@@ -25,44 +25,34 @@ DIRECTION_DOC = (
 )
 
 ALLOWED_INVERSIONS_DOC = (
-    "These are the two transitional inversions the panel-sub cut left behind, not a general licence. "
-    "roles/master.py and roles/worker.py ship from panel-core but register the `subscription` "
-    "blueprint, which ships from panel-sub; panel-sub already depends on panel-core, so the reverse "
-    "edge cannot be declared without a workspace cycle. Production is unaffected (every image installs "
-    "all three distributions), but `uv sync --package panel-core` alone cannot build the master or the "
-    "worker: create_app() dies with ImportError: cannot import name 'subscription' from "
-    "'panel_core.api' (unknown location). The fix is not a declaration -- it is the panel-master / "
-    "panel-worker cut, which moves roles/{master,worker}.py out of panel-core. Emptying this set is an "
-    "exit criterion of that cut: once those two modules ship from distributions that may declare a "
-    "dependency on panel-sub, delete the entries (the staleness test below will demand it). The "
-    "checkable criterion is exactly that -- ALLOWED_INVERSIONS is empty -- and NOT the literal "
-    "'panel-core imports nothing from another distribution', which is unreachable: dispatch.py also "
-    "ships from panel-core and must import roles/{sub,botapi} to dispatch to them. That is why the "
-    "guard carries a separate set, ROLE_DISPATCH_EXEMPTIONS, for that edge; it is structural and "
-    "permanent, and emptying it is not a goal."
+    "This set is empty, and that is the point: phase 3c-3 completed the cut it was created to survive. "
+    "Until then roles/master.py and roles/worker.py shipped from panel-core while registering the "
+    "`subscription` blueprint from panel-sub, an edge that could not be declared without a workspace "
+    "cycle -- so `uv sync --package panel-core` alone could not build the master or the worker. Both "
+    "role modules now ship from panel-master and panel-worker, which declare panel-sub, so the edge is "
+    "a plain declared dependency. Do not add entries here: a new inversion means a module sits in the "
+    "wrong distribution, so move the module instead. ROLE_DISPATCH_EXEMPTIONS below is a different "
+    "thing entirely -- structural and permanent -- and is not a precedent for this set."
 )
 
-ALLOWED_INVERSIONS = frozenset(
-    {
-        ("panel-core", "roles/master.py", "panel_core.api.subscription", "panel-sub"),
-    }
-)
+ALLOWED_INVERSIONS = frozenset()
 
 ROLE_DISPATCH_DOC = (
     "dispatch.py is the PANEL_ROLE selector: each branch imports exactly the role module the running "
     "host was configured for, inside create_app(), never at module scope. So the edge is only ever "
     "traversed on a host that installs that distribution by definition -- unlike the "
-    "roles/{master,worker}.py inversions above, which fire on every master and every worker. This "
-    "exemption is structural, not transitional: the dispatcher will still name all four roles after "
-    "the panel-master / panel-worker cut. It holds only while the imports stay function-level, which "
-    "test_the_role_dispatcher_imports_lazily below checks -- hoist one to module scope and importing "
-    "panel_core.dispatch alone would drag every role's distribution in with it."
+    "roles/{master,worker}.py inversions above, which used to fire on every master and every worker. "
+    "This exemption is structural, not transitional: the dispatcher still names all four roles now "
+    "that the panel-master / panel-worker cut is done. It holds only while the imports stay "
+    "function-level, which test_the_role_dispatcher_imports_lazily below checks -- hoist one to module "
+    "scope and importing panel_core.dispatch alone would drag every role's distribution in with it."
 )
 
 ROLE_DISPATCH_EXEMPTIONS = frozenset(
     {
         ("panel-core", "dispatch.py", "panel_core.roles.sub", "panel-sub"),
         ("panel-core", "dispatch.py", "panel_core.roles.botapi", "panel-botapi"),
+        ("panel-core", "dispatch.py", "panel_core.roles.master", "panel-master"),
         ("panel-core", "dispatch.py", "panel_core.roles.worker", "panel-worker"),
     }
 )

@@ -205,6 +205,33 @@ def test_panel_worker_declares_panel_sub():
     )
 
 
+MASTER_MODULES = (
+    "api/bot_admin.py",
+    "api/panels.py",
+    "jobs/billing.py",
+    "jobs/panels.py",
+    "roles/master.py",
+)
+
+
+def test_panel_master_ships_the_orchestrator_surface():
+    from tests.import_graph import SRC_ROOTS, source_path
+
+    roots = {root.parents[1].name for root in SRC_ROOTS}
+    assert "panel-master" in roots, f"panel-master must be a distribution under packages/; found {sorted(roots)}"
+    for relative in MASTER_MODULES:
+        path = source_path(relative)
+        assert "panel-master" in path.parts, f"{relative} resolved to {path}, expected it under packages/panel-master"
+
+
+def test_panel_master_declares_panel_sub():
+    declared = _distributions_with_dependencies()["panel-master"]
+    assert "panel-sub" in declared, (
+        "panel-master must declare panel-sub: roles/master.py registers the `subscription` blueprint, "
+        f"which ships from panel-sub. Declared: {sorted(declared)}"
+    )
+
+
 def test_every_workspace_member_with_python_code_is_scanned():
     from tests.import_graph import (
         SRC_ROOTS,

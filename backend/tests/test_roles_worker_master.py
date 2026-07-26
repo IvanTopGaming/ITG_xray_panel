@@ -98,9 +98,10 @@ def test_worker_does_not_register_master_only_jobs(monkeypatch, tmp_path):
 
 def test_master_module_does_not_import_stats_or_grpc():
     import ast
-    from pathlib import Path
 
-    master = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core/roles/master.py"
+    from tests.import_graph import source_path
+
+    master = source_path("roles/master.py")
     tree = ast.parse(master.read_text())
 
     imported = set()
@@ -118,9 +119,10 @@ def test_master_module_does_not_import_stats_or_grpc():
 
 def test_panels_job_takes_snapshots_from_traffic_store():
     import ast
-    from pathlib import Path
 
-    panels = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core/jobs/panels.py"
+    from tests.import_graph import source_path
+
+    panels = source_path("jobs/panels.py")
     tree = ast.parse(panels.read_text())
 
     modules = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}

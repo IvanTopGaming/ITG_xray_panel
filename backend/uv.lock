@@ -7,6 +7,7 @@ members = [
     "itg-xray-panel-backend",
     "panel-botapi",
     "panel-core",
+    "panel-master",
     "panel-sub",
     "panel-worker",
 ]
@@ -407,6 +408,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "panel-botapi" },
     { name = "panel-core" },
+    { name = "panel-master" },
     { name = "panel-sub" },
     { name = "panel-worker" },
 ]
@@ -421,6 +423,7 @@ dev = [
 requires-dist = [
     { name = "panel-botapi", editable = "packages/panel-botapi" },
     { name = "panel-core", editable = "packages/panel-core" },
+    { name = "panel-master", editable = "packages/panel-master" },
     { name = "panel-sub", editable = "packages/panel-sub" },
     { name = "panel-worker", editable = "packages/panel-worker" },
 ]
@@ -580,6 +583,21 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "redis" },
     { name = "requests" },
+]
+
+[[package]]
+name = "panel-master"
+version = "0.1.0"
+source = { editable = "packages/panel-master" }
+dependencies = [
+    { name = "panel-core" },
+    { name = "panel-sub" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "panel-core", editable = "packages/panel-core" },
+    { name = "panel-sub", editable = "packages/panel-sub" },
 ]
 
 [[package]]
