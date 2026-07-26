@@ -578,7 +578,10 @@ export default function System() {
                         key={s.key}
                         label={s.label}
                         value={s.current}
-                        latest={s.updateAvailable ? s.latest : null}
+                        latest={
+                          s.current !== null ? (s.updateAvailable ? s.latest : null) : s.latest
+                        }
+                        isLocal={s.isLocal}
                       />
                     ))}
                   </div>
@@ -711,26 +714,32 @@ function VersionPill({
   label,
   value,
   latest,
+  isLocal,
 }: {
   label: string;
-  value: string;
+  value: string | null;
   latest?: string | null;
+  isLocal?: boolean;
 }) {
+  const isInformational = value === null;
   return (
     <div
       className={`flex items-center justify-between gap-3 px-3 py-2 bg-black/20 rounded-lg border ${
         latest ? 'col-span-2 border-primary/25' : 'border-white/5'
       }`}
     >
-      <span className="shrink-0 text-gray-500 uppercase tracking-wider">{label}</span>
+      <span className="shrink-0 text-gray-500 uppercase tracking-wider">
+        {label}
+        {isLocal && <span className="ml-1.5 normal-case text-primary/70">(this host)</span>}
+      </span>
       <span className="flex items-center gap-2">
-        <span className="whitespace-nowrap text-gray-200">{value}</span>
+        {value !== null && <span className="whitespace-nowrap text-gray-200">{value}</span>}
         {latest && (
           <span
-            title={`Update available: ${latest}`}
+            title={isInformational ? `Published version: ${latest}` : `Update available: ${latest}`}
             className="shrink-0 whitespace-nowrap rounded border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold text-primary"
           >
-            ↑ {latest}
+            {isInformational ? latest : `↑ ${latest}`}
           </span>
         )}
       </span>

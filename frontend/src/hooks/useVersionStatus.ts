@@ -5,10 +5,13 @@ import { panelRole } from '@/lib/panelRole';
 export interface ServiceStatus {
   key: string;
   label: string;
-  current: string;
+  current: string | null;
   latest: string | null;
   updateAvailable: boolean;
+  isLocal?: boolean;
 }
+
+const BACKEND_ROLE_ORDER = ['master', 'worker', 'sub', 'bot_api'] as const;
 
 export function useVersionStatus() {
   const query = useQuery({
@@ -25,13 +28,31 @@ export function useVersionStatus() {
 
   const backendKey = data?.running.backend_key ?? panelRole;
   const backendCurrent = data?.running.backend ?? __APP_VERSIONS__[backendKey] ?? 'dev';
-  services.push({
-    key: 'backend',
-    label: backendKey,
-    current: backendCurrent,
-    latest: latest?.[backendKey] ?? null,
-    updateAvailable: isNewer(latest?.[backendKey], backendCurrent),
-  });
+
+  for (const roleKey of BACKEND_ROLE_ORDER) {
+    if (roleKey === backendKey) {
+      services.push({
+        key: `backend-${roleKey}`,
+        label: roleKey,
+        current: backendCurrent,
+        latest: latest?.[roleKey] ?? null,
+        updateAvailable: isNewer(latest?.[roleKey], backendCurrent),
+        isLocal: true,
+      });
+      continue;
+    }
+
+    const publishedVersion = latest?.[roleKey] ?? null;
+    if (publishedVersion) {
+      services.push({
+        key: `backend-${roleKey}`,
+        label: roleKey,
+        current: null,
+        latest: publishedVersion,
+        updateAvailable: false,
+      });
+    }
+  }
 
   services.push({
     key: 'frontend',
