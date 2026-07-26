@@ -34,7 +34,10 @@ COPY packages/ packages/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --package panel-worker
 
-RUN test -n "$XRAY_CORE_REF" && \
+RUN { test -n "$XRAY_CORE_REF" || { \
+        echo "XRAY_CORE_REF build-arg is required (the Xray-core tag whose protobuf stubs get generated)" >&2; \
+        exit 1; \
+    }; } && \
 	git clone --depth 1 --branch "$XRAY_CORE_REF" "$XRAY_CORE_REPO" /tmp/xray && \
 	python -m grpc_tools.protoc \
 	-I /tmp/xray \
