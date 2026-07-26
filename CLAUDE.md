@@ -63,7 +63,7 @@ uvx ruff format --check tg_bot/
 
 ### Caddy / caddygen (Go)
 ```bash
-cd caddy/caddygen && go test ./...   # tests for the routes.yaml → Caddy-JSON generator
+cd caddy/caddygen && go test -count=1 ./...   # tests for the routes.yaml → Caddy-JSON generator; -count=1 bypasses the test cache, which does not track the docker-compose.bot.yml / routes.yaml files these tests read from outside the Go module
 ```
 
 ### Certificates & demo data
@@ -345,7 +345,7 @@ All checks must pass before code reaches `main`. Run locally before pushing:
 
 CI provisions uv via `astral-sh/setup-uv@v8.2.0` (there is no moving `v8` major tag — pin the exact version), then runs the commands above through `uvx` / `uv run`.
 
-`uvx ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. The `caddygen` Go tests (`cd caddy/caddygen && go test ./...`) are not in CI but should pass after caddygen changes. markdownlint is **not** run in CI.
+`uvx ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. The `caddygen` Go tests (`cd caddy/caddygen && go test -count=1 ./...`) are not in CI but should pass after caddygen changes; `-count=1` is required — plain `go test ./...` can print a stale `ok (cached)` because `compose_test.go` reads `docker-compose.bot.yml` and `caddy/routes.yaml` from outside the Go module, which the test cache does not track. markdownlint is **not** run in CI.
 
 CI **runs pytest** (the `Backend pytest` job runs `uv run pytest tests/ -q` after `uv sync --frozen`) — a test failure turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
 
@@ -401,6 +401,7 @@ This wave moves the entire billing surface off the master. Read all six points b
    **The bot host needs its own certificate covering `BOT_DOMAIN`, issued manually on the box** — it is not distributed from the master, and **`scripts/generate_certs.sh` cannot do it** (same as the sub host). The script is written for the host that serves `PANEL_DOMAIN`: it passes `-d "$PANEL_DOMAIN"` unconditionally, whose DNS points at the master, so the `certbot --standalone` HTTP-01 challenge for it is answered by the master's Caddy and certbot — being all-or-nothing — fails the whole run; and its `docker compose stop caddy` / `up -d caddy` carry no `-f`, so on a bot box they would resolve the legacy monolithic `docker-compose.yml` (see point 6) and replace `panel-bot-caddy`. On the bot box, do it by hand instead:
 
    ```bash
+   set -a; . ./.env; set +a
    docker compose -f docker-compose.bot.yml stop caddy
    certbot certonly --standalone --non-interactive --agree-tos \
        --register-unsafely-without-email --cert-name "$BOT_DOMAIN" -d "$BOT_DOMAIN"
