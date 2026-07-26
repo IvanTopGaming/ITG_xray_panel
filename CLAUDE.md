@@ -79,7 +79,10 @@ bash scripts/generate_local_cert.sh   # self-signed cert for local domains
 | Service | Role |
 |---|---|
 | `xray` | Xray-core proxy engine |
-| `backend` | Flask API + APScheduler crons (gunicorn + gevent, single worker) |
+| `backend` (`master`) | Admin API + APScheduler crons (gunicorn + gevent, single worker) — runs the `panel-master` image; no local Xray, no billing surface |
+| `backend` (`worker`/node) | Same Flask app plus the local Xray driver — runs the `panel-worker` image, the only one of the four per-role images carrying the Xray binary and the generated protobuf stubs |
+| `backend` (`sub`) | Subscription links only — runs the `panel-sub` image |
+| `backend` (`bot-api`) | `/bot-service/*` and the whole billing surface — runs the `panel-bot-api` image |
 | `frontend` | React app served by Nginx |
 | `caddy` | Reverse proxy — caddygen-built native JSON, SNI routing on `:443` (caddy-l4), `:80→:443` redirect, TLS from mounted certs, decoy masquerade |
 | `redis` | Rate limiting + sub-cache + bot pubsub channel |
@@ -307,7 +310,7 @@ Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 17`. A bump trigg
 ### Python dependencies & Docker images (uv)
 Both Python services (`backend/`, `tg_bot/`) are **uv projects**: dependencies live in `[project].dependencies` in each `pyproject.toml`, pinned by a committed `uv.lock` (reproducible builds — previously every rebuild floated to latest). `[tool.uv] package = false` marks them as applications (install deps only, no wheel build), and `requires-python = "==3.12.*"` matches the `python:3.12-slim` base and the `grpcio==1.66.2` pin. There is **no `requirements.txt`** — `uv sync` is the install path everywhere.
 
-Dockerfiles are **multi-stage**: a builder stage runs `uv sync --frozen --no-dev` into `/app/.venv` (backend also generates the Xray protobuf stubs there with `grpc_tools.protoc`), then the final stage copies only `/app/.venv` + code — no `uv` binary, no `git`, no `build-essential` in the runtime image (backend ~317 MB, bot ~176 MB). The `uv` binary comes from the pinned `ghcr.io/astral-sh/uv:0.11.19` image; `UV_LINK_MODE=copy` keeps the venv relocatable across stages, `/app/.venv/bin` is first on `PATH`, and a `.dockerignore` keeps the local `.venv` out of the build context. `UV_PYTHON_DOWNLOADS=0` forces uv to use the base image's interpreter.
+Dockerfiles are **multi-stage**: a builder stage runs `uv sync --frozen --no-dev` into `/app/.venv`, then the final stage copies only `/app/.venv` + code — no `uv` binary, no `git`, no `build-essential` in the runtime image. The backend now builds as **four** per-role images from **two** Dockerfiles instead of one monolithic `backend` image: `backend/Dockerfile` takes a required `ARG PANEL_PACKAGE` (no default — an empty value fails the build via `test -n "$PANEL_PACKAGE"`) and is reused for `panel-master` (**211 MB**), `panel-sub` (**210 MB**) and `panel-bot-api` (**222 MB**) by passing `--build-arg PANEL_PACKAGE=panel-{master,sub,botapi}`; `backend/Dockerfile.worker` is a **separate file**, not another `PANEL_PACKAGE` value, because only the worker needs the Xray binary (`COPY --from=xraybin`) and the `grpc_tools.protoc`-generated protobuf stubs (`XRAY_CORE_REF`-pinned), which would otherwise bloat the three light images — it hardcodes `--package panel-worker` and produces `panel-worker` (**311 MB**). All four still beat the old **316.8 MB** monolith; the three light roles save 30-50%. The `uv` binary comes from the pinned `ghcr.io/astral-sh/uv:0.11.19` image; `UV_LINK_MODE=copy` keeps the venv relocatable across stages, `/app/.venv/bin` is first on `PATH`, and a `.dockerignore` keeps the local `.venv`, `secret.key`, `tests/` and `db/` out of the build context. `UV_PYTHON_DOWNLOADS=0` forces uv to use the base image's interpreter. Both Dockerfiles insert a dependency-only cache layer (`uv sync … --package "$PANEL_PACKAGE" --no-install-workspace`) between the `pyproject.toml` COPYs and `COPY packages/`, so an app-code change doesn't invalidate the dependency-install layer. The bot image is unaffected by this split (~176 MB).
 
 CI installs uv via `astral-sh/setup-uv@v8.2.0` and runs `uvx ruff` for lint, `uv sync --frozen` + `uv run pytest` for tests. `uv sync` installs the dev group (`pytest`, `pytest-flask`) — note `pytest-flask`'s autouse fixtures pull the `app` fixture ahead of other autouse fixtures, so test mocks must patch a name **where it is used** (`app.api.inbound.restart_xray_container`), not only where it is defined (`app.services.xray.*`); the source-module patch silently misses because `api/inbound.py` did `from app.services.xray import …`.
 
@@ -383,7 +386,7 @@ Release is **driven entirely by `versions.json`** on `main`. You decide what to 
 1. Bump the service(s) you want to release in `versions.json` (e.g. `"bot": "2.1.4"` → `"2.2.0"`).
 2. Update the matching line in `.env.example` so deployers pin the new tag (edit by hand to match the `versions.json` change; `.env.example` uses the `v`-prefixed tag, `versions.json` does not).
 3. Merge to `main`. The release workflow triggers only when `versions.json` changes on `main`.
-4. CI diffs the new `versions.json` against the previous commit and builds/pushes **only the services whose version string changed**. If only `xray_core_ref` changed it's a no-op; bump `backend` too to force a rebuild.
+4. CI diffs the new `versions.json` against the previous commit and builds/pushes **only the services whose version string changed**. If only `xray_core_ref` changed it's a no-op; bump `worker` too to force a rebuild — it's the only image the Xray core ref affects.
 5. CI does **not** commit anything back to `main`. There is no auto-bump commit.
 
 Force-pushing rewrites history — CI can't diff against the old SHA and falls back to `HEAD~1..HEAD`. Avoid force-pushing `main`; use feature branches.
@@ -425,6 +428,18 @@ This wave moves the entire billing surface off the master. Read all six points b
 
 6. **The legacy monolithic stacks are dead — statement of fact, not a task.** `docker-compose.yml`, `docker-compose.prod.yml` and `docker-compose.staging.yml` all still set `PANEL_ROLE=master` alongside a local `xray` container and point the bot at `backend:5000`, where `/bot-service/*` no longer exists. They were **already** broken before this phase: since Phase 3b the master gets a `RemoteXrayGateway` and registers none of `sync_traffic` / `check_limits` / `parse_logs`, so a local `xray` is neither driven nor polled. **The monolithic install path does not currently work.** The user has deliberately deferred `prod` / `staging` / `install_*` ("we'll do it from scratch") — do not try to repair these files as a side quest.
 
+### Deploy note — one `backend` image becomes four (Phase 3d)
+
+This wave retires the single `panel-backend` image in favour of one image per role. Read all four points before rolling it out.
+
+1. **`BACKEND_IMAGE` is gone.** Every split stack now refuses to start until `.env` gains `MASTER_IMAGE` / `WORKER_IMAGE` / `SUB_IMAGE` / `BOT_API_IMAGE` — intentional fail-loud, same pattern as `BOT_EVENTS_REDIS_URI`. Each host only reads its own variable, but `.env` is usually shared across hosts, so set all four everywhere.
+
+2. **`ghcr.io/ivantopgaming/panel-backend` is retired.** Nothing builds or pushes it any more; existing tags stay pullable but stop receiving updates.
+
+3. **Four versions replace one.** `versions.json` no longer has `backend`; it has `master` / `worker` / `sub` / `bot_api` instead, and bumping one alone rebuilds and republishes only that image. The rebuild fan-out a deployer needs to reason about: a change in `panel-core` rebuilds all **four** backend images; a change in `panel-sub` rebuilds **three** (`sub`, `master`, `worker` — both `roles/master.py` and `roles/worker.py` register the `subscription` blueprint, since the master and each node serve subscription links themselves); a change in `panel-adminapi` rebuilds **two** (`master`, `worker`); a change confined to `panel-master`, `panel-worker` or `panel-botapi` rebuilds **one**. `backend/Dockerfile` builds `master`/`sub`/`bot-api` off `PANEL_PACKAGE`; `backend/Dockerfile.worker` is the separate file that builds `worker` and alone carries the Xray binary and protobuf stubs — see Python dependencies & Docker images above for the measured sizes.
+
+4. **The schema-bump lockstep rule still applies.** Per-role versions do not change the existing requirement to deploy master and all linked panels in the same wave when `CURRENT_DB_VERSION` changes.
+
 ## Configuration
 
 Copy `.env.example` to `.env`. Key variables:
@@ -435,7 +450,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `RATELIMIT_STORAGE_URI` — Redis URI for rate limiting.
 - `BOT_EVENTS_REDIS_URI` — event-bus Redis URI for the `bot:events` channel (`redis://` or `rediss://`). Defaults to `RATELIMIT_STORAGE_URI`. **Required on the master and on every node** — both stacks run their own local `redis` container for rate limiting and the sub-cache, so the default would publish into a Redis with no subscriber, and the event would be marked delivered and lost for good. Point it at the shared data-tier Redis (`docker-compose.postgres.yml`): `redis://node:<REDIS_NODE_PASSWORD>@<data-vm>:6379/0` on a node (publish-only credential), `redis://panel:<REDIS_PANEL_PASSWORD>@<data-vm>:6379/0` on the master. `sub` and `bot` have no local Redis and can rely on the default. That Redis ACLs two users: `node` (`-@all +publish +select &bot:events`) and `panel` (`~* &* +@all -@dangerous` — data + pubsub + scripting, but no `FLUSHALL`/`CONFIG`/`KEYS`/`SHUTDOWN`/`DEBUG`/`INFO`). The bus crosses hosts and carries the ACL password plus `telegram_id`/`email` in cleartext — run it over a private network between hosts or over `rediss://`.
 - `BACKEND_LOG_LEVEL` *(default INFO)* — backend log verbosity. Every API request (`app.requests`), scheduler job run with duration (`app.jobs`), and federation HTTP call is logged at INFO/DEBUG; `DEBUG` additionally echoes every SQL statement (`sqlalchemy.engine` + per-statement timings in `app.sql`). Slow thresholds: `BACKEND_SLOW_SQL_MS` (default 200) and `BACKEND_SLOW_REQUEST_MS` (default 1000) promote slow statements/requests to WARNING. The backend container has json-file log rotation (50 MB × 5).
-- `*_IMAGE` — per-service image pins (mirrors `versions.json`).
+- `*_IMAGE` — per-service image pins (mirrors `versions.json`). The backend is now four images, each pinned by its own variable: `MASTER_IMAGE` (`docker-compose.master.yml`), `WORKER_IMAGE` (`docker-compose.node.yml`), `SUB_IMAGE` (`docker-compose.sub.yml`), `BOT_API_IMAGE` (`docker-compose.bot.yml`) — `BACKEND_IMAGE` no longer exists outside the frozen legacy monolithic compose files. See the deploy note below.
 
 Bot configuration is **not** in `.env`. It lives in `SystemSetting` rows managed via **Bot → Settings** in the panel UI: `bot_token`, `admin_telegram_ids`, `bot_service_token`, YooKassa `shop_id` / `secret_key`, `display_timezone`. The bot container only needs two env vars: `BACKEND_API_URL` and `BOT_SERVICE_TOKEN`. Changes take effect within ~60s without restarting the bot.
 
