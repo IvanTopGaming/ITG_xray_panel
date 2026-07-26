@@ -5,10 +5,6 @@ requires-python = "==3.12.*"
 dependencies = [
     "flask",
     "flask-cors",
-    "docker",
-    "grpcio==1.66.2",
-    "grpcio-tools==1.66.2",
-    "protobuf==5.28.3",
     "psutil",
     "pyjwt",
     "gunicorn",
@@ -18,7 +14,6 @@ dependencies = [
     "flask-sqlalchemy",
     "flask-migrate",
     "flask-apscheduler",
-    "filelock",
     "requests",
     "pyyaml",
     "cryptography",

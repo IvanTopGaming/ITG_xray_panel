@@ -1,0 +1,24 @@
+[project]
+name = "panel-worker"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "panel-core",
+    "panel-sub",
+    "docker",
+    "filelock",
+    "grpcio==1.66.2",
+    "grpcio-tools==1.66.2",
+    "protobuf==5.28.3",
+]
+
+[tool.uv.sources]
+panel-core = { workspace = true }
+panel-sub = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/panel_core"]

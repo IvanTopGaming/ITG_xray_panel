@@ -45,7 +45,6 @@ ALLOWED_INVERSIONS_DOC = (
 ALLOWED_INVERSIONS = frozenset(
     {
         ("panel-core", "roles/master.py", "panel_core.api.subscription", "panel-sub"),
-        ("panel-core", "roles/worker.py", "panel_core.api.subscription", "panel-sub"),
     }
 )
 
@@ -64,6 +63,7 @@ ROLE_DISPATCH_EXEMPTIONS = frozenset(
     {
         ("panel-core", "dispatch.py", "panel_core.roles.sub", "panel-sub"),
         ("panel-core", "dispatch.py", "panel_core.roles.botapi", "panel-botapi"),
+        ("panel-core", "dispatch.py", "panel_core.roles.worker", "panel-worker"),
     }
 )
 

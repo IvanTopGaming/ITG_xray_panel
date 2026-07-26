@@ -8,6 +8,7 @@ members = [
     "panel-botapi",
     "panel-core",
     "panel-sub",
+    "panel-worker",
 ]
 
 [[package]]
@@ -407,6 +408,7 @@ dependencies = [
     { name = "panel-botapi" },
     { name = "panel-core" },
     { name = "panel-sub" },
+    { name = "panel-worker" },
 ]
 
 [package.dev-dependencies]
@@ -420,6 +422,7 @@ requires-dist = [
     { name = "panel-botapi", editable = "packages/panel-botapi" },
     { name = "panel-core", editable = "packages/panel-core" },
     { name = "panel-sub", editable = "packages/panel-sub" },
+    { name = "panel-worker", editable = "packages/panel-worker" },
 ]
 
 [package.metadata.requires-dev]
@@ -542,8 +545,6 @@ version = "0.1.0"
 source = { editable = "packages/panel-core" }
 dependencies = [
     { name = "cryptography" },
-    { name = "docker" },
-    { name = "filelock" },
     { name = "flask" },
     { name = "flask-apscheduler" },
     { name = "flask-cors" },
@@ -551,10 +552,7 @@ dependencies = [
     { name = "flask-migrate" },
     { name = "flask-sqlalchemy" },
     { name = "gevent" },
-    { name = "grpcio" },
-    { name = "grpcio-tools" },
     { name = "gunicorn" },
-    { name = "protobuf" },
     { name = "psutil" },
     { name = "psycogreen" },
     { name = "psycopg2-binary" },
@@ -567,8 +565,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography" },
-    { name = "docker" },
-    { name = "filelock" },
     { name = "flask" },
     { name = "flask-apscheduler" },
     { name = "flask-cors" },
@@ -576,10 +572,7 @@ requires-dist = [
     { name = "flask-migrate" },
     { name = "flask-sqlalchemy" },
     { name = "gevent" },
-    { name = "grpcio", specifier = "==1.66.2" },
-    { name = "grpcio-tools", specifier = "==1.66.2" },
     { name = "gunicorn" },
-    { name = "protobuf", specifier = "==5.28.3" },
     { name = "psutil" },
     { name = "psycogreen", specifier = "==1.0.2" },
     { name = "psycopg2-binary", specifier = "==2.9.10" },
@@ -599,6 +592,31 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "panel-core", editable = "packages/panel-core" }]
+
+[[package]]
+name = "panel-worker"
+version = "0.1.0"
+source = { editable = "packages/panel-worker" }
+dependencies = [
+    { name = "docker" },
+    { name = "filelock" },
+    { name = "grpcio" },
+    { name = "grpcio-tools" },
+    { name = "panel-core" },
+    { name = "panel-sub" },
+    { name = "protobuf" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "docker" },
+    { name = "filelock" },
+    { name = "grpcio", specifier = "==1.66.2" },
+    { name = "grpcio-tools", specifier = "==1.66.2" },
+    { name = "panel-core", editable = "packages/panel-core" },
+    { name = "panel-sub", editable = "packages/panel-sub" },
+    { name = "protobuf", specifier = "==5.28.3" },
+]
 
 [[package]]
 name = "pluggy"

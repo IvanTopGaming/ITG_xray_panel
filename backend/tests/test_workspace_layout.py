@@ -135,6 +135,76 @@ def test_no_module_is_shipped_by_two_distributions():
     )
 
 
+WORKER_MODULES = (
+    "xray/local.py",
+    "xray/engine.py",
+    "xray/grpc_client.py",
+    "services/stats.py",
+    "roles/worker.py",
+)
+
+WORKER_ONLY_DEPENDENCIES = ("docker", "filelock", "grpcio", "grpcio-tools", "protobuf")
+
+
+def _distributions_with_dependencies():
+    import tomllib
+
+    from tests.import_graph import workspace_members
+
+    result = {}
+    for member in workspace_members():
+        with (member / "pyproject.toml").open("rb") as handle:
+            project = tomllib.load(handle).get("project", {})
+        name = project.get("name")
+        assert name, f"{member}/pyproject.toml declares no [project].name"
+        declared = set()
+        for spec in project.get("dependencies", []):
+            requirement = spec.split(";")[0].strip()
+            for separator in ("[", "=", ">", "<", "!", "~", " ", "("):
+                requirement = requirement.split(separator)[0]
+            declared.add(requirement.strip().lower().replace("_", "-"))
+        result[name] = declared
+    assert result, "no workspace member resolved — this guard would pass vacuously"
+    return result
+
+
+def test_panel_worker_ships_the_local_xray_stack():
+    from tests.import_graph import SRC_ROOTS, source_path
+
+    roots = {root.parents[1].name for root in SRC_ROOTS}
+    assert "panel-worker" in roots, f"panel-worker must be a distribution under packages/; found {sorted(roots)}"
+    for relative in WORKER_MODULES:
+        path = source_path(relative)
+        assert "panel-worker" in path.parts, f"{relative} resolved to {path}, expected it under packages/panel-worker"
+
+
+def test_the_heavy_stack_is_declared_only_by_panel_worker():
+    declared = _distributions_with_dependencies()
+    offenders = sorted(
+        f"{name} declares {dependency}"
+        for name, entry in declared.items()
+        for dependency in WORKER_ONLY_DEPENDENCIES
+        if dependency in entry and name != "panel-worker"
+    )
+    assert offenders == [], (
+        f"the gRPC/docker/filelock stack must be declared by panel-worker alone: {offenders}. Leaving any "
+        "of it in panel-core's dependency list puts the whole Xray runtime into every image, which is the "
+        "thing this cut exists to prevent."
+    )
+    assert declared["panel-worker"] >= set(WORKER_ONLY_DEPENDENCIES), (
+        f"panel-worker declares {sorted(declared['panel-worker'])}, missing part of "
+        f"{sorted(WORKER_ONLY_DEPENDENCIES)} — it ships engine.py and grpc_client.py and must declare them."
+    )
+
+
+def test_panel_worker_declares_panel_sub():
+    declared = _distributions_with_dependencies()["panel-worker"]
+    assert "panel-sub" in declared, (
+        "panel-worker must declare panel-sub: roles/worker.py registers the `subscription` blueprint, "
+        f"which ships from panel-sub. Declared: {sorted(declared)}"
+    )
+
+
 def test_every_workspace_member_with_python_code_is_scanned():
     from tests.import_graph import (
         SRC_ROOTS,
