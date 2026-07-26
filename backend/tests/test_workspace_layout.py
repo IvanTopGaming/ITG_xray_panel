@@ -3,6 +3,8 @@ import importlib.util
 
 import pytest
 
+from tests.import_graph import distributions_with_dependencies
+
 
 def test_panel_core_is_importable():
     mod = importlib.import_module("panel_core")
@@ -146,28 +148,6 @@ WORKER_MODULES = (
 WORKER_ONLY_DEPENDENCIES = ("docker", "filelock", "grpcio", "grpcio-tools", "protobuf")
 
 
-def _distributions_with_dependencies():
-    import tomllib
-
-    from tests.import_graph import workspace_members
-
-    result = {}
-    for member in workspace_members():
-        with (member / "pyproject.toml").open("rb") as handle:
-            project = tomllib.load(handle).get("project", {})
-        name = project.get("name")
-        assert name, f"{member}/pyproject.toml declares no [project].name"
-        declared = set()
-        for spec in project.get("dependencies", []):
-            requirement = spec.split(";")[0].strip()
-            for separator in ("[", "=", ">", "<", "!", "~", " ", "("):
-                requirement = requirement.split(separator)[0]
-            declared.add(requirement.strip().lower().replace("_", "-"))
-        result[name] = declared
-    assert result, "no workspace member resolved — this guard would pass vacuously"
-    return result
-
-
 def test_panel_worker_ships_the_local_xray_stack():
     from tests.import_graph import SRC_ROOTS, source_path
 
@@ -179,7 +159,7 @@ def test_panel_worker_ships_the_local_xray_stack():
 
 
 def test_the_heavy_stack_is_declared_only_by_panel_worker():
-    declared = _distributions_with_dependencies()
+    declared = distributions_with_dependencies()
     offenders = sorted(
         f"{name} declares {dependency}"
         for name, entry in declared.items()
@@ -198,7 +178,7 @@ def test_the_heavy_stack_is_declared_only_by_panel_worker():
 
 
 def test_panel_worker_declares_panel_sub():
-    declared = _distributions_with_dependencies()["panel-worker"]
+    declared = distributions_with_dependencies()["panel-worker"]
     assert "panel-sub" in declared, (
         "panel-worker must declare panel-sub: roles/worker.py registers the `subscription` blueprint, "
         f"which ships from panel-sub. Declared: {sorted(declared)}"
@@ -225,7 +205,7 @@ def test_panel_master_ships_the_orchestrator_surface():
 
 
 def test_panel_master_declares_panel_sub():
-    declared = _distributions_with_dependencies()["panel-master"]
+    declared = distributions_with_dependencies()["panel-master"]
     assert "panel-sub" in declared, (
         "panel-master must declare panel-sub: roles/master.py registers the `subscription` blueprint, "
         f"which ships from panel-sub. Declared: {sorted(declared)}"
@@ -258,7 +238,7 @@ def test_panel_adminapi_ships_the_shared_admin_surface():
 def test_psutil_is_declared_only_by_panel_adminapi():
     offenders = sorted(
         f"{name} declares psutil"
-        for name, entry in _distributions_with_dependencies().items()
+        for name, entry in distributions_with_dependencies().items()
         if "psutil" in entry and name != "panel-adminapi"
     )
     assert offenders == [], (
@@ -269,7 +249,7 @@ def test_psutil_is_declared_only_by_panel_adminapi():
 
 
 def test_the_roles_declare_the_admin_surface_they_register():
-    declared = _distributions_with_dependencies()
+    declared = distributions_with_dependencies()
     for name in ("panel-worker", "panel-master"):
         assert "panel-adminapi" in declared[name], (
             f"{name} must declare panel-adminapi: its role factory registers the auth, inbound, outbound, "
@@ -287,7 +267,7 @@ def test_the_workspace_has_exactly_the_six_planned_distributions():
         "panel-sub",
         "panel-botapi",
     }
-    actual = set(_distributions_with_dependencies())
+    actual = set(distributions_with_dependencies())
     assert actual == expected, (
         f"the workspace holds {sorted(actual)}, expected {sorted(expected)}. Phase 3c-3 is the last cut; "
         "a seventh distribution or a missing one means the layout drifted from the design."

@@ -116,6 +116,42 @@ def member_has_python_code(member):
     return any(path.is_file() for path in member.rglob("*.py"))
 
 
+def project_table(member):
+    with (member / "pyproject.toml").open("rb") as handle:
+        return tomllib.load(handle).get("project", {})
+
+
+def project_name(member, *, context=""):
+    name = project_table(member).get("name")
+    assert name, f"{member}/pyproject.toml declares no [project].name{context}"
+    return name
+
+
+def requirement_name(spec):
+    name = spec.split(";")[0].strip()
+    for separator in ("[", "=", ">", "<", "!", "~", " ", "("):
+        name = name.split(separator)[0]
+    return name.strip().lower().replace("_", "-")
+
+
+def distributions():
+    result = {}
+    for member in workspace_members():
+        project = project_table(member)
+        name = project_name(member, context=" — ownership cannot be resolved")
+        result[name] = {
+            "path": member,
+            "dependencies": {requirement_name(spec) for spec in project.get("dependencies", [])},
+        }
+    return result
+
+
+def distributions_with_dependencies():
+    result = {name: entry["dependencies"] for name, entry in distributions().items()}
+    assert result, "no workspace member resolved — this guard would pass vacuously"
+    return result
+
+
 HEAVY_ROOTS = (
     "app",
     "common",

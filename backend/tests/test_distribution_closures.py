@@ -3,14 +3,15 @@ import tomllib
 from tests.import_graph import (
     BACKEND_PYPROJECT,
     distribution_root,
+    distributions_with_dependencies,
     imported_modules,
     iter_sources,
+    project_name,
     relative_source_name,
+    requirement_name,
     root_for,
     workspace_members,
 )
-from tests.test_distribution_imports import _requirement_name
-from tests.test_workspace_layout import _distributions_with_dependencies
 
 LOCAL_ROOTS = {"panel_core", "tests"}
 
@@ -43,12 +44,7 @@ DECLARED_DEPENDENCY_NAME = {
 }
 
 
-def _project_name(member):
-    with (member / "pyproject.toml").open("rb") as handle:
-        return tomllib.load(handle).get("project", {}).get("name")
-
-
-OWNERS = {member: _project_name(member) for member in workspace_members()}
+OWNERS = {member: project_name(member, context=" — ownership cannot be resolved") for member in workspace_members()}
 
 
 def _owner(path):
@@ -100,7 +96,7 @@ def test_every_owned_package_is_actually_imported_somewhere():
 
 
 def test_the_owning_distribution_actually_declares_the_package_it_owns():
-    declared = _distributions_with_dependencies()
+    declared = distributions_with_dependencies()
     offenders = []
     for root, owner in sorted(EXTERNAL_OWNERS.items()):
         package = DECLARED_DEPENDENCY_NAME[root]
@@ -116,8 +112,8 @@ def test_the_owning_distribution_actually_declares_the_package_it_owns():
 def test_the_root_aggregator_declares_only_the_six_workspace_distributions():
     with BACKEND_PYPROJECT.open("rb") as handle:
         project = tomllib.load(handle).get("project", {})
-    declared = {_requirement_name(spec) for spec in project.get("dependencies", [])}
-    expected = {_project_name(member) for member in workspace_members()}
+    declared = {requirement_name(spec) for spec in project.get("dependencies", [])}
+    expected = {project_name(member, context=" — ownership cannot be resolved") for member in workspace_members()}
     assert declared == expected, (
         f"backend/pyproject.toml's [project].dependencies is {sorted(declared)}, expected exactly the "
         f"workspace distributions {sorted(expected)}. workspace_members() globs packages/* only, so the "

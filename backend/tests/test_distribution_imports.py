@@ -1,7 +1,6 @@
-import tomllib
-
 from tests.import_graph import (
     distribution_root,
+    distributions,
     imported_modules,
     iter_sources,
     module_level_imports,
@@ -9,7 +8,6 @@ from tests.import_graph import (
     resolve_module_path,
     root_for,
     source_path,
-    workspace_members,
 )
 
 DIRECTION_DOC = (
@@ -60,32 +58,7 @@ ROLE_DISPATCH_EXEMPTIONS = frozenset(
 EXEMPT_EDGES = ALLOWED_INVERSIONS | ROLE_DISPATCH_EXEMPTIONS
 
 
-def _project_table(member):
-    with (member / "pyproject.toml").open("rb") as handle:
-        return tomllib.load(handle).get("project", {})
-
-
-def _requirement_name(spec):
-    name = spec.split(";")[0].strip()
-    for separator in ("[", "=", ">", "<", "!", "~", " ", "("):
-        name = name.split(separator)[0]
-    return name.strip().lower().replace("_", "-")
-
-
-def _distributions():
-    distributions = {}
-    for member in workspace_members():
-        project = _project_table(member)
-        name = project.get("name")
-        assert name, f"{member}/pyproject.toml declares no [project].name — ownership cannot be resolved"
-        distributions[name] = {
-            "path": member,
-            "dependencies": {_requirement_name(spec) for spec in project.get("dependencies", [])},
-        }
-    return distributions
-
-
-DISTRIBUTIONS = _distributions()
+DISTRIBUTIONS = distributions()
 
 OWNER_BY_PATH = {entry["path"]: name for name, entry in DISTRIBUTIONS.items()}
 
