@@ -34,8 +34,12 @@ ALLOWED_INVERSIONS_DOC = (
     "'panel_core.api' (unknown location). The fix is not a declaration -- it is the panel-master / "
     "panel-worker cut, which moves roles/{master,worker}.py out of panel-core. Emptying this set is an "
     "exit criterion of that cut: once those two modules ship from distributions that may declare a "
-    "dependency on panel-sub, delete the entries (the staleness test below will demand it) and "
-    "panel-core imports nothing from another distribution."
+    "dependency on panel-sub, delete the entries (the staleness test below will demand it). The "
+    "checkable criterion is exactly that -- ALLOWED_INVERSIONS is empty -- and NOT the literal "
+    "'panel-core imports nothing from another distribution', which is unreachable: dispatch.py also "
+    "ships from panel-core and must import roles/{sub,botapi} to dispatch to them. That is why the "
+    "guard carries a separate set, ROLE_DISPATCH_EXEMPTIONS, for that edge; it is structural and "
+    "permanent, and emptying it is not a goal."
 )
 
 ALLOWED_INVERSIONS = frozenset(
