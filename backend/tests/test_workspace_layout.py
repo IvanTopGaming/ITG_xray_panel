@@ -110,3 +110,49 @@ def test_the_yookassa_sdk_is_imported_only_from_panel_botapi():
         "the yookassa SDK must be imported only from panel-botapi, otherwise the dependency "
         f"leaks back into every image: {offenders}"
     )
+
+
+def test_no_module_is_shipped_by_two_distributions():
+    from collections import defaultdict
+
+    from tests.import_graph import SRC_ROOTS, iter_sources, relative_source_name, root_for, root_label
+
+    owners = defaultdict(list)
+    for path in iter_sources():
+        owners[relative_source_name(path)].append(root_label(root_for(path)))
+
+    assert owners, (
+        f"no python module found under any of {[str(r) for r in SRC_ROOTS]} — this guard would pass "
+        "vacuously with nothing to compare"
+    )
+
+    duplicates = {name: sorted(labels) for name, labels in owners.items() if len(labels) > 1}
+    assert duplicates == {}, (
+        "these modules are shipped by more than one distribution, so which one wins depends on "
+        f"sys.path order and every guard silently inspects only the first: {duplicates}\n"
+        "A module must be moved between distributions with git mv, never copied.\n"
+        f"scanned roots: {[str(r) for r in SRC_ROOTS]}"
+    )
+
+
+def test_every_workspace_member_with_python_code_is_scanned():
+    from tests.import_graph import (
+        SRC_ROOTS,
+        member_has_python_code,
+        scanned_distributions,
+        workspace_member_globs,
+        workspace_members,
+    )
+
+    members = workspace_members()
+    scanned = scanned_distributions()
+
+    missing = sorted(member.name for member in members if member_has_python_code(member) and member not in scanned)
+
+    assert missing == [], (
+        "these workspace members ship Python code that no guard scans, because their layout does not "
+        f"match packages/*/src/panel_core: {missing}\n"
+        "Either move them to that layout or teach import_graph.SRC_ROOTS about them.\n"
+        f"workspace globs: {workspace_member_globs()}\n"
+        f"scanned roots: {[str(r) for r in SRC_ROOTS]}"
+    )

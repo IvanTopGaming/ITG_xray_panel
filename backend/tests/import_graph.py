@@ -1,10 +1,13 @@
 import ast
 import pathlib
+import tomllib
 from collections import deque
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
 PACKAGES = BACKEND / "packages"
+
+BACKEND_PYPROJECT = BACKEND / "pyproject.toml"
 
 SRC_ROOTS_DOC = (
     "Guards anchor on every packages/*/src/panel_core directory, not on packages/panel-core alone. "
@@ -80,6 +83,37 @@ def discovered_directories():
 
 def root_label(root):
     return f"{root.parents[1].name}:panel_core"
+
+
+def distribution_root(root):
+    return root.parents[1]
+
+
+def scanned_distributions():
+    return {distribution_root(root) for root in SRC_ROOTS}
+
+
+def workspace_member_globs():
+    with BACKEND_PYPROJECT.open("rb") as handle:
+        config = tomllib.load(handle)
+    globs = config.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+    assert globs, f"{BACKEND_PYPROJECT} declares no [tool.uv.workspace] members — member discovery is broken"
+    return list(globs)
+
+
+def workspace_members():
+    globs = workspace_member_globs()
+    members = set()
+    for pattern in globs:
+        for path in BACKEND.glob(pattern):
+            if (path / "pyproject.toml").is_file():
+                members.add(path)
+    assert members, f"no uv workspace member resolved from {globs} under {BACKEND} — member discovery is broken"
+    return sorted(members)
+
+
+def member_has_python_code(member):
+    return any(path.is_file() for path in member.rglob("*.py"))
 
 
 HEAVY_ROOTS = (
