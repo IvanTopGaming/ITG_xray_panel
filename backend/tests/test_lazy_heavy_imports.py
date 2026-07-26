@@ -7,7 +7,7 @@ from tests.import_graph import (
 )
 
 ALLOWED_LAZY_HEAVY_FILES = {
-    "__init__.py": (
+    "dispatch.py": (
         "the role dispatcher: create_app() imports panel_core.roles.worker only when PANEL_ROLE=worker, "
         "which is exactly how the light roles avoid the heavy stack"
     ),
