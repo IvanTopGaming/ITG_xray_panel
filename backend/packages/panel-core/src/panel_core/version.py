@@ -2,6 +2,8 @@ import json
 import os
 import pathlib
 
+from panel_core.panel_role import ROLE_BOT, ROLE_MASTER, ROLE_SUB, ROLE_WORKER, current_role
+
 
 def _ancestor_candidates():
     here = pathlib.Path(__file__).resolve().parent
@@ -22,8 +24,6 @@ def _read_versions(path=None):
                 continue
     return {}
 
-
-from panel_core.panel_role import ROLE_BOT, ROLE_MASTER, ROLE_SUB, ROLE_WORKER, current_role
 
 VERSION_KEY_BY_ROLE = {
     ROLE_MASTER: "master",
