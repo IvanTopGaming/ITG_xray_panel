@@ -722,10 +722,11 @@ function VersionPill({
   isLocal?: boolean;
 }) {
   const isInformational = value === null;
+  const isActionable = Boolean(latest) && !isInformational;
   return (
     <div
       className={`flex items-center justify-between gap-3 px-3 py-2 bg-black/20 rounded-lg border ${
-        latest ? 'col-span-2 border-primary/25' : 'border-white/5'
+        isActionable ? 'col-span-2 border-primary/25' : 'border-white/5'
       }`}
     >
       <span className="shrink-0 text-gray-500 uppercase tracking-wider">
@@ -737,7 +738,11 @@ function VersionPill({
         {latest && (
           <span
             title={isInformational ? `Published version: ${latest}` : `Update available: ${latest}`}
-            className="shrink-0 whitespace-nowrap rounded border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold text-primary"
+            className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[9px] font-bold ${
+              isActionable
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-white/10 bg-white/5 text-gray-400'
+            }`}
           >
             {isInformational ? latest : `↑ ${latest}`}
           </span>

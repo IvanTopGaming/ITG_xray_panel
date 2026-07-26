@@ -4,7 +4,11 @@ import re
 
 import pytest
 
+from panel_core.version import VERSION_KEY_BY_ROLE
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
+
+USE_VERSION_STATUS_HOOK = "frontend/src/hooks/useVersionStatus.ts"
 
 IMAGE_TARGETS = {
     "master": {
@@ -57,6 +61,11 @@ THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY = {
     "XRAY_IMAGE": "upstream Xray-core image; its tag tracks xray_core_ref, not a semver in versions.json",
     "SOCKET_PROXY_IMAGE": "third-party image (tecnativa/docker-socket-proxy), never built or versioned by this repo",
     "REDIS_IMAGE": "third-party image (redis), never built or versioned by this repo",
+}
+
+VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN = {
+    "xray_core_ref": "build-time Xray-core git ref compiled into the worker image; it is a ref, not an "
+    "image tag, so no .env.example *_IMAGE var pins it",
 }
 
 DRIFT_DOC = (
@@ -139,6 +148,19 @@ def test_every_image_var_in_env_example_is_either_version_pinned_or_explicitly_t
         f".env.example declares {sorted(unaccounted)} but this guard has no opinion on them — add each "
         f"to VERSION_PINNED_ENV_VARS (if versions.json should own its tag) or to "
         f"THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY (with a reason) so a new *_IMAGE var can't "
+        f"silently drift unchecked.\n\n{DRIFT_DOC}"
+    )
+
+
+def test_every_versions_json_key_is_either_env_pinned_or_explicitly_a_non_image_ref():
+    versions = json.loads(_read("versions.json"))
+    accounted_for = set(VERSION_PINNED_ENV_VARS) | set(VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN)
+    unaccounted = set(versions) - accounted_for
+    assert unaccounted == set(), (
+        f"versions.json declares {sorted(unaccounted)} but no .env.example *_IMAGE var pins it, and this "
+        f"guard has no opinion on it either. Add each to VERSION_PINNED_ENV_VARS (if it should own an "
+        f".env.example *_IMAGE pin) or to VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN (with a reason, the way "
+        f"xray_core_ref is a build-time ref rather than an image) so a new versions.json key can't "
         f"silently drift unchecked.\n\n{DRIFT_DOC}"
     )
 
@@ -243,6 +265,31 @@ def test_only_the_worker_image_carries_the_xray_runtime():
 
     assert "--package panel-worker" in worker, "Dockerfile.worker must sync the panel-worker package"
     assert "--package" in light and "PANEL_PACKAGE" in light
+
+
+def _frontend_backend_role_order():
+    text = _read(USE_VERSION_STATUS_HOOK)
+    match = re.search(r"BACKEND_ROLE_ORDER\s*=\s*\[([^\]]*)\]", text)
+    assert match, (
+        f"{USE_VERSION_STATUS_HOOK} has no 'BACKEND_ROLE_ORDER = [...]' array literal — this guard can "
+        f"no longer find it.\n\n{DRIFT_DOC}"
+    )
+    return re.findall(r"'([^']+)'", match.group(1))
+
+
+def test_frontend_backend_role_order_matches_the_backend_version_keys():
+    backend_roles = set(VERSION_KEY_BY_ROLE.values())
+    frontend_roles = set(_frontend_backend_role_order())
+    missing_from_frontend = backend_roles - frontend_roles
+    unknown_to_backend = frontend_roles - backend_roles
+    assert not missing_from_frontend and not unknown_to_backend, (
+        f"backend/packages/panel-core/src/panel_core/version.py's VERSION_KEY_BY_ROLE declares "
+        f"{sorted(backend_roles)} but {USE_VERSION_STATUS_HOOK}'s BACKEND_ROLE_ORDER declares "
+        f"{sorted(frontend_roles)} (missing from frontend: {sorted(missing_from_frontend)}; unknown to "
+        f"backend: {sorted(unknown_to_backend)}). Edit BACKEND_ROLE_ORDER in {USE_VERSION_STATUS_HOOK} to "
+        f"match — a role missing from the frontend list silently drops that backend's version row from "
+        f"System → About, with no TypeScript error and no failing test.\n\n{DRIFT_DOC}"
+    )
 
 
 def test_every_workspace_member_pyproject_is_copied_into_both_builds():
