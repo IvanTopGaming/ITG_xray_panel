@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import time
 from urllib.parse import urlparse
 from flask import Flask
@@ -17,6 +18,8 @@ from .models import Admin, Outbound
 from .xray.facade import generate_config_file
 
 PACKAGE_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+INSTANCE_PATH = os.path.join(sys.prefix, "var", "panel_core-instance")
 
 LOCAL_DEV_ORIGINS = [
     "http://localhost",
@@ -164,7 +167,7 @@ def build_base_app(role):
 
     setup_logging()
     bound_role = bind_role(role)
-    app = Flask("panel_core", root_path=PACKAGE_ROOT)
+    app = Flask("panel_core", root_path=PACKAGE_ROOT, instance_path=INSTANCE_PATH)
     init_request_logging(app)
     app.logger.info("panel role bound (role=%s)", bound_role)
 
