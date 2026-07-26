@@ -347,7 +347,7 @@ CI provisions uv via `astral-sh/setup-uv@v8.2.0` (there is no moving `v8` major 
 
 `uvx ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. The `caddygen` Go tests (`cd caddy/caddygen && go test -count=1 ./...`) are not in CI but should pass after caddygen changes; `-count=1` is required — plain `go test ./...` can print a stale `ok (cached)` because `compose_test.go` reads `docker-compose.bot.yml` and `caddy/routes.yaml` from outside the Go module, which the test cache does not track. markdownlint is **not** run in CI.
 
-CI **runs pytest** (the `Backend pytest` job runs `uv run pytest tests/ -q` after `uv sync --frozen`) — a test failure turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
+CI **runs pytest** — the `Backend pytest` job (`ci.yml`) and the `Bot pytest` job both run `uv run pytest tests/ -q` after `uv sync --frozen` — so a test failure in either suite turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
 
 ## Git Workflow
 
