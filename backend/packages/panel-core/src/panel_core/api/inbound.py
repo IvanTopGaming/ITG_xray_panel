@@ -15,7 +15,7 @@ from panel_core.utils import (
     normalize_email,
     parse_int,
 )
-from panel_core.xray import (
+from panel_core.xray.facade import (
     generate_config_file,
     has_local_xray,
     restart_xray_container,

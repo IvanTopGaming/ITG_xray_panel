@@ -15,7 +15,7 @@ from panel_core.xray.grpc_client import (
     get_channel,
     _close_channel,
 )
-from panel_core.xray import (
+from panel_core.xray.facade import (
     generate_config_file,
     restart_xray_container,
     _api_add_user_grpc,  # noqa: F401 — re-exported for consumers importing it from this module

@@ -8,7 +8,7 @@ from panel_core.extensions import db
 from panel_core.models import Client, Inbound, LinkedPanel, NotificationLog
 from panel_core.services import sub_cache
 from panel_core.services.panel_proxy import fetch_panel_snapshot_live
-from panel_core.xray import (
+from panel_core.xray.facade import (
     _api_add_user_grpc,
     generate_config_file,
     has_local_xray,
@@ -325,7 +325,7 @@ def apply_tariff_for_user(
 
 def revoke_payment_access(telegram_id: int, tariff_id: int) -> dict:
 
-    from panel_core.xray import _api_remove_user_grpc
+    from panel_core.xray.facade import _api_remove_user_grpc
 
     active_clients = Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id, enable=True).all()
     inbound_tags = {c.inbound_tag for c in active_clients}

@@ -29,7 +29,7 @@ from panel_core.services.remote_clients import (
     _bucket_panel_clients,
     remote_clients_by_telegram_id_live as _remote_clients_by_telegram_id_live,
 )
-from panel_core.xray import (
+from panel_core.xray.facade import (
     generate_config_file,
     restart_xray_container,
     _api_add_user_grpc,
