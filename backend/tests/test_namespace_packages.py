@@ -1,10 +1,6 @@
-from pathlib import Path
-
 import pytest
 
-SRC = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core"
-
-NAMESPACE_DIRS = ("", "api", "services", "jobs", "roles", "xray", "data")
+from tests.import_graph import SRC_ROOTS, SRC_ROOTS_DOC, discovered_directories, root_label
 
 HINT = (
     "A namespace package cannot carry __init__.py: the moment two distributions ship into the same "
@@ -13,8 +9,28 @@ HINT = (
 )
 
 
+def _namespace_directories():
+    return [""] + discovered_directories()
+
+
+def test_namespace_directory_discovery_sees_the_known_packages():
+    discovered = set(discovered_directories())
+    expected = {"api", "services", "jobs", "roles", "xray", "data"}
+    assert expected <= discovered, (
+        f"package discovery found {sorted(discovered)}, missing {sorted(expected - discovered)} — the "
+        f"__init__.py check below is vacuous for every package it cannot see.\n\n{SRC_ROOTS_DOC}"
+    )
+
+
 def test_split_packages_carry_no_init():
-    offenders = [d or "panel_core" for d in NAMESPACE_DIRS if (SRC / d / "__init__.py").exists()]
+    offenders = sorted(
+        {
+            f"{root_label(root)}/{directory}" if directory else root_label(root)
+            for root in SRC_ROOTS
+            for directory in _namespace_directories()
+            if (root / directory / "__init__.py").exists()
+        }
+    )
     assert offenders == [], f"these must be namespace packages: {offenders}\n\n{HINT}"
 
 

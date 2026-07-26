@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from panel_core.xray import gateway as gw
-from tests.import_graph import HEAVY_ROOTS, XRAY_HEAVY_MODULES, SRC
+from tests.import_graph import HEAVY_ROOTS, SRC_ROOTS, XRAY_HEAVY_MODULES
 
 FORBIDDEN_MODULES = list(XRAY_HEAVY_MODULES + HEAVY_ROOTS)
 
@@ -16,10 +16,10 @@ import json
 import sys
 import types
 
-src, forbidden = sys.argv[1], json.loads(sys.argv[2])
+roots, forbidden = json.loads(sys.argv[1]), json.loads(sys.argv[2])
 
 pkg = types.ModuleType("panel_core")
-pkg.__path__ = [src]
+pkg.__path__ = list(roots)
 sys.modules["panel_core"] = pkg
 
 gateway = importlib.import_module("panel_core.xray.gateway")
@@ -60,7 +60,13 @@ print(json.dumps(report))
 
 def _run_isolation_probe():
     result = subprocess.run(
-        [sys.executable, "-c", _ISOLATION_PROBE, str(SRC), json.dumps(FORBIDDEN_MODULES)],
+        [
+            sys.executable,
+            "-c",
+            _ISOLATION_PROBE,
+            json.dumps([str(r) for r in SRC_ROOTS]),
+            json.dumps(FORBIDDEN_MODULES),
+        ],
         capture_output=True,
         text=True,
         timeout=120,

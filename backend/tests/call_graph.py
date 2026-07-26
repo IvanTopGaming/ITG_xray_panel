@@ -2,7 +2,7 @@ import ast
 import re
 from collections import deque
 
-from tests.import_graph import SRC, module_name, package_name
+from tests.import_graph import SRC_ROOTS, SRC_ROOTS_DOC, iter_sources, module_name, package_name
 
 
 def _absolute(path, module, level):
@@ -79,10 +79,10 @@ class CallGraph:
         self.imports = {}
         self.defs = {}
         self.routes = {}
-        sources = sorted(SRC.rglob("*.py"))
+        sources = iter_sources()
         assert sources, (
-            f"no python sources found under {SRC} — every call-graph guard would pass vacuously. "
-            "Point SRC at the package's new location."
+            f"no python sources found under any of {[str(r) for r in SRC_ROOTS]} — every call-graph guard "
+            f"would pass vacuously.\n\n{SRC_ROOTS_DOC}"
         )
         for path in sources:
             _Collector(path, self).visit(ast.parse(path.read_text()))

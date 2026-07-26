@@ -7,7 +7,7 @@ import pytest
 from grpc.experimental import gevent as grpc_gevent
 
 from tests.call_graph import call_graph
-from tests.import_graph import SRC, imported_modules
+from tests.import_graph import imported_modules, source_path
 
 GRPC_SINKS = {
     "panel_core.xray.grpc_client:get_channel",
@@ -66,9 +66,7 @@ def _reimport_role(name):
 
 
 def _role_source(name):
-    path = SRC / "roles" / f"{name}.py"
-    assert path.is_file(), f"{path} is missing — the role guard would check nothing"
-    return path
+    return source_path(f"roles/{name}.py")
 
 
 @pytest.mark.parametrize("name", HEAVY_ROLES)

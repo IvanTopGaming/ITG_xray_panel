@@ -1,9 +1,13 @@
 from tests.import_graph import (
     HEAVY_ROOTS_DOC,
-    SRC,
+    SRC_ROOTS,
+    SRC_ROOTS_DOC,
     XRAY_HEAVY_MODULES,
     function_level_imports,
     heavy_import_chain,
+    iter_sources,
+    relative_source_name,
+    source_path,
 )
 
 ALLOWED_LAZY_HEAVY_FILES = {
@@ -19,10 +23,10 @@ ALLOWED_LAZY_HEAVY_FILES = {
 
 
 def _sources():
-    paths = sorted(SRC.rglob("*.py"))
+    paths = iter_sources()
     assert paths, (
-        f"no python sources found under {SRC} — this guard would pass vacuously. "
-        "If panel_core moved, point tests/import_graph.SRC at its new location."
+        f"no python sources found under any of {[str(r) for r in SRC_ROOTS]} — this guard would pass "
+        f"vacuously.\n\n{SRC_ROOTS_DOC}"
     )
     return paths
 
@@ -30,7 +34,7 @@ def _sources():
 def _lazy_heavy_hits():
     hits = []
     for path in _sources():
-        relative = path.relative_to(SRC).as_posix()
+        relative = relative_source_name(path)
         for function, modules in sorted(function_level_imports(path).items()):
             for module in sorted(modules):
                 chain = heavy_import_chain(module, extra=XRAY_HEAVY_MODULES)
@@ -57,7 +61,7 @@ def test_lazy_heavy_imports_stay_inside_the_declared_seams():
 
 def test_the_declared_lazy_seams_still_exist():
     for name in ALLOWED_LAZY_HEAVY_FILES:
-        assert (SRC / name).is_file(), (
+        assert source_path(name).is_file(), (
             f"{name} is in ALLOWED_LAZY_HEAVY_FILES but no longer exists. After a package cut the entry "
             "must follow the file to its new path, otherwise the allowlist silently protects nothing and "
             "the real seam starts failing this guard."

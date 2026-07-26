@@ -1,14 +1,13 @@
 import pytest
 
-from tests.import_graph import SRC, imported_modules
+from tests.import_graph import SRC_ROOTS, SRC_ROOTS_DOC, imported_modules, iter_sources
 
 
 def _package_sources(package):
-    root = SRC / package
-    paths = sorted(root.rglob("*.py"))
+    paths = iter_sources(package)
     assert paths, (
-        f"no python sources found under {root} — this guard would pass vacuously. "
-        f"If the '{package}' package moved, point SRC/the guard at its new location."
+        f"no python sources found for '{package}' under any of {[str(r) for r in SRC_ROOTS]} — this guard "
+        f"would pass vacuously.\n\n{SRC_ROOTS_DOC}"
     )
     return paths
 

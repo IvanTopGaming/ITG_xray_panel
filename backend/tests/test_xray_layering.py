@@ -9,11 +9,15 @@ import pytest
 from tests.import_graph import (
     HEAVY_ROOTS,
     HEAVY_ROOTS_DOC,
-    SRC,
+    SRC_ROOTS,
+    SRC_ROOTS_DOC,
     XRAY_HEAVY_MODULES,
+    discovered_packages,
     heavy_root,
     import_chains,
     imported_modules,
+    iter_root_modules,
+    iter_sources,
 )
 
 _SEAM_IMPORT_PROBE = """
@@ -23,7 +27,7 @@ import sys
 import types
 
 pkg = types.ModuleType("panel_core")
-pkg.__path__ = [{src!r}]
+pkg.__path__ = list({roots_path!r})
 sys.modules["panel_core"] = pkg
 
 importlib.import_module("panel_core.xray")
@@ -86,25 +90,17 @@ def _heavy_targets(path):
 
 
 def _package_sources(package):
-    if package == ROOT_MODULES:
-        root, paths = SRC, sorted(SRC.glob("*.py"))
-    else:
-        root = SRC / package
-        paths = sorted(root.rglob("*.py"))
+    paths = iter_root_modules() if package == ROOT_MODULES else iter_sources(package)
     assert paths, (
-        f"no python sources found under {root} — this guard would pass vacuously. "
-        f"If the '{package}' package moved, point SRC/the guard at its new location."
+        f"no python sources found for '{package}' under any of {[str(r) for r in SRC_ROOTS]} — this guard "
+        f"would pass vacuously. If the '{package}' package moved, it must have moved to a "
+        f"packages/*/src/panel_core root.\n\n{SRC_ROOTS_DOC}"
     )
     return paths
 
 
 def _discovered_packages():
-    names = {ROOT_MODULES}
-    for path in SRC.rglob("*.py"):
-        relative = path.relative_to(SRC)
-        if len(relative.parts) > 1:
-            names.add(relative.parts[0])
-    return sorted(names)
+    return sorted({ROOT_MODULES, *discovered_packages()})
 
 
 def _heavy_offenders(package):
@@ -194,7 +190,9 @@ def test_every_panel_core_package_is_covered_by_the_layering_guard():
 
 
 def test_xray_seam_imports_without_heavy_dependencies():
-    probe = textwrap.dedent(_SEAM_IMPORT_PROBE).format(src=str(SRC), roots=list(HEAVY_ROOTS))
+    probe = textwrap.dedent(_SEAM_IMPORT_PROBE).format(
+        roots_path=[str(root) for root in SRC_ROOTS], roots=list(HEAVY_ROOTS)
+    )
     result = subprocess.run(
         [sys.executable, "-c", probe],
         capture_output=True,
@@ -208,7 +206,12 @@ def test_xray_seam_imports_without_heavy_dependencies():
 
 def test_protocol_and_settings_are_free_of_heavy_imports():
     for name in ("protocol.py", "settings.py"):
-        path = SRC / "xray" / name
+        matches = [path for path in iter_sources("xray") if path.name == name]
+        assert len(matches) == 1, (
+            f"expected exactly one xray/{name} across {[str(r) for r in SRC_ROOTS]}, found "
+            f"{[str(m) for m in matches]}\n\n{SRC_ROOTS_DOC}"
+        )
+        path = matches[0]
         offenders = sorted({mod for mod in imported_modules(path) if heavy_root(mod, extra=("subprocess",))})
         assert offenders == [], (
             f"xray/{name} must stay importable anywhere — it is the pure part of the seam — but it imports "

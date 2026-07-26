@@ -2,7 +2,85 @@ import ast
 import pathlib
 from collections import deque
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "packages" / "panel-core" / "src" / "panel_core"
+BACKEND = pathlib.Path(__file__).resolve().parents[1]
+
+PACKAGES = BACKEND / "packages"
+
+SRC_ROOTS_DOC = (
+    "Guards anchor on every packages/*/src/panel_core directory, not on packages/panel-core alone. "
+    "panel_core is a namespace package precisely so a subpackage can move to a second distribution: "
+    "after that move a whole-directory anchor still points at a non-empty directory, every guard stays "
+    "green, and the modules that moved are scanned by nothing at all."
+)
+
+
+def _src_roots():
+    roots = tuple(sorted(path for path in PACKAGES.glob("*/src/panel_core") if path.is_dir()))
+    assert roots, f"no packages/*/src/panel_core source root found under {PACKAGES}\n\n{SRC_ROOTS_DOC}"
+    return roots
+
+
+SRC_ROOTS = _src_roots()
+
+
+def root_for(path):
+    for root in SRC_ROOTS:
+        if path == root or root in path.parents:
+            return root
+    raise AssertionError(f"{path} lies outside every panel_core source root: {[str(r) for r in SRC_ROOTS]}")
+
+
+def iter_sources(package=None):
+    paths = []
+    for root in SRC_ROOTS:
+        base = root if package is None else root / package
+        if base.is_dir():
+            paths.extend(base.rglob("*.py"))
+    return sorted(paths)
+
+
+def source_path(relative):
+    matches = [root / relative for root in SRC_ROOTS if (root / relative).is_file()]
+    assert len(matches) == 1, (
+        f"expected exactly one panel_core/{relative} across {[str(r) for r in SRC_ROOTS]}, found "
+        f"{[str(m) for m in matches]}\n\n{SRC_ROOTS_DOC}"
+    )
+    return matches[0]
+
+
+def relative_source_name(path):
+    return path.relative_to(root_for(path)).as_posix()
+
+
+def iter_root_modules():
+    paths = []
+    for root in SRC_ROOTS:
+        paths.extend(root.glob("*.py"))
+    return sorted(paths)
+
+
+def discovered_packages():
+    names = set()
+    for root in SRC_ROOTS:
+        for path in root.rglob("*.py"):
+            relative = path.relative_to(root)
+            if len(relative.parts) > 1:
+                names.add(relative.parts[0])
+    return sorted(names)
+
+
+def discovered_directories():
+    names = set()
+    for root in SRC_ROOTS:
+        for path in root.iterdir():
+            if path.is_dir() and path.name != "__pycache__":
+                names.add(path.name)
+    return sorted(names)
+
+
+def root_label(root):
+    return f"{root.parents[1].name}:panel_core"
+
 
 HEAVY_ROOTS = (
     "app",
@@ -35,7 +113,7 @@ def heavy_root(module, extra=()):
 
 
 def module_name(path):
-    parts = list(path.relative_to(SRC.parent).with_suffix("").parts)
+    parts = list(path.relative_to(root_for(path).parent).with_suffix("").parts)
     if parts and parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts)
@@ -121,13 +199,14 @@ def function_level_imports(path):
 def resolve_module_path(module):
     if module != "panel_core" and not module.startswith("panel_core."):
         return None
-    base = SRC.joinpath(*module.split(".")[1:])
-    candidate = base.with_suffix(".py")
-    if candidate.is_file():
-        return candidate
-    package_init = base / "__init__.py"
-    if package_init.is_file():
-        return package_init
+    for root in SRC_ROOTS:
+        base = root.joinpath(*module.split(".")[1:])
+        candidate = base.with_suffix(".py")
+        if candidate.is_file():
+            return candidate
+        package_init = base / "__init__.py"
+        if package_init.is_file():
+            return package_init
     return None
 
 

@@ -1,9 +1,7 @@
 import ast
 from pathlib import Path
 
-BACKEND = Path(__file__).resolve().parents[1]
-
-SRC = BACKEND / "packages/panel-core/src/panel_core"
+from tests.import_graph import BACKEND, SRC_ROOTS, SRC_ROOTS_DOC, iter_sources
 
 ENTRY_POINT_SCRIPTS = ("run.py", "migrate_db.py", "sqlite_to_pg.py")
 
@@ -93,7 +91,12 @@ def _shim_imports_from_the_package_root(path):
 
 
 def _scanned_paths():
-    paths = sorted(SRC.rglob("*.py")) + sorted(Path(__file__).resolve().parent.rglob("*.py"))
+    package_sources = iter_sources()
+    assert package_sources, (
+        f"no python sources found under any of {[str(r) for r in SRC_ROOTS]} — this guard would pass "
+        f"vacuously.\n\n{SRC_ROOTS_DOC}"
+    )
+    paths = package_sources + sorted(Path(__file__).resolve().parent.rglob("*.py"))
     scripts = [BACKEND / name for name in ENTRY_POINT_SCRIPTS]
     missing = [script.name for script in scripts if not script.is_file()]
     assert missing == [], (
