@@ -34,5 +34,7 @@ def test_worker_drops_master_blueprints(monkeypatch):
 
 def test_master_keeps_all_blueprints(monkeypatch):
     rules = _rules(monkeypatch, "master")
-    assert _has_prefix(rules, "/api/billing/")
+    assert not _has_prefix(rules, "/api/billing/")
+    assert not _has_prefix(rules, "/api/bot-service/")
+    assert _has_prefix(rules, "/api/bot/")
     assert _has_prefix(rules, "/api/panels")

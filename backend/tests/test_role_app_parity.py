@@ -12,7 +12,7 @@ WORKER_BLUEPRINTS = {
     "statistics",
     "federation",
 }
-MASTER_BLUEPRINTS = WORKER_BLUEPRINTS | {"bot_admin", "bot_service", "billing", "panels"}
+MASTER_BLUEPRINTS = WORKER_BLUEPRINTS | {"bot_admin", "panels"}
 SUB_BLUEPRINTS = {"subscription"}
 BOT_BLUEPRINTS = {"bot_service", "billing"}
 
@@ -28,12 +28,15 @@ EVENT_BUS_JOBS = {
     ("replay_undelivered_bot_events", 60),
     ("cleanup_bot_events", 86400),
 }
-WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS | EVENT_BUS_JOBS
-MASTER_JOBS = DB_MAINTENANCE_JOBS | {
-    ("auto_renew_free_users", 900),
+PAYMENT_JOBS = {
     ("poll_pending_payments", 30),
     ("reconcile_refunds", 3600),
     ("cleanup_old_payments", 86400),
+}
+WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS | EVENT_BUS_JOBS
+BOT_JOBS = PAYMENT_JOBS
+MASTER_JOBS = DB_MAINTENANCE_JOBS | {
+    ("auto_renew_free_users", 900),
     ("cleanup_bot_events", 86400),
     ("replay_undelivered_bot_events", 60),
     ("poll_linked_panels", 10),
@@ -42,7 +45,7 @@ MASTER_JOBS = DB_MAINTENANCE_JOBS | {
 
 CASES = [
     ("sub", SUB_BLUEPRINTS, set()),
-    ("bot", BOT_BLUEPRINTS, set()),
+    ("bot", BOT_BLUEPRINTS, BOT_JOBS),
     ("worker", WORKER_BLUEPRINTS, WORKER_JOBS),
     ("master", MASTER_BLUEPRINTS, MASTER_JOBS),
 ]

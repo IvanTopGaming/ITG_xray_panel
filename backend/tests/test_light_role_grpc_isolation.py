@@ -145,7 +145,13 @@ def bot_role_client(monkeypatch, tmp_path):
         db.session.add(SystemSetting(key="bot_service_token", value="test-bot-token"))
         db.session.commit()
 
-    return app.test_client()
+    yield app.test_client()
+
+    from panel_core.extensions import scheduler
+
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+    scheduler.remove_all_jobs()
 
 
 def test_bot_role_trial_activate_never_provisions_locally(bot_role_client):

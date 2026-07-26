@@ -70,16 +70,11 @@ def test_master_role_composition(monkeypatch, tmp_path):
         "statistics",
         "federation",
         "bot_admin",
-        "bot_service",
-        "billing",
         "panels",
     }
     assert _jobs() == {
         ("cleanup_stats", 86400),
         ("auto_renew_free_users", 900),
-        ("poll_pending_payments", 30),
-        ("reconcile_refunds", 3600),
-        ("cleanup_old_payments", 86400),
         ("cleanup_bot_events", 86400),
         ("replay_undelivered_bot_events", 60),
         ("poll_linked_panels", 10),

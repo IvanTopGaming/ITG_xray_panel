@@ -3,11 +3,13 @@ DB_MAINTENANCE = {"cleanup_stats"}
 EVENT_BUS = {"cleanup_bot_events", "replay_undelivered_bot_events"}
 MASTER_ONLY = {
     "auto_renew_free_users",
+    "poll_linked_panels",
+    "check_latest_version",
+}
+BOT_API_ONLY = {
     "poll_pending_payments",
     "reconcile_refunds",
     "cleanup_old_payments",
-    "poll_linked_panels",
-    "check_latest_version",
 }
 
 
@@ -36,12 +38,23 @@ def test_worker_registers_only_data_plane_crons(monkeypatch):
     assert DATA_PLANE.issubset(ids)
     assert DB_MAINTENANCE.issubset(ids)
     assert ids.isdisjoint(MASTER_ONLY)
+    assert ids.isdisjoint(BOT_API_ONLY)
 
 
 def test_master_registers_master_crons(monkeypatch):
     ids = _job_ids(monkeypatch, "master")
     assert MASTER_ONLY.issubset(ids)
     assert DB_MAINTENANCE.issubset(ids)
+
+
+def test_master_does_not_register_payment_crons(monkeypatch):
+    ids = _job_ids(monkeypatch, "master")
+    assert ids.isdisjoint(BOT_API_ONLY)
+
+
+def test_botapi_registers_payment_crons(monkeypatch):
+    ids = _job_ids(monkeypatch, "bot")
+    assert ids == BOT_API_ONLY
 
 
 def test_master_registers_no_data_plane_crons(monkeypatch):

@@ -8,7 +8,6 @@ from panel_core.app_base import (
 from panel_core.jobs.billing import auto_renew_free_users
 from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered_bot_events
 from panel_core.jobs.panels import poll_linked_panels
-from panel_core.jobs.payments import cleanup_old_payments, poll_pending_payments, reconcile_refunds
 from panel_core.panel_role import ROLE_MASTER
 from panel_core.services.traffic_store import cleanup_stats_job
 from panel_core.services.version_check import fetch_latest
@@ -24,9 +23,6 @@ def create_app():
 
     ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
     ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
-    ensure_scheduler_job("poll_pending_payments", poll_pending_payments, 30)
-    ensure_scheduler_job("reconcile_refunds", reconcile_refunds, 3600)
-    ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
     ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
     ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
@@ -49,8 +45,6 @@ def create_app():
         subscription,
         statistics,
         bot_admin,
-        bot_service,
-        billing,
         panels,
         federation,
     )
@@ -63,8 +57,6 @@ def create_app():
     app.register_blueprint(subscription.bp, url_prefix="/api")
     app.register_blueprint(statistics.bp, url_prefix="/api")
     app.register_blueprint(bot_admin.bp, url_prefix="/api")
-    app.register_blueprint(bot_service.bp, url_prefix="/api")
-    app.register_blueprint(billing.bp, url_prefix="/api")
     app.register_blueprint(panels.bp, url_prefix="/api")
     app.register_blueprint(federation.bp, url_prefix="/api")
 

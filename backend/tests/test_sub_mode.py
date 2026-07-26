@@ -45,5 +45,5 @@ def test_master_mode_unchanged(monkeypatch):
     except Exception:
         pass
     assert any(r.startswith("/api/inbound") for r in rules)
-    assert any(r.startswith("/api/billing") for r in rules)
+    assert not any(r.startswith("/api/billing") for r in rules)
     assert any(r.startswith("/api/sub") for r in rules)

@@ -1,5 +1,20 @@
 from unittest.mock import patch
 
+import pytest
+
+BOT_API_JOBS = {"poll_pending_payments", "reconcile_refunds", "cleanup_old_payments"}
+
+
+@pytest.fixture(autouse=True)
+def _scheduler_teardown():
+    yield
+
+    from panel_core.extensions import scheduler
+
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+    scheduler.remove_all_jobs()
+
 
 def _env(monkeypatch, role):
     monkeypatch.setenv("PANEL_ROLE", role)
@@ -29,7 +44,7 @@ def test_bot_mode_mounts_only_bot_and_billing(monkeypatch):
     assert not any(r.startswith("/api/panels") for r in rules)
     assert not any(r.startswith("/api/sub") for r in rules)
     assert "/healthz" in rules and "/readyz" in rules
-    assert jobs == []
+    assert {job.id for job in jobs} == BOT_API_JOBS
     m_mig.assert_not_called()
 
 
