@@ -2,7 +2,7 @@ import subprocess
 import sys
 import textwrap
 
-HEAVY = ["docker", "grpc", "filelock", "app.proxyman", "app.stats", "common", "proxy"]
+from tests.import_graph import HEAVY_ROOTS, HEAVY_ROOTS_DOC
 
 
 def _probe(import_line):
@@ -10,8 +10,9 @@ def _probe(import_line):
         f"""
         import sys
         {import_line}
-        heavy = [name for name in {HEAVY!r} if name in sys.modules]
-        print(",".join(heavy))
+        roots = {list(HEAVY_ROOTS)!r}
+        leaked = {{name.split(".")[0] for name in sys.modules}} & set(roots)
+        print(",".join(sorted(leaked)))
         """
     )
     result = subprocess.run(
@@ -24,14 +25,19 @@ def _probe(import_line):
     return [name for name in result.stdout.strip().split(",") if name]
 
 
+def _assert_clean(import_line):
+    leaked = _probe(import_line)
+    assert leaked == [], f"`{import_line}` pulled heavy roots into sys.modules: {leaked}\n\n{HEAVY_ROOTS_DOC}"
+
+
 def test_importing_panel_core_pulls_nothing_heavy():
-    assert _probe("import panel_core") == []
+    _assert_clean("import panel_core")
 
 
 def test_importing_app_base_pulls_nothing_heavy():
-    assert _probe("import panel_core.app_base") == []
+    _assert_clean("import panel_core.app_base")
 
 
 def test_light_role_modules_pull_nothing_heavy():
-    assert _probe("import panel_core.roles.sub") == []
-    assert _probe("import panel_core.roles.botapi") == []
+    _assert_clean("import panel_core.roles.sub")
+    _assert_clean("import panel_core.roles.botapi")

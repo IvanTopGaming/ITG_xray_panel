@@ -59,6 +59,8 @@ ALLOWED_HEAVY_SERVICE_IMPORTERS = {"stats.py"}
 
 ROOT_MODULES = "."
 
+NAMESPACE_PACKAGES = {"api", "services"}
+
 ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE = {
     "xray": ALLOWED_HEAVY_IMPORTERS,
     "roles": ALLOWED_HEAVY_ROLE_IMPORTERS,
@@ -163,12 +165,26 @@ def test_package_does_not_transitively_reach_heavy_modules(package):
     assert offenders == [], f"{offenders}\n\n{OFFENDER_HINT}"
 
 
+def test_the_heavy_allowlists_still_point_at_real_files():
+    stale = []
+    for package, allowed in ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE.items():
+        present = {path.name for path in _package_sources(package)}
+        stale.extend(f"{package}/{name}" for name in sorted(allowed - present))
+    assert stale == [], (
+        f"ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE exempts files that no longer exist: {stale}. The allowlist "
+        "matches on the base filename, so a stale entry is worse than useless after a package cut: it "
+        "keeps exempting any future file with that name anywhere under the package (rglob), including a "
+        "nested one. Move the entry with the file, or drop it."
+    )
+
+
 def test_every_panel_core_package_is_covered_by_the_layering_guard():
     discovered = _discovered_packages()
-    assert len(discovered) > 1, (
-        f"only {discovered} found under {SRC} — package discovery is broken and every coverage claim below "
-        "is vacuous. Discovery must not depend on __init__.py: panel_core's api/ and services/ are "
-        "namespace packages and have none."
+    assert NAMESPACE_PACKAGES <= set(discovered), (
+        f"package discovery found {discovered}, missing {sorted(NAMESPACE_PACKAGES - set(discovered))} — "
+        "every coverage claim below is vacuous for the packages it cannot see. Discovery must not depend "
+        "on __init__.py: panel_core's api/ and services/ are namespace packages and have none, so an "
+        "__init__.py-based scan silently drops exactly the two packages that matter most."
     )
     uncovered = [name for name in discovered if name not in ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE]
     assert uncovered == [], (

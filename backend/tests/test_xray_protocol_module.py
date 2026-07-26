@@ -1,5 +1,4 @@
 import importlib
-import inspect
 
 import pytest
 
@@ -47,12 +46,6 @@ def test_pure_function_present(name):
 def test_pure_constant_present(name):
     mod = importlib.import_module("panel_core.xray.protocol")
     assert getattr(mod, name) is not None
-
-
-def test_protocol_module_has_no_heavy_imports():
-    source = inspect.getsource(importlib.import_module("panel_core.xray.protocol"))
-    for forbidden in ("import docker", "from docker", "import grpc", "from grpc", "from filelock", "import subprocess"):
-        assert forbidden not in source
 
 
 def test_settings_module_exposes_get_system_settings():

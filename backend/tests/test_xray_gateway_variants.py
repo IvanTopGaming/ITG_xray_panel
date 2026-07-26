@@ -6,15 +6,9 @@ from unittest.mock import patch
 import pytest
 
 from panel_core.xray import gateway as gw
-from tests.import_graph import SRC
+from tests.import_graph import HEAVY_ROOTS, XRAY_HEAVY_MODULES, SRC
 
-FORBIDDEN_MODULES = [
-    "panel_core.xray.engine",
-    "panel_core.xray.grpc_client",
-    "grpc",
-    "docker",
-    "filelock",
-]
+FORBIDDEN_MODULES = list(XRAY_HEAVY_MODULES + HEAVY_ROOTS)
 
 _ISOLATION_PROBE = """
 import importlib
