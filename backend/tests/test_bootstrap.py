@@ -168,15 +168,16 @@ def test_every_role_installs_the_psycopg_wait_callback(role, monkeypatch, tmp_pa
     import importlib
 
     module = importlib.import_module(f"panel_core.roles.{role}")
-    module.create_app()
+    try:
+        module.create_app()
 
-    assert pg_compat._patched is True, (
-        f"role {role} built an app without installing the psycopg gevent wait callback; "
-        "without it every Postgres query blocks the whole gevent hub"
-    )
+        assert pg_compat._patched is True, (
+            f"role {role} built an app without installing the psycopg gevent wait callback; "
+            "without it every Postgres query blocks the whole gevent hub"
+        )
+    finally:
+        from panel_core.extensions import scheduler
 
-    from panel_core.extensions import scheduler
-
-    scheduler.remove_all_jobs()
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
+        scheduler.remove_all_jobs()
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
