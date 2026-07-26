@@ -483,6 +483,18 @@ def _alter_client_billing_columns(cursor: sqlite3.Cursor) -> int:
     return added
 
 
+def _read_bot_text_defaults_source(defaults_path: Optional[str] = None) -> Optional[str]:
+
+    if defaults_path is None:
+        from panel_core.resources import BOT_TEXTS_DEFAULTS, read_data_text
+
+        return read_data_text(BOT_TEXTS_DEFAULTS)
+    if not os.path.exists(defaults_path):
+        return None
+    with open(defaults_path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
 def _seed_bot_texts(
     cursor: sqlite3.Cursor,
     defaults_path: Optional[str] = None,
@@ -495,15 +507,11 @@ def _seed_bot_texts(
     except ImportError:
         return 0
 
-    if defaults_path is None:
-        here = os.path.dirname(os.path.abspath(__file__))
-        defaults_path = os.path.join(here, "data", "bot_texts_defaults.yaml")
-
-    if not os.path.exists(defaults_path):
+    raw = _read_bot_text_defaults_source(defaults_path)
+    if raw is None:
         return 0
 
-    with open(defaults_path, "r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
+    data = yaml.safe_load(raw)
 
     if not data or not isinstance(data, dict):
         return 0
@@ -547,13 +555,10 @@ def _load_bot_text_defaults(defaults_path: Optional[str] = None) -> Dict[Tuple[s
         import yaml
     except ImportError:
         return {}
-    if defaults_path is None:
-        here = os.path.dirname(os.path.abspath(__file__))
-        defaults_path = os.path.join(here, "data", "bot_texts_defaults.yaml")
-    if not os.path.exists(defaults_path):
+    raw = _read_bot_text_defaults_source(defaults_path)
+    if raw is None:
         return {}
-    with open(defaults_path, "r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
+    data = yaml.safe_load(raw)
     if not isinstance(data, dict):
         return {}
     out: Dict[Tuple[str, str], str] = {}

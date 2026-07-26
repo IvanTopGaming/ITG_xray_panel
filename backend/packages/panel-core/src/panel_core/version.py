@@ -1,12 +1,14 @@
 import json
 import os
+import pathlib
 
-_HERE = os.path.dirname(__file__)
-_CANDIDATES = (
-    "/app/versions.json",
-    os.path.join(_HERE, "..", "..", "..", "..", "versions.json"),
-    os.path.join(_HERE, "..", "..", "..", "..", "..", "versions.json"),
-)
+
+def _ancestor_candidates():
+    here = pathlib.Path(__file__).resolve().parent
+    return tuple(str(parent / "versions.json") for parent in here.parents)
+
+
+_CANDIDATES = ("/app/versions.json",) + _ancestor_candidates()
 
 
 def _read_versions(path=None):

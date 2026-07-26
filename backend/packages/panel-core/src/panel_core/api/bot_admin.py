@@ -1,5 +1,4 @@
 import logging
-import os
 import secrets
 import time
 from datetime import datetime, timedelta
@@ -35,6 +34,7 @@ from panel_core.xray.facade import (
     _api_add_user_grpc,
     _api_remove_user_grpc,
 )
+from panel_core.resources import BOT_TEXTS_DEFAULTS, BOT_TEXTS_META, read_data_text
 from panel_core.utils import token_required
 
 bp = Blueprint("bot_admin", __name__)
@@ -375,20 +375,11 @@ def list_texts():
 @token_required
 def list_text_keys():
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(here, "..", "data")
-    defaults_path = os.path.join(data_dir, "bot_texts_defaults.yaml")
-    meta_path = os.path.join(data_dir, "bot_texts_meta.yaml")
+    raw_defaults = read_data_text(BOT_TEXTS_DEFAULTS)
+    defaults = (yaml.safe_load(raw_defaults) or {}) if raw_defaults else {}
 
-    defaults = {}
-    if os.path.exists(defaults_path):
-        with open(defaults_path, "r", encoding="utf-8") as fh:
-            defaults = yaml.safe_load(fh) or {}
-
-    meta = {}
-    if os.path.exists(meta_path):
-        with open(meta_path, "r", encoding="utf-8") as fh:
-            meta = yaml.safe_load(fh) or {}
+    raw_meta = read_data_text(BOT_TEXTS_META)
+    meta = (yaml.safe_load(raw_meta) or {}) if raw_meta else {}
 
     keys = []
     for key in sorted(defaults.keys()):
