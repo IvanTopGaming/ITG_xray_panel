@@ -17,7 +17,8 @@ from panel_core.services.stats import (
     parse_access_logs,
     sync_traffic_job,
 )
-from panel_core.xray.gateway import LocalXrayGateway, set_xray_gateway, xray_gateway_configured
+from panel_core.xray.gateway import set_xray_gateway, xray_gateway_configured
+from panel_core.xray.local import LocalXrayGateway
 
 grpc_gevent.init_gevent()
 

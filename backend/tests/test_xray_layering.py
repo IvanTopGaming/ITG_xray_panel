@@ -55,7 +55,7 @@ ENGINE_CONSTANTS = [
     "LOG_TAIL_LINES",
 ]
 
-ALLOWED_HEAVY_IMPORTERS = {"gateway.py", "engine.py", "grpc_client.py"}
+ALLOWED_HEAVY_IMPORTERS = {"local.py", "engine.py", "grpc_client.py"}
 
 ALLOWED_HEAVY_ROLE_IMPORTERS = {"worker.py"}
 

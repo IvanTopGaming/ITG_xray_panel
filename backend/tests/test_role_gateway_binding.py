@@ -3,9 +3,10 @@ import importlib
 import pytest
 
 from panel_core.xray import gateway as gw
+from panel_core.xray.local import LocalXrayGateway
 
 CASES = [
-    ("worker", "worker", gw.LocalXrayGateway),
+    ("worker", "worker", LocalXrayGateway),
     ("master", "master", gw.RemoteXrayGateway),
     ("sub", "sub", gw.NullXrayGateway),
     ("botapi", "bot", gw.NullXrayGateway),
@@ -85,7 +86,8 @@ def test_lazy_default_does_not_latch_and_preempt_the_role(module_name, role, exp
     _reset_scheduler()
     gw.set_xray_gateway(None)
 
-    assert isinstance(gw.get_xray_gateway(), gw.LocalXrayGateway)
+    with pytest.raises(RuntimeError):
+        gw.get_xray_gateway()
     assert gw.xray_gateway_configured() is False
 
     module = importlib.import_module(f"panel_core.roles.{module_name}")

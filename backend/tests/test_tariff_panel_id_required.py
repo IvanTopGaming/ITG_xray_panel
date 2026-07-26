@@ -9,6 +9,7 @@ import pytest
 from panel_core.models import Admin, Inbound, Tariff, TariffItem
 from panel_core.utils import SECRET_KEY
 from panel_core.xray import gateway as gw
+from panel_core.xray.local import LocalXrayGateway
 
 
 @pytest.fixture
@@ -210,7 +211,7 @@ def test_provisioning_still_works_on_a_gateway_with_local_xray(app, db):
 
     calls = []
 
-    class _Recording(gw.LocalXrayGateway):
+    class _Recording(LocalXrayGateway):
         def apply_config(self, validate=True):
             calls.append("apply_config")
 
@@ -277,7 +278,7 @@ def test_startup_audit_is_silent_on_a_role_with_local_xray(app, db, caplog):
     from panel_core.app_base import audit_tariff_items_without_panel_id
 
     _seed_legacy_tariff(db, name="Legacy Local", tag="legacy-on-worker", port=31007)
-    gw.set_xray_gateway(gw.LocalXrayGateway())
+    gw.set_xray_gateway(LocalXrayGateway())
 
     with caplog.at_level(logging.WARNING):
         audit_tariff_items_without_panel_id(app)

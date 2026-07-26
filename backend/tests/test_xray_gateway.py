@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from panel_core.xray import gateway as gw
+from panel_core.xray.local import LocalXrayGateway
 
 
 @pytest.fixture(autouse=True)
@@ -11,9 +12,22 @@ def _reset_gateway():
     gw.set_xray_gateway(None)
 
 
-def test_default_gateway_is_local():
+def test_unbound_gateway_fails_loud_instead_of_defaulting_to_local():
     gw.set_xray_gateway(None)
-    assert isinstance(gw.get_xray_gateway(), gw.LocalXrayGateway)
+    with pytest.raises(RuntimeError) as excinfo:
+        gw.get_xray_gateway()
+    assert "no XrayGateway bound" in str(excinfo.value)
+
+
+def test_local_gateway_ships_from_its_own_module():
+    from panel_core.xray import local
+
+    assert not hasattr(gw, "LocalXrayGateway"), (
+        "LocalXrayGateway must not be reachable from panel_core.xray.gateway. gateway.py ships from "
+        "panel-core; LocalXrayGateway ships from panel-worker, and a re-export here would make core "
+        "import from a downstream distribution."
+    )
+    assert local.LocalXrayGateway().has_local_xray() is True
 
 
 def test_set_gateway_is_returned():
@@ -95,7 +109,7 @@ def test_local_gateway_stream_logs_without_arguments_uses_engine_default(monkeyp
     seen = {}
     monkeypatch.setattr(engine, "stream_xray_logs", lambda tail_lines: seen.setdefault("tail", tail_lines))
 
-    gw.LocalXrayGateway().stream_logs()
+    LocalXrayGateway().stream_logs()
 
     assert seen == {"tail": engine.LOG_TAIL_LINES}
 
@@ -148,7 +162,7 @@ def test_facade_signature_matches_implementation(facade_name, impl_module, impl_
 
 
 def test_local_gateway_satisfies_the_protocol():
-    assert isinstance(gw.LocalXrayGateway(), gw.XrayGateway)
+    assert isinstance(LocalXrayGateway(), gw.XrayGateway)
 
 
 def test_local_gateway_delegates_to_engine(monkeypatch):
@@ -158,7 +172,7 @@ def test_local_gateway_delegates_to_engine(monkeypatch):
     monkeypatch.setattr(engine, "generate_config_file", lambda validate=True: calls.setdefault("apply", validate))
     monkeypatch.setattr(engine, "restart_xray_container", lambda: calls.setdefault("restart", True))
 
-    local = gw.LocalXrayGateway()
+    local = LocalXrayGateway()
     local.apply_config(validate=False)
     local.restart()
 
@@ -181,7 +195,7 @@ def test_local_gateway_delegates_to_grpc_client(monkeypatch):
     monkeypatch.setattr(grpc_client, "_api_add_user_grpc", _add)
     monkeypatch.setattr(grpc_client, "_api_remove_user_grpc", _remove)
 
-    local = gw.LocalXrayGateway()
+    local = LocalXrayGateway()
     assert local.add_user("tag-a", "obj") is True
     assert local.remove_user("tag-a", "a@b") is True
 

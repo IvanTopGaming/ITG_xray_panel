@@ -5,6 +5,7 @@ import jwt
 import pytest
 
 from panel_core.xray import gateway as gw
+from panel_core.xray.local import LocalXrayGateway
 
 
 def _reset_scheduler():
@@ -323,7 +324,7 @@ def test_worker_still_runs_the_same_local_crud(worker_app):
 
     calls = []
 
-    class _Recording(gw.LocalXrayGateway):
+    class _Recording(LocalXrayGateway):
         def apply_config(self, validate=True):
             calls.append("apply_config")
 

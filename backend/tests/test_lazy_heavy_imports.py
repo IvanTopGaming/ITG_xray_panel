@@ -15,7 +15,7 @@ ALLOWED_LAZY_HEAVY_FILES = {
         "the role dispatcher: create_app() imports panel_core.roles.worker only when PANEL_ROLE=worker, "
         "which is exactly how the light roles avoid the heavy stack"
     ),
-    "xray/gateway.py": (
+    "xray/local.py": (
         "the seam itself: LocalXrayGateway imports panel_core.xray.{engine,grpc_client} per call, and "
         "imports the module rather than the function so the ~125 patch sites keep working"
     ),

@@ -73,8 +73,9 @@ def pytest_runtest_protocol(item, nextitem):
 def _reset_xray_gateway():
 
     from panel_core.xray import gateway as _gateway_module
+    from panel_core.xray.local import LocalXrayGateway
 
-    _gateway_module.set_xray_gateway(None)
+    _gateway_module.set_xray_gateway(LocalXrayGateway())
     yield
     _gateway_module.set_xray_gateway(None)
 
