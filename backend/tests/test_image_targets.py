@@ -42,6 +42,23 @@ WORKFLOWS = {
     "dev-build.yml": ".github/workflows/dev-build.yml",
 }
 
+VERSION_PINNED_ENV_VARS = {
+    "master": "MASTER_IMAGE",
+    "worker": "WORKER_IMAGE",
+    "sub": "SUB_IMAGE",
+    "bot_api": "BOT_API_IMAGE",
+    "frontend": "FRONTEND_IMAGE",
+    "caddy": "CADDY_IMAGE",
+    "bot": "BOT_IMAGE",
+    "xray_egress": "XRAY_EGRESS_IMAGE",
+}
+
+THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY = {
+    "XRAY_IMAGE": "upstream Xray-core image; its tag tracks xray_core_ref, not a semver in versions.json",
+    "SOCKET_PROXY_IMAGE": "third-party image (tecnativa/docker-socket-proxy), never built or versioned by this repo",
+    "REDIS_IMAGE": "third-party image (redis), never built or versioned by this repo",
+}
+
 DRIFT_DOC = (
     "The per-role image split spreads one fact across five files: versions.json (the version), the two "
     "Dockerfiles (how it is built), the compose file (which variable names it), .env.example (the pin) "
@@ -97,6 +114,33 @@ def test_env_example_pins_every_role_image(service):
         f".env.example has no {target['env_var']}={target['image']}:v… pin\n\n{DRIFT_DOC}"
     )
     assert not re.search(r"^BACKEND_IMAGE=", text, re.M), f".env.example still pins BACKEND_IMAGE\n\n{DRIFT_DOC}"
+
+
+@pytest.mark.parametrize("version_key", sorted(VERSION_PINNED_ENV_VARS))
+def test_env_example_pin_tracks_the_versions_json_it_was_bumped_from(version_key):
+    versions = json.loads(_read("versions.json"))
+    env_var = VERSION_PINNED_ENV_VARS[version_key]
+    text = _read(".env.example")
+    assert version_key in versions, f"versions.json has no '{version_key}' version\n\n{DRIFT_DOC}"
+    expected_version = versions[version_key]
+    assert re.search(rf"^{env_var}=\S+:v{re.escape(expected_version)}$", text, re.M), (
+        f".env.example's {env_var} pin does not equal 'v' + versions.json's '{version_key}' "
+        f"({expected_version}). A pin can go stale in either direction — bump one file and forget the "
+        f"other — and this is the only check that would ever notice.\n\n{DRIFT_DOC}"
+    )
+
+
+def test_every_image_var_in_env_example_is_either_version_pinned_or_explicitly_third_party():
+    text = _read(".env.example")
+    declared = set(re.findall(r"^(\w+_IMAGE)=", text, re.M))
+    accounted_for = set(VERSION_PINNED_ENV_VARS.values()) | set(THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY)
+    unaccounted = declared - accounted_for
+    assert unaccounted == set(), (
+        f".env.example declares {sorted(unaccounted)} but this guard has no opinion on them — add each "
+        f"to VERSION_PINNED_ENV_VARS (if versions.json should own its tag) or to "
+        f"THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY (with a reason) so a new *_IMAGE var can't "
+        f"silently drift unchecked.\n\n{DRIFT_DOC}"
+    )
 
 
 @pytest.mark.parametrize("service", sorted(IMAGE_TARGETS))
