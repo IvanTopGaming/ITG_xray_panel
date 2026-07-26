@@ -325,10 +325,19 @@ cd tg_bot && uv sync
 uv run python main.py
 ```
 
-Rebuild a single service after changes:
+Rebuild a single service after changes. The backend is split into four per-role images, so
+`docker compose build backend` no longer works (`backend/Dockerfile` requires a `PANEL_PACKAGE`
+build-arg with no default) — build the role you need with the same invocation CI uses:
 
 ```bash
-docker compose build backend && docker compose up -d backend
+docker buildx build --build-context project=. --build-arg PANEL_PACKAGE=panel-master \
+  --tag panel-master:local --load ./backend
+docker buildx build --build-context project=. --build-arg PANEL_PACKAGE=panel-sub \
+  --tag panel-sub:local --load ./backend
+docker buildx build --build-context project=. --build-arg PANEL_PACKAGE=panel-botapi \
+  --tag panel-bot-api:local --load ./backend
+docker buildx build --build-context project=. --build-arg XRAY_CORE_REF=$(python3 -c "import json;print(json.load(open('versions.json'))['xray_core_ref'])") \
+  --tag panel-worker:local --load ./backend -f backend/Dockerfile.worker
 ```
 
 `backend/tests/conftest.py` stubs the gRPC modules, so the suite runs on a plain checkout without the Xray protobuf bundle that ships only inside the Docker image.

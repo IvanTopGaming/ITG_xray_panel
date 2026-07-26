@@ -17,9 +17,23 @@ docker compose -f docker-compose.prod.yml up   # Production
 
 # Rebuild and restart a single service after code changes:
 docker compose build frontend && docker compose up -d frontend
-docker compose build backend  && docker compose up -d backend
 docker compose build bot      && docker compose up -d bot
 docker compose build caddy    && docker compose up -d caddy
+```
+
+The backend is split into four per-role images and `docker compose build backend` no longer
+works — the shared `backend/Dockerfile` now requires a `PANEL_PACKAGE` build-arg with no default,
+so a plain build fails with `PANEL_PACKAGE build-arg is required`. Build the role you need directly
+with the same invocation CI uses:
+```bash
+docker buildx build --build-context project=. --build-arg PANEL_PACKAGE=panel-master \
+  --tag panel-master:local --load ./backend
+docker buildx build --build-context project=. --build-arg PANEL_PACKAGE=panel-sub \
+  --tag panel-sub:local --load ./backend
+docker buildx build --build-context project=. --build-arg PANEL_PACKAGE=panel-botapi \
+  --tag panel-bot-api:local --load ./backend
+docker buildx build --build-context project=. --build-arg XRAY_CORE_REF=$(python3 -c "import json;print(json.load(open('versions.json'))['xray_core_ref'])") \
+  --tag panel-worker:local --load ./backend -f backend/Dockerfile.worker
 ```
 
 ### Backend (Python/Flask)
