@@ -24,6 +24,9 @@ _REFUND_LOOKBACK_DAYS = 30
 _REFUND_BATCH = 200
 
 
+_UNCANCELLABLE_REMOTE_STATUSES = frozenset({"succeeded", "waiting_for_capture"})
+
+
 def _get_setting(key: str) -> str:
     row = SystemSetting.query.filter_by(key=key).first()
     return row.value if row and row.value else ""
@@ -138,10 +141,39 @@ def cleanup_old_payments() -> None:
         .limit(500)
         .all()
     )
+    cancelled = []
     for payment in stuck:
+        remote = billing.fetch_remote_status(payment)
+        if remote is None:
+            logger.warning(
+                "cleanup_old_payments: yookassa unreachable, leaving payment=%s yk=%s pending",
+                payment.id,
+                payment.yookassa_id,
+            )
+            continue
+        if remote == "succeeded":
+            logger.warning(
+                "cleanup_old_payments: payment=%s yk=%s is succeeded at yookassa but still pending here; applying",
+                payment.id,
+                payment.yookassa_id,
+            )
+            try:
+                billing.apply_payment(payment)
+            except Exception:
+                logger.exception("cleanup_old_payments: apply failed payment=%s", payment.id)
+            continue
+        if remote in _UNCANCELLABLE_REMOTE_STATUSES:
+            logger.info(
+                "cleanup_old_payments: payment=%s yk=%s holds money at yookassa (status=%s); leaving pending",
+                payment.id,
+                payment.yookassa_id,
+                remote,
+            )
+            continue
         payment.status = "cancelled"
+        cancelled.append(payment)
     db.session.commit()
-    for payment in stuck:
+    for payment in cancelled:
         try:
             bot_events.publish(
                 "payment_cancelled",

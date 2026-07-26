@@ -228,9 +228,81 @@ def test_cleanup_cancels_stale_pending(app, tariff):
     pid = _insert_pending(app, tariff, age_seconds=25 * 3600)
     from panel_core.jobs.payments import cleanup_old_payments
 
-    with app.app_context(), patch("panel_core.jobs.payments.bot_events.publish"):
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.jobs.payments.bot_events.publish"),
+    ):
+        mock_find.return_value = SimpleNamespace(status="canceled")
         cleanup_old_payments()
         assert db.session.get(Payment, pid).status == "cancelled"
+
+
+def test_cleanup_does_not_cancel_what_yookassa_reports_succeeded(app, tariff):
+
+    pid = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-paid-late")
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_billing_publish,
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
+    ):
+        mock_find.return_value = SimpleNamespace(status="succeeded")
+        mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
+        cleanup_old_payments()
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "succeeded", (
+            "cleanup_old_payments cancelled a payment YooKassa reports as succeeded — with no public "
+            "webhook route and poll_pending_payments bounded to 24h, a >24h bot-api outage would turn "
+            "every genuinely paid payment into 'cancelled' on restart"
+        )
+    published = [c.args[0] for c in mock_publish.call_args_list] + [
+        c.args[0] for c in mock_billing_publish.call_args_list
+    ]
+    assert "payment_cancelled" not in published, f"a paid payment was announced as cancelled: {published}"
+    assert mock_provision.call_count == 1, "the late-confirmed payment must be provisioned, not merely left alone"
+
+
+def test_cleanup_leaves_the_row_pending_when_yookassa_is_unreachable(app, tariff):
+
+    pid = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-unreachable")
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one", side_effect=RuntimeError("network down")),
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
+    ):
+        cleanup_old_payments()
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "pending", (
+            "cleanup_old_payments cancelled a payment it could not check — an unreachable YooKassa is "
+            "not evidence that the user did not pay; skipping is safe, cancelling is not"
+        )
+    assert mock_publish.call_args_list == [], "no cancellation may be announced for an unverified payment"
+
+
+def test_cleanup_leaves_money_holding_statuses_pending(app, tariff):
+
+    pid = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-held")
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
+    ):
+        mock_find.return_value = SimpleNamespace(status="waiting_for_capture")
+        cleanup_old_payments()
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "pending"
+    assert mock_publish.call_args_list == []
 
 
 def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
@@ -246,7 +318,12 @@ def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
 
     from panel_core.jobs.payments import cleanup_old_payments
 
-    with app.app_context(), patch("panel_core.jobs.payments.bot_events.publish") as mock_publish:
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
+    ):
+        mock_find.return_value = SimpleNamespace(status="canceled")
         cleanup_old_payments()
 
     events = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "payment_cancelled"]
