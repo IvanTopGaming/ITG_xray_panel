@@ -1,7 +1,11 @@
 import ast
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core"
+BACKEND = Path(__file__).resolve().parents[1]
+
+SRC = BACKEND / "packages/panel-core/src/panel_core"
+
+ENTRY_POINT_SCRIPTS = ("run.py", "migrate_db.py", "sqlite_to_pg.py")
 
 FACADE_NAMES = (
     "has_local_xray",
@@ -36,29 +40,76 @@ def test_the_package_root_carries_no_re_exports_to_import():
         )
 
 
+PACKAGE_ROOT_MODULES = ("panel_core.xray", ".xray", "..xray")
+
+
+def _dotted_name(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _package_root_aliases(tree):
+    aliases = {"panel_core.xray"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "panel_core.xray" and alias.asname:
+                    aliases.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            module = "." * node.level + (node.module or "")
+            if module not in ("panel_core", ".", ".."):
+                continue
+            for alias in node.names:
+                if alias.name == "xray":
+                    aliases.add(alias.asname or "xray")
+    return aliases
+
+
 def _shim_imports_from_the_package_root(path):
-    for node in ast.walk(ast.parse(path.read_text())):
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
         module = "." * node.level + (node.module or "")
-        if module not in ("panel_core.xray", ".xray", "..xray"):
+        if module not in PACKAGE_ROOT_MODULES:
             continue
         for alias in node.names:
             if alias.name in FACADE_NAMES:
-                yield f"{path.name}:{node.lineno} -> {alias.name}"
+                yield f"{path.name}:{node.lineno} -> from {module} import {alias.name}"
+
+    aliases = _package_root_aliases(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or node.attr not in FACADE_NAMES:
+            continue
+        target = _dotted_name(node.value)
+        if target in aliases:
+            yield f"{path.name}:{node.lineno} -> {target}.{node.attr}"
+
+
+def _scanned_paths():
+    paths = sorted(SRC.rglob("*.py")) + sorted(Path(__file__).resolve().parent.rglob("*.py"))
+    scripts = [BACKEND / name for name in ENTRY_POINT_SCRIPTS]
+    missing = [script.name for script in scripts if not script.is_file()]
+    assert missing == [], (
+        f"entry-point scripts declared in ENTRY_POINT_SCRIPTS are gone: {missing}. They live outside the "
+        "package, so nothing else scans them - a stale name here silently shrinks this guard's reach."
+    )
+    return paths + scripts
 
 
 def test_no_module_imports_the_shims_from_the_package_root():
-    roots = (SRC, Path(__file__).resolve().parent)
-    offenders = [
-        hit
-        for root in roots
-        for path in sorted(root.rglob("*.py"))
-        for hit in _shim_imports_from_the_package_root(path)
-    ]
+    offenders = [hit for path in _scanned_paths() for hit in _shim_imports_from_the_package_root(path)]
     assert offenders == [], (
-        "these modules still import gateway shims from the package root, which cannot survive "
+        "these modules still reach gateway shims through the package root, which cannot survive "
         f"panel_core.xray becoming a namespace package: {offenders}. Relative forms ('from .xray import "
         "generate_config_file') break exactly the same way - app_base.py used two of them and the "
-        "absolute-only version of this guard missed both."
+        "absolute-only version of this guard missed both. So does the attribute form ('from panel_core "
+        "import xray' then 'xray.generate_config_file(...)'): it resolves the same attribute on the same "
+        "package root, just one statement later. Import from panel_core.xray.facade instead."
     )

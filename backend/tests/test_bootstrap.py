@@ -1,3 +1,4 @@
+import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -5,6 +6,66 @@ from pathlib import Path
 import pytest
 
 ROLES = ("master", "worker", "sub", "botapi")
+
+CONFTEST = Path(__file__).resolve().parent / "conftest.py"
+
+CONFTEST_BOOTSTRAP_WHY = (
+    "tests/conftest.py must call bootstrap_gevent() at module scope, before it imports anything else "
+    "from panel_core. panel_core is a namespace package: importing it - or any role module - runs no "
+    "code, so nothing patches gevent as a side effect any more. Without the explicit call the suite "
+    "imports socket, ssl and threading unpatched and then collapses into a cascade of gevent LoopExit "
+    "errors across unrelated tests, which is loud but points nowhere near the cause."
+)
+
+
+def _module_level_imported_names(node):
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom) and not node.level:
+        return [node.module or ""]
+    return []
+
+
+def test_conftest_calls_bootstrap_gevent_before_importing_panel_core():
+    assert CONFTEST.is_file(), f"conftest.py not found at {CONFTEST} - this guard would pass vacuously"
+    body = ast.parse(CONFTEST.read_text()).body
+
+    bootstrap_call = None
+    first_panel_core_import = None
+    for index, node in enumerate(body):
+        if (
+            bootstrap_call is None
+            and isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "bootstrap_gevent"
+        ):
+            bootstrap_call = index
+        if first_panel_core_import is None:
+            for name in _module_level_imported_names(node):
+                if (name == "panel_core" or name.startswith("panel_core.")) and name != "panel_core.bootstrap":
+                    first_panel_core_import = (index, name)
+                    break
+
+    assert bootstrap_call is not None, (
+        f"no module-level bootstrap_gevent() call in conftest.py\n\n{CONFTEST_BOOTSTRAP_WHY}"
+    )
+    assert first_panel_core_import is not None, (
+        "conftest.py imports nothing from panel_core, so the ordering assertion below proves nothing. "
+        "Re-check what this guard is looking at before relaxing it."
+    )
+    assert bootstrap_call < first_panel_core_import[0], (
+        f"conftest.py imports {first_panel_core_import[1]} at statement {first_panel_core_import[0]}, "
+        f"before the bootstrap_gevent() call at statement {bootstrap_call}\n\n{CONFTEST_BOOTSTRAP_WHY}"
+    )
+
+
+def test_the_running_suite_has_patched_sockets():
+    import gevent.monkey
+
+    assert gevent.monkey.is_module_patched("socket"), (
+        f"the pytest process is running with unpatched sockets\n\n{CONFTEST_BOOTSTRAP_WHY}"
+    )
 
 
 def test_bootstrap_is_idempotent():
