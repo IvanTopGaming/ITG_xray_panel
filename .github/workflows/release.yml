@@ -138,6 +138,10 @@ jobs:
                 IMAGE="ghcr.io/ivantopgaming/panel-egress"
                 BUILD_ARGS=""
                 ;;
+              *)
+                echo "Unknown service '$SERVICE' — no build case defined for it" >&2
+                exit 1
+                ;;
             esac
 
             echo "::group::Build $SERVICE v$VERSION"

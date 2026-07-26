@@ -69,6 +69,10 @@ jobs:
                 IMAGE="ghcr.io/ivantopgaming/panel-bot"
                 BUILD_ARGS="--build-context project=."
                 ;;
+              *)
+                echo "Unknown service '$SERVICE' — no build case defined for it" >&2
+                exit 1
+                ;;
             esac
 
             echo "::group::Build $SERVICE (dev-$SHORT_SHA)"
