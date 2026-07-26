@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { getVersionInfo, isNewer } from '@/lib/version';
+import { panelRole } from '@/lib/panelRole';
 
 export interface ServiceStatus {
   key: string;
@@ -22,13 +23,14 @@ export function useVersionStatus() {
 
   const services: ServiceStatus[] = [];
 
-  const backendCurrent = data?.running.backend ?? __APP_VERSIONS__.backend;
+  const backendKey = data?.running.backend_key ?? panelRole;
+  const backendCurrent = data?.running.backend ?? __APP_VERSIONS__[backendKey] ?? 'dev';
   services.push({
     key: 'backend',
-    label: 'backend',
+    label: backendKey,
     current: backendCurrent,
-    latest: latest?.backend ?? null,
-    updateAvailable: isNewer(latest?.backend, backendCurrent),
+    latest: latest?.[backendKey] ?? null,
+    updateAvailable: isNewer(latest?.[backendKey], backendCurrent),
   });
 
   services.push({

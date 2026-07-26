@@ -26,7 +26,7 @@ from panel_core.xray.protocol import (
     normalize_geo_data_url,
     normalize_xray_log_level,
 )
-from panel_core.version import get_app_version
+from panel_core.version import get_app_version, app_version_key
 from panel_core.services.bot_status import get_bot_status
 from panel_core.services.version_check import get_latest
 
@@ -133,6 +133,7 @@ def system_version():
         {
             "running": {
                 "backend": get_app_version(),
+                "backend_key": app_version_key(),
                 "bot": bot["version"],
                 "bot_reported_at": bot["reported_at"],
             },

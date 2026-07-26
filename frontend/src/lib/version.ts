@@ -3,6 +3,7 @@ import api from './api';
 export interface VersionInfo {
   running: {
     backend: string | null;
+    backend_key: string | null;
     bot: string | null;
     bot_reported_at: number | null;
   };

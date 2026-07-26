@@ -67,9 +67,10 @@ def bot_headers(app):
     return {"Authorization": f"Bearer {BOT_TOKEN}"}
 
 
-def test_reads_backend_field_from_given_file(tmp_path):
+def test_reads_backend_field_from_given_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("PANEL_ROLE", raising=False)
     p = tmp_path / "versions.json"
-    p.write_text(json.dumps({"backend": "9.9.9", "bot": "1.2.3"}))
+    p.write_text(json.dumps({"master": "9.9.9", "bot": "1.2.3"}))
     assert get_app_version(str(p)) == "9.9.9"
 
 
@@ -150,6 +151,71 @@ def test_version_check_keeps_previous_on_failure(monkeypatch):
     monkeypatch.setattr(version_check, "_http_get_json", boom)
     version_check.fetch_latest()
     assert version_check.get_latest()["latest"] == {"backend": "1.1.1"}
+
+
+def test_version_key_is_mapped_per_role_not_taken_from_the_role_name():
+    from panel_core.panel_role import ROLE_BOT, ROLE_MASTER, ROLE_SUB, ROLE_WORKER
+    from panel_core.version import VERSION_KEY_BY_ROLE
+
+    assert VERSION_KEY_BY_ROLE == {
+        ROLE_MASTER: "master",
+        ROLE_WORKER: "worker",
+        ROLE_SUB: "sub",
+        ROLE_BOT: "bot_api",
+    }
+    assert VERSION_KEY_BY_ROLE[ROLE_BOT] != ROLE_BOT, (
+        "the bot-api role is named 'bot', and versions.json already has a 'bot' key holding the "
+        "TELEGRAM BOT's version. Using the role name as the version key would make bot-api report the "
+        "Telegram bot's version. The mapping must stay explicit."
+    )
+
+
+@pytest.mark.parametrize(
+    "role,expected",
+    [("master", "2.0.0"), ("worker", "2.0.1"), ("sub", "2.0.2"), ("bot", "2.0.3")],
+)
+def test_each_role_reports_its_own_image_version(role, expected, tmp_path, monkeypatch):
+    import json
+
+    from panel_core.version import get_app_version
+
+    path = tmp_path / "versions.json"
+    path.write_text(
+        json.dumps({"master": "2.0.0", "worker": "2.0.1", "sub": "2.0.2", "bot_api": "2.0.3", "bot": "9.9.9"})
+    )
+    monkeypatch.setenv("PANEL_ROLE", role)
+    assert get_app_version(str(path)) == expected
+
+
+def test_a_missing_key_reports_dev_rather_than_another_roles_version(tmp_path, monkeypatch):
+    import json
+
+    from panel_core.version import get_app_version
+
+    path = tmp_path / "versions.json"
+    path.write_text(json.dumps({"master": "2.0.0"}))
+    monkeypatch.setenv("PANEL_ROLE", "sub")
+    assert get_app_version(str(path)) == "dev"
+
+
+def test_versions_json_declares_the_four_backend_images_and_no_legacy_backend_key():
+    import json
+    import pathlib
+
+    from panel_core.version import VERSION_KEY_BY_ROLE
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    assert (root / "backend").is_dir(), f"{root} is not the repo root — the parents[2] index drifted"
+    data = json.loads((root / "versions.json").read_text())
+
+    missing = sorted(key for key in VERSION_KEY_BY_ROLE.values() if key not in data)
+    assert missing == [], f"versions.json is missing backend image versions: {missing}"
+
+    assert "backend" not in data, (
+        "versions.json still carries the legacy single 'backend' key. Four per-role images replaced it; "
+        "leaving it means the release workflow would build a fifth image nothing deploys, and "
+        "get_app_version() would silently prefer it."
+    )
 
 
 def test_version_endpoint_shape(client, auth_headers, monkeypatch):

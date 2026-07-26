@@ -10,7 +10,16 @@ const versionsCandidates = [
 const versionsPath = versionsCandidates.find((p) => existsSync(p));
 const versions = versionsPath
   ? JSON.parse(readFileSync(versionsPath, 'utf-8'))
-  : { backend: 'dev', frontend: 'dev', bot: 'dev', caddy: 'dev', xray_core_ref: 'dev' };
+  : {
+      master: 'dev',
+      worker: 'dev',
+      sub: 'dev',
+      bot_api: 'dev',
+      frontend: 'dev',
+      bot: 'dev',
+      caddy: 'dev',
+      xray_core_ref: 'dev',
+    };
 
 export default defineConfig({
   plugins: [react()],
@@ -41,7 +50,7 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_BACKEND_URL || 'http://backend:5000',
         changeOrigin: true,
-      }
-    }
-  }
+      },
+    },
+  },
 });

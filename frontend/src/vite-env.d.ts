@@ -7,9 +7,13 @@ interface ImportMeta {
 }
 
 declare const __APP_VERSIONS__: {
-  backend: string;
+  master: string;
+  worker: string;
+  sub: string;
+  bot_api: string;
   frontend: string;
   caddy: string;
   bot: string;
   xray_core_ref: string;
+  [key: string]: string;
 };
