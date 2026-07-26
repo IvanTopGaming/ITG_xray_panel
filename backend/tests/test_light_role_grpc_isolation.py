@@ -18,15 +18,16 @@ GRPC_SINKS = {
 SUB_ROLE_MODULES = ("panel_core.api.subscription",)
 BOT_ROLE_MODULES = ("panel_core.api.bot_service", "panel_core.api.billing")
 
-ROLE_GUARDED_HANDLERS = {
+XRAY_REACHING_HANDLERS = {
     "panel_core.api.bot_service:activate_trial",
     "panel_core.api.billing:yookassa_webhook",
 }
 
 FAILURE_HINT = (
-    "A light-role endpoint gained a call path to Xray gRPC. Either gate it behind is_bot_api()/is_sub() "
-    "the way activate_trial and yookassa_webhook are, or make that role call grpc_gevent.init_gevent() "
-    "in its factory before the call can block the gevent hub."
+    "A light-role endpoint gained a call path to Xray gRPC. These two reach it only through "
+    "provisioning's local-inbound branch, which _require_local_xray() refuses on a role without a "
+    "local Xray; any new one must be equally unreachable at runtime, or the role must call "
+    "grpc_gevent.init_gevent() in its factory before the call can block the gevent hub."
 )
 
 
@@ -45,9 +46,9 @@ def test_sub_role_endpoints_cannot_reach_xray_grpc():
     assert _reaching(*SUB_ROLE_MODULES) == {}, FAILURE_HINT
 
 
-def test_only_role_guarded_bot_endpoints_can_reach_xray_grpc():
+def test_only_provisioning_bot_endpoints_can_reach_xray_grpc():
     reaching = _reaching(*BOT_ROLE_MODULES)
-    assert set(reaching) == ROLE_GUARDED_HANDLERS, FAILURE_HINT + f"\nreaching: {reaching}"
+    assert set(reaching) == XRAY_REACHING_HANDLERS, FAILURE_HINT + f"\nreaching: {reaching}"
 
 
 HEAVY_ROLES = ("worker",)
@@ -100,11 +101,15 @@ def test_light_roles_do_not_import_grpc_under_any_spelling(name):
 
 
 class _ExplodingGateway:
+    def __init__(self):
+        self.apply_config_calls = 0
+
     def has_local_xray(self):
         return False
 
     def apply_config(self, validate=True):
-        raise AssertionError("xray config write reached in a light role")
+        self.apply_config_calls += 1
+        return None
 
     def restart(self):
         raise AssertionError("xray restart reached in a light role")
@@ -123,19 +128,20 @@ class _ExplodingGateway:
 
 
 @pytest.fixture
-def bot_role_client(monkeypatch, tmp_path):
+def bot_role_app(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "bot")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/grpc-isolation.db")
-    monkeypatch.delenv("ADMIN_BACKEND_URL", raising=False)
     monkeypatch.chdir(tmp_path)
 
     from panel_core.xray.gateway import set_xray_gateway
 
-    set_xray_gateway(_ExplodingGateway())
+    gateway = _ExplodingGateway()
+    set_xray_gateway(gateway)
 
     from panel_core.roles import botapi
 
     app = botapi.create_app()
+    app.xray_gateway_spy = gateway
 
     from panel_core.extensions import db
     from panel_core.models import SystemSetting
@@ -145,7 +151,7 @@ def bot_role_client(monkeypatch, tmp_path):
         db.session.add(SystemSetting(key="bot_service_token", value="test-bot-token"))
         db.session.commit()
 
-    yield app.test_client()
+    yield app
 
     from panel_core.extensions import scheduler
 
@@ -154,29 +160,119 @@ def bot_role_client(monkeypatch, tmp_path):
     scheduler.remove_all_jobs()
 
 
-def test_bot_role_trial_activate_never_provisions_locally(bot_role_client):
+@pytest.fixture
+def bot_role_client(bot_role_app):
+    return bot_role_app.test_client()
+
+
+AUTH = {"Authorization": "Bearer test-bot-token"}
+
+
+def _seed_trial_tariff(app, *, panel_id):
+    from panel_core.extensions import db
+    from panel_core.models import LinkedPanel, Tariff, TariffItem
+
+    with app.app_context():
+        if panel_id is not None:
+            db.session.add(
+                LinkedPanel(
+                    id=panel_id,
+                    name="node-1",
+                    url="http://node-1:5000",
+                    federation_token="tok",
+                    created_at=0,
+                )
+            )
+        tariff = Tariff(name="Trial", price_rub=0, period_days=3, is_trial=True, enabled=True)
+        db.session.add(tariff)
+        db.session.flush()
+        db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="vless-reality", traffic_gb=10, panel_id=panel_id))
+        db.session.commit()
+        return tariff.id
+
+
+def _local_client_count(app):
+    from panel_core.models import Client
+
+    with app.app_context():
+        return Client.query.count()
+
+
+def test_bot_role_trial_activate_provisions_on_a_node(bot_role_app, bot_role_client):
+    _seed_trial_tariff(bot_role_app, panel_id=7)
+
+    with patch("panel_core.services.panel_proxy.proxy_provision") as m_provision:
+        resp = bot_role_client.post(
+            "/api/bot-service/trial/activate",
+            json={"telegram_id": 4242},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200
+    assert m_provision.call_count == 1
+    panel_id, telegram_id, inbound_tag, payload = m_provision.call_args.args
+    assert (panel_id, telegram_id, inbound_tag) == (7, 4242, "vless-reality")
+    assert payload["limit_bytes"] == 10 * 1024**3
+    assert _local_client_count(bot_role_app) == 0
+
+
+def test_bot_role_trial_activate_refuses_a_local_only_tariff(bot_role_app, bot_role_client):
+    from panel_core.models import TelegramUser
+
+    _seed_trial_tariff(bot_role_app, panel_id=None)
+
     resp = bot_role_client.post(
         "/api/bot-service/trial/activate",
         json={"telegram_id": 4242},
-        headers={"Authorization": "Bearer test-bot-token"},
+        headers=AUTH,
     )
-    assert resp.status_code == 503
-    assert resp.get_json() == {"error": "provisioning temporarily unavailable"}
+
+    assert resp.status_code == 500
+    assert _local_client_count(bot_role_app) == 0
+    with bot_role_app.app_context():
+        from panel_core.extensions import db
+
+        assert db.session.get(TelegramUser, 4242).trial_used_at is None
 
 
-def test_bot_role_checkout_never_provisions_locally(bot_role_client):
-    resp = bot_role_client.post(
-        "/api/billing/checkout",
-        json={"telegram_id": 4242, "tariff_id": 1},
-        headers={"Authorization": "Bearer test-bot-token"},
-    )
-    assert resp.status_code == 503
-    assert resp.get_json() == {"error": "provisioning temporarily unavailable"}
+def test_bot_role_local_only_tariff_raises_local_xray_unavailable(bot_role_app):
+    from panel_core.models import Tariff
+    from panel_core.services.provisioning import apply_tariff_for_user
+    from panel_core.xray.gateway import LocalXrayUnavailable
+
+    tariff_id = _seed_trial_tariff(bot_role_app, panel_id=None)
+
+    with bot_role_app.app_context():
+        from panel_core.extensions import db
+
+        tariff = db.session.get(Tariff, tariff_id)
+        with pytest.raises(LocalXrayUnavailable) as excinfo:
+            apply_tariff_for_user(4242, tariff, source="trial")
+
+    assert "panel_id" in str(excinfo.value)
 
 
-def test_bot_role_yookassa_webhook_is_disabled(bot_role_client):
+def test_bot_role_checkout_is_handled_locally(bot_role_client):
+    tariff_payload = {"payment_id": 1, "confirmation_url": "https://yookassa.example/p/1"}
+
+    with patch("panel_core.services.billing.create_checkout", return_value=tariff_payload) as m_checkout:
+        resp = bot_role_client.post(
+            "/api/billing/checkout",
+            json={"telegram_id": 4242, "tariff_id": 1},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200
+    assert resp.get_json() == tariff_payload
+    assert m_checkout.call_count == 1
+    assert m_checkout.call_args.kwargs == {"telegram_id": 4242, "tariff_id": 1, "lang": "ru"}
+
+
+def test_bot_role_yookassa_webhook_is_served(bot_role_client):
     resp = bot_role_client.post(
         "/api/billing/yookassa/webhook",
-        json={"event": "refund.succeeded", "object": {"payment_id": "yk-1"}},
+        json={"event": "refund.succeeded", "object": {"payment_id": "yk-unknown"}},
     )
-    assert resp.status_code == 404
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True}

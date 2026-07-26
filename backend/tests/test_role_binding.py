@@ -91,7 +91,6 @@ def test_factory_accepts_a_matching_env_role(module_name, role, monkeypatch, tmp
 
 def _bot_app(monkeypatch, tmp_path, db_name):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{db_name}.db")
-    monkeypatch.delenv("ADMIN_BACKEND_URL", raising=False)
     monkeypatch.chdir(tmp_path)
 
     from panel_core.roles import botapi
@@ -99,19 +98,18 @@ def _bot_app(monkeypatch, tmp_path, db_name):
     return botapi.create_app()
 
 
-def test_bot_role_webhook_404s_with_panel_role_unset(monkeypatch, tmp_path):
+def test_bot_role_serves_the_webhook_with_panel_role_unset(monkeypatch, tmp_path):
     monkeypatch.delenv("PANEL_ROLE", raising=False)
 
     app = _bot_app(monkeypatch, tmp_path, "bot-unset")
-    resp = app.test_client().post(
-        "/api/billing/yookassa/webhook",
-        json={"event": "refund.succeeded", "object": {"payment_id": "yk-1"}},
-    )
+    resp = app.test_client().post("/api/billing/yookassa/webhook", json={})
 
-    assert resp.status_code == 404
+    assert os.environ["PANEL_ROLE"] == "bot"
+    assert resp.status_code == 400
+    assert resp.get_json() == {"error": "invalid_request"}
 
 
-def test_bot_role_webhook_is_never_served_with_a_contradicting_panel_role(monkeypatch, tmp_path):
+def test_bot_role_refuses_to_boot_with_a_contradicting_panel_role(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "master")
 
     with pytest.raises(RuntimeError):

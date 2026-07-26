@@ -48,7 +48,7 @@ def test_bot_mode_mounts_only_bot_and_billing(monkeypatch):
     m_mig.assert_not_called()
 
 
-def test_bot_mode_gates_yookassa_webhook(monkeypatch):
+def test_bot_mode_serves_yookassa_webhook_locally(monkeypatch):
     _env(monkeypatch, "bot")
     with patch("panel_core.app_base.run_startup_migration"):
         from panel_core.dispatch import create_app
@@ -56,7 +56,8 @@ def test_bot_mode_gates_yookassa_webhook(monkeypatch):
 
         app = create_app()
         client = app.test_client()
-        resp = client.post("/api/billing/yookassa/webhook", json={"event": "payment.succeeded", "object": {"id": "x"}})
+        resp = client.post("/api/billing/yookassa/webhook", json={})
         scheduler.remove_all_jobs()
 
-    assert resp.status_code == 404
+    assert resp.status_code == 400
+    assert resp.get_json() == {"error": "invalid_request"}
