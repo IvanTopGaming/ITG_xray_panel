@@ -138,11 +138,21 @@ def cleanup_old_payments() -> None:
             Payment.status == "pending",
             Payment.created_at < now - dt.timedelta(hours=24),
         )
+        .order_by(Payment.created_at.asc())
         .limit(500)
         .all()
     )
     cancelled = []
     for payment in stuck:
+        if payment.confirmation_url is None:
+            logger.info(
+                "cleanup_old_payments: payment=%s yk=%s never reached a yookassa checkout page; cancelling locally",
+                payment.id,
+                payment.yookassa_id,
+            )
+            payment.status = "cancelled"
+            cancelled.append(payment)
+            continue
         remote = billing.fetch_remote_status(payment)
         if remote is None:
             logger.warning(

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import sqlalchemy as sa
 
 from panel_core.extensions import db
 from panel_core.models import Payment, SystemSetting, Tariff, TariffItem
@@ -37,7 +38,13 @@ def tariff(app, configured):
         yield t.id
 
 
-def _insert_pending(app, tariff_id, age_seconds=600, yk_id="yk-poll-1"):
+def _insert_pending(
+    app,
+    tariff_id,
+    age_seconds=600,
+    yk_id="yk-poll-1",
+    confirmation_url="https://yookassa.test/pay/default",
+):
     with app.app_context():
         p = Payment(
             yookassa_id=yk_id,
@@ -46,6 +53,7 @@ def _insert_pending(app, tariff_id, age_seconds=600, yk_id="yk-poll-1"):
             tariff_snapshot={"name": "x", "price_rub": 150, "period_days": 30, "items": []},
             amount_rub=150,
             status="pending",
+            confirmation_url=confirmation_url,
             metadata_json={"lang": "ru"},
         )
         db.session.add(p)
@@ -331,6 +339,93 @@ def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
     payloads = sorted([c.args[2] for c in events], key=lambda p: p["payment_id"])
     assert payloads[0]["chat_id"] == 100
     assert payloads[1]["chat_id"] == 200
+
+
+def test_cleanup_cancels_payment_without_confirmation_url_without_asking_yookassa(app, tariff):
+
+    pid = _insert_pending(
+        app,
+        tariff,
+        age_seconds=25 * 3600,
+        yk_id="pending-deadbeef",
+        confirmation_url=None,
+    )
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.jobs.payments.billing.fetch_remote_status") as mock_fetch,
+        patch("panel_core.jobs.payments.bot_events.publish"),
+    ):
+        cleanup_old_payments()
+
+    mock_fetch.assert_not_called()
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "cancelled", (
+            "a payment whose confirmation_url was never set never reached YooKassa's checkout page — "
+            "the user could not have paid, so it can be cancelled from local state alone"
+        )
+
+
+def test_cleanup_leaves_confirmed_payment_pending_when_unresolvable(app, tariff):
+
+    pid = _insert_pending(
+        app,
+        tariff,
+        age_seconds=25 * 3600,
+        yk_id="yk-real-unresolvable",
+        confirmation_url="https://yookassa.test/pay/real",
+    )
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.jobs.payments.billing.fetch_remote_status", return_value=None) as mock_fetch,
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
+    ):
+        cleanup_old_payments()
+
+    assert mock_fetch.call_count == 1
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "pending", (
+            "a payment the user did see a checkout page for must not be cancelled just because "
+            "YooKassa could not be reached this run"
+        )
+    assert mock_publish.call_args_list == []
+
+
+def test_cleanup_processes_oldest_pending_first(app, tariff):
+
+    _insert_pending(
+        app, tariff, age_seconds=25 * 3600, yk_id="yk-new", confirmation_url="https://yookassa.test/pay/new"
+    )
+    _insert_pending(
+        app, tariff, age_seconds=48 * 3600, yk_id="yk-mid", confirmation_url="https://yookassa.test/pay/mid"
+    )
+    _insert_pending(
+        app, tariff, age_seconds=72 * 3600, yk_id="yk-old", confirmation_url="https://yookassa.test/pay/old"
+    )
+
+    with app.app_context():
+        db.session.execute(sa.text("DROP INDEX IF EXISTS ix_payment_created_at"))
+        db.session.commit()
+
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    order = []
+
+    def fake_fetch(payment):
+        order.append(payment.yookassa_id)
+        return None
+
+    with (
+        app.app_context(),
+        patch("panel_core.jobs.payments.billing.fetch_remote_status", side_effect=fake_fetch),
+        patch("panel_core.jobs.payments.bot_events.publish"),
+    ):
+        cleanup_old_payments()
+
+    assert order == ["yk-old", "yk-mid", "yk-new"], "the oldest stuck payment must be checked first"
 
 
 def test_cleanup_deletes_ancient_cancelled(app, tariff):
