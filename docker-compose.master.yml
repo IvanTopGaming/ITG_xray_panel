@@ -14,7 +14,7 @@ services:
       - redis-net
 
   backend:
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    image: ${MASTER_IMAGE:?MASTER_IMAGE is required}
     container_name: panel-backend
     restart: always
     volumes:

@@ -1,6 +1,6 @@
 services:
   bot-api:
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    image: ${BOT_API_IMAGE:?BOT_API_IMAGE is required}
     container_name: panel-bot-api
     restart: always
     environment:

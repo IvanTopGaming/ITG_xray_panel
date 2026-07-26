@@ -1,6 +1,6 @@
 services:
   sub-backend:
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    image: ${SUB_IMAGE:?SUB_IMAGE is required}
     container_name: panel-sub-backend
     restart: always
     environment:
