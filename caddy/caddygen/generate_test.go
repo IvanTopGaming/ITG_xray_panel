@@ -208,6 +208,87 @@ func TestGenerate_NoDeadXRealIP(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_DropsEmptyBot(t *testing.T) {
+	data, err := os.ReadFile("../routes.yaml")
+	if err != nil {
+		t.Skipf("routes.yaml not found: %v", err)
+	}
+	cfg, err := LoadConfig(data, envMap(map[string]string{
+		"PROXY_DOMAIN": "proxy.example.com",
+		"PANEL_DOMAIN": "panel.example.com",
+		"SUB_DOMAIN":   "sub.example.com",
+	}))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	for _, r := range cfg.SNIRoutes {
+		if r.Name == "bot" {
+			t.Fatal("bot route should have been dropped when BOT_DOMAIN is empty")
+		}
+	}
+}
+
+func TestLoadConfig_KeepsBotWhenSet(t *testing.T) {
+	data, err := os.ReadFile("../routes.yaml")
+	if err != nil {
+		t.Skipf("routes.yaml not found: %v", err)
+	}
+	cfg, err := LoadConfig(data, envMap(map[string]string{
+		"PROXY_DOMAIN": "proxy.example.com",
+		"PANEL_DOMAIN": "panel.example.com",
+		"SUB_DOMAIN":   "sub.example.com",
+		"BOT_DOMAIN":   "bot.example.com",
+	}))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	var bot *Route
+	for i := range cfg.SNIRoutes {
+		if cfg.SNIRoutes[i].Name == "bot" {
+			bot = &cfg.SNIRoutes[i]
+		}
+	}
+	if bot == nil {
+		t.Fatal("bot route missing")
+	}
+	if bot.Match != "bot.example.com" || bot.Upstream != "backend:5000" {
+		t.Fatalf("bot route not interpolated: %+v", bot)
+	}
+	if !bot.TLS || len(bot.OnlyPaths) != 1 || bot.OnlyPaths[0] != "/api/billing/yookassa/webhook" {
+		t.Fatalf("bot route flags wrong: %+v", bot)
+	}
+}
+
+func TestGenerate_BotServerPathFilters(t *testing.T) {
+	data, err := os.ReadFile("../routes.yaml")
+	if err != nil {
+		t.Skipf("routes.yaml not found: %v", err)
+	}
+	cfg, err := LoadConfig(data, envMap(map[string]string{
+		"PROXY_DOMAIN": "proxy.example.com",
+		"PANEL_DOMAIN": "panel.example.com",
+		"SUB_DOMAIN":   "sub.example.com",
+		"BOT_DOMAIN":   "bot.example.com",
+	}))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	b, err := Generate(cfg)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	str := string(b)
+	if !containsString(str, "/api/billing/yookassa/webhook") {
+		t.Fatal("bot webhook path matcher missing")
+	}
+	if !containsString(str, "backend:5000") {
+		t.Fatal("bot backend upstream missing")
+	}
+	if !containsString(str, "\"status_code\": 404") && !containsString(str, "\"status_code\":404") {
+		t.Fatal("404 catch-all missing for bot server")
+	}
+}
+
 func TestGenerate_DefaultRoutesFileValidJSON(t *testing.T) {
 	data, err := os.ReadFile("../routes.yaml")
 	if err != nil {
