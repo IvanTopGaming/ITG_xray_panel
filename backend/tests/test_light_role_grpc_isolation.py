@@ -100,6 +100,15 @@ def test_light_roles_do_not_import_grpc_under_any_spelling(name):
     )
 
 
+APPLY_CONFIG_HINT = (
+    "apply_config() is the one gateway call a light role is allowed to make: _sync_after_provision() "
+    "calls generate_config_file() unconditionally, which on the bot role's gateway is a no-op that "
+    "writes nothing and talks to no Xray. Every other method on _ExplodingGateway raises, so this count "
+    "is the whole of the light role's Xray surface -- if it moved, either provisioning grew a second "
+    "sync, or a real config write crept back onto a role that has no Xray to write for."
+)
+
+
 class _ExplodingGateway:
     def __init__(self):
         self.apply_config_calls = 0
@@ -142,6 +151,10 @@ def bot_role_app(monkeypatch, tmp_path):
 
     app = botapi.create_app()
     app.xray_gateway_spy = gateway
+    assert gateway.apply_config_calls == 0, (
+        f"botapi.create_app() wrote an Xray config while booting ({gateway.apply_config_calls} calls). "
+        f"{APPLY_CONFIG_HINT}"
+    )
 
     from panel_core.extensions import db
     from panel_core.models import SystemSetting
@@ -214,6 +227,10 @@ def test_bot_role_trial_activate_provisions_on_a_node(bot_role_app, bot_role_cli
     assert (panel_id, telegram_id, inbound_tag) == (7, 4242, "vless-reality")
     assert payload["limit_bytes"] == 10 * 1024**3
     assert _local_client_count(bot_role_app) == 0
+    assert bot_role_app.xray_gateway_spy.apply_config_calls == 1, (
+        f"expected exactly one apply_config() from _sync_after_provision, observed "
+        f"{bot_role_app.xray_gateway_spy.apply_config_calls}. {APPLY_CONFIG_HINT}"
+    )
 
 
 def test_bot_role_trial_activate_refuses_a_local_only_tariff(bot_role_app, bot_role_client):
@@ -229,6 +246,11 @@ def test_bot_role_trial_activate_refuses_a_local_only_tariff(bot_role_app, bot_r
 
     assert resp.status_code == 500
     assert _local_client_count(bot_role_app) == 0
+    assert bot_role_app.xray_gateway_spy.apply_config_calls == 0, (
+        f"a refused local-only tariff still reached apply_config "
+        f"({bot_role_app.xray_gateway_spy.apply_config_calls} calls) — _require_local_xray() must abort "
+        f"before any sync. {APPLY_CONFIG_HINT}"
+    )
     with bot_role_app.app_context():
         from panel_core.extensions import db
 
