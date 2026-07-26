@@ -8,6 +8,8 @@ certs/
 !.env.example
 !.gitkeep
 
+secret.key
+
 docker-compose.override.yml
 docs/*
 !docs/shot-*.webp
