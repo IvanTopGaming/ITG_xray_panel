@@ -13,7 +13,6 @@ set +a
 cert_dir="$PWD/certs"
 domains=(-d "$PANEL_DOMAIN")
 [[ -n "${SUB_DOMAIN:-}" ]] && domains+=(-d "$SUB_DOMAIN")
-[[ -n "${BOT_DOMAIN:-}" ]] && domains+=(-d "$BOT_DOMAIN")
 
 docker compose stop caddy
 trap 'docker compose up -d caddy' EXIT
