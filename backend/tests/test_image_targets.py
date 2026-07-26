@@ -205,6 +205,18 @@ def test_the_case_branch_pairs_its_own_package_and_dockerfile_with_its_own_image
     )
 
 
+@pytest.mark.parametrize("workflow_name", sorted(WORKFLOWS))
+def test_the_case_statement_fails_loudly_on_an_unrecognized_service(workflow_name):
+    workflow = WORKFLOWS[workflow_name]
+    text = _read(workflow)
+    body = _case_branch(text, "*", workflow)
+    assert re.search(r"\bexit\s+[1-9]\d*\b", body), (
+        f"{workflow}'s '*)' fallback branch does not exit non-zero. Without it, a ninth service silently "
+        f"reuses the previous loop iteration's IMAGE/CONTEXT/BUILD_ARGS and gets built and published under "
+        f"the wrong role's image name.\n\n{DRIFT_DOC}"
+    )
+
+
 def test_the_light_dockerfile_requires_its_package_argument():
     text = _read("backend/Dockerfile")
     assert re.search(r"^ARG PANEL_PACKAGE\s*$", text, re.M), (
