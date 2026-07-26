@@ -39,3 +39,26 @@ def test_application_no_longer_lives_under_app_namespace():
     assert importlib.util.find_spec("panel_core.models") is not None
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("app.models")
+
+
+def test_panel_sub_is_a_workspace_distribution():
+    from tests.import_graph import SRC_ROOTS
+
+    roots = {path.parents[1].name for path in SRC_ROOTS}
+    assert "panel-sub" in roots, f"panel-sub must be a distribution under packages/; found {sorted(roots)}"
+
+
+def test_subscription_modules_live_in_panel_sub():
+    from tests.import_graph import source_path
+
+    for relative in ("api/subscription.py", "roles/sub.py"):
+        path = source_path(relative)
+        assert "panel-sub" in path.parts, f"{relative} resolved to {path}, expected it under packages/panel-sub"
+
+
+def test_subscription_still_imports_under_its_original_name():
+    import panel_core.api.subscription
+    import panel_core.roles.sub
+
+    assert panel_core.api.subscription.bp.name == "subscription"
+    assert callable(panel_core.roles.sub.create_app)
