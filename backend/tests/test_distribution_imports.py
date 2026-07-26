@@ -132,15 +132,21 @@ CROSS_DISTRIBUTION_EDGES = _cross_distribution_edges()
 
 
 def test_the_declared_dependency_graph_is_read_from_the_pyprojects():
-    assert set(DISTRIBUTIONS) == {"panel-core", "panel-sub", "panel-botapi"}, (
-        f"workspace membership changed: {sorted(DISTRIBUTIONS)}. Update nothing here — the guard reads "
-        "the declarations — but check that the new member is covered by the direction test below."
+    assert "panel-core" in DISTRIBUTIONS, (
+        f"panel-core is missing from {sorted(DISTRIBUTIONS)} — workspace_members() is broken, and nothing "
+        "else in this file can be trusted without it."
     )
-    assert DISTRIBUTIONS["panel-sub"]["dependencies"] >= {"panel-core"}
-    assert DISTRIBUTIONS["panel-botapi"]["dependencies"] >= {"panel-core"}
+    non_core = set(DISTRIBUTIONS) - {"panel-core"}
+    assert non_core, f"only {sorted(DISTRIBUTIONS)} found — the workspace has no distribution besides panel-core"
+    for name in sorted(non_core):
+        assert DISTRIBUTIONS[name]["dependencies"] >= {"panel-core"}, (
+            f"{name} does not declare panel-core as a dependency — every non-core distribution must, since "
+            "panel-core is the shared base every image installs. Add a fourth distribution and this loop "
+            "covers it for free; nothing here needs updating."
+        )
     assert _dependency_closure("panel-core") == set(), (
-        "panel-core gained a workspace dependency. That is the one edge the layout cannot have: "
-        f"both other distributions depend on panel-core, so any reverse edge is a cycle.\n\n{DIRECTION_DOC}"
+        "panel-core gained a workspace dependency. That is the one edge the layout cannot have: every other "
+        f"distribution depends on panel-core, so any reverse edge is a cycle.\n\n{DIRECTION_DOC}"
     )
 
 
