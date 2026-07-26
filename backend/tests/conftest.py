@@ -46,6 +46,10 @@ os.environ.setdefault("RATELIMIT_STORAGE_URI", "memory://")
 import pytest  # noqa: E402
 from flask import Flask  # noqa: E402
 
+from panel_core.bootstrap import bootstrap_gevent  # noqa: E402
+
+bootstrap_gevent()
+
 from panel_core.extensions import db as _db  # noqa: E402
 import panel_core.models  # noqa: E402, F401  -- registers tables with db.metadata
 

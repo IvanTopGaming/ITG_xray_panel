@@ -125,9 +125,9 @@ def test_root_dispatcher_still_routes_by_env_role(monkeypatch, tmp_path):
 
     _reset_scheduler()
 
-    import panel_core
+    from panel_core.dispatch import create_app
 
-    app = panel_core.create_app()
+    app = create_app()
 
     assert set(app.blueprints) == {"subscription"}
     assert os.environ["PANEL_ROLE"] == "sub"

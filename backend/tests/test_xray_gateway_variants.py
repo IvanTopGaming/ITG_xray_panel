@@ -102,7 +102,7 @@ def test_has_local_xray_reports_whether_a_local_instance_exists(gateway_class, e
 
 
 def test_facade_has_local_xray_follows_the_installed_gateway():
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     gw.set_xray_gateway(gw.RemoteXrayGateway())
     assert facade.has_local_xray() is False

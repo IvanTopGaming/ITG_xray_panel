@@ -23,7 +23,7 @@ def test_set_gateway_is_returned():
 
 
 def test_facade_delegates_apply_config():
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     fake = MagicMock()
     gw.set_xray_gateway(fake)
@@ -32,7 +32,7 @@ def test_facade_delegates_apply_config():
 
 
 def test_facade_delegates_apply_config_without_validation():
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     fake = MagicMock()
     gw.set_xray_gateway(fake)
@@ -41,7 +41,7 @@ def test_facade_delegates_apply_config_without_validation():
 
 
 def test_facade_delegates_restart():
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     fake = MagicMock()
     gw.set_xray_gateway(fake)
@@ -50,7 +50,7 @@ def test_facade_delegates_restart():
 
 
 def test_facade_delegates_add_and_remove_user():
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     fake = MagicMock()
     fake.add_user.return_value = True
@@ -65,7 +65,7 @@ def test_facade_delegates_add_and_remove_user():
 
 
 def test_facade_delegates_stream_logs_and_update_geo():
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     fake = MagicMock()
     gw.set_xray_gateway(fake)
@@ -78,7 +78,7 @@ def test_facade_delegates_stream_logs_and_update_geo():
 
 
 def test_facade_stream_logs_without_arguments_uses_engine_default():
-    import panel_core.xray as facade
+    from panel_core.xray import facade
     from panel_core.xray import engine
 
     fake = MagicMock()
@@ -112,7 +112,7 @@ def test_local_gateway_stream_logs_without_arguments_uses_engine_default(monkeyp
     ],
 )
 def test_facade_propagates_gateway_return_value(facade_name, gateway_name, args):
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     sentinel = object()
     fake = MagicMock()
@@ -137,7 +137,7 @@ def test_facade_signature_matches_implementation(facade_name, impl_module, impl_
     import importlib
     import inspect
 
-    import panel_core.xray as facade
+    from panel_core.xray import facade
 
     def shape(fn):
         return [(p.name, p.kind, p.default) for p in inspect.signature(fn).parameters.values()]

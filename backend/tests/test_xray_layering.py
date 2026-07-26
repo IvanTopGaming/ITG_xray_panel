@@ -59,7 +59,7 @@ ALLOWED_HEAVY_SERVICE_IMPORTERS = {"stats.py"}
 
 ROOT_MODULES = "."
 
-NAMESPACE_PACKAGES = {"api", "services"}
+NAMESPACE_PACKAGES = {"api", "services", "jobs", "roles", "xray"}
 
 ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE = {
     "xray": ALLOWED_HEAVY_IMPORTERS,
@@ -67,7 +67,6 @@ ALLOWED_HEAVY_IMPORTERS_BY_PACKAGE = {
     "services": ALLOWED_HEAVY_SERVICE_IMPORTERS,
     "jobs": set(),
     "api": set(),
-    "data": set(),
     ROOT_MODULES: set(),
 }
 

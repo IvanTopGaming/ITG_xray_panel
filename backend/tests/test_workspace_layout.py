@@ -6,7 +6,8 @@ import pytest
 
 def test_panel_core_is_importable():
     mod = importlib.import_module("panel_core")
-    assert hasattr(mod, "create_app")
+    assert hasattr(mod, "__path__")
+    assert callable(importlib.import_module("panel_core.dispatch").create_app)
 
 
 @pytest.mark.parametrize(

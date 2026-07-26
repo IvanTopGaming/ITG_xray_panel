@@ -14,7 +14,9 @@ from .extensions import db, migrate, scheduler, limiter
 from .observability import setup_logging, init_request_logging, run_job_logged
 from .panel_role import bind_role
 from .models import Admin, Outbound
-from .xray import generate_config_file
+from .xray.facade import generate_config_file
+
+PACKAGE_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 LOCAL_DEV_ORIGINS = [
     "http://localhost",
@@ -162,7 +164,7 @@ def build_base_app(role):
 
     setup_logging()
     bound_role = bind_role(role)
-    app = Flask("panel_core")
+    app = Flask("panel_core", root_path=PACKAGE_ROOT)
     init_request_logging(app)
     app.logger.info("panel role bound (role=%s)", bound_role)
 
@@ -214,7 +216,7 @@ def build_base_app(role):
 
 def audit_tariff_items_without_panel_id(app):
     from .models import Tariff, TariffItem
-    from .xray import has_local_xray
+    from .xray.facade import has_local_xray
 
     if has_local_xray():
         return []

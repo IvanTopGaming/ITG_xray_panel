@@ -64,9 +64,9 @@ def _build(role, monkeypatch, tmp_path):
 
     _reset_scheduler()
 
-    import panel_core
+    from panel_core.dispatch import create_app
 
-    return panel_core.create_app()
+    return create_app()
 
 
 @pytest.fixture(autouse=True)
@@ -103,9 +103,9 @@ def test_default_role_is_master(monkeypatch, tmp_path):
 
     _reset_scheduler()
 
-    import panel_core
+    from panel_core.dispatch import create_app
 
-    app = panel_core.create_app()
+    app = create_app()
     assert set(app.blueprints) == MASTER_BLUEPRINTS
 
 
@@ -127,8 +127,8 @@ def test_role_env_is_read_case_insensitively(monkeypatch, tmp_path):
 
     _reset_scheduler()
 
-    import panel_core
+    from panel_core.dispatch import create_app
 
-    app = panel_core.create_app()
+    app = create_app()
     assert set(app.blueprints) == WORKER_BLUEPRINTS
     assert os.getenv("PANEL_ROLE").strip().lower() == "worker"
