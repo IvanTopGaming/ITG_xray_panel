@@ -69,13 +69,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
-      - PANEL_DOMAIN=${PANEL_DOMAIN:-}
-      - PROXY_DOMAIN=${PROXY_DOMAIN:-}
-      - SUB_DOMAIN=${SUB_DOMAIN:-}
       - BOT_DOMAIN=${BOT_DOMAIN:?BOT_DOMAIN is required}
-    env_file:
-      - .env
     depends_on:
       bot-api:
         condition: service_healthy
