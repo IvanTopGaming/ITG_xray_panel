@@ -75,9 +75,11 @@ def _reset_xray_gateway():
     from panel_core.xray import gateway as _gateway_module
     from panel_core.xray.local import LocalXrayGateway
 
-    _gateway_module.set_xray_gateway(LocalXrayGateway())
+    _gateway_module.set_default_xray_gateway(LocalXrayGateway())
+    _gateway_module.set_xray_gateway(None)
     yield
     _gateway_module.set_xray_gateway(None)
+    _gateway_module.set_default_xray_gateway(None)
 
 
 @pytest.fixture(autouse=True)

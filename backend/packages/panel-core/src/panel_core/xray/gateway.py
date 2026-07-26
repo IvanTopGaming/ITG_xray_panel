@@ -94,6 +94,7 @@ def _unavailable_message(operation: str) -> str:
 
 
 _gateway = None
+_default_gateway = None
 
 
 def set_xray_gateway(gateway: Optional[XrayGateway]) -> None:
@@ -101,14 +102,21 @@ def set_xray_gateway(gateway: Optional[XrayGateway]) -> None:
     _gateway = gateway
 
 
+def set_default_xray_gateway(gateway: Optional[XrayGateway]) -> None:
+    global _default_gateway
+    _default_gateway = gateway
+
+
 def xray_gateway_configured() -> bool:
     return _gateway is not None
 
 
 def get_xray_gateway() -> XrayGateway:
-    if _gateway is None:
-        raise RuntimeError(
-            "no XrayGateway bound - every role factory binds one in create_app(); "
-            "a test must bind one explicitly with set_xray_gateway()"
-        )
-    return _gateway
+    if _gateway is not None:
+        return _gateway
+    if _default_gateway is not None:
+        return _default_gateway
+    raise RuntimeError(
+        "no XrayGateway bound - every role factory binds one in create_app(); "
+        "a test must bind one explicitly with set_xray_gateway()"
+    )

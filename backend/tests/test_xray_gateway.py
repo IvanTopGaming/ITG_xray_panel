@@ -14,6 +14,7 @@ def _reset_gateway():
 
 def test_unbound_gateway_fails_loud_instead_of_defaulting_to_local():
     gw.set_xray_gateway(None)
+    gw.set_default_xray_gateway(None)
     with pytest.raises(RuntimeError) as excinfo:
         gw.get_xray_gateway()
     assert "no XrayGateway bound" in str(excinfo.value)
@@ -232,3 +233,19 @@ def test_create_app_installs_remote_gateway_for_the_default_master_role():
     gw.set_xray_gateway(None)
     _build_app()
     assert isinstance(gw.get_xray_gateway(), gw.RemoteXrayGateway)
+
+
+def test_the_default_gateway_hook_is_test_only():
+    from tests.import_graph import iter_sources, relative_source_name
+
+    offenders = sorted(
+        relative_source_name(path)
+        for path in iter_sources()
+        if "set_default_xray_gateway" in path.read_text() and relative_source_name(path) != "xray/gateway.py"
+    )
+    assert offenders == [], (
+        f"set_default_xray_gateway is a test-only fallback hook, called by tests/conftest.py alone: "
+        f"{offenders}. Production must reach get_xray_gateway() with an explicitly bound gateway or fail "
+        "loud; a caller inside packages/ would silently restore the implicit-local default that this "
+        "phase removed."
+    )

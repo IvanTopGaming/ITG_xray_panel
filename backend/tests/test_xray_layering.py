@@ -32,6 +32,7 @@ sys.modules["panel_core"] = pkg
 
 importlib.import_module("panel_core.xray")
 importlib.import_module("panel_core.xray.gateway")
+importlib.import_module("panel_core.xray.local")
 
 roots = {roots!r}
 print(json.dumps(sorted({{name.split(".")[0] for name in sys.modules if name.split(".")[0] in roots}})))

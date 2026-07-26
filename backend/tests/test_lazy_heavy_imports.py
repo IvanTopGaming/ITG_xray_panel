@@ -6,6 +6,7 @@ from tests.import_graph import (
     function_level_imports,
     heavy_import_chain,
     iter_sources,
+    module_level_imports,
     relative_source_name,
     source_path,
 )
@@ -74,4 +75,33 @@ def test_the_known_lazy_seams_are_actually_exercised():
         f"lazy heavy imports live in {sorted(seams)}, but the allowlist declares "
         f"{sorted(ALLOWED_LAZY_HEAVY_FILES)}. An allowlist entry with nothing behind it means the guard "
         "is no longer looking where it thinks it is — re-check the import graph before relaxing this."
+    )
+
+
+LOCAL_GATEWAY_METHODS = (
+    "apply_config",
+    "restart",
+    "add_user",
+    "remove_user",
+    "stream_logs",
+    "update_geo",
+    "reset_user_counters",
+    "reset_inbound_counters",
+)
+
+
+def test_local_gateway_keeps_every_heavy_import_inside_its_method():
+    path = source_path("xray/local.py")
+    eager = sorted(m for m in module_level_imports(path) if heavy_import_chain(m, extra=XRAY_HEAVY_MODULES))
+    assert eager == [], (
+        f"panel_core.xray.local imports {eager} at module scope. Every heavy import must stay inside the "
+        "method that needs it: local.py is a leaf that nothing light imports, so no other guard sees an "
+        "eager import here, and importing the module rather than the function is what keeps ~125 test "
+        "patch sites working."
+    )
+    lazy = function_level_imports(path)
+    missing = sorted(name for name in LOCAL_GATEWAY_METHODS if name not in lazy)
+    assert missing == [], (
+        f"these LocalXrayGateway methods no longer carry their own lazy import: {missing}. Each must do "
+        "`from panel_core.xray import engine` (or grpc_client) at call time."
     )

@@ -85,15 +85,46 @@ def test_lazy_default_does_not_latch_and_preempt_the_role(module_name, role, exp
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)
+    gw.set_default_xray_gateway(None)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as excinfo:
         gw.get_xray_gateway()
+    assert "no XrayGateway bound" in str(excinfo.value)
     assert gw.xray_gateway_configured() is False
 
     module = importlib.import_module(f"panel_core.roles.{module_name}")
     module.create_app()
 
     assert isinstance(gw.get_xray_gateway(), expected)
+
+
+@pytest.mark.parametrize("module_name,role,expected", CASES, ids=[c[0] for c in CASES])
+def test_role_installs_its_gateway_under_the_bare_autouse_fixture(module_name, role, expected, monkeypatch, tmp_path):
+    monkeypatch.setenv("PANEL_ROLE", role)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{module_name}-bare.db")
+    monkeypatch.chdir(tmp_path)
+    _reset_scheduler()
+
+    module = importlib.import_module(f"panel_core.roles.{module_name}")
+    module.create_app()
+
+    assert isinstance(gw.get_xray_gateway(), expected), (
+        "create_app() must install the role's own gateway under nothing but the autouse "
+        "_reset_xray_gateway fixture -- no test-local set_xray_gateway(None) call. A master here "
+        "must come back RemoteXrayGateway (has_local_xray() False), not LocalXrayGateway/True; the "
+        "reviewer measured exactly that inversion when the fixture pre-bound instead of only setting "
+        "the fallback."
+    )
+
+
+def test_the_autouse_fixture_does_not_preempt_the_role_binding():
+    assert gw.xray_gateway_configured() is False, (
+        "the autouse _reset_xray_gateway fixture must leave the binding slot EMPTY so every role "
+        "factory's `if not xray_gateway_configured()` still fires. Binding a gateway there instead of "
+        "setting the fallback makes create_app() decline to bind, so a master app in tests silently "
+        "gets a LocalXrayGateway and has_local_xray() answers True - inverting the Phase 3b invariant "
+        "that the master has no local Xray."
+    )
 
 
 def test_master_gateway_refuses_local_user_mutation(monkeypatch, tmp_path):
