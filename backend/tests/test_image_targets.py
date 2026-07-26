@@ -61,7 +61,7 @@ def _read(relative):
 
 
 def _case_branch(text, service, workflow):
-    match = re.search(rf"(?:^|\n)[ \t]*{re.escape(service)}\)\n(.*?)\n[ \t]*;;\n", text, re.S)
+    match = re.search(rf"(?:^|\n)[ \t]*{re.escape(service)}\)\n(.*?);;[ \t]*\n", text, re.S)
     assert match, (
         f"{workflow} has no '{service})' case branch — the case statement's shape changed and this guard "
         f"can no longer find it.\n\n{DRIFT_DOC}"
