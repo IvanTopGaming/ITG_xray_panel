@@ -236,7 +236,7 @@ def test_create_app_installs_remote_gateway_for_the_default_master_role():
 
 
 def test_the_default_gateway_hook_is_test_only():
-    from tests.import_graph import iter_sources, relative_source_name, source_path
+    from tests.import_graph import TOP_LEVEL_ENTRY_POINTS, iter_sources, relative_source_name, source_path
 
     assert "def set_default_xray_gateway" in source_path("xray/gateway.py").read_text(), (
         "panel_core.xray.gateway no longer defines set_default_xray_gateway. This guard matches the hook "
@@ -252,9 +252,18 @@ def test_the_default_gateway_hook_is_test_only():
         for path in iter_sources()
         if "set_default_xray_gateway" in path.read_text() and relative_source_name(path) != "xray/gateway.py"
     )
+
+    for entry_point in TOP_LEVEL_ENTRY_POINTS:
+        assert entry_point.is_file(), f"expected top-level entry point at {entry_point}"
+        if "set_default_xray_gateway" in entry_point.read_text():
+            offenders.append(entry_point.name)
+    offenders.sort()
+
     assert offenders == [], (
         f"set_default_xray_gateway is a test-only fallback hook, called by tests/conftest.py alone: "
         f"{offenders}. Production must reach get_xray_gateway() with an explicitly bound gateway or fail "
-        "loud; a caller inside packages/ would silently restore the implicit-local default that this "
-        "phase removed."
+        "loud; a caller inside packages/ or the top-level entry-point scripts (run.py, migrate_db.py, "
+        "sqlite_to_pg.py) would silently restore the implicit-local default that this phase removed. "
+        "This is a string match on the call site — a direct gateway._default_gateway assignment would "
+        "evade it, but that is a different threat model and out of scope for this guard."
     )

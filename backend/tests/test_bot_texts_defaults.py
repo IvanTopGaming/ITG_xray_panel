@@ -1,11 +1,10 @@
-import os
-
 import yaml
+
+from tests.import_graph import source_path
 
 
 def _load_defaults():
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, "..", "packages", "panel-core", "src", "panel_core", "data", "bot_texts_defaults.yaml")
+    path = source_path("data/bot_texts_defaults.yaml")
     with open(path, "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 

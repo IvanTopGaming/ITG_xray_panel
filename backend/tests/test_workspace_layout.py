@@ -137,6 +137,34 @@ def test_no_module_is_shipped_by_two_distributions():
     )
 
 
+def test_no_data_file_is_shipped_by_two_distributions():
+    from collections import defaultdict
+
+    from tests.import_graph import SRC_ROOTS, iter_non_python_sources, relative_source_name, root_for, root_label
+
+    owners = defaultdict(list)
+    for path in iter_non_python_sources():
+        owners[relative_source_name(path)].append(root_label(root_for(path)))
+
+    assert owners, (
+        f"no non-.py file found under any of {[str(r) for r in SRC_ROOTS]} — this guard would pass "
+        "vacuously with nothing to compare. panel_core/data/bot_texts_defaults.yaml is expected to be "
+        "one such file today."
+    )
+
+    duplicates = {name: sorted(labels) for name, labels in owners.items() if len(labels) > 1}
+    assert duplicates == {}, (
+        "these files are shipped by more than one distribution: "
+        f"{duplicates}\n"
+        "panel_core/resources.py resolves package data through "
+        'importlib.resources.files("panel_core.data"), which on a namespace package returns a '
+        "MultiplexedPath that silently picks a winner ordered by distribution directory, so a "
+        "duplicate is a live production hazard, not just dead weight.\n"
+        "A file must be moved between distributions with git mv, never copied.\n"
+        f"scanned roots: {[str(r) for r in SRC_ROOTS]}"
+    )
+
+
 WORKER_MODULES = (
     "xray/local.py",
     "xray/engine.py",

@@ -9,6 +9,12 @@ PACKAGES = BACKEND / "packages"
 
 BACKEND_PYPROJECT = BACKEND / "pyproject.toml"
 
+TOP_LEVEL_ENTRY_POINTS = (
+    BACKEND / "run.py",
+    BACKEND / "migrate_db.py",
+    BACKEND / "sqlite_to_pg.py",
+)
+
 SRC_ROOTS_DOC = (
     "Guards anchor on every packages/*/src/panel_core directory, not on packages/panel-core alone. "
     "panel_core is a namespace package precisely so a subpackage can move to a second distribution: "
@@ -39,6 +45,18 @@ def iter_sources(package=None):
         base = root if package is None else root / package
         if base.is_dir():
             paths.extend(base.rglob("*.py"))
+    return sorted(paths)
+
+
+def iter_non_python_sources(package=None):
+    paths = []
+    for root in SRC_ROOTS:
+        base = root if package is None else root / package
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.is_file() and path.suffix != ".py" and "__pycache__" not in path.parts:
+                paths.append(path)
     return sorted(paths)
 
 
