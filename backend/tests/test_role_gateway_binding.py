@@ -118,6 +118,8 @@ def test_role_installs_its_gateway_under_the_bare_autouse_fixture(module_name, r
 
 
 def test_the_autouse_fixture_does_not_preempt_the_role_binding():
+    gw.get_xray_gateway()
+
     assert gw.xray_gateway_configured() is False, (
         "the autouse _reset_xray_gateway fixture must leave the binding slot EMPTY so every role "
         "factory's `if not xray_gateway_configured()` still fires. Binding a gateway there instead of "

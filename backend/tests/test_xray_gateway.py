@@ -236,7 +236,16 @@ def test_create_app_installs_remote_gateway_for_the_default_master_role():
 
 
 def test_the_default_gateway_hook_is_test_only():
-    from tests.import_graph import iter_sources, relative_source_name
+    from tests.import_graph import iter_sources, relative_source_name, source_path
+
+    assert "def set_default_xray_gateway" in source_path("xray/gateway.py").read_text(), (
+        "panel_core.xray.gateway no longer defines set_default_xray_gateway. This guard matches the hook "
+        "by name, so renaming it makes every assertion below scan for a string that occurs nowhere and "
+        "pass while a production caller of the new name goes unnoticed."
+    )
+
+    scanned = sorted(relative_source_name(path) for path in iter_sources())
+    assert len(scanned) > 1, f"only {scanned} scanned - iter_sources() is broken and this guard is vacuous"
 
     offenders = sorted(
         relative_source_name(path)
