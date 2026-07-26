@@ -4,9 +4,11 @@ import sys
 
 import pytest
 
+from tests.import_graph import HEAVY_ROOTS, HEAVY_ROOTS_DOC
+
 LIGHT_ROLES = ("master", "sub", "botapi")
 PANEL_ROLE_BY_MODULE = {"master": "master", "sub": "sub", "botapi": "bot"}
-HEAVY_MODULE_ROOTS = ("grpc", "google", "docker", "filelock")
+HEAVY_MODULE_ROOTS = HEAVY_ROOTS
 MISSING_STUBS_MARKER = "No module named 'app'"
 
 PROBE = """
@@ -39,7 +41,7 @@ HINT = (
     "is not enough to catch this: lazy imports inside blueprint registration (e.g. api/inbound.py "
     "pulling in services/stats.py, which pulls in grpc_client) only fire once create_app() actually "
     "registers the blueprint. Check what the role's module graph pulls in when it boots, not just on "
-    "bare import."
+    f"bare import.\n\n{HEAVY_ROOTS_DOC}"
 )
 
 

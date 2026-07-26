@@ -4,6 +4,35 @@ from collections import deque
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "packages" / "panel-core" / "src" / "panel_core"
 
+HEAVY_ROOTS = (
+    "app",
+    "common",
+    "docker",
+    "filelock",
+    "google",
+    "grpc",
+    "proxy",
+)
+
+XRAY_HEAVY_MODULES = ("panel_core.xray.engine", "panel_core.xray.grpc_client")
+
+XRAY_SEAM_MODULES = ("panel_core.xray",) + XRAY_HEAVY_MODULES
+
+HEAVY_ROOTS_DOC = (
+    "'heavy' is defined once, in tests/import_graph.HEAVY_ROOTS: the top-level packages that only "
+    "exist inside the worker's Docker image (grpc/google protobuf runtime, the generated Xray stubs "
+    "app.*/common.*/proxy.*) or that only the worker needs (docker, filelock). Every guard derives its "
+    "own view from that tuple -- do not re-spell the list locally, that divergence is what let "
+    "google.protobuf slip past one guard while another caught it."
+)
+
+
+def heavy_root(module, extra=()):
+    for heavy in tuple(extra) + HEAVY_ROOTS:
+        if module == heavy or module.startswith(f"{heavy}."):
+            return heavy
+    return None
+
 
 def module_name(path):
     parts = list(path.relative_to(SRC.parent).with_suffix("").parts)
@@ -69,6 +98,26 @@ def module_level_imports(path):
     return found
 
 
+def function_level_imports(path):
+    tree = ast.parse(path.read_text())
+    found = {}
+
+    def visit(node, function):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, function or child.name)
+            elif isinstance(child, (ast.Import, ast.ImportFrom)):
+                if function is not None:
+                    imported = set()
+                    _record(path, child, imported)
+                    found.setdefault(function, set()).update(imported)
+            else:
+                visit(child, function)
+
+    visit(tree, None)
+    return found
+
+
 def resolve_module_path(module):
     if module != "panel_core" and not module.startswith("panel_core."):
         return None
@@ -79,6 +128,25 @@ def resolve_module_path(module):
     package_init = base / "__init__.py"
     if package_init.is_file():
         return package_init
+    return None
+
+
+def heavy_import_chain(module, extra=()):
+    queue = deque([(module,)])
+    visited = {module}
+    while queue:
+        chain = queue.popleft()
+        current = chain[-1]
+        root = heavy_root(current, extra)
+        if root is not None:
+            return chain if current == root else chain + (root,)
+        target = resolve_module_path(current)
+        if target is None:
+            continue
+        for mod in sorted(module_level_imports(target)):
+            if mod not in visited:
+                visited.add(mod)
+                queue.append(chain + (mod,))
     return None
 
 

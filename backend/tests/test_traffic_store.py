@@ -1,10 +1,9 @@
 import ast
 from pathlib import Path
 
-STORE = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core/services/traffic_store.py"
+from tests.import_graph import HEAVY_ROOTS_DOC, XRAY_SEAM_MODULES, heavy_root
 
-HEAVY_PREFIXES = ("grpc", "docker", "filelock", "app.", "proxy.", "common.")
-HEAVY_MODULES = {"panel_core.xray.grpc_client", "panel_core.xray.engine", "panel_core.xray"}
+STORE = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core/services/traffic_store.py"
 
 
 def _imported_names(path):
@@ -24,8 +23,10 @@ def test_traffic_store_exists():
 
 def test_traffic_store_imports_nothing_heavy():
     names = _imported_names(STORE)
-    offenders = {name for name in names if name in HEAVY_MODULES or name.startswith(HEAVY_PREFIXES)}
-    assert offenders == set(), f"traffic_store must stay free of Xray/gRPC imports, found: {sorted(offenders)}"
+    offenders = {name for name in names if name in XRAY_SEAM_MODULES or heavy_root(name)}
+    assert offenders == set(), (
+        f"traffic_store must stay free of Xray/gRPC imports, found: {sorted(offenders)}\n\n{HEAVY_ROOTS_DOC}"
+    )
 
 
 def test_traffic_store_exposes_the_master_facing_api():
