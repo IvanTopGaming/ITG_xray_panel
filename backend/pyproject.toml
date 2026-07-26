@@ -2,17 +2,25 @@
 name = "itg-xray-panel-backend"
 version = "0"
 requires-python = "==3.12.*"
-dependencies = ["panel-core", "panel-sub", "panel-botapi", "panel-worker", "panel-master"]
+dependencies = [
+    "panel-core",
+    "panel-adminapi",
+    "panel-worker",
+    "panel-master",
+    "panel-sub",
+    "panel-botapi",
+]
 
 [tool.uv.workspace]
 members = ["packages/*"]
 
 [tool.uv.sources]
 panel-core = { workspace = true }
-panel-sub = { workspace = true }
-panel-botapi = { workspace = true }
+panel-adminapi = { workspace = true }
 panel-worker = { workspace = true }
 panel-master = { workspace = true }
+panel-sub = { workspace = true }
+panel-botapi = { workspace = true }
 
 [tool.uv]
 package = false

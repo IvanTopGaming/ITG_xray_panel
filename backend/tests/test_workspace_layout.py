@@ -232,6 +232,68 @@ def test_panel_master_declares_panel_sub():
     )
 
 
+ADMINAPI_MODULES = (
+    "api/auth.py",
+    "api/inbound.py",
+    "api/outbound.py",
+    "api/routing.py",
+    "api/statistics.py",
+    "api/system.py",
+    "api/federation.py",
+)
+
+
+def test_panel_adminapi_ships_the_shared_admin_surface():
+    from tests.import_graph import SRC_ROOTS, source_path
+
+    roots = {root.parents[1].name for root in SRC_ROOTS}
+    assert "panel-adminapi" in roots, f"panel-adminapi must be a distribution under packages/; found {sorted(roots)}"
+    for relative in ADMINAPI_MODULES:
+        path = source_path(relative)
+        assert "panel-adminapi" in path.parts, (
+            f"{relative} resolved to {path}, expected it under packages/panel-adminapi"
+        )
+
+
+def test_psutil_is_declared_only_by_panel_adminapi():
+    offenders = sorted(
+        f"{name} declares psutil"
+        for name, entry in _distributions_with_dependencies().items()
+        if "psutil" in entry and name != "panel-adminapi"
+    )
+    assert offenders == [], (
+        f"psutil must be declared by panel-adminapi alone: {offenders}. It is imported by exactly one "
+        "module in the workspace (api/system.py), which ships from panel-adminapi; leaving it in "
+        "panel-core's dependency list puts it in every image."
+    )
+
+
+def test_the_roles_declare_the_admin_surface_they_register():
+    declared = _distributions_with_dependencies()
+    for name in ("panel-worker", "panel-master"):
+        assert "panel-adminapi" in declared[name], (
+            f"{name} must declare panel-adminapi: its role factory registers the auth, inbound, outbound, "
+            f"routing, system, statistics and federation blueprints, all of which ship from "
+            f"panel-adminapi. Declared: {sorted(declared[name])}"
+        )
+
+
+def test_the_workspace_has_exactly_the_six_planned_distributions():
+    expected = {
+        "panel-core",
+        "panel-adminapi",
+        "panel-worker",
+        "panel-master",
+        "panel-sub",
+        "panel-botapi",
+    }
+    actual = set(_distributions_with_dependencies())
+    assert actual == expected, (
+        f"the workspace holds {sorted(actual)}, expected {sorted(expected)}. Phase 3c-3 is the last cut; "
+        "a seventh distribution or a missing one means the layout drifted from the design."
+    )
+
+
 def test_every_workspace_member_with_python_code_is_scanned():
     from tests.import_graph import (
         SRC_ROOTS,

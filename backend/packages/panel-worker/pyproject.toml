@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
     "panel-core",
+    "panel-adminapi",
     "panel-sub",
     "docker",
     "filelock",
@@ -14,6 +15,7 @@ dependencies = [
 
 [tool.uv.sources]
 panel-core = { workspace = true }
+panel-adminapi = { workspace = true }
 panel-sub = { workspace = true }
 
 [build-system]

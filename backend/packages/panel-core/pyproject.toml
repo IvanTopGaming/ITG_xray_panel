@@ -5,7 +5,6 @@ requires-python = "==3.12.*"
 dependencies = [
     "flask",
     "flask-cors",
-    "psutil",
     "pyjwt",
     "gunicorn",
     "gevent",

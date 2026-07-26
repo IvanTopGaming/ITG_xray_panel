@@ -5,6 +5,7 @@ requires-python = "==3.12.*"
 [manifest]
 members = [
     "itg-xray-panel-backend",
+    "panel-adminapi",
     "panel-botapi",
     "panel-core",
     "panel-master",
@@ -406,6 +407,7 @@ name = "itg-xray-panel-backend"
 version = "0"
 source = { virtual = "." }
 dependencies = [
+    { name = "panel-adminapi" },
     { name = "panel-botapi" },
     { name = "panel-core" },
     { name = "panel-master" },
@@ -421,6 +423,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "panel-adminapi", editable = "packages/panel-adminapi" },
     { name = "panel-botapi", editable = "packages/panel-botapi" },
     { name = "panel-core", editable = "packages/panel-core" },
     { name = "panel-master", editable = "packages/panel-master" },
@@ -528,6 +531,21 @@ wheels = [
 ]
 
 [[package]]
+name = "panel-adminapi"
+version = "0.1.0"
+source = { editable = "packages/panel-adminapi" }
+dependencies = [
+    { name = "panel-core" },
+    { name = "psutil" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "panel-core", editable = "packages/panel-core" },
+    { name = "psutil" },
+]
+
+[[package]]
 name = "panel-botapi"
 version = "0.1.0"
 source = { editable = "packages/panel-botapi" }
@@ -556,7 +574,6 @@ dependencies = [
     { name = "flask-sqlalchemy" },
     { name = "gevent" },
     { name = "gunicorn" },
-    { name = "psutil" },
     { name = "psycogreen" },
     { name = "psycopg2-binary" },
     { name = "pyjwt" },
@@ -576,7 +593,6 @@ requires-dist = [
     { name = "flask-sqlalchemy" },
     { name = "gevent" },
     { name = "gunicorn" },
-    { name = "psutil" },
     { name = "psycogreen", specifier = "==1.0.2" },
     { name = "psycopg2-binary", specifier = "==2.9.10" },
     { name = "pyjwt" },
@@ -590,12 +606,14 @@ name = "panel-master"
 version = "0.1.0"
 source = { editable = "packages/panel-master" }
 dependencies = [
+    { name = "panel-adminapi" },
     { name = "panel-core" },
     { name = "panel-sub" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "panel-adminapi", editable = "packages/panel-adminapi" },
     { name = "panel-core", editable = "packages/panel-core" },
     { name = "panel-sub", editable = "packages/panel-sub" },
 ]
@@ -620,6 +638,7 @@ dependencies = [
     { name = "filelock" },
     { name = "grpcio" },
     { name = "grpcio-tools" },
+    { name = "panel-adminapi" },
     { name = "panel-core" },
     { name = "panel-sub" },
     { name = "protobuf" },
@@ -631,6 +650,7 @@ requires-dist = [
     { name = "filelock" },
     { name = "grpcio", specifier = "==1.66.2" },
     { name = "grpcio-tools", specifier = "==1.66.2" },
+    { name = "panel-adminapi", editable = "packages/panel-adminapi" },
     { name = "panel-core", editable = "packages/panel-core" },
     { name = "panel-sub", editable = "packages/panel-sub" },
     { name = "protobuf", specifier = "==5.28.3" },

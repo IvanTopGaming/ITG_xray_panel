@@ -1,9 +1,8 @@
 import ast
-from pathlib import Path
 
-from tests.import_graph import HEAVY_ROOTS_DOC, XRAY_SEAM_MODULES, heavy_root
+from tests.import_graph import HEAVY_ROOTS_DOC, XRAY_SEAM_MODULES, heavy_root, source_path
 
-STORE = Path(__file__).resolve().parents[1] / "packages/panel-core/src/panel_core/services/traffic_store.py"
+STORE = source_path("services/traffic_store.py")
 
 
 def _imported_names(path):
