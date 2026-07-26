@@ -37,6 +37,11 @@ IMAGE_TARGETS = {
     },
 }
 
+WORKFLOWS = {
+    "release.yml": ".github/workflows/release.yml",
+    "dev-build.yml": ".github/workflows/dev-build.yml",
+}
+
 DRIFT_DOC = (
     "The per-role image split spreads one fact across five files: versions.json (the version), the two "
     "Dockerfiles (how it is built), the compose file (which variable names it), .env.example (the pin) "
@@ -53,6 +58,15 @@ def _read(relative):
     path = REPO / relative
     assert path.is_file(), f"{relative} does not exist under {REPO}"
     return path.read_text()
+
+
+def _case_branch(text, service, workflow):
+    match = re.search(rf"(?:^|\n)[ \t]*{re.escape(service)}\)\n(.*?)\n[ \t]*;;\n", text, re.S)
+    assert match, (
+        f"{workflow} has no '{service})' case branch — the case statement's shape changed and this guard "
+        f"can no longer find it.\n\n{DRIFT_DOC}"
+    )
+    return match.group(1)
 
 
 def test_versions_json_names_exactly_the_four_backend_images():
@@ -89,9 +103,62 @@ def test_env_example_pins_every_role_image(service):
 def test_the_release_workflow_builds_every_role_image(service):
     target = IMAGE_TARGETS[service]
     text = _read(".github/workflows/release.yml")
-    assert f'"{service}"' in text, f"release.yml never names the '{service}' service\n\n{DRIFT_DOC}"
+    assert f'"{service}"' in text, (
+        f"release.yml's 'services' detection tuple never names '{service}' — a service missing from that "
+        f"tuple never gets noticed as bumped, so a released version of it is never built.\n\n{DRIFT_DOC}"
+    )
     assert target["image"] in text, f"release.yml never builds {target['image']}\n\n{DRIFT_DOC}"
     assert "panel-backend" not in text, f"release.yml still builds the retired panel-backend image\n\n{DRIFT_DOC}"
+
+
+@pytest.mark.parametrize("service", sorted(IMAGE_TARGETS))
+def test_the_dev_build_workflow_builds_every_role_image(service):
+    target = IMAGE_TARGETS[service]
+    text = _read(".github/workflows/dev-build.yml")
+    assert re.search(rf"for SERVICE in[^\n]*\b{re.escape(service)}\b", text), (
+        f"dev-build.yml's build loop never names the '{service}' service — a service missing from that "
+        f"loop is never built as a dev image.\n\n{DRIFT_DOC}"
+    )
+    assert target["image"] in text, f"dev-build.yml never builds {target['image']}\n\n{DRIFT_DOC}"
+    assert "panel-backend" not in text, f"dev-build.yml still builds the retired panel-backend image\n\n{DRIFT_DOC}"
+
+
+@pytest.mark.parametrize("workflow_name", sorted(WORKFLOWS))
+@pytest.mark.parametrize("service", sorted(IMAGE_TARGETS))
+def test_the_case_branch_pairs_its_own_package_and_dockerfile_with_its_own_image(service, workflow_name):
+    target = IMAGE_TARGETS[service]
+    workflow = WORKFLOWS[workflow_name]
+    text = _read(workflow)
+    body = _case_branch(text, service, workflow)
+
+    assert f'IMAGE="{target["image"]}"' in body, (
+        f"{workflow}'s '{service})' case branch does not set IMAGE=\"{target['image']}\"\n\n{DRIFT_DOC}"
+    )
+
+    package_match = re.search(r"PANEL_PACKAGE=([\w.-]+)", body)
+    actual_package = package_match.group(1) if package_match else None
+    if service == "worker":
+        assert actual_package is None, (
+            f"{workflow}'s 'worker)' case branch passes --build-arg PANEL_PACKAGE={actual_package!r}, but "
+            f"the worker's Dockerfile hardcodes --package panel-worker itself and takes no such build-arg."
+            f"\n\n{DRIFT_DOC}"
+        )
+    else:
+        assert actual_package == target["package"], (
+            f"{workflow}'s '{service})' case branch builds --build-arg PANEL_PACKAGE={actual_package!r} but "
+            f"publishes it as the '{target['image']}' image, which must build PANEL_PACKAGE="
+            f"{target['package']!r} instead. Nothing else ties the package a case branch builds to the "
+            f"image name it is pushed under — a mismatch here builds, boots and answers /healthz just "
+            f"fine, it just runs the wrong role's blueprints under the wrong image name, silently."
+            f"\n\n{DRIFT_DOC}"
+        )
+
+    dockerfile_flag_match = re.search(r'-f\s+([^\s"]+)', body)
+    actual_dockerfile = dockerfile_flag_match.group(1) if dockerfile_flag_match else "backend/Dockerfile"
+    assert actual_dockerfile == target["dockerfile"], (
+        f"{workflow}'s '{service})' case branch builds against {actual_dockerfile}, but must build against "
+        f"{target['dockerfile']}\n\n{DRIFT_DOC}"
+    )
 
 
 def test_the_light_dockerfile_requires_its_package_argument():
