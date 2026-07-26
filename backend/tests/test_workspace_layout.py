@@ -62,3 +62,51 @@ def test_subscription_still_imports_under_its_original_name():
 
     assert panel_core.api.subscription.bp.name == "subscription"
     assert callable(panel_core.roles.sub.create_app)
+
+
+BOTAPI_SOURCES = (
+    "api/bot_service.py",
+    "api/billing.py",
+    "services/billing.py",
+    "jobs/payments.py",
+    "roles/botapi.py",
+)
+
+
+def test_panel_botapi_is_a_workspace_distribution():
+    from tests.import_graph import SRC_ROOTS
+
+    roots = {path.parents[1].name for path in SRC_ROOTS}
+    assert "panel-botapi" in roots, f"panel-botapi must be a distribution under packages/; found {sorted(roots)}"
+
+
+def test_botapi_modules_live_in_panel_botapi():
+    from tests.import_graph import source_path
+
+    for relative in BOTAPI_SOURCES:
+        path = source_path(relative)
+        assert "panel-botapi" in path.parts, f"{relative} resolved to {path}, expected it under packages/panel-botapi"
+
+
+def test_the_yookassa_sdk_is_imported_only_from_panel_botapi():
+    import ast
+
+    from tests.import_graph import iter_sources, root_for, root_label
+
+    offenders = []
+    for path in iter_sources():
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            if any(name == "yookassa" or name.startswith("yookassa.") for name in names):
+                label = root_label(root_for(path))
+                if not label.startswith("panel-botapi"):
+                    offenders.append(f"{label}/{path.name}")
+    assert offenders == [], (
+        "the yookassa SDK must be imported only from panel-botapi, otherwise the dependency "
+        f"leaks back into every image: {offenders}"
+    )
