@@ -34,7 +34,9 @@ services:
       retries: 3
       start_period: 20s
     networks:
-      - bot-net
+      bot-net:
+        aliases:
+          - backend
 
   bot:
     image: ${BOT_IMAGE:?BOT_IMAGE is required}
@@ -54,6 +56,36 @@ services:
     networks:
       - bot-net
 
+  caddy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE is required}
+    container_name: panel-bot-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
+      - ./certs:/root/cert:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - PANEL_DOMAIN=${PANEL_DOMAIN:-}
+      - PROXY_DOMAIN=${PROXY_DOMAIN:-}
+      - SUB_DOMAIN=${SUB_DOMAIN:-}
+      - BOT_DOMAIN=${BOT_DOMAIN:?BOT_DOMAIN is required}
+    env_file:
+      - .env
+    depends_on:
+      bot-api:
+        condition: service_healthy
+    networks:
+      - bot-net
+
 networks:
   bot-net:
     driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
