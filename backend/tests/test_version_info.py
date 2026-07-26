@@ -220,7 +220,6 @@ def test_versions_json_declares_the_four_backend_images_and_no_legacy_backend_ke
 
 def test_version_endpoint_shape(client, auth_headers, monkeypatch):
     from panel_core.services import bot_status, version_check
-    from panel_core.version import app_version_key
 
     monkeypatch.setenv("PANEL_ROLE", "worker")
     monkeypatch.setattr("panel_core.api.system.get_app_version", lambda: "2.1.10")
@@ -233,7 +232,12 @@ def test_version_endpoint_shape(client, auth_headers, monkeypatch):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["running"]["backend"] == "2.1.10"
-    assert body["running"]["backend_key"] == app_version_key()
+    assert body["running"]["backend_key"] == "worker", (
+        "the endpoint must report the version key of the role it is running as. Pinned to the literal "
+        "on purpose: comparing against app_version_key() would put the same function on both sides of "
+        "the assertion, so a wrong entry in VERSION_KEY_BY_ROLE would satisfy it while the endpoint "
+        "reported the wrong key."
+    )
     assert body["running"]["bot"] is None
     assert body["latest"]["backend"] == "2.1.11"
     assert body["latest_checked_at"] == 4242.0
