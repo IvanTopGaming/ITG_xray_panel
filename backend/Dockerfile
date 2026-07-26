@@ -23,6 +23,8 @@ COPY packages/panel-worker/pyproject.toml packages/panel-worker/
 COPY packages/panel-master/pyproject.toml packages/panel-master/
 COPY packages/panel-sub/pyproject.toml packages/panel-sub/
 COPY packages/panel-botapi/pyproject.toml packages/panel-botapi/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --package "$PANEL_PACKAGE" --no-install-workspace
 
 COPY packages/ packages/
 RUN --mount=type=cache,target=/root/.cache/uv \
