@@ -416,3 +416,25 @@ def test_every_workspace_member_pyproject_is_copied_into_both_builds():
             f"{dockerfile} does not COPY {missing}. uv resolves the whole workspace even when syncing a "
             f"single package, so a missing member pyproject fails the build.\n\n{DRIFT_DOC}"
         )
+
+
+@pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
+def test_each_frontend_app_bakes_the_version_key_its_image_is_published_under(target_key):
+    target = FRONTEND_IMAGE_TARGETS[target_key]
+    config = f"frontend/packages/{target['ui_package']}/vite.config.ts"
+    text = _read(config)
+
+    assert f"__FRONTEND_VERSION_KEY__: JSON.stringify('{target_key}')" in text, (
+        f"{config} does not define __FRONTEND_VERSION_KEY__ as '{target_key}'. That constant is what the "
+        f"About card and the update indicator read out of versions.json, and it is the one link in this "
+        f"chain no other guard covers: rename the key everywhere else -- versions.json, .env.example, "
+        f"both compose files, both workflows -- and miss this define, and the panel renders 'vundefined' "
+        f"with typecheck, lint, build and the whole test suite green.\n\n{DRIFT_DOC}"
+    )
+
+    other_keys = sorted(set(FRONTEND_IMAGE_TARGETS) - {target_key})
+    for other in other_keys:
+        assert f"JSON.stringify('{other}')" not in text, (
+            f"{config} also defines a constant as '{other}' — the two frontend apps must not bake each "
+            f"other's version key, or one image reports the other's version.\n\n{DRIFT_DOC}"
+        )
