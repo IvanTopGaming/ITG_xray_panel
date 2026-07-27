@@ -72,9 +72,14 @@ def test_the_vite_dev_injection_needle_occurs_in_the_shell(path):
     config = path.parent / "vite.config.ts"
     if not config.is_file():
         pytest.skip(f"{config} has no vite config")
-    match = VITE_NEEDLE_RE.search(config.read_text())
-    if match is None:
+    text = config.read_text()
+    if "transformIndexHtml" not in text:
         pytest.skip(f"{config} performs no transformIndexHtml replacement")
+    match = VITE_NEEDLE_RE.search(text)
+    assert match is not None, (
+        f"{config.relative_to(REPO)} has a transformIndexHtml hook but no parseable html.replace() "
+        f"needle -- the guard would silently vanish rather than fire.\n\n{SHELL_DOC}"
+    )
     needle = _unescape(match.group("needle"))
     assert needle in path.read_text(), (
         f"{config.relative_to(REPO)} replaces {needle!r}, which does not occur in "
