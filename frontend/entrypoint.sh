@@ -34,6 +34,6 @@ case "$PANEL_ROLE" in
   worker) : ;;
   *) PANEL_ROLE=master ;;
 esac
-sed -i "s|window.__PANEL_ROLE__ = '__PANEL_ROLE__'|window.__PANEL_ROLE__ = '$PANEL_ROLE'|g" /usr/share/nginx/html/index.html
+sed -i "s|<meta name=\"panel-role\" content=\"__PANEL_ROLE__\"|<meta name=\"panel-role\" content=\"$PANEL_ROLE\"|g" /usr/share/nginx/html/index.html
 
 exec nginx -g "daemon off;"

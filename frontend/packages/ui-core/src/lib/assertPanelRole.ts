@@ -1,13 +1,7 @@
-declare global {
-  interface Window {
-    __PANEL_ROLE__?: string;
-  }
-}
+import { readInjectedPanelRole } from './panelRole';
 
 export function assertPanelRole(expected: string): void {
-  const injected = String(window.__PANEL_ROLE__ || '')
-    .trim()
-    .toLowerCase();
+  const injected = readInjectedPanelRole();
   const actual = injected === 'worker' ? 'worker' : 'master';
   if (actual === expected) return;
 

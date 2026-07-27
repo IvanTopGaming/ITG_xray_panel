@@ -30,8 +30,8 @@ function devPanelRoleInjection() {
     apply: 'serve' as const,
     transformIndexHtml(html: string) {
       return html.replace(
-        "window.__PANEL_ROLE__ = '__PANEL_ROLE__'",
-        `window.__PANEL_ROLE__ = '${expectedPanelRole}'`
+        '<meta name="panel-role" content="__PANEL_ROLE__"',
+        `<meta name="panel-role" content="${expectedPanelRole}"`
       );
     },
   };

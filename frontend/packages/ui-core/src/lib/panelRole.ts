@@ -1,14 +1,13 @@
-declare global {
-  interface Window {
-    __PANEL_ROLE__?: string;
-  }
-}
-
 export type PanelRole = 'master' | 'worker';
 
-const rawRole = String(window.__PANEL_ROLE__ || '')
-  .trim()
-  .toLowerCase();
+export function readInjectedPanelRole(): string {
+  const meta = document.querySelector('meta[name="panel-role"]');
+  return String(meta?.getAttribute('content') || '')
+    .trim()
+    .toLowerCase();
+}
+
+const rawRole = readInjectedPanelRole();
 
 const ROLES_WITH_LOCAL_XRAY: ReadonlySet<string> = new Set(['worker']);
 
