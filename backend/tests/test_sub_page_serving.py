@@ -23,6 +23,80 @@ SERVING_DOC = (
     "would otherwise shadow the whole bundle."
 )
 
+REPO = pathlib.Path(__file__).resolve().parents[2]
+
+TOPOLOGY_DOC = (
+    "One image bakes the page bundle, three roles register the subscription blueprint. That asymmetry "
+    "is the whole reason SUB_DOMAIN stopped being optional: with it empty, build_aggregate_sub_url "
+    "falls back to PANEL_DOMAIN, caddy/routes.yaml sends that to the master, and the master has no "
+    "bundle — so the browser branch 503s where a rendered page used to be, while client apps keep "
+    "getting configs and nobody notices. It is a deployment-topology rule, enforced by nothing at "
+    "runtime, so CLAUDE.md carrying it is the only thing standing between a deployer and that trap. "
+    "This guard fails when the topology changes without the prose, or the prose without the topology."
+)
+
+ROLES_SERVING_THE_SUBSCRIPTION_ROUTES = {"master", "worker", "sub"}
+
+TOPOLOGY_CLAIMS = {
+    "the Subscription links section": "**Only the `sub` role serves the subscription page.**",
+    "the Configuration SUB_DOMAIN bullet": "`SUB_DOMAIN` *(required for the subscription page)*",
+    "the Phase 3d fan-out rule": "**Phase 6 is a standing exception to the three-image fan-out above",
+}
+
+
+def _roles_registering_the_subscription_blueprint():
+    found = set()
+    for role_file in sorted((REPO / "backend" / "packages").glob("*/src/panel_core/roles/*.py")):
+        if "register_blueprint(subscription.bp" in role_file.read_text():
+            found.add(role_file.stem)
+    return found
+
+
+def _dockerfiles_baking_a_frontend_bundle():
+    found = set()
+    for dockerfile in sorted((REPO / "backend").glob("Dockerfile*")):
+        text = dockerfile.read_text()
+        if "npm run build" in text or "sub-page/dist" in text:
+            found.add(dockerfile.name)
+    return found
+
+
+def test_exactly_one_image_bakes_the_bundle_that_three_roles_serve_routes_for():
+    roles = _roles_registering_the_subscription_blueprint()
+    bakers = _dockerfiles_baking_a_frontend_bundle()
+
+    assert roles == ROLES_SERVING_THE_SUBSCRIPTION_ROUTES, (
+        f"{sorted(roles)} register the subscription blueprint, not "
+        f"{sorted(ROLES_SERVING_THE_SUBSCRIPTION_ROUTES)}. If master or worker dropped it, they no "
+        f"longer 503 a browser and the SUB_DOMAIN-is-required rule is obsolete — rewrite the CLAUDE.md "
+        f"passages this guard pins instead of leaving them to mislead. If a fourth role gained it, that "
+        f"role has just inherited the same bundle-less page.\n\n{TOPOLOGY_DOC}"
+    )
+    assert bakers == {"Dockerfile.sub"}, (
+        f"{sorted(bakers)} bake a frontend bundle, not just Dockerfile.sub. If a second image now "
+        f"carries one, the roles it covers no longer 503 in a browser and the documented rule has to "
+        f"change with it.\n\n{TOPOLOGY_DOC}"
+    )
+
+    claude_md = (REPO / "CLAUDE.md").read_text()
+    for where, claim in TOPOLOGY_CLAIMS.items():
+        assert claim in claude_md, (
+            f"CLAUDE.md no longer states, in {where}: {claim!r}. The topology it describes is still "
+            f"live — {sorted(roles)} register the blueprint and only {sorted(bakers)} bakes a bundle — "
+            f"so deleting the prose does not delete the trap, it only hides it.\n\n{TOPOLOGY_DOC}"
+        )
+
+
+def test_env_example_does_not_call_sub_domain_optional():
+    env = (REPO / ".env.example").read_text()
+    sub_domain_comment = [line for line in env.splitlines() if line.startswith("# SUB_DOMAIN")]
+    assert sub_domain_comment, f".env.example no longer documents SUB_DOMAIN at all\n\n{TOPOLOGY_DOC}"
+    assert "optional" not in sub_domain_comment[0].lower(), (
+        f".env.example still calls SUB_DOMAIN optional: {sub_domain_comment[0]!r}. It is optional only "
+        f"for config delivery; for the subscription page it is the difference between a page and a "
+        f"503.\n\n{TOPOLOGY_DOC}"
+    )
+
 
 @pytest.fixture
 def app(app):
