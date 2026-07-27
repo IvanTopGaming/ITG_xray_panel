@@ -3,14 +3,17 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "lint": "eslint src",
-    "lint:fix": "eslint src --fix",
-    "format": "prettier --write src",
-    "format:check": "prettier --check src"
+    "build": "npm run build --workspace @panel/admin && npm run build --workspace @panel/node",
+    "build:admin": "npm run build --workspace @panel/admin",
+    "build:node": "npm run build --workspace @panel/node",
+    "dev": "npm run dev --workspace @panel/admin",
+    "typecheck": "tsc --noEmit -p packages/ui-core && tsc --noEmit -p packages/admin && tsc --noEmit -p packages/node",
+    "lint": "eslint packages",
+    "lint:fix": "eslint packages --fix",
+    "format": "prettier --write packages",
+    "format:check": "prettier --check packages"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
