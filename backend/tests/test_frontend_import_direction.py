@@ -23,7 +23,10 @@ DIRECTION_DOC = (
     "node -> ui-core. Forbidden: ui-core -> admin, ui-core -> node, admin -> node, node -> admin. "
     "ui-core must depend on nothing but itself, because it is what both images share; admin and node "
     "must never import each other directly, because that is exactly how a master-only page (or a "
-    "node-only one) would ship into the wrong image without any alias ever admitting it.\n\n"
+    "node-only one) would ship into the wrong image without any alias ever admitting it. "
+    "sub-page is the fourth package: it ships into the panel-sub image, not into either frontend image, "
+    "so it may reach ui-core and nothing else -- an import of admin or node from it would bake "
+    "master-only or node-only code into the subscription service.\n\n"
     + WORKSPACE_DOC
     + "\n\nThis guard fires on `import type` and type-only `export ... from` specifiers too, on "
     "purpose: a design-boundary guard should not special-case a transpiler flag, and a type that "
@@ -31,7 +34,7 @@ DIRECTION_DOC = (
     "past the guard because it happens to erase at build time."
 )
 
-ALLOWED_EDGES = frozenset({("admin", "ui-core"), ("node", "ui-core")})
+ALLOWED_EDGES = frozenset({("admin", "ui-core"), ("node", "ui-core"), ("sub-page", "ui-core")})
 
 NATURALLY_OCCURRING_FORMS = ("relative", "@ui/", "@/")
 
@@ -116,3 +119,34 @@ def test_no_package_imports_outside_the_allowed_direction():
         if (owner, target) not in ALLOWED_EDGES
     )
     assert offenders == [], f"undeclared cross-package imports: {offenders}\n\n{DIRECTION_DOC}"
+
+
+SUB_PAGE_FORBIDDEN_MODULES = (
+    "lib/api",
+    "lib/version",
+    "lib/panelRole",
+    "lib/assertPanelRole",
+    "hooks/useVersionStatus",
+)
+
+SUB_PAGE_DOC = (
+    "sub-page is built without the __APP_VERSIONS__ / __FRONTEND_VERSION_KEY__ / __EXPECTED_PANEL_ROLE__ "
+    "defines that ui-core's version and role modules read, so importing one of them fails the build -- "
+    "but lib/api is the one that matters beyond the build: it is the admin axios client with an auth "
+    "interceptor that logs the user out on any 401, and the subscription page is an unauthenticated "
+    "surface that must never carry it."
+)
+
+
+def test_sub_page_imports_no_authenticated_or_build_define_module():
+    root = PACKAGE_ROOTS.get("sub-page")
+    assert root is not None, f"sub-page package missing\n\n{SUB_PAGE_DOC}"
+    sources = iter_frontend_sources("sub-page")
+    assert sources, f"no sub-page sources found under {root} -- this guard would pass vacuously\n\n{VACUITY_DOC}"
+    offenders = []
+    for path in sources:
+        for specifier in import_specifiers(path):
+            for forbidden in SUB_PAGE_FORBIDDEN_MODULES:
+                if specifier.endswith(forbidden) or specifier.endswith(forbidden + ".ts"):
+                    offenders.append(f"{relative_source_name(path)} -> {specifier}")
+    assert offenders == [], "\n".join(sorted(offenders)) + f"\n\n{SUB_PAGE_DOC}"

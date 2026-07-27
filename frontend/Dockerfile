@@ -12,6 +12,7 @@ COPY package.json package-lock.json ./
 COPY packages/ui-core/package.json packages/ui-core/
 COPY packages/admin/package.json packages/admin/
 COPY packages/node/package.json packages/node/
+COPY packages/sub-page/package.json packages/sub-page/
 
 RUN npm ci
 

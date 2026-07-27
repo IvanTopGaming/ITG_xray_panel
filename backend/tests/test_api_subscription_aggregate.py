@@ -350,9 +350,14 @@ def test_aggregate_no_gate_when_toggle_off(client, user_with_two_keys):
     assert base64.b64decode(r.data).decode().count("vless://") >= 1
 
 
-def test_browser_never_gated_even_over_limit(client, app, user_with_two_keys):
+def test_browser_never_gated_even_over_limit(client, app, user_with_two_keys, tmp_path, monkeypatch):
     from panel_core.extensions import db
     from panel_core.models import SystemSetting
+
+    dist = tmp_path / "ui"
+    dist.mkdir()
+    (dist / "index.html").write_text('<!doctype html><html><body><div id="root"></div></body></html>')
+    monkeypatch.setenv("SUB_PAGE_DIST", str(dist))
 
     token = user_with_two_keys
     with app.app_context():
@@ -368,4 +373,9 @@ def test_browser_never_gated_even_over_limit(client, app, user_with_two_keys):
     )
     assert resp.status_code == 200
     assert resp.mimetype == "text/html"
-    assert "<!doctype html>" in resp.get_data(as_text=True).lower()
+    body = resp.get_data(as_text=True)
+    assert '<div id="root"></div>' in body, (
+        "the browser branch must return the page shell before the device gate runs — a browser that has "
+        "hit the device limit still needs the page, which is where the user goes to see why"
+    )
+    assert "<!doctype html>" in body.lower()

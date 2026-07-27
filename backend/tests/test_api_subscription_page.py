@@ -262,7 +262,27 @@ def http_client(app):
     return app.test_client()
 
 
-def test_browser_gets_html_page(http_client, user_three_keys):
+SHELL_MARKER = '<div id="root"></div>'
+
+SHELL_DOC = (
+    "The browser branch no longer renders node names, brand or language server-side — it returns the "
+    "sub-page bundle's index.html verbatim, and the page fetches /api/sub/u/<token>/info for all of "
+    "that (asserted in test_api_subscription_info.py). What stays true at this layer is narrower and "
+    "worth pinning on its own: a browser gets HTML rather than a proxy config, and the bytes it gets "
+    "do not depend on ?lang= or on any other request-scoped state."
+)
+
+
+@pytest.fixture
+def sub_bundle(tmp_path, monkeypatch):
+    dist = tmp_path / "ui"
+    dist.mkdir()
+    (dist / "index.html").write_text(f"<!doctype html><html><body>{SHELL_MARKER}</body></html>")
+    monkeypatch.setenv("SUB_PAGE_DIST", str(dist))
+    return dist
+
+
+def test_browser_gets_the_page_shell(http_client, user_three_keys, sub_bundle):
     token = user_three_keys
     resp = http_client.get(
         f"/api/sub/u/{token}",
@@ -271,18 +291,19 @@ def test_browser_gets_html_page(http_client, user_three_keys):
     assert resp.status_code == 200
     assert resp.mimetype == "text/html"
     body = resp.get_data(as_text=True)
-    assert "🇳🇱 Amsterdam" in body
+    assert SHELL_MARKER in body, SHELL_DOC
     assert "<!doctype html>" in body.lower()
 
 
-def test_browser_lang_query(http_client, user_three_keys):
+def test_the_shell_is_language_independent(http_client, user_three_keys, sub_bundle):
     token = user_three_keys
-    resp = http_client.get(
-        f"/api/sub/u/{token}?lang=ru",
-        headers={"User-Agent": "Mozilla/5.0 AppleWebKit/537.36"},
-    )
-    body = resp.get_data(as_text=True)
-    assert "Узлы" in body
+    headers = {"User-Agent": "Mozilla/5.0 AppleWebKit/537.36"}
+
+    ru = http_client.get(f"/api/sub/u/{token}?lang=ru", headers=headers)
+    en = http_client.get(f"/api/sub/u/{token}?lang=en", headers={**headers, "Accept-Language": "en-US,en;q=0.9"})
+
+    assert ru.status_code == 200 and en.status_code == 200
+    assert ru.data == en.data, SHELL_DOC
 
 
 def test_client_ua_still_gets_v2ray(http_client, user_three_keys):

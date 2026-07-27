@@ -6,7 +6,7 @@ import os
 import time
 from urllib.parse import quote, urlencode
 import yaml
-from flask import Blueprint, jsonify, request, Response
+from flask import Blueprint, jsonify, request, Response, send_from_directory
 from panel_core.extensions import limiter, db
 from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
@@ -632,6 +632,26 @@ def _absolute_sub_url(token: str) -> str:
     return f"{scheme}://{host}/api/sub/u/{token}"
 
 
+def sub_page_dist() -> str:
+    return os.getenv("SUB_PAGE_DIST", "/app/ui")
+
+
+def sub_page_index_path() -> str:
+    return os.path.join(sub_page_dist(), "index.html")
+
+
+_BUNDLE_MISSING = "Subscription page bundle is not installed"
+
+
+@bp.route("/sub/u/assets/<path:filename>", methods=["GET"])
+@limiter.limit("600 per minute")
+def get_sub_page_asset(filename):
+    assets_dir = os.path.join(sub_page_dist(), "assets")
+    if not os.path.isdir(assets_dir):
+        return _BUNDLE_MISSING, 503
+    return send_from_directory(assets_dir, filename, max_age=31536000)
+
+
 @bp.route("/sub/u/<token>", methods=["GET"])
 @limiter.limit("180 per minute")
 def get_subscription_aggregate(token):
@@ -656,10 +676,12 @@ def get_subscription_aggregate(token):
     headers = _aggregate_user_headers(clients)
 
     if _looks_like_browser(user_agent):
-        lang = _pick_lang(request.args.get("lang", ""), request.headers.get("Accept-Language", ""))
-        abs_sub_url = _absolute_sub_url(token)
-        page = render_aggregate_subscription_page(user, lang, abs_sub_url)
-        return Response(page, mimetype="text/html; charset=utf-8", headers=headers)
+        index_path = sub_page_index_path()
+        if not os.path.isfile(index_path):
+            return Response(_BUNDLE_MISSING, status=503, mimetype="text/plain; charset=utf-8")
+        with open(index_path, "r", encoding="utf-8") as fh:
+            shell = fh.read()
+        return Response(shell, mimetype="text/html; charset=utf-8", headers=headers)
 
     from panel_core.services.device_tracking import user_device_gate
 

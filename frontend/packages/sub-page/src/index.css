@@ -1,0 +1,12 @@
+@import '../../ui-core/src/fonts.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background bg-main-gradient font-sans text-[#eae6f0] antialiased;
+    min-height: 100vh;
+  }
+}

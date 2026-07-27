@@ -6,7 +6,7 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parents[2]
 FRONTEND_PACKAGES = REPO / "frontend" / "packages"
 
-ADMIN_ONLY_PACKAGES = {"admin"}
+PACKAGES_OUTSIDE_THE_NODE_IMAGE = {"admin", "sub-page"}
 
 MASTER_ONLY_PATHS = {
     "/panels": "the `panels` blueprint, registered by roles/master.py and not by roles/worker.py",
@@ -19,7 +19,10 @@ GATE_DOC = (
     "`bot_admin` are master-only: roles/worker.py registers neither, and both modules ship from "
     "panel-master, so on a node these paths 404 on every session — silently, because nothing surfaces "
     "a failed background query. Put the call behind a single gated hook rather than repeating an "
-    "`enabled:` at each call site, so this guard stays checkable."
+    "`enabled:` at each call site, so this guard stays checkable. "
+    "sub-page is excluded for the opposite reason to admin: it does not ship into the node image at all "
+    "(it is baked into panel-sub), so sweeping it into this scan would make the guard assert things about "
+    "code that never reaches a node."
 )
 
 
@@ -27,10 +30,10 @@ def _node_image_package_names():
     names = sorted(
         p.name
         for p in FRONTEND_PACKAGES.iterdir()
-        if p.is_dir() and p.name not in ADMIN_ONLY_PACKAGES and (p / "src").is_dir()
+        if p.is_dir() and p.name not in PACKAGES_OUTSIDE_THE_NODE_IMAGE and (p / "src").is_dir()
     )
     assert names, (
-        f"no non-admin package with a src directory found under {FRONTEND_PACKAGES} — the workspace "
+        f"no node-image package with a src directory found under {FRONTEND_PACKAGES} — the workspace"
         f"layout moved and this guard would pass vacuously.\n\n{GATE_DOC}"
     )
     return names
