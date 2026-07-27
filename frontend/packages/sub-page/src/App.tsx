@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { useSubInfo } from '@/hooks/useSubInfo';
 import { pickLang, t } from '@/lib/i18n';
 import ErrorState from '@/components/ErrorState';
+import Loading from '@/components/Loading';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import Summary from '@/components/Summary';
@@ -20,7 +21,7 @@ export default function App() {
     if (data) document.title = data.brand || t('default_brand', lang);
   }, [data, lang]);
 
-  if (loading) return <div className="mx-auto max-w-3xl px-4 pt-8" />;
+  if (loading) return <Loading lang={lang} />;
   if (error || !data) return <ErrorState lang={lang} onRetry={reload} />;
 
   return (

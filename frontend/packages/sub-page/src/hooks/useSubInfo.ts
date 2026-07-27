@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { SubInfo } from '@/lib/types';
 
+const REQUEST_TIMEOUT_MS = 10000;
+
 function infoUrl(): string {
   return `${window.location.pathname.replace(/\/+$/, '')}/info${window.location.search}`;
 }
@@ -13,7 +15,10 @@ export function useSubInfo() {
   const load = useCallback(() => {
     setLoading(true);
     setError(false);
-    fetch(infoUrl(), { headers: { Accept: 'application/json' } })
+    fetch(infoUrl(), {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
       .then((response) => {
         if (!response.ok) throw new Error(String(response.status));
         return response.json();
