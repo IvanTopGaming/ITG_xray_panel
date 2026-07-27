@@ -378,9 +378,35 @@ func TestSecurityHeadersAllowNoExternalFontHosts(t *testing.T) {
 			t.Fatalf("CSP still allows %s; fonts are self-hosted from ui-core/src/fonts: %s", host, csp)
 		}
 	}
-	for _, directive := range []string{"style-src 'self' 'unsafe-inline'", "font-src 'self' data:"} {
-		if !strings.Contains(csp, directive) {
-			t.Fatalf("CSP lost %q: %s", directive, csp)
+	for _, pinned := range []struct {
+		directive string
+		why       string
+	}{
+		{
+			"style-src 'self' 'unsafe-inline'",
+			"Tailwind emits an inline <style> block and the SPAs render inline style attributes; " +
+				"without 'unsafe-inline' every page loads unstyled.",
+		},
+		{
+			"font-src 'self' data:",
+			"the Roboto subsets are served out of the bundle itself since the fonts were self-hosted; " +
+				"losing 'self' silently drops every page to the fallback system font.",
+		},
+		{
+			"script-src 'self'",
+			"this is the directive that blocks inline <script>, and three separate decisions rest on it " +
+				"with nothing else holding them up. frontend/entrypoint.sh ships the panel role in a " +
+				"<meta name=\"panel-role\"> tag rather than an inline script precisely because this header " +
+				"killed the script form. backend/tests/test_frontend_html_shell.py forbids inline scripts " +
+				"in every nginx-served shell and cites this directive as the entire reason. And the " +
+				"server-rendered subscription page was retired in part because its inline copy button was " +
+				"dead on any deployment behind this proxy. Drop the directive and all three become " +
+				"pointless ceremony while inline script execution quietly comes back on an unauthenticated " +
+				"page that renders admin-controlled brand, node and inbound-tag strings.",
+		},
+	} {
+		if !strings.Contains(csp, pinned.directive) {
+			t.Fatalf("CSP lost %q: %s\n\n%s", pinned.directive, csp, pinned.why)
 		}
 	}
 }

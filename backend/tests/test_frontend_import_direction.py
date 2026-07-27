@@ -127,6 +127,7 @@ SUB_PAGE_FORBIDDEN_MODULES = (
     "lib/panelRole",
     "lib/assertPanelRole",
     "hooks/useVersionStatus",
+    "stores",
 )
 
 SUB_PAGE_DOC = (
@@ -134,8 +135,45 @@ SUB_PAGE_DOC = (
     "defines that ui-core's version and role modules read, so importing one of them fails the build -- "
     "but lib/api is the one that matters beyond the build: it is the admin axios client with an auth "
     "interceptor that logs the user out on any 401, and the subscription page is an unauthenticated "
-    "surface that must never carry it."
+    "surface that must never carry it.\n\n"
+    "`stores` carries no build-time backstop at all, which is why it has to be listed rather than left "
+    "to the build: @ui/stores/authStore imports nothing but zustand and reads no define, so "
+    "`import { useAuthStore } from '@ui/stores/authStore'` in sub-page typechecks, bundles and ships "
+    "clean -- a persist-backed admin auth-token store baked into a page served without any login in "
+    "front of it. Entries are matched as whole path segments, not as a string suffix, so a directory "
+    "entry like `stores` catches `@ui/stores/authStore` (an endswith test matches only the leaf, which "
+    "is exactly how this one slipped the guard) while `lib/api` still refuses to fire on a sub-page "
+    "module of its own such as `@/lib/i18n`."
 )
+
+
+def _forbidden_module_hit(specifier):
+    trimmed = specifier
+    for suffix in (".tsx", ".ts"):
+        if trimmed.endswith(suffix):
+            trimmed = trimmed[: -len(suffix)]
+            break
+    segments = [part for part in trimmed.split("/") if part not in ("", ".", "..")]
+    for forbidden in SUB_PAGE_FORBIDDEN_MODULES:
+        needle = forbidden.split("/")
+        for start in range(len(segments) - len(needle) + 1):
+            if segments[start : start + len(needle)] == needle:
+                return forbidden
+    return None
+
+
+def test_the_sub_page_forbidden_module_matcher_catches_a_directory_entry():
+    assert _forbidden_module_hit("@ui/stores/authStore") == "stores", (
+        "the matcher does not flag '@ui/stores/authStore', so the `stores` entry is decorative and the "
+        f"scan below proves nothing about it.\n\n{SUB_PAGE_DOC}"
+    )
+    assert _forbidden_module_hit("@ui/lib/api") == "lib/api", (
+        f"the matcher stopped flagging '@ui/lib/api' -- every entry in the list is now dead.\n\n{SUB_PAGE_DOC}"
+    )
+    assert _forbidden_module_hit("@/lib/i18n") is None, (
+        "the matcher flags sub-page's own '@/lib/i18n', so it over-matches and the scan below would "
+        f"fail on legitimate local imports.\n\n{SUB_PAGE_DOC}"
+    )
 
 
 def test_sub_page_imports_no_authenticated_or_build_define_module():
@@ -146,7 +184,6 @@ def test_sub_page_imports_no_authenticated_or_build_define_module():
     offenders = []
     for path in sources:
         for specifier in import_specifiers(path):
-            for forbidden in SUB_PAGE_FORBIDDEN_MODULES:
-                if specifier.endswith(forbidden) or specifier.endswith(forbidden + ".ts"):
-                    offenders.append(f"{relative_source_name(path)} -> {specifier}")
+            if _forbidden_module_hit(specifier) is not None:
+                offenders.append(f"{relative_source_name(path)} -> {specifier}")
     assert offenders == [], "\n".join(sorted(offenders)) + f"\n\n{SUB_PAGE_DOC}"
