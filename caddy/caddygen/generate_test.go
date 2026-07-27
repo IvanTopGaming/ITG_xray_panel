@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -364,4 +365,22 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestSecurityHeadersAllowNoExternalFontHosts(t *testing.T) {
+	headers := securityHeaders()
+	response := headers["response"].(map[string]any)
+	set := response["set"].(map[string]any)
+	csp := set["Content-Security-Policy"].([]any)[0].(string)
+
+	for _, host := range []string{"fonts.googleapis.com", "fonts.gstatic.com"} {
+		if strings.Contains(csp, host) {
+			t.Fatalf("CSP still allows %s; fonts are self-hosted from ui-core/src/fonts: %s", host, csp)
+		}
+	}
+	for _, directive := range []string{"style-src 'self' 'unsafe-inline'", "font-src 'self' data:"} {
+		if !strings.Contains(csp, directive) {
+			t.Fatalf("CSP lost %q: %s", directive, csp)
+		}
+	}
 }

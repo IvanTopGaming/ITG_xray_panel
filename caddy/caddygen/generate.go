@@ -18,8 +18,8 @@ func securityHeaders() map[string]any {
 				"Referrer-Policy":           []any{"strict-origin-when-cross-origin"},
 				"Content-Security-Policy": []any{
 					"default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; " +
-						"script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-						"font-src 'self' https://fonts.gstatic.com data:; img-src 'self' https: data: blob:; " +
+						"script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+						"font-src 'self' data:; img-src 'self' https: data: blob:; " +
 						"connect-src 'self' https: wss:;",
 				},
 			},
