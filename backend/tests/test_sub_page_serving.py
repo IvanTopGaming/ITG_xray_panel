@@ -1,4 +1,6 @@
 import os
+import pathlib
+import re
 
 import pytest
 
@@ -113,3 +115,25 @@ def test_the_dist_path_is_read_per_call_not_at_import(monkeypatch):
     assert sub_page_dist() == "/somewhere/else"
     monkeypatch.delenv("SUB_PAGE_DIST", raising=False)
     assert sub_page_dist() == os.path.join("/app", "ui")
+
+
+def test_the_sub_image_bakes_the_bundle_where_the_default_dist_path_looks_for_it(monkeypatch):
+    from panel_core.api.subscription import sub_page_dist
+
+    monkeypatch.delenv("SUB_PAGE_DIST", raising=False)
+    default = sub_page_dist()
+
+    dockerfile = (pathlib.Path(__file__).resolve().parents[1] / "Dockerfile.sub").read_text()
+    match = re.search(r"^COPY --from=ui \S+ (\S+)\s*$", dockerfile, re.M)
+
+    assert match, (
+        "backend/Dockerfile.sub no longer copies the built bundle out of its 'ui' stage. Nothing else "
+        f"puts a bundle in the image, so the page would 503 in every container.\n\n{SERVING_DOC}"
+    )
+    assert match.group(1) == default, (
+        f"backend/Dockerfile.sub bakes the bundle into {match.group(1)} but Flask looks for it in "
+        f"{default} when SUB_PAGE_DIST is unset — which is exactly how docker-compose.sub.yml runs it. "
+        f"The two are set in different languages in different files and only agree by convention; when "
+        f"they disagree the role still boots and still serves configs, and only the page is dead."
+        f"\n\n{SERVING_DOC}"
+    )

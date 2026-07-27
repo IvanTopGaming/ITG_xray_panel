@@ -106,7 +106,7 @@ jobs:
               sub)
                 CONTEXT="./backend"
                 IMAGE="ghcr.io/ivantopgaming/panel-sub"
-                BUILD_ARGS="--build-arg PANEL_PACKAGE=panel-sub --build-context project=."
+                BUILD_ARGS="--build-context project=. -f backend/Dockerfile.sub"
                 ;;
               bot_api)
                 CONTEXT="./backend"

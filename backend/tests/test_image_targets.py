@@ -24,13 +24,15 @@ IMAGE_TARGETS = {
         "compose": "docker-compose.node.yml",
         "env_var": "WORKER_IMAGE",
         "dockerfile": "backend/Dockerfile.worker",
+        "package_hardcoded_in_dockerfile": True,
     },
     "sub": {
         "package": "panel-sub",
         "image": "ghcr.io/ivantopgaming/panel-sub",
         "compose": "docker-compose.sub.yml",
         "env_var": "SUB_IMAGE",
-        "dockerfile": "backend/Dockerfile",
+        "dockerfile": "backend/Dockerfile.sub",
+        "package_hardcoded_in_dockerfile": True,
     },
     "bot_api": {
         "package": "panel-botapi",
@@ -219,11 +221,16 @@ def test_the_case_branch_pairs_its_own_package_and_dockerfile_with_its_own_image
 
     package_match = re.search(r"PANEL_PACKAGE=([\w.-]+)", body)
     actual_package = package_match.group(1) if package_match else None
-    if service == "worker":
+    if target.get("package_hardcoded_in_dockerfile"):
         assert actual_package is None, (
-            f"{workflow}'s 'worker)' case branch passes --build-arg PANEL_PACKAGE={actual_package!r}, but "
-            f"the worker's Dockerfile hardcodes --package panel-worker itself and takes no such build-arg."
-            f"\n\n{DRIFT_DOC}"
+            f"{workflow}'s '{service})' case branch passes --build-arg PANEL_PACKAGE={actual_package!r}, but "
+            f"{target['dockerfile']} hardcodes --package {target['package']} itself and takes no such "
+            f"build-arg.\n\n{DRIFT_DOC}"
+        )
+        assert f"--package {target['package']}" in _read(target["dockerfile"]), (
+            f"{target['dockerfile']} does not sync --package {target['package']}. It takes no PANEL_PACKAGE "
+            f"build-arg, so the package name written into the file is the only thing deciding which role "
+            f"the '{target['image']}' image actually runs.\n\n{DRIFT_DOC}"
         )
     else:
         assert actual_package == target["package"], (
@@ -366,19 +373,54 @@ def test_the_light_dockerfile_requires_its_package_argument():
 
 
 def test_only_the_worker_image_carries_the_xray_runtime():
-    light = _read("backend/Dockerfile")
     worker = _read("backend/Dockerfile.worker")
 
+    for light_path in ("backend/Dockerfile", "backend/Dockerfile.sub"):
+        light = _read(light_path)
+        for marker in ("xraybin", "grpc_tools.protoc", "XRAY_CORE_REF"):
+            assert marker not in light, (
+                f"{light_path} mentions {marker!r}. The three light roles must not carry the Xray "
+                f"binary, the protobuf stubs or the toolchain that generates them — dropping those is the "
+                f"point of this split.\n\n{DRIFT_DOC}"
+            )
+
     for marker in ("xraybin", "grpc_tools.protoc", "XRAY_CORE_REF"):
-        assert marker not in light, (
-            f"backend/Dockerfile mentions {marker!r}. The three light roles must not carry the Xray "
-            f"binary, the protobuf stubs or the toolchain that generates them — dropping those is the "
-            f"point of this split.\n\n{DRIFT_DOC}"
-        )
         assert marker in worker, f"backend/Dockerfile.worker no longer mentions {marker!r}; the worker needs all three."
 
     assert "--package panel-worker" in worker, "Dockerfile.worker must sync the panel-worker package"
+    light = _read("backend/Dockerfile")
     assert "--package" in light and "PANEL_PACKAGE" in light
+
+
+def test_the_repo_root_build_context_is_filtered():
+    patterns = {line.strip() for line in _read(".dockerignore").splitlines() if line.strip()}
+    for required in ("**/node_modules/", "**/dist/", ".git/"):
+        assert required in patterns, (
+            f"the repo-root .dockerignore does not exclude {required!r}. Every Dockerfile that takes "
+            f"--build-context project=. draws from this unfiltered directory, and backend/Dockerfile.sub "
+            f"copies all of frontend/ out of it: without this file the host's node_modules is shipped into "
+            f"the build and lands on top of the container's own npm ci, which fails loudly on an arch "
+            f"mismatch and silently otherwise.\n\n{DRIFT_DOC}"
+        )
+    assert not re.search(r"^versions\.json$", _read(".dockerignore"), re.M), (
+        f"the repo-root .dockerignore excludes versions.json, which every image COPYs from the project "
+        f"context to bake its version.\n\n{DRIFT_DOC}"
+    )
+
+
+def test_only_the_sub_image_bakes_a_frontend_bundle():
+    sub = _read("backend/Dockerfile.sub")
+    assert "@panel/sub-page" in sub and "/app/ui" in sub, (
+        "backend/Dockerfile.sub no longer builds @panel/sub-page into /app/ui. That bundle is the "
+        "subscription page itself — without it the role boots fine and answers 503 on the page while "
+        "still serving configs, which is exactly the failure nobody notices until a user opens the "
+        f"link.\n\n{DRIFT_DOC}"
+    )
+    for other in ("backend/Dockerfile", "backend/Dockerfile.worker"):
+        assert "sub-page" not in _read(other), (
+            f"{other} builds the sub-page bundle too. Only the sub image serves that page, and a Node "
+            f"build stage in the other backend images buys them nothing but build time.\n\n{DRIFT_DOC}"
+        )
 
 
 def _frontend_backend_role_order():
@@ -406,10 +448,10 @@ def test_frontend_backend_role_order_matches_the_backend_version_keys():
     )
 
 
-def test_every_workspace_member_pyproject_is_copied_into_both_builds():
+def test_every_workspace_member_pyproject_is_copied_into_every_build():
     members = sorted(p.parent.name for p in (REPO / "backend" / "packages").glob("*/pyproject.toml"))
     assert len(members) == 6, f"expected six workspace members, found {members}"
-    for dockerfile in ("backend/Dockerfile", "backend/Dockerfile.worker"):
+    for dockerfile in ("backend/Dockerfile", "backend/Dockerfile.worker", "backend/Dockerfile.sub"):
         text = _read(dockerfile)
         missing = [m for m in members if f"packages/{m}/pyproject.toml" not in text]
         assert missing == [], (
