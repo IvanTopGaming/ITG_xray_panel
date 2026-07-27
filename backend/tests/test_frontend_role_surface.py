@@ -41,7 +41,9 @@ def test_a_master_only_path_is_called_from_one_gated_place_in_ui_core(api_path):
     )
 
     for caller in callers:
-        assert "isWorker" in caller.read_text(), (
-            f"{caller.relative_to(REPO)} calls {api_path} without referencing isWorker — the query must "
-            f"carry `enabled: !isWorker`.\n\n{GATE_DOC}"
+        assert "!isWorker" in caller.read_text(), (
+            f"{caller.relative_to(REPO)} calls {api_path} without a `!isWorker` gate — the query must "
+            f"carry `enabled: !isWorker`. Matching the negated form on purpose: a bare `isWorker` check "
+            f"passes when the gate is deleted but the symbol survives anywhere else in the file, which "
+            f"is the exact regression this guard exists to catch.\n\n{GATE_DOC}"
         )
