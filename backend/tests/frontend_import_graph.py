@@ -74,9 +74,34 @@ def _resolve_file(base):
     return None
 
 
+WORKSPACE_PREFIX = "@panel/"
+
+WORKSPACE_DOC = (
+    "npm workspaces symlinks every packages/* member into frontend/node_modules/@panel/<name> "
+    "regardless of what any package.json declares as a dependency -- with moduleResolution: bundler "
+    "and no package.json `exports` field, a deep import through that symlink (`@panel/admin/src/"
+    "pages/Panels`) resolves, typechecks and bundles exactly like the relative-path escape, and is "
+    "arguably the more likely mistake of the two: `@panel/ui-core/lib/api` is the idiomatic monorepo "
+    "specifier and what an editor's auto-import offers. resolve_import has to follow it into the "
+    "same packages/<name>/src tree that `@panel/<name>` symlinks to, whether or not the specifier "
+    "itself spells out the `src/` segment -- the real symlink target is the package root, so both "
+    "`@panel/admin/src/pages/Panels` (subpath includes `src/`, matching the reviewer's reproduction) "
+    "and `@panel/ui-core/lib/api` (subpath omits it, matching the idiomatic form) must land on the "
+    "same file that `@ui/lib/api` already resolves to."
+)
+
+
 def resolve_import(importer_path, specifier):
     if specifier.startswith("@ui/"):
         base = PACKAGE_ROOTS["ui-core"] / specifier[len("@ui/") :]
+    elif specifier.startswith(WORKSPACE_PREFIX):
+        rest = specifier[len(WORKSPACE_PREFIX) :]
+        package_name, _, subpath = rest.partition("/")
+        if package_name not in PACKAGE_ROOTS:
+            return None
+        if subpath.startswith("src/"):
+            subpath = subpath[len("src/") :]
+        base = PACKAGE_ROOTS[package_name] / subpath if subpath else PACKAGE_ROOTS[package_name]
     elif specifier.startswith("@/"):
         importer_package = package_for(importer_path)
         base = PACKAGE_ROOTS[importer_package] / specifier[len("@/") :]
@@ -85,3 +110,15 @@ def resolve_import(importer_path, specifier):
     else:
         return None
     return _resolve_file(base)
+
+
+def specifier_form(specifier):
+    if specifier.startswith("@ui/"):
+        return "@ui/"
+    if specifier.startswith(WORKSPACE_PREFIX):
+        return WORKSPACE_PREFIX
+    if specifier.startswith("@/"):
+        return "@/"
+    if specifier.startswith("."):
+        return "relative"
+    return None
