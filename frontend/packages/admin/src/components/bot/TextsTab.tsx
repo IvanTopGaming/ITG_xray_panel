@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 import { listBotTexts, listBotTextKeys, updateBotText, resetBotText } from '@/lib/bot';
-import type { BotTextKeyMeta } from '@/lib/types';
+import type { BotTextKeyMeta } from '@ui/lib/types';
 
 interface RowState {
   ru: string;

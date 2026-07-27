@@ -12,10 +12,10 @@ import {
   unblockBotUser,
 } from '@/lib/bot';
 import type { PanelFailure } from '@/lib/bot';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
-import { Select } from '@/components/ui/Select';
-import { cn } from '@/lib/utils';
-import type { BotUserDetail, GrantBilling, Tariff, UserTariffGrant, Client } from '@/lib/types';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
+import { Select } from '@ui/components/ui/Select';
+import { cn } from '@ui/lib/utils';
+import type { BotUserDetail, GrantBilling, Tariff, UserTariffGrant, Client } from '@ui/lib/types';
 
 function billingChipClass(billing: GrantBilling): string {
   if (billing === 'paid') return 'border-violet-500/30 bg-violet-500/10 text-violet-300';
@@ -37,7 +37,7 @@ interface UserDrawerProps {
   onClose: () => void;
 }
 
-import { formatDate as _formatDay, formatDateTime } from '@/lib/datetime';
+import { formatDate as _formatDay, formatDateTime } from '@ui/lib/datetime';
 
 function formatDate(iso: string | null): string {
   return formatDateTime(iso);

@@ -1,6 +1,6 @@
 import { Gift, Plus } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import type { Tariff, TariffStats } from '@/lib/types';
+import { cn } from '@ui/lib/utils';
+import type { Tariff, TariffStats } from '@ui/lib/types';
 
 interface TrialCardProps {
   trial: Tariff | null;

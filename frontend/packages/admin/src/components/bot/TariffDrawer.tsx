@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, Trash2, Package, Gift } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { Select } from '@/components/ui/Select';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
+import { cn } from '@ui/lib/utils';
+import { Select } from '@ui/components/ui/Select';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
 import type {
   Inbound,
   LinkedPanel,
@@ -11,7 +11,7 @@ import type {
   TariffStats,
   TariffVisibility,
   TariffWritePayload,
-} from '@/lib/types';
+} from '@ui/lib/types';
 
 interface TariffDrawerProps {
   open: boolean;

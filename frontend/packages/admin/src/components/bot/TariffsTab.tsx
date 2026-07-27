@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 import { Plus, Search } from 'lucide-react';
 import { motion } from 'framer-motion';
-import api from '@/lib/api';
+import api from '@ui/lib/api';
 import {
   listTariffs,
   archiveTariff,
@@ -14,9 +14,15 @@ import {
   restoreTariff,
   getTariffStats,
 } from '@/lib/bot';
-import type { Inbound, LinkedPanel, Tariff, TariffStatsMap, TariffWritePayload } from '@/lib/types';
-import { cn } from '@/lib/utils';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
+import type {
+  Inbound,
+  LinkedPanel,
+  Tariff,
+  TariffStatsMap,
+  TariffWritePayload,
+} from '@ui/lib/types';
+import { cn } from '@ui/lib/utils';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
 import { TrialCard } from './TrialCard';
 import { TariffsTable } from './TariffsTable';
 import { TariffDrawer } from './TariffDrawer';

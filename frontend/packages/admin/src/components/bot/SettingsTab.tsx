@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Eye, EyeOff, Copy, Check, RefreshCw } from 'lucide-react';
 import { getBotSettings, updateBotSettings, rotateBotServiceToken } from '../../lib/bot';
-import type { BotSettingsUpdate } from '../../lib/types';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
-import { Switch } from '@/components/ui/Switch';
+import type { BotSettingsUpdate } from '@ui/lib/types';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
+import { Switch } from '@ui/components/ui/Switch';
 
 export function SettingsTab() {
   const qc = useQueryClient();

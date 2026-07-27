@@ -1,4 +1,4 @@
-import { PaymentStatus } from '../../lib/types';
+import { PaymentStatus } from '@ui/lib/types';
 
 const styles: Record<PaymentStatus, string> = {
   succeeded: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',

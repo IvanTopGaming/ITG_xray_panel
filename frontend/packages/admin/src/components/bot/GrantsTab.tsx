@@ -3,13 +3,13 @@ import { createPortal } from 'react-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 import { Plus, Trash2 } from 'lucide-react';
-import { Modal } from '@/components/ui/Modal';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
-import { Select } from '@/components/ui/Select';
-import { Button } from '@/components/ui/Button';
-import { cn } from '@/lib/utils';
+import { Modal } from '@ui/components/ui/Modal';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
+import { Select } from '@ui/components/ui/Select';
+import { Button } from '@ui/components/ui/Button';
+import { cn } from '@ui/lib/utils';
 import { listGrants, createGrant, revokeTariff, listTariffs, listBotUsers } from '@/lib/bot';
-import type { GrantRow, Tariff, BotUser, GrantBilling } from '@/lib/types';
+import type { GrantRow, Tariff, BotUser, GrantBilling } from '@ui/lib/types';
 
 function billingChipClass(billing: GrantBilling): string {
   if (billing === 'paid') return 'border-violet-500/30 bg-violet-500/10 text-violet-300';
@@ -17,7 +17,7 @@ function billingChipClass(billing: GrantBilling): string {
   return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
 }
 
-import { formatDateTime as formatDate } from '@/lib/datetime';
+import { formatDateTime as formatDate } from '@ui/lib/datetime';
 
 interface AddDialogProps {
   open: boolean;

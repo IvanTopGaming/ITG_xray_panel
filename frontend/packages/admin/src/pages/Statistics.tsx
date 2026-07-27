@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import api from '@/lib/api';
-import { formatBytes, cn } from '@/lib/utils';
+import api from '@ui/lib/api';
+import { formatBytes, cn } from '@ui/lib/utils';
 import {
   formatWith,
   formatDateTimeForLocalInput,
   epochSecFromLocalDateTimeInput,
-} from '@/lib/datetime';
+} from '@ui/lib/datetime';
 import {
   TrendingUp,
   TrendingDown,

@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { listBotUsers } from '@/lib/bot';
-import type { BotUser } from '@/lib/types';
+import type { BotUser } from '@ui/lib/types';
 import { Search } from 'lucide-react';
 import { UserDrawer } from './UserDrawer';
-import { formatDate } from '@/lib/datetime';
+import { formatDate } from '@ui/lib/datetime';
 
 export function UsersTab() {
   const [search, setSearch] = useState('');

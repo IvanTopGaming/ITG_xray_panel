@@ -3,14 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastContainer, Slide } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
-import { useAuthStore, AuthState } from '@/stores/authStore';
-import { panelBase } from '@/lib/panelBase';
-import { hasLocalXray, isWorker } from '@/lib/panelRole';
-import { Layout } from '@/components/layout/Layout';
-import Login from '@/pages/Login';
-import Dashboard from '@/pages/Dashboard';
-import Routing from '@/pages/Routing';
-import System from '@/pages/System';
+import { useAuthStore, AuthState } from '@ui/stores/authStore';
+import { panelBase } from '@ui/lib/panelBase';
+import { hasLocalXray } from '@ui/lib/panelRole';
+import { Layout } from '@ui/components/layout/Layout';
+import Login from '@ui/pages/Login';
+import Dashboard from '@ui/pages/Dashboard';
+import Routing from '@ui/pages/Routing';
+import System from '@ui/pages/System';
 import Statistics from '@/pages/Statistics';
 import Panels from '@/pages/Panels';
 import Bot from '@/pages/Bot';
@@ -48,16 +48,13 @@ function App() {
             }
           >
             <Route index element={<Dashboard />} />
-            <Route
-              path="statistics"
-              element={isWorker ? <Navigate to="/" replace /> : <Statistics />}
-            />
-            <Route path="panels" element={isWorker ? <Navigate to="/" replace /> : <Panels />} />
+            <Route path="statistics" element={<Statistics />} />
+            <Route path="panels" element={<Panels />} />
             <Route
               path="routing"
               element={hasLocalXray ? <Routing /> : <Navigate to="/" replace />}
             />
-            <Route path="bot" element={isWorker ? <Navigate to="/" replace /> : <Bot />} />
+            <Route path="bot" element={<Bot />} />
             <Route path="system" element={<System />} />
           </Route>
         </Routes>

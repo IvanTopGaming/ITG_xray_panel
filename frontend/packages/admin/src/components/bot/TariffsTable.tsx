@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Package, ChevronUp, ChevronDown, Infinity as InfinityIcon } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import type { Tariff, TariffStatsMap } from '@/lib/types';
+import { cn } from '@ui/lib/utils';
+import type { Tariff, TariffStatsMap } from '@ui/lib/types';
 import { TariffRowMenu } from './TariffRowMenu';
-import { parseDate } from '@/lib/datetime';
+import { parseDate } from '@ui/lib/datetime';
 
 type SortKey = 'id' | 'name' | 'price' | 'period' | 'active' | 'revenue' | 'last_sale';
 type SortDir = 'asc' | 'desc';

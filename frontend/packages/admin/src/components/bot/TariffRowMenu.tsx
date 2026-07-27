@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MoreHorizontal, Copy, EyeOff, RotateCcw, Trash2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import type { Tariff } from '@/lib/types';
+import { cn } from '@ui/lib/utils';
+import type { Tariff } from '@ui/lib/types';
 
 interface TariffRowMenuProps {
   tariff: Tariff;

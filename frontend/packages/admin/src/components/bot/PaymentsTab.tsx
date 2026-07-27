@@ -2,11 +2,11 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ExternalLink } from 'lucide-react';
-import { Select } from '@/components/ui/Select';
+import { Select } from '@ui/components/ui/Select';
 import { listPayments, PaymentListFilters } from '../../lib/bot';
 import { PaymentStatusBadge } from './PaymentStatusBadge';
-import { PaymentStatus } from '../../lib/types';
-import { formatDateTime as formatDate } from '@/lib/datetime';
+import { PaymentStatus } from '@ui/lib/types';
+import { formatDateTime as formatDate } from '@ui/lib/datetime';
 
 const STATUS_SELECT_OPTIONS: { value: string; label: string }[] = [
   { value: 'all', label: 'All statuses' },

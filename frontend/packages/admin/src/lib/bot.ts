@@ -1,4 +1,4 @@
-import api from './api';
+import api from '@ui/lib/api';
 import type {
   Tariff,
   TariffWritePayload,
@@ -14,7 +14,7 @@ import type {
   BotSettings,
   BotSettingsUpdate,
   BackfillSummary,
-} from './types';
+} from '@ui/lib/types';
 
 export async function listTariffs(): Promise<Tariff[]> {
   const { data } = await api.get<{ tariffs: Tariff[] }>('/bot/tariffs');

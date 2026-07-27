@@ -24,6 +24,7 @@ docs/*
 
 frontend/node_modules/
 frontend/dist/
+frontend/packages/*/dist/
 out-tsc/
 bazel-out/
 coverage/

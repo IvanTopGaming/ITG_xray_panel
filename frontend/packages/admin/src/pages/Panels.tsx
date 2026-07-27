@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '@/lib/api';
-import { LinkedPanel, FederationConfig, Inbound } from '@/lib/types';
-import { Button } from '@/components/ui/Button';
-import { Modal } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/Input';
-import { Switch } from '@/components/ui/Switch';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
-import { formatDateTime } from '@/lib/datetime';
+import api from '@ui/lib/api';
+import { LinkedPanel, FederationConfig, Inbound } from '@ui/lib/types';
+import { Button } from '@ui/components/ui/Button';
+import { Modal } from '@ui/components/ui/Modal';
+import { Input } from '@ui/components/ui/Input';
+import { Switch } from '@ui/components/ui/Switch';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
+import { formatDateTime } from '@ui/lib/datetime';
 import {
   Plus,
   Trash2,
