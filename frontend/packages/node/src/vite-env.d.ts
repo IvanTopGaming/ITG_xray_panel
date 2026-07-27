@@ -11,9 +11,10 @@ declare const __APP_VERSIONS__: {
   worker: string;
   sub: string;
   bot_api: string;
-  frontend: string;
-  caddy: string;
+  frontend_admin: string;
+  frontend_node: string;
   bot: string;
+  caddy: string;
   xray_core_ref: string;
   [key: string]: string;
 };
