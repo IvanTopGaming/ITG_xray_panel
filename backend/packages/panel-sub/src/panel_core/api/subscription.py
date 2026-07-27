@@ -623,9 +623,9 @@ def _looks_like_browser(user_agent: str) -> bool:
 
 
 def _absolute_sub_url(token: str) -> str:
-    sub_domain = os.getenv("SUB_DOMAIN", "").strip()
-    if sub_domain:
-        return f"https://{sub_domain}/api/sub/u/{token}"
+    configured = build_aggregate_sub_url(token)
+    if configured:
+        return configured
     scheme = request.headers.get("X-Forwarded-Proto", request.scheme or "https")
     host = request.headers.get("X-Forwarded-Host", request.host)
     return f"{scheme}://{host}/api/sub/u/{token}"

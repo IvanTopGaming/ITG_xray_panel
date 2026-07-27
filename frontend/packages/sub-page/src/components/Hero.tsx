@@ -75,7 +75,7 @@ export default function Hero({ data, lang }: { data: SubInfo; lang: Lang }) {
           </div>
           {qrOpen && (
             <div className="mt-3.5 text-center md:hidden">
-              <QrPanel value={data.sub_url} size={180} />
+              <QrPanel value={data.sub_url} size={220} />
               <p className="mt-2 text-[11px] text-muted">{t('scan_hint', lang)}</p>
             </div>
           )}

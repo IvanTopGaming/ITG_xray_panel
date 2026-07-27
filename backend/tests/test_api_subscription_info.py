@@ -152,6 +152,17 @@ def test_info_404s_on_a_blocked_user_without_leaking_a_body(app, client):
     assert b"vless-reality" not in response.data
 
 
+SUB_URL_DOC = (
+    "sub_url is what the page turns into a QR and into three one-tap deep links, so a link that "
+    "404s is no longer a string a human reads in a copy box -- it is an unscannable QR and three "
+    "buttons that import a dead subscription. On a PANEL_DOMAIN-only install the page is reachable "
+    "only under /<PANEL_SECRET_PATH>/api/..., and caddygen strips that prefix without sending "
+    "X-Forwarded-Prefix, so the request headers cannot reconstruct it. services/sub_links."
+    "build_aggregate_sub_url is the one place that knows the rule; _absolute_sub_url must delegate "
+    "to it rather than re-deriving the URL from the request."
+)
+
+
 def test_info_prefers_the_sub_domain_for_the_link(app, client, monkeypatch):
     monkeypatch.setenv("SUB_DOMAIN", "sub.example.ru")
     _seed(app, clients=[{"email": "tg777_vless"}])
@@ -159,6 +170,56 @@ def test_info_prefers_the_sub_domain_for_the_link(app, client, monkeypatch):
     body = client.get("/api/sub/u/tok777/info").get_json()
 
     assert body["sub_url"] == "https://sub.example.ru/api/sub/u/tok777"
+
+
+def test_info_link_keeps_the_sub_domain_clean_even_when_a_secret_path_is_set(app, client, monkeypatch):
+    monkeypatch.setenv("SUB_DOMAIN", "sub.example.ru")
+    monkeypatch.setenv("PANEL_DOMAIN", "panel.example.ru")
+    monkeypatch.setenv("PANEL_SECRET_PATH", "s3cr3t")
+    _seed(app, clients=[{"email": "tg777_vless"}])
+
+    body = client.get("/api/sub/u/tok777/info").get_json()
+
+    assert body["sub_url"] == "https://sub.example.ru/api/sub/u/tok777", SUB_URL_DOC
+
+
+def test_info_link_carries_the_secret_path_when_there_is_no_sub_domain(app, client, monkeypatch):
+    monkeypatch.setenv("SUB_DOMAIN", "")
+    monkeypatch.setenv("PANEL_DOMAIN", "panel.example.ru")
+    monkeypatch.setenv("PANEL_SECRET_PATH", "s3cr3t")
+    _seed(app, clients=[{"email": "tg777_vless"}])
+
+    body = client.get("/api/sub/u/tok777/info").get_json()
+
+    assert body["sub_url"] == "https://panel.example.ru/s3cr3t/api/sub/u/tok777", SUB_URL_DOC
+
+
+def test_info_link_uses_the_bare_panel_domain_when_no_secret_path_is_set(app, client, monkeypatch):
+    monkeypatch.setenv("SUB_DOMAIN", "")
+    monkeypatch.setenv("PANEL_DOMAIN", "panel.example.ru")
+    monkeypatch.setenv("PANEL_SECRET_PATH", "")
+    _seed(app, clients=[{"email": "tg777_vless"}])
+
+    body = client.get("/api/sub/u/tok777/info").get_json()
+
+    assert body["sub_url"] == "https://panel.example.ru/api/sub/u/tok777", SUB_URL_DOC
+
+
+def test_info_link_falls_back_to_the_request_when_no_domain_is_configured(app, client, monkeypatch):
+    monkeypatch.setenv("SUB_DOMAIN", "")
+    monkeypatch.setenv("PANEL_DOMAIN", "")
+    monkeypatch.setenv("PANEL_SECRET_PATH", "")
+    _seed(app, clients=[{"email": "tg777_vless"}])
+
+    body = client.get(
+        "/api/sub/u/tok777/info",
+        headers={"X-Forwarded-Host": "fallback.example.ru", "X-Forwarded-Proto": "https"},
+    ).get_json()
+
+    assert body["sub_url"] == "https://fallback.example.ru/api/sub/u/tok777", (
+        "build_aggregate_sub_url returns None when PANEL_DOMAIN is unset, and None must never reach "
+        f"the payload -- the request-derived form stays as the fallback for that case.\n\n{SUB_URL_DOC}"
+    )
 
 
 def test_info_picks_the_nearest_expiry_among_enabled_nodes(app, client):
