@@ -1,5 +1,5 @@
-import { Button } from '@/components/ui/Button';
-import { Modal } from '@/components/ui/Modal';
+import { Button } from '@ui/components/ui/Button';
+import { Modal } from '@ui/components/ui/Modal';
 import { AlertTriangle } from 'lucide-react';
 
 interface ConfirmationModalProps {

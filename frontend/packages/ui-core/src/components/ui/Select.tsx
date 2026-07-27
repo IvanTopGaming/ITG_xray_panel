@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, SelectHTMLAttributes } from 'react';
-import { cn } from '@/lib/utils';
+import { cn } from '@ui/lib/utils';
 import { ChevronDown, Check } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';

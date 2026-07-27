@@ -1,5 +1,5 @@
 import { forwardRef, ReactNode } from 'react';
-import { cn } from '@/lib/utils';
+import { cn } from '@ui/lib/utils';
 import { Loader2 } from 'lucide-react';
 import { motion, HTMLMotionProps } from 'framer-motion';
 

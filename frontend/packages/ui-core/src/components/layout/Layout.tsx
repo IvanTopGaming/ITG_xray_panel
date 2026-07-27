@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Menu } from 'lucide-react';
 import { Sidebar } from './Sidebar';
-import { useAuthStore, AuthState } from '@/stores/authStore';
+import { useAuthStore, AuthState } from '@ui/stores/authStore';
 import { AnimatedBackground } from './AnimatedBackground';
-import { DisplayConfigLoader } from '@/components/DisplayConfigLoader';
+import { DisplayConfigLoader } from '@ui/components/DisplayConfigLoader';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export function Layout() {

@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
-import { Inbound, LinkedPanel, RoutingProfile } from '@/lib/types';
-import api from '@/lib/api';
+import { Button } from '@ui/components/ui/Button';
+import { Input } from '@ui/components/ui/Input';
+import { Select } from '@ui/components/ui/Select';
+import { Inbound, LinkedPanel, RoutingProfile } from '@ui/lib/types';
+import api from '@ui/lib/api';
 import { toast } from 'react-toastify';
 import { Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
-import { hasLocalXray } from '@/lib/panelRole';
+import { hasLocalXray } from '@ui/lib/panelRole';
 import { useQuery } from '@tanstack/react-query';
 
 interface InboundFormProps {

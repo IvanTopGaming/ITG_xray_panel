@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import api from '@/lib/api';
-import { setDisplayTimezone } from '@/lib/datetime';
+import api from '@ui/lib/api';
+import { setDisplayTimezone } from '@ui/lib/datetime';
 
 export function DisplayConfigLoader() {
   const { data } = useQuery({

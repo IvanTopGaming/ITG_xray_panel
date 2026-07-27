@@ -1,7 +1,7 @@
 import { ReactNode, useEffect } from 'react';
 import { X } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { cn } from '@/lib/utils';
+import { cn } from '@ui/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface ModalProps {

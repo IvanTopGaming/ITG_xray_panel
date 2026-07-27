@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '@/lib/api';
+import api from '@ui/lib/api';
 import {
   Inbound,
   SystemStats,
@@ -9,17 +9,17 @@ import {
   Outbound,
   Balancer,
   LinkedPanel,
-} from '@/lib/types';
-import { formatBytes, cn } from '@/lib/utils';
-import { formatDate } from '@/lib/datetime';
-import { generateLink, generateSubscriptionUrl } from '@/lib/protocols';
-import { deviceIcon, timeAgo } from '@/lib/devices';
-import { Button } from '@/components/ui/Button';
-import { Modal } from '@/components/ui/Modal';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
-import { Input } from '@/components/ui/Input';
-import { InboundForm } from '@/components/inbound/InboundForm';
-import { UserForm } from '@/components/inbound/UserForm';
+} from '@ui/lib/types';
+import { formatBytes, cn } from '@ui/lib/utils';
+import { formatDate } from '@ui/lib/datetime';
+import { generateLink, generateSubscriptionUrl } from '@ui/lib/protocols';
+import { deviceIcon, timeAgo } from '@ui/lib/devices';
+import { Button } from '@ui/components/ui/Button';
+import { Modal } from '@ui/components/ui/Modal';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
+import { Input } from '@ui/components/ui/Input';
+import { InboundForm } from '@ui/components/inbound/InboundForm';
+import { UserForm } from '@ui/components/inbound/UserForm';
 import {
   Plus,
   ArrowUp,
@@ -52,8 +52,8 @@ import {
 import { toast } from 'react-toastify';
 import { QRCodeCanvas } from 'qrcode.react';
 import { motion, AnimatePresence, animate, useMotionValue } from 'framer-motion';
-import { Select } from '@/components/ui/Select';
-import { hasLocalXray } from '@/lib/panelRole';
+import { Select } from '@ui/components/ui/Select';
+import { hasLocalXray } from '@ui/lib/panelRole';
 
 const KEY_SEP = '\0';
 

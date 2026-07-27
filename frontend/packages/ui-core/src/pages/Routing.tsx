@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '@/lib/api';
+import api from '@ui/lib/api';
 import {
   RoutingProfile,
   RoutingRule,
@@ -8,13 +8,13 @@ import {
   Balancer,
   OutboundHealth,
   Inbound,
-} from '@/lib/types';
-import { Button } from '@/components/ui/Button';
-import { Modal } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
-import { TagInput } from '@/components/ui/TagInput';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
+} from '@ui/lib/types';
+import { Button } from '@ui/components/ui/Button';
+import { Modal } from '@ui/components/ui/Modal';
+import { Input } from '@ui/components/ui/Input';
+import { Select } from '@ui/components/ui/Select';
+import { TagInput } from '@ui/components/ui/TagInput';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
 import {
   Plus,
   Trash2,
@@ -32,7 +32,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
-import { validateRuleFieldPrefixes } from '@/lib/routing-validation';
+import { validateRuleFieldPrefixes } from '@ui/lib/routing-validation';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const csvToList = (value?: string): string[] =>

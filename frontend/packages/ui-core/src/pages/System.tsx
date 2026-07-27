@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import api from '@/lib/api';
-import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
+import api from '@ui/lib/api';
+import { Button } from '@ui/components/ui/Button';
+import { Input } from '@ui/components/ui/Input';
+import { Select } from '@ui/components/ui/Select';
 import {
   Terminal,
   Download,
@@ -24,13 +24,13 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ConfirmationModal } from '@/components/ui/ConfirmationModal';
-import { formatDateForPicker, formatTime } from '@/lib/datetime';
-import { Modal } from '@/components/ui/Modal';
-import { useLogStore } from '@/stores/logStore';
-import { useAuthStore } from '@/stores/authStore';
-import { useVersionStatus } from '@/hooks/useVersionStatus';
-import { hasLocalXray } from '@/lib/panelRole';
+import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
+import { formatDateForPicker, formatTime } from '@ui/lib/datetime';
+import { Modal } from '@ui/components/ui/Modal';
+import { useLogStore } from '@ui/stores/logStore';
+import { useAuthStore } from '@ui/stores/authStore';
+import { useVersionStatus } from '@ui/hooks/useVersionStatus';
+import { hasLocalXray } from '@ui/lib/panelRole';
 
 const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_RESTORE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];

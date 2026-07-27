@@ -2,7 +2,7 @@ import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn } from '@ui/lib/utils';
 
 interface TagInputProps {
   label?: string;

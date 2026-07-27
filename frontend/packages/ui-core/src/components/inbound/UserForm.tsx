@@ -1,13 +1,13 @@
 import { useForm, useWatch } from 'react-hook-form';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
-import { Switch } from '@/components/ui/Switch';
-import { Inbound, Client } from '@/lib/types';
-import { supportsVlessFlow } from '@/lib/protocols';
-import api from '@/lib/api';
-import { epochMsFromLocalDateTimeInput, formatDateTimeForLocalInput } from '@/lib/datetime';
+import { Button } from '@ui/components/ui/Button';
+import { Input } from '@ui/components/ui/Input';
+import { Select } from '@ui/components/ui/Select';
+import { Switch } from '@ui/components/ui/Switch';
+import { Inbound, Client } from '@ui/lib/types';
+import { supportsVlessFlow } from '@ui/lib/protocols';
+import api from '@ui/lib/api';
+import { epochMsFromLocalDateTimeInput, formatDateTimeForLocalInput } from '@ui/lib/datetime';
 import { toast } from 'react-toastify';
 import { RefreshCw } from 'lucide-react';
 

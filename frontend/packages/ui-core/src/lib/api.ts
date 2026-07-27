@@ -1,6 +1,6 @@
 import axios from 'axios';
-import { useAuthStore } from '@/stores/authStore';
-import { panelBase } from '@/lib/panelBase';
+import { useAuthStore } from '@ui/stores/authStore';
+import { panelBase } from '@ui/lib/panelBase';
 
 const normalizedBase = panelBase.endsWith('/') ? panelBase : `${panelBase}/`;
 

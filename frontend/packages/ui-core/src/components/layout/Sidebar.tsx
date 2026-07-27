@@ -9,11 +9,11 @@ import {
   Server,
   Bot as BotIcon,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { useAuthStore, AuthState } from '@/stores/authStore';
+import { cn } from '@ui/lib/utils';
+import { useAuthStore, AuthState } from '@ui/stores/authStore';
 import { motion } from 'framer-motion';
-import { useVersionStatus } from '@/hooks/useVersionStatus';
-import { hasLocalXray, isWorker } from '@/lib/panelRole';
+import { useVersionStatus } from '@ui/hooks/useVersionStatus';
+import { hasLocalXray, isWorker } from '@ui/lib/panelRole';
 
 export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const location = useLocation();

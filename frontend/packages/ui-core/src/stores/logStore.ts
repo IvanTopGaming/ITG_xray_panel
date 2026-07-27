@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { useAuthStore } from './authStore';
-import { panelBase } from '@/lib/panelBase';
+import { panelBase } from '@ui/lib/panelBase';
 
 const MAX_LOG_LINES = 2000;
 const normalizedBase = panelBase.endsWith('/') ? panelBase : `${panelBase}/`;

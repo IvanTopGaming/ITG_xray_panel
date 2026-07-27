@@ -1,32 +1,7 @@
-import { defineConfig, Plugin } from 'vite';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import { readFileSync, existsSync } from 'fs';
-
-const adminSrc = path.resolve(__dirname, './src');
-const uiCoreSrc = path.resolve(__dirname, '../ui-core/src');
-const resolveExtensions = ['', '.tsx', '.ts', '.jsx', '.js', '.css'];
-
-function resolveSharedRoot(rel: string): string | null {
-  for (const root of [adminSrc, uiCoreSrc]) {
-    for (const ext of resolveExtensions) {
-      const candidate = path.join(root, rel + ext);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-function sharedAliasFallback(): Plugin {
-  return {
-    name: 'admin-shared-alias-fallback',
-    enforce: 'pre',
-    resolveId(source) {
-      if (!source.startsWith('@/')) return null;
-      return resolveSharedRoot(source.slice(2)) ?? null;
-    },
-  };
-}
 
 const versionsCandidates = [
   path.resolve(__dirname, '../../../versions.json'),
@@ -48,7 +23,7 @@ const versions = versionsPath
     };
 
 export default defineConfig({
-  plugins: [sharedAliasFallback(), react()],
+  plugins: [react()],
   base: './',
   define: {
     __APP_VERSIONS__: JSON.stringify(versions),
@@ -69,7 +44,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@ui': uiCoreSrc,
+      '@': path.resolve(__dirname, './src'),
+      '@ui': path.resolve(__dirname, '../ui-core/src'),
     },
   },
   server: {

@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
-import api from '@/lib/api';
-import { useAuthStore, AuthState } from '@/stores/authStore';
-import { Input } from '@/components/ui/Input';
-import { Button } from '@/components/ui/Button';
+import api from '@ui/lib/api';
+import { useAuthStore, AuthState } from '@ui/stores/authStore';
+import { Input } from '@ui/components/ui/Input';
+import { Button } from '@ui/components/ui/Button';
 import { Radar, Lock } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion } from 'framer-motion';

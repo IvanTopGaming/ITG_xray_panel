@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { getVersionInfo, isNewer } from '@/lib/version';
-import { panelRole } from '@/lib/panelRole';
+import { getVersionInfo, isNewer } from '@ui/lib/version';
+import { panelRole } from '@ui/lib/panelRole';
 
 export interface ServiceStatus {
   key: string;
