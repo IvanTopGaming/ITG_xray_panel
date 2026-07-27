@@ -22,13 +22,28 @@ const versions = versionsPath
       xray_core_ref: 'dev',
     };
 
+const expectedPanelRole = 'master';
+
+function devPanelRoleInjection() {
+  return {
+    name: 'dev-panel-role-injection',
+    apply: 'serve' as const,
+    transformIndexHtml(html: string) {
+      return html.replace(
+        "window.__PANEL_ROLE__ = '__PANEL_ROLE__'",
+        `window.__PANEL_ROLE__ = '${expectedPanelRole}'`
+      );
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), devPanelRoleInjection()],
   base: './',
   define: {
     __APP_VERSIONS__: JSON.stringify(versions),
     __FRONTEND_VERSION_KEY__: JSON.stringify('frontend_admin'),
-    __EXPECTED_PANEL_ROLE__: JSON.stringify('master'),
+    __EXPECTED_PANEL_ROLE__: JSON.stringify(expectedPanelRole),
   },
   build: {
     rollupOptions: {

@@ -1,3 +1,9 @@
+declare global {
+  interface Window {
+    __PANEL_ROLE__?: string;
+  }
+}
+
 export function assertPanelRole(expected: string): void {
   const injected = String(window.__PANEL_ROLE__ || '')
     .trim()
