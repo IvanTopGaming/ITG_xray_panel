@@ -16,7 +16,6 @@ docker compose up                              # Start all services (dev)
 docker compose -f docker-compose.prod.yml up   # Production
 
 # Rebuild and restart a single service after code changes:
-docker compose build frontend && docker compose up -d frontend
 docker compose build bot      && docker compose up -d bot
 docker compose build caddy    && docker compose up -d caddy
 ```
@@ -36,6 +35,10 @@ docker buildx build --build-context project=. --build-arg XRAY_CORE_REF=$(python
   --tag panel-worker:local --load ./backend -f backend/Dockerfile.worker
 ```
 
+`docker compose build frontend` is likewise gone — `frontend/Dockerfile` now requires a `UI_PACKAGE`
+build-arg with no default. See Frontend (React/Vite) below for the two `docker buildx build` invocations
+that replace it.
+
 ### Backend (Python/Flask)
 ```bash
 cd backend
@@ -53,16 +56,29 @@ uv run pytest tests/                  # 850+ unit + integration tests
 `backend/tests/conftest.py` stubs gRPC modules in `sys.modules` before importing the app so tests run on a dev checkout without needing the protobuf bundle that ships only inside the Docker image. That stub is global, so it would make any in-process check that `master`/`sub`/`botapi` import without `grpcio`/`protobuf`/`docker`/`filelock` pass vacuously — `tests/test_light_role_import_isolation.py` asserts exactly that in a **separate subprocess** instead, where the stub was never installed.
 
 ### Frontend (React/Vite)
+`frontend/` is an npm workspace of three packages (`packages/ui-core`, `packages/admin`, `packages/node`) — see Frontend (`frontend/packages/`) below. The root scripts drive both apps at once; `:admin`/`:node` variants target one:
 ```bash
 cd frontend
 npm install
-npm run dev           # Dev server on :4200 (proxies /api → :5000)
-npm run build         # Production build + tsc typecheck
-npm run preview       # Preview production build
-npm run lint          # ESLint
-npm run format:check  # Prettier check (CI mode)
-npm run format        # Prettier auto-fix
+npm run dev            # = dev:admin — admin dev server on :4200 (proxies /api → :5000)
+npm run dev:admin      # admin dev server on :4200
+npm run dev:node       # node dev server on :4200
+npm run build          # tsc typecheck + vite build, both apps
+npm run build:admin    # admin only → packages/admin/dist
+npm run build:node     # node only → packages/node/dist
+npm run typecheck      # tsc --noEmit across all three packages
+npm run lint           # ESLint
+npm run format:check   # Prettier check (CI mode)
+npm run format         # Prettier auto-fix
 ```
+There is no root `tsconfig.json` project to typecheck directly — `npx tsc --noEmit` from `frontend/` exits 2 with `TS18002` (the root config is deliberately inert; it exists only so editors resolve paths). Always use `npm run typecheck`.
+
+Each app builds into its own Docker image via the shared `frontend/Dockerfile`'s required `ARG UI_PACKAGE` (no default — an empty value fails the build):
+```bash
+docker buildx build --build-arg UI_PACKAGE=admin --build-context project=. --tag panel-frontend-admin:local --load ./frontend
+docker buildx build --build-arg UI_PACKAGE=node  --build-context project=. --tag panel-frontend-node:local  --load ./frontend
+```
+`--build-context project=.` (repo root) is required — the Dockerfile reads `versions.json` from it to bake `__APP_VERSIONS__`. A bare `docker buildx build ./frontend` with no `UI_PACKAGE` fails fast on `test -n "$UI_PACKAGE"`.
 
 ### Telegram Bot
 ```bash
@@ -97,7 +113,8 @@ bash scripts/generate_local_cert.sh   # self-signed cert for local domains
 | `backend` (`worker`/node) | Same Flask app plus the local Xray driver — runs the `panel-worker` image, the only one of the four per-role images carrying the Xray binary and the generated protobuf stubs |
 | `backend` (`sub`) | Subscription links only — runs the `panel-sub` image |
 | `backend` (`bot-api`) | `/bot-service/*` and the whole billing surface — runs the `panel-bot-api` image |
-| `frontend` | React app served by Nginx |
+| `frontend` (`docker-compose.master.yml`) | The admin SPA (full UI, incl. Bot/Panels/Statistics) served by Nginx — runs the `panel-frontend-admin` image |
+| `frontend` (`docker-compose.node.yml`) | The node SPA (Dashboard/Routing/System only, no page of its own) served by Nginx — runs the `panel-frontend-node` image |
 | `caddy` | Reverse proxy — caddygen-built native JSON, SNI routing on `:443` (caddy-l4), `:80→:443` redirect, TLS from mounted certs, decoy masquerade |
 | `redis` | Rate limiting + sub-cache + bot pubsub channel |
 | `socket-proxy` | Restricts Docker socket access to specific API ops |
@@ -167,15 +184,15 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
   - `notifications.py` — `cleanup_bot_events`, `replay_undelivered_bot_events` (also registered on the worker role, not just master). There is no `send_expiry_notifications`/`send_traffic_notifications` cron — expiry and traffic warnings are emitted inline from `stats.py`'s `check_limits_and_reset` and `sync_traffic_stats` via `services/notifications.emit_if_new`
   - `panels.py` — `poll_linked_panels` (10s linked-panel health poll)
 
-### Frontend (`frontend/src/`)
-- `pages/` — `Dashboard` (inbound/outbound management), `Statistics` (traffic analytics), `Routing`, `Panels` (federation management), `Bot` (billing UI), `System` (settings + logs + backup + about), `Login`
-- `components/bot/` — `TariffsTab`, `TariffDrawer`, `TariffsTable`, `TariffRowMenu`, `UsersTab`, `UserDrawer`, `GrantsTab`, `PaymentsTab`, `PaymentStatusBadge`, `TextsTab`, `SettingsTab`, `TrialCard`
-- `components/inbound/` — `InboundForm`, `UserForm`
-- `components/ui/` — shared primitives (`Select`, `Modal`, `ConfirmationModal`, `Button`, `Input`, `TagInput`, etc.)
-- `lib/api.ts` — axios client with auth interceptor (auto-logout on 401)
-- `lib/types.ts` — TS interfaces for every API entity
-- `lib/protocols.ts` — protocol + stream-settings definitions
-- `stores/` — Zustand stores for auth + log state
+### Frontend (`frontend/packages/`)
+
+`frontend` is an npm workspace (`frontend/package.json`: `workspaces: ["packages/*"]`) of three packages, each with its own `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `tailwind.config.js` and `postcss.config.js` — there is no root-level `index.html`/`vite.config.ts`/`tailwind.config.js`/`postcss.config.js` any more; only `entrypoint.sh` and `nginx.conf.template` stay shared at `frontend/`. `@panel/admin` and `@panel/node` both depend on `@panel/ui-core`; `vite.config.ts` aliases `@ui` → `packages/ui-core/src` and `@` → the app's own `src` (so a bare `@/pages/Panels` inside `admin` can never resolve inside `ui-core`, and vice versa).
+
+- `packages/ui-core/src/` — everything shared by both apps (32 files): `pages/` (`Dashboard`, `Routing`, `System`, `Login` — the four pages every role has), `components/inbound/` (`InboundForm`, `UserForm`), `components/ui/` (`Select`, `Modal`, `ConfirmationModal`, `Button`, `Input`, `Switch`, `TagInput`), `components/layout/` (`Layout`, `Sidebar`, `AnimatedBackground`), `components/DisplayConfigLoader.tsx`, `hooks/` (`useLinkedPanels`, `useVersionStatus`), `lib/` (`api.ts` — axios client with auth interceptor; `types.ts` — TS interfaces for every API entity; `protocols.ts` — protocol + stream-settings definitions; `panelRole.ts`/`assertPanelRole.ts` — role gating, see the deploy note below; `panelBase.ts`, `datetime.ts`, `devices.ts`, `routing-validation.ts`, `utils.ts`, `version.ts`), `stores/` (Zustand stores for auth + log state), `index.css`.
+- `packages/admin/src/` — admin-only surface (18 files): `App.tsx`, `main.tsx` (the entry points), and the master-only pages/components `pages/Statistics.tsx`, `pages/Panels.tsx` (federation management), `pages/Bot.tsx` (billing UI) plus `components/bot/` (`TariffsTab`, `TariffDrawer`, `TariffsTable`, `TariffRowMenu`, `UsersTab`, `UserDrawer`, `GrantsTab`, `PaymentsTab`, `PaymentStatusBadge`, `TextsTab`, `SettingsTab`, `TrialCard`) and `lib/bot.ts`.
+- `packages/node/src/` — **has no page of its own**: just `App.tsx`, `main.tsx`, `vite-env.d.ts` (3 files). `App.tsx` wires up only the shared `Dashboard`/`Routing`/`System`/`Login` pages from `ui-core` (`Routing` further gated by `hasLocalXray`, which is always true for this image) — every route with its own page component lives in `ui-core` or `admin`, never in `node`.
+
+Each app bakes its role at build time (`vite.config.ts`'s `define: { __EXPECTED_PANEL_ROLE__ }`) and asserts it at runtime against the server-injected `window.__PANEL_ROLE__` — see the deploy note below.
 
 ### Caddy (`caddy/`)
 - `routes.yaml` — declarative per-SNI routes (the only hand-edited Caddy config). Fields: `match` (SNI host, `${ENV}` interpolated), `upstream` (`host:port`), `tls` (terminate vs raw passthrough), `only_paths` (path-prefix allowlist → 404, implies `tls`). A route whose `match` is empty after interpolation is **dropped** (so an empty `SUB_DOMAIN` drops the subscription route).
@@ -303,13 +320,13 @@ XTLS Vision (`xtls-rprx-vision`) is only valid on raw-TCP with TLS or REALITY �
 Inbound stream settings are stored as a single JSON blob in `Inbound.stream_settings`. This blob carries extra UI-only keys beyond what Xray understands (`ssMethod`, `ssPassword`, `ssNetwork`, `authUser`, `authPass`, `wgSecretKey`, `wgPublicKey`, `wgMTU`). `generate_config_file()` strips these keys before writing the Xray config. When adding a new protocol, follow this pattern: store all metadata in the blob, strip extra keys in the stripping list at the bottom of `generate_config_file()`.
 
 ### Protocol/stream types
-Protocol details live in `frontend/lib/protocols.ts` (UI-facing) and are serialized to JSON in backend models. Client IDs must be valid UUIDs for VLESS/VMess/Trojan, valid WireGuard private keys for WireGuard. Shadowsocks 2022 server/user passwords must be base64-encoded keys of the correct byte length (16 bytes for AES-128, 32 bytes for AES-256 and ChaCha20).
+Protocol details live in `frontend/packages/ui-core/src/lib/protocols.ts` (UI-facing) and are serialized to JSON in backend models. Client IDs must be valid UUIDs for VLESS/VMess/Trojan, valid WireGuard private keys for WireGuard. Shadowsocks 2022 server/user passwords must be base64-encoded keys of the correct byte length (16 bytes for AES-128, 32 bytes for AES-256 and ChaCha20).
 
 ### Subscription links
 `api/subscription.py` serves `GET /api/sub/<uuid_str>` — UUID-keyed, so renaming `Client.email` does NOT break a user's existing app config. The response can merge entries from linked panels visible to the user. Cached in Redis with a configurable TTL (`subscription_update_interval_hours` SystemSetting). `build_aggregate_sub_url(token)` builds the link the bot/dashboard show: it **prefers `SUB_DOMAIN`** (`https://<SUB_DOMAIN>/api/sub/u/<token>`) and falls back to `PANEL_DOMAIN` + `PANEL_SECRET_PATH` when `SUB_DOMAIN` is empty. The env var must be present on the **backend** container for this to take effect.
 
 ### Custom Select component
-`components/ui/Select.tsx` renders a portal-based dropdown instead of a native `<select>`. It synthesizes a `React.ChangeEvent<HTMLSelectElement>` in its `onChange`. When used with react-hook-form, always spread `{...register('fieldName')}` so the `name` prop is passed — react-hook-form looks up the field by `event.target.name` and silently ignores the change if `name` is missing or empty.
+`frontend/packages/ui-core/src/components/ui/Select.tsx` renders a portal-based dropdown instead of a native `<select>`. It synthesizes a `React.ChangeEvent<HTMLSelectElement>` in its `onChange`. When used with react-hook-form, always spread `{...register('fieldName')}` so the `name` prop is passed — react-hook-form looks up the field by `event.target.name` and silently ignores the change if `name` is missing or empty.
 
 ### Default outbounds
 On startup, `direct` (freedom) and `block` (blackhole) outbounds are auto-created if missing. These are always re-enabled if disabled — do not delete them.
@@ -355,7 +372,7 @@ All checks must pass before code reaches `main`. Run locally before pushing:
 | Check | Command |
 |---|---|
 | Python lint + format | `uvx ruff check backend/ tg_bot/` · `uvx ruff format --check backend/ tg_bot/` |
-| TypeScript typecheck | `cd frontend && npx tsc --noEmit` |
+| TypeScript typecheck | `cd frontend && npm run typecheck` |
 | ESLint | `cd frontend && npm run lint` |
 | Prettier | `cd frontend && npm run format:check` |
 | Frontend build | `cd frontend && npm run build` |
@@ -454,6 +471,16 @@ This wave retires the single `panel-backend` image in favour of one image per ro
 
 4. **The schema-bump lockstep rule still applies.** Per-role versions do not change the existing requirement to deploy master and all linked panels in the same wave when `CURRENT_DB_VERSION` changes.
 
+### Deploy note — one `frontend` image becomes two (Phase 3e)
+
+This wave splits the single frontend image into an admin SPA and a node SPA. Read all three points before rolling it out.
+
+1. **`FRONTEND_IMAGE` is gone.** Both split stacks now refuse to start until `.env` gains `FRONTEND_ADMIN_IMAGE` (`docker-compose.master.yml`) / `FRONTEND_NODE_IMAGE` (`docker-compose.node.yml`) — same fail-loud pattern as `MASTER_IMAGE`/`WORKER_IMAGE`/etc. Each host only reads its own variable, but `.env` is usually shared across hosts, so set both everywhere.
+
+2. **`ghcr.io/ivantopgaming/panel-frontend` is retired.** Nothing builds or pushes it any more; existing tags stay pullable but stop receiving updates. `versions.json` no longer has `frontend`; it has `frontend_admin` / `frontend_node` instead, each bumped and rebuilt independently.
+
+3. **Deploying the wrong image on a host is now loud, not silent.** Before the split, one image served both roles and the UI gated master-only pages/API calls at runtime off the injected `PANEL_ROLE` — a misconfigured role just hid or showed the wrong tabs. Now each image is built for one role (`vite.config.ts`'s `__EXPECTED_PANEL_ROLE__`) and `main.tsx` calls `assertPanelRole()` before rendering anything: if the server-injected `window.__PANEL_ROLE__` doesn't match what the bundle was built for, the whole page is replaced with a red error box naming both the expected and actual role, and no further JS runs. Concretely, this means `FRONTEND_ADMIN_IMAGE` pointed at a `worker` host (or vice versa) now fails visibly on first paint instead of quietly serving a UI that calls endpoints the running role doesn't register.
+
 ## Configuration
 
 Copy `.env.example` to `.env`. Key variables:
@@ -464,7 +491,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `RATELIMIT_STORAGE_URI` — Redis URI for rate limiting.
 - `BOT_EVENTS_REDIS_URI` — event-bus Redis URI for the `bot:events` channel (`redis://` or `rediss://`). Defaults to `RATELIMIT_STORAGE_URI`. **Required on the master and on every node** — both stacks run their own local `redis` container for rate limiting and the sub-cache, so the default would publish into a Redis with no subscriber, and the event would be marked delivered and lost for good. Point it at the shared data-tier Redis (`docker-compose.postgres.yml`): `redis://node:<REDIS_NODE_PASSWORD>@<data-vm>:6379/0` on a node (publish-only credential), `redis://panel:<REDIS_PANEL_PASSWORD>@<data-vm>:6379/0` on the master. `sub` and `bot` have no local Redis and can rely on the default. That Redis ACLs two users: `node` (`-@all +publish +select &bot:events`) and `panel` (`~* &* +@all -@dangerous` — data + pubsub + scripting, but no `FLUSHALL`/`CONFIG`/`KEYS`/`SHUTDOWN`/`DEBUG`/`INFO`). The bus crosses hosts and carries the ACL password plus `telegram_id`/`email` in cleartext — run it over a private network between hosts or over `rediss://`.
 - `BACKEND_LOG_LEVEL` *(default INFO)* — backend log verbosity. Every API request (`app.requests`), scheduler job run with duration (`app.jobs`), and federation HTTP call is logged at INFO/DEBUG; `DEBUG` additionally echoes every SQL statement (`sqlalchemy.engine` + per-statement timings in `app.sql`). Slow thresholds: `BACKEND_SLOW_SQL_MS` (default 200) and `BACKEND_SLOW_REQUEST_MS` (default 1000) promote slow statements/requests to WARNING. The backend container has json-file log rotation (50 MB × 5).
-- `*_IMAGE` — per-service image pins (mirrors `versions.json`). The backend is now four images, each pinned by its own variable: `MASTER_IMAGE` (`docker-compose.master.yml`), `WORKER_IMAGE` (`docker-compose.node.yml`), `SUB_IMAGE` (`docker-compose.sub.yml`), `BOT_API_IMAGE` (`docker-compose.bot.yml`) — `BACKEND_IMAGE` no longer exists outside the frozen legacy monolithic compose files. See the deploy note below.
+- `*_IMAGE` — per-service image pins (mirrors `versions.json`). The backend is now four images, each pinned by its own variable: `MASTER_IMAGE` (`docker-compose.master.yml`), `WORKER_IMAGE` (`docker-compose.node.yml`), `SUB_IMAGE` (`docker-compose.sub.yml`), `BOT_API_IMAGE` (`docker-compose.bot.yml`) — `BACKEND_IMAGE` no longer exists outside the frozen legacy monolithic compose files. The frontend is likewise two images: `FRONTEND_ADMIN_IMAGE` (`docker-compose.master.yml`) serves the admin SPA, `FRONTEND_NODE_IMAGE` (`docker-compose.node.yml`) serves the node SPA — `FRONTEND_IMAGE` no longer exists outside the frozen legacy monolithic compose files. See the deploy notes below.
 
 Bot configuration is **not** in `.env`. It lives in `SystemSetting` rows managed via **Bot → Settings** in the panel UI: `bot_token`, `admin_telegram_ids`, `bot_service_token`, YooKassa `shop_id` / `secret_key`, `display_timezone`. The bot container only needs two env vars: `BACKEND_API_URL` and `BOT_SERVICE_TOKEN`. Changes take effect within ~60s without restarting the bot.
 

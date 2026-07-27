@@ -314,11 +314,11 @@ uv run python run.py           # dev server :5000
 uvx ruff check backend/ tg_bot/    # lint     (CI uses ruff format --check)
 uv run pytest tests/               # 970+ unit + API tests
 
-# Frontend
+# Frontend — npm workspace of ui-core / admin / node (frontend/packages/)
 cd frontend && npm install
-npm run dev                    # dev server :4200, proxies /api → :5000
-npm run build                  # tsc + vite build
-npm run lint && npm run format:check
+npm run dev                    # = dev:admin, dev server :4200, proxies /api → :5000
+npm run build                  # typecheck + vite build, both apps
+npm run typecheck && npm run lint && npm run format:check
 
 # Bot
 cd tg_bot && uv sync
@@ -340,12 +340,22 @@ docker buildx build --build-context project=. --build-arg XRAY_CORE_REF=$(python
   --tag panel-worker:local --load ./backend -f backend/Dockerfile.worker
 ```
 
+The frontend is likewise split, into an admin SPA and a node SPA — `docker compose build frontend`
+no longer works either (`frontend/Dockerfile` requires a `UI_PACKAGE` build-arg with no default):
+
+```bash
+docker buildx build --build-arg UI_PACKAGE=admin --build-context project=. \
+  --tag panel-frontend-admin:local --load ./frontend
+docker buildx build --build-arg UI_PACKAGE=node --build-context project=. \
+  --tag panel-frontend-node:local --load ./frontend
+```
+
 `backend/tests/conftest.py` stubs the gRPC modules, so the suite runs on a plain checkout without the Xray protobuf bundle that ships only inside the Docker image.
 
 <details>
 <summary><b>CI checks &amp; release pipeline</b></summary>
 
-Every push runs: `ruff check` + `ruff format --check` (backend & bot), `tsc --noEmit`, ESLint, Prettier, the frontend build, the backend test suite, and hadolint. All must pass before code reaches `main`.
+Every push runs: `ruff check` + `ruff format --check` (backend & bot), `npm run typecheck`, ESLint, Prettier, the frontend build, the backend test suite, and hadolint. All must pass before code reaches `main`.
 
 Releases are driven entirely by **`versions.json` on `main`**: bump the services you want to ship, mirror the pins in `.env.example`, and merge. CI diffs `versions.json` against the previous commit and builds **only the services whose version changed**. See `CLAUDE.md` for the full workflow, including the federation deploy-ordering rule (deploy the master and every linked panel in the same wave whenever the DB schema version changes).
 
