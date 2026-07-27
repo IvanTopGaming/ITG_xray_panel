@@ -117,7 +117,7 @@ services:
       - dockersock-net
 
   frontend:
-    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}
+    image: ${FRONTEND_NODE_IMAGE:?FRONTEND_NODE_IMAGE is required}
     container_name: panel-frontend
     restart: always
     healthcheck:

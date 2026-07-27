@@ -55,11 +55,14 @@ export function useVersionStatus() {
   }
 
   services.push({
-    key: 'frontend',
-    label: 'frontend',
-    current: __APP_VERSIONS__.frontend,
-    latest: latest?.frontend ?? null,
-    updateAvailable: isNewer(latest?.frontend, __APP_VERSIONS__.frontend),
+    key: __FRONTEND_VERSION_KEY__,
+    label: __FRONTEND_VERSION_KEY__,
+    current: __APP_VERSIONS__[__FRONTEND_VERSION_KEY__],
+    latest: latest?.[__FRONTEND_VERSION_KEY__] ?? null,
+    updateAvailable: isNewer(
+      latest?.[__FRONTEND_VERSION_KEY__],
+      __APP_VERSIONS__[__FRONTEND_VERSION_KEY__]
+    ),
   });
 
   if (data?.running.bot) {

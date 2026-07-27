@@ -63,7 +63,7 @@ services:
       - redis-net
 
   frontend:
-    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}
+    image: ${FRONTEND_ADMIN_IMAGE:?FRONTEND_ADMIN_IMAGE is required}
     container_name: panel-frontend
     restart: always
     healthcheck:

@@ -568,7 +568,7 @@ export default function System() {
                       ITG Xray Panel
                     </div>
                     <div className="mt-1 text-xs font-mono text-gray-500">
-                      v{__APP_VERSIONS__.frontend}
+                      v{__APP_VERSIONS__[__FRONTEND_VERSION_KEY__]}
                     </div>
                   </div>
 

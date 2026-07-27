@@ -41,6 +41,21 @@ IMAGE_TARGETS = {
     },
 }
 
+FRONTEND_IMAGE_TARGETS = {
+    "frontend_admin": {
+        "ui_package": "admin",
+        "image": "ghcr.io/ivantopgaming/panel-frontend-admin",
+        "compose": "docker-compose.master.yml",
+        "env_var": "FRONTEND_ADMIN_IMAGE",
+    },
+    "frontend_node": {
+        "ui_package": "node",
+        "image": "ghcr.io/ivantopgaming/panel-frontend-node",
+        "compose": "docker-compose.node.yml",
+        "env_var": "FRONTEND_NODE_IMAGE",
+    },
+}
+
 WORKFLOWS = {
     "release.yml": ".github/workflows/release.yml",
     "dev-build.yml": ".github/workflows/dev-build.yml",
@@ -51,7 +66,8 @@ VERSION_PINNED_ENV_VARS = {
     "worker": "WORKER_IMAGE",
     "sub": "SUB_IMAGE",
     "bot_api": "BOT_API_IMAGE",
-    "frontend": "FRONTEND_IMAGE",
+    "frontend_admin": "FRONTEND_ADMIN_IMAGE",
+    "frontend_node": "FRONTEND_NODE_IMAGE",
     "caddy": "CADDY_IMAGE",
     "bot": "BOT_IMAGE",
     "xray_egress": "XRAY_EGRESS_IMAGE",
@@ -236,6 +252,104 @@ def test_the_case_statement_fails_loudly_on_an_unrecognized_service(workflow_nam
         f"{workflow}'s '*)' fallback branch does not exit non-zero. Without it, a ninth service silently "
         f"reuses the previous loop iteration's IMAGE/CONTEXT/BUILD_ARGS and gets built and published under "
         f"the wrong role's image name.\n\n{DRIFT_DOC}"
+    )
+
+
+def test_versions_json_names_both_frontend_images():
+    data = json.loads(_read("versions.json"))
+    for key in FRONTEND_IMAGE_TARGETS:
+        assert key in data, f"versions.json has no '{key}' version\n\n{DRIFT_DOC}"
+    assert "frontend" not in data, f"versions.json still has the legacy 'frontend' key\n\n{DRIFT_DOC}"
+
+
+@pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
+def test_each_compose_stack_names_its_own_frontend_image_variable(target_key):
+    target = FRONTEND_IMAGE_TARGETS[target_key]
+    text = _read(target["compose"])
+    assert f"${{{target['env_var']}:?" in text, (
+        f"{target['compose']} does not read ${{{target['env_var']}:?...}}. The :? form is deliberate — a "
+        f"stack that starts on the wrong image is worse than one that refuses to start.\n\n{DRIFT_DOC}"
+    )
+    assert "FRONTEND_IMAGE" not in text, (
+        f"{target['compose']} still reads the retired single FRONTEND_IMAGE variable.\n\n{DRIFT_DOC}"
+    )
+
+
+@pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
+def test_env_example_pins_every_frontend_image(target_key):
+    target = FRONTEND_IMAGE_TARGETS[target_key]
+    text = _read(".env.example")
+    assert re.search(rf"^{target['env_var']}={re.escape(target['image'])}:v", text, re.M), (
+        f".env.example has no {target['env_var']}={target['image']}:v… pin\n\n{DRIFT_DOC}"
+    )
+    assert not re.search(r"^FRONTEND_IMAGE=", text, re.M), (
+        f".env.example still pins the retired single FRONTEND_IMAGE\n\n{DRIFT_DOC}"
+    )
+
+
+@pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
+def test_the_release_workflow_builds_every_frontend_image(target_key):
+    target = FRONTEND_IMAGE_TARGETS[target_key]
+    text = _read(".github/workflows/release.yml")
+    assert f'"{target_key}"' in text, (
+        f"release.yml's 'services' detection tuple never names '{target_key}' — a service missing from "
+        f"that tuple never gets noticed as bumped, so a released version of it is never built.\n\n{DRIFT_DOC}"
+    )
+    assert target["image"] in text, f"release.yml never builds {target['image']}\n\n{DRIFT_DOC}"
+    assert not re.search(r'"frontend"', text), (
+        f"release.yml still names the retired single 'frontend' service\n\n{DRIFT_DOC}"
+    )
+
+
+@pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
+def test_the_dev_build_workflow_builds_every_frontend_image(target_key):
+    target = FRONTEND_IMAGE_TARGETS[target_key]
+    text = _read(".github/workflows/dev-build.yml")
+    assert re.search(rf"for SERVICE in[^\n]*\b{re.escape(target_key)}\b", text), (
+        f"dev-build.yml's build loop never names the '{target_key}' service — a service missing from that "
+        f"loop is never built as a dev image.\n\n{DRIFT_DOC}"
+    )
+    assert target["image"] in text, f"dev-build.yml never builds {target['image']}\n\n{DRIFT_DOC}"
+    assert not re.search(r"for SERVICE in[^\n]*\bfrontend\b", text), (
+        f"dev-build.yml's build loop still names the retired single 'frontend' service\n\n{DRIFT_DOC}"
+    )
+
+
+@pytest.mark.parametrize("workflow_name", sorted(WORKFLOWS))
+@pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
+def test_the_frontend_case_branch_pairs_its_own_ui_package_with_its_own_image(target_key, workflow_name):
+    target = FRONTEND_IMAGE_TARGETS[target_key]
+    workflow = WORKFLOWS[workflow_name]
+    text = _read(workflow)
+    body = _case_branch(text, target_key, workflow)
+
+    assert f'IMAGE="{target["image"]}"' in body, (
+        f"{workflow}'s '{target_key})' case branch does not set IMAGE=\"{target['image']}\"\n\n{DRIFT_DOC}"
+    )
+    assert 'CONTEXT="./frontend"' in body, (
+        f"{workflow}'s '{target_key})' case branch does not build against the ./frontend context\n\n{DRIFT_DOC}"
+    )
+
+    package_match = re.search(r"UI_PACKAGE=([\w.-]+)", body)
+    actual_package = package_match.group(1) if package_match else None
+    assert actual_package == target["ui_package"], (
+        f"{workflow}'s '{target_key})' case branch builds --build-arg UI_PACKAGE={actual_package!r} but "
+        f"publishes it as the '{target['image']}' image, which must build UI_PACKAGE={target['ui_package']!r} "
+        f"instead. Nothing else ties the app a case branch builds to the image name it is pushed under — a "
+        f"mismatch here builds and boots just fine, it just serves the wrong app under the wrong image name, "
+        f"silently.\n\n{DRIFT_DOC}"
+    )
+
+
+def test_the_frontend_dockerfile_requires_its_package_argument():
+    text = _read("frontend/Dockerfile")
+    assert re.search(r"^ARG UI_PACKAGE\s*$", text, re.M), (
+        "frontend/Dockerfile's ARG UI_PACKAGE must carry NO default. A default lets a forgotten --build-arg "
+        "publish one app's image under the other app's name, which no later check catches because the "
+        f"image builds and boots perfectly well.\n\n{DRIFT_DOC}"
+    )
+    assert 'test -n "$UI_PACKAGE"' in text, (
+        f"frontend/Dockerfile does not fail the build when UI_PACKAGE is empty\n\n{DRIFT_DOC}"
     )
 
 

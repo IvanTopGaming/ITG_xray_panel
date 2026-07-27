@@ -11,7 +11,6 @@ declare const __APP_VERSIONS__: {
   worker: string;
   sub: string;
   bot_api: string;
-  frontend: string;
   caddy: string;
   bot: string;
   xray_core_ref: string;

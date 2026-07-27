@@ -32,7 +32,7 @@ jobs:
           SHORT_SHA="${SHA:0:7}"
           XRAY_REF=$(python3 -c "import json; print(json.load(open('versions.json'))['xray_core_ref'])")
 
-          for SERVICE in master worker sub bot_api frontend caddy bot; do
+          for SERVICE in master worker sub bot_api frontend_admin frontend_node caddy bot; do
             case $SERVICE in
               master)
                 CONTEXT="./backend"
@@ -54,10 +54,15 @@ jobs:
                 IMAGE="ghcr.io/ivantopgaming/panel-worker"
                 BUILD_ARGS="--build-arg XRAY_CORE_REF=$XRAY_REF --build-context project=. -f backend/Dockerfile.worker"
                 ;;
-              frontend)
+              frontend_admin)
                 CONTEXT="./frontend"
-                IMAGE="ghcr.io/ivantopgaming/panel-frontend"
-                BUILD_ARGS="--build-context project=."
+                IMAGE="ghcr.io/ivantopgaming/panel-frontend-admin"
+                BUILD_ARGS="--build-arg UI_PACKAGE=admin --build-context project=."
+                ;;
+              frontend_node)
+                CONTEXT="./frontend"
+                IMAGE="ghcr.io/ivantopgaming/panel-frontend-node"
+                BUILD_ARGS="--build-arg UI_PACKAGE=node --build-context project=."
                 ;;
               caddy)
                 CONTEXT="./caddy"
