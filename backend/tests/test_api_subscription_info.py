@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 
 import pytest
 
@@ -53,7 +54,7 @@ def _seed(app, *, blocked=False, clients=(), devices_enabled=False, device_limit
         for spec in clients:
             db.session.add(
                 Client(
-                    id="11111111-1111-1111-1111-111111111111",
+                    id=spec.get("id", str(uuid.uuid4())),
                     email=spec["email"],
                     inbound_tag="vless-reality",
                     telegram_id=777,
@@ -158,3 +159,39 @@ def test_info_prefers_the_sub_domain_for_the_link(app, client, monkeypatch):
     body = client.get("/api/sub/u/tok777/info").get_json()
 
     assert body["sub_url"] == "https://sub.example.ru/api/sub/u/tok777"
+
+
+def test_info_picks_the_nearest_expiry_among_enabled_nodes(app, client):
+    now = int(time.time() * 1000)
+    earliest_disabled = now + 1 * HOUR_MS
+    earliest_enabled = now + 2 * HOUR_MS
+    later_enabled = now + 3 * HOUR_MS
+    _seed(
+        app,
+        clients=[
+            {"email": "tg777_vless_a", "enable": False, "expiry_time": earliest_disabled},
+            {"email": "tg777_vless_b", "enable": True, "expiry_time": earliest_enabled},
+            {"email": "tg777_vless_c", "enable": True, "expiry_time": later_enabled},
+        ],
+    )
+
+    body = client.get("/api/sub/u/tok777/info").get_json()
+
+    assert body["expiry_at"] == earliest_enabled
+
+
+def test_info_falls_back_to_the_nearest_expiry_when_every_node_is_disabled(app, client):
+    now = int(time.time() * 1000)
+    earliest_disabled = now + 1 * HOUR_MS
+    later_disabled = now + 5 * HOUR_MS
+    _seed(
+        app,
+        clients=[
+            {"email": "tg777_vless_a", "enable": False, "expiry_time": earliest_disabled},
+            {"email": "tg777_vless_b", "enable": False, "expiry_time": later_disabled},
+        ],
+    )
+
+    body = client.get("/api/sub/u/tok777/info").get_json()
+
+    assert body["expiry_at"] == earliest_disabled
