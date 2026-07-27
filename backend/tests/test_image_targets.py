@@ -8,7 +8,7 @@ from panel_core.version import VERSION_KEY_BY_ROLE
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
-USE_VERSION_STATUS_HOOK = "frontend/src/hooks/useVersionStatus.ts"
+USE_VERSION_STATUS_HOOK = "frontend/packages/ui-core/src/hooks/useVersionStatus.ts"
 
 IMAGE_TARGETS = {
     "master": {
