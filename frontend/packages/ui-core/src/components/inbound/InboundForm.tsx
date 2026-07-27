@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@ui/components/ui/Button';
 import { Input } from '@ui/components/ui/Input';
 import { Select } from '@ui/components/ui/Select';
-import { Inbound, LinkedPanel, RoutingProfile } from '@ui/lib/types';
+import { Inbound, RoutingProfile } from '@ui/lib/types';
 import api from '@ui/lib/api';
 import { toast } from 'react-toastify';
 import { Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { hasLocalXray } from '@ui/lib/panelRole';
-import { useQuery } from '@tanstack/react-query';
+import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
 
 interface InboundFormProps {
   inbound?: Inbound;
@@ -76,11 +76,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
   const [showAuthPass, setShowAuthPass] = useState(false);
   const [targetPanelId, setTargetPanelId] = useState<number | null>(null);
 
-  const { data: panels } = useQuery<LinkedPanel[]>({
-    queryKey: ['panels'],
-    queryFn: async () => (await api.get<LinkedPanel[]>('/panels')).data,
-    enabled: !isEdit,
-  });
+  const { data: panels } = useLinkedPanels(!isEdit);
 
   useEffect(() => {
     if (isEdit || hasLocalXray || targetPanelId != null) return;

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@ui/lib/api';
 import { setDisplayTimezone } from '@ui/lib/datetime';
+import { isWorker } from '@ui/lib/panelRole';
 
 export function DisplayConfigLoader() {
   const { data } = useQuery({
@@ -11,6 +12,7 @@ export function DisplayConfigLoader() {
       return data?.display_timezone || 'Europe/Moscow';
     },
     staleTime: 5 * 60 * 1000,
+    enabled: !isWorker,
   });
 
   useEffect(() => {

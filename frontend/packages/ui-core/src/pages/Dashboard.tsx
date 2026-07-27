@@ -14,6 +14,7 @@ import { formatBytes, cn } from '@ui/lib/utils';
 import { formatDate } from '@ui/lib/datetime';
 import { generateLink, generateSubscriptionUrl } from '@ui/lib/protocols';
 import { deviceIcon, timeAgo } from '@ui/lib/devices';
+import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
 import { Button } from '@ui/components/ui/Button';
 import { Modal } from '@ui/components/ui/Modal';
 import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
@@ -297,12 +298,7 @@ export default function Dashboard() {
     enabled: hasLocalXray,
   });
 
-  const { data: panels } = useQuery<LinkedPanel[]>({
-    queryKey: ['panels'],
-    queryFn: async () => (await api.get<LinkedPanel[]>('/panels')).data,
-    refetchOnWindowFocus: false,
-    refetchInterval: 10000,
-  });
+  const { data: panels } = useLinkedPanels();
 
   useEffect(() => {
     const fetchStats = async () => {
