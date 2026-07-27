@@ -6,7 +6,7 @@ import os
 import time
 from urllib.parse import quote, urlencode
 import yaml
-from flask import Blueprint, request, Response
+from flask import Blueprint, jsonify, request, Response
 from panel_core.extensions import limiter, db
 from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
@@ -623,6 +623,15 @@ def _looks_like_browser(user_agent: str) -> bool:
     return any(token in ua for token in ("mozilla", "applewebkit", "gecko", "trident", "edg"))
 
 
+def _absolute_sub_url(token: str) -> str:
+    sub_domain = os.getenv("SUB_DOMAIN", "").strip()
+    if sub_domain:
+        return f"https://{sub_domain}/api/sub/u/{token}"
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme or "https")
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    return f"{scheme}://{host}/api/sub/u/{token}"
+
+
 @bp.route("/sub/u/<token>", methods=["GET"])
 @limiter.limit("180 per minute")
 def get_subscription_aggregate(token):
@@ -648,13 +657,7 @@ def get_subscription_aggregate(token):
 
     if _looks_like_browser(user_agent):
         lang = _pick_lang(request.args.get("lang", ""), request.headers.get("Accept-Language", ""))
-        sub_domain = os.getenv("SUB_DOMAIN", "").strip()
-        if sub_domain:
-            abs_sub_url = f"https://{sub_domain}/api/sub/u/{token}"
-        else:
-            scheme = request.headers.get("X-Forwarded-Proto", request.scheme or "https")
-            host = request.headers.get("X-Forwarded-Host", request.host)
-            abs_sub_url = f"{scheme}://{host}/api/sub/u/{token}"
+        abs_sub_url = _absolute_sub_url(token)
         page = render_aggregate_subscription_page(user, lang, abs_sub_url)
         return Response(page, mimetype="text/html; charset=utf-8", headers=headers)
 
@@ -1388,6 +1391,57 @@ def _user_device_summary(telegram_id):
             if d.hwid:
                 hwids.add(d.hwid)
     return {"count": len(hwids), "limit": limit}
+
+
+def _subscription_info_payload(user, token) -> dict:
+    brand_row = SystemSetting.query.filter_by(key="brand_name").first()
+    brand = (brand_row.value if brand_row and brand_row.value else "").strip()
+
+    nodes = _user_page_nodes(user.telegram_id)
+    dev = _user_device_summary(user.telegram_id)
+
+    interval_row = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
+    try:
+        interval = int(interval_row.value) if interval_row and interval_row.value else 24
+        if interval < 1:
+            interval = 24
+    except (ValueError, TypeError):
+        interval = 24
+
+    expiries = [n["expiry"] for n in nodes if n["enabled"] and n["expiry"] > 0] or [
+        n["expiry"] for n in nodes if n["expiry"] > 0
+    ]
+    active = not user.blocked and any(n["enabled"] for n in nodes)
+
+    return {
+        "brand": brand,
+        "sub_url": _absolute_sub_url(token),
+        "status": "active" if active else "disabled",
+        "expiry_at": min(expiries) if expiries else 0,
+        "devices": None if dev is None else {"count": dev["count"], "limit": dev["limit"]},
+        "nodes": [
+            {
+                "name": n["name"],
+                "tag": n["tag"],
+                "used": n["used"],
+                "limit": n["limit"],
+                "expiry": n["expiry"],
+                "online": n["online"],
+                "enabled": n["enabled"],
+            }
+            for n in nodes
+        ],
+        "update_interval_hours": interval,
+    }
+
+
+@bp.route("/sub/u/<token>/info", methods=["GET"])
+@limiter.limit("180 per minute")
+def get_subscription_info(token):
+    user = TelegramUser.query.filter_by(sub_token=token).first()
+    if not user or user.blocked:
+        return "User not found", 404
+    return jsonify(_subscription_info_payload(user, token))
 
 
 _PAGE_STRINGS = {
