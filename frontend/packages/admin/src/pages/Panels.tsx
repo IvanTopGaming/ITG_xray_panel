@@ -20,6 +20,7 @@ import {
   Shield,
   Layers,
   Clock,
+  Link2,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -62,6 +63,8 @@ export default function Panels() {
   const [editingPanel, setEditingPanel] = useState<LinkedPanel | null>(null);
   const [editFormData, setEditFormData] = useState<EditPanelForm>({ name: '', enable: true });
   const [unlinkTarget, setUnlinkTarget] = useState<LinkedPanel | null>(null);
+  const [relinkTarget, setRelinkTarget] = useState<LinkedPanel | null>(null);
+  const [relinkToken, setRelinkToken] = useState('');
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -105,6 +108,20 @@ export default function Panels() {
     },
     onError: (err: any) => {
       toast.error(err?.response?.data?.error || 'Failed to update panel');
+    },
+  });
+
+  const relinkPanelMutation = useMutation({
+    mutationFn: (data: { id: number; link_token: string }) =>
+      api.post(`/panels/${data.id}/relink`, { link_token: data.link_token }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['panels'] });
+      setRelinkTarget(null);
+      setRelinkToken('');
+      toast.success('Panel relinked with a fresh token');
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.data?.error || 'Failed to relink panel');
     },
   });
 
@@ -284,6 +301,17 @@ export default function Panels() {
                       <Pencil size={14} />
                       <span className="ml-1">Edit</span>
                     </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setRelinkToken('');
+                        setRelinkTarget(panel);
+                      }}
+                    >
+                      <Link2 size={14} />
+                      <span className="ml-1">Relink</span>
+                    </Button>
                     <Button variant="danger" size="sm" onClick={() => setUnlinkTarget(panel)}>
                       <Trash2 size={14} />
                       <span className="ml-1">Unlink</span>
@@ -320,6 +348,40 @@ export default function Panels() {
               disabled={addPanelMutation.isPending}
             >
               {addPanelMutation.isPending ? 'Linking...' : 'Add'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!relinkTarget}
+        onClose={() => setRelinkTarget(null)}
+        title={`Relink ${relinkTarget?.name || ''}`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm leading-relaxed text-gray-400">
+            Issue a fresh token on the node itself — System → Link → Revoke access &amp; issue token
+            — then paste it here. Tariffs stay on this panel; only the token and the address change.
+          </p>
+          <Input
+            label="Link Token"
+            type="password"
+            placeholder="Paste the new token from the node panel"
+            value={relinkToken}
+            onChange={(e) => setRelinkToken(e.target.value)}
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setRelinkTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() =>
+                relinkTarget &&
+                relinkPanelMutation.mutate({ id: relinkTarget.id, link_token: relinkToken })
+              }
+              disabled={!relinkToken.trim() || relinkPanelMutation.isPending}
+            >
+              {relinkPanelMutation.isPending ? 'Relinking...' : 'Relink'}
             </Button>
           </div>
         </div>

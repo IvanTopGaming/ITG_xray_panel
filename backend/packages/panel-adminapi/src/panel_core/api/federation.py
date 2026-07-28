@@ -38,23 +38,31 @@ def generate_link_token():
         cfg = FederationConfig(id=1)
         db.session.add(cfg)
 
-    if cfg.federation_token and cfg.linked_at:
-        return jsonify({"error": "already linked to a master panel"}), 409
+    revoked = bool(cfg.federation_token)
 
     raw_token = secrets.token_urlsafe(32)
     cfg.link_token = raw_token
     cfg.link_token_used = False
+    cfg.federation_token = None
+    cfg.linked_at = None
     db.session.commit()
+
+    if revoked:
+        logger.info(
+            "federation access revoked: a fresh link token was issued while linked to %s",
+            cfg.master_url or "an unnamed master",
+        )
 
     panel_url = _build_panel_url()
     import base64
 
     composite = base64.urlsafe_b64encode(f"{panel_url}|{raw_token}".encode()).decode().rstrip("=")
 
-    return jsonify({"link_token": composite}), 200
+    return jsonify({"link_token": composite, "revoked": revoked}), 200
 
 
 @bp.route("/federation/handshake", methods=["POST"])
+@limiter.limit("30 per minute")
 def handshake():
 
     data = request.get_json(silent=True) or {}

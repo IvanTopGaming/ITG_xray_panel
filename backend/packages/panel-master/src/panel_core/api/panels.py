@@ -5,11 +5,51 @@ from flask import Blueprint, request, jsonify
 
 from panel_core.extensions import db
 from panel_core.models import LinkedPanel, SystemSetting, TariffItem
-from panel_core.services.panel_proxy import forget_panel, get_panel_liveness
+from panel_core.services.panel_proxy import _nudge_panel_refresh, forget_panel, get_panel_liveness
 from panel_core.services.tariffs import purge_tariff_items
 from panel_core.utils import token_required
 
 bp = Blueprint("panels", __name__)
+
+
+class _HandshakeError(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _handshake(url: str, link_token: str) -> str:
+
+    setting = SystemSetting.query.filter_by(key="panel_name").first()
+    master_name = (setting.value if setting else None) or "Master"
+
+    try:
+        resp = requests.post(
+            f"{url}/api/federation/handshake",
+            json={
+                "link_token": link_token,
+                "master_url": request.host_url,
+                "master_name": master_name,
+            },
+            timeout=10,
+            allow_redirects=False,
+        )
+    except requests.ConnectionError:
+        raise _HandshakeError("Cannot connect to child panel")
+    except requests.Timeout:
+        raise _HandshakeError("Connection to child panel timed out")
+
+    if resp.status_code != 200:
+        try:
+            err = resp.json().get("error", resp.text)
+        except Exception:
+            err = resp.text
+        raise _HandshakeError(f"Handshake failed: {err}")
+
+    token = str(resp.json().get("federation_token", "") or "")
+    if not token:
+        raise _HandshakeError("Handshake returned no federation token")
+    return token
 
 
 def _decode_link_token(raw: str) -> tuple[str, str]:
@@ -110,34 +150,10 @@ def create_panel():
         if dup:
             raise ValueError("Panel name already exists")
 
-        setting = SystemSetting.query.filter_by(key="panel_name").first()
-        master_name = (setting.value if setting else None) or "Master"
-
         try:
-            resp = requests.post(
-                f"{url}/api/federation/handshake",
-                json={
-                    "link_token": link_token,
-                    "master_url": request.host_url,
-                    "master_name": master_name,
-                },
-                timeout=10,
-                allow_redirects=False,
-            )
-        except requests.ConnectionError:
-            return jsonify({"error": "Cannot connect to child panel"}), 502
-        except requests.Timeout:
-            return jsonify({"error": "Connection to child panel timed out"}), 502
-
-        if resp.status_code != 200:
-            try:
-                err = resp.json().get("error", resp.text)
-            except Exception:
-                err = resp.text
-            return jsonify({"error": f"Handshake failed: {err}"}), 502
-
-        resp_data = resp.json()
-        federation_token = resp_data.get("federation_token", "")
+            federation_token = _handshake(url, link_token)
+        except _HandshakeError as e:
+            return jsonify({"error": e.message}), 502
 
         panel = LinkedPanel(
             name=name,
@@ -179,6 +195,46 @@ def update_panel(panel_id):
             panel.enable = bool(data["enable"])
 
         db.session.commit()
+        return jsonify(panel.to_dict()), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@bp.route("/panels/<int:panel_id>/relink", methods=["POST"])
+@token_required
+def relink_panel(panel_id):
+    try:
+        panel = db.session.get(LinkedPanel, panel_id)
+        if not panel:
+            return jsonify({"error": "Panel not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+
+        raw_input = str(data.get("link_token", "") or "").strip()
+        if not raw_input:
+            raise ValueError("Link token is required")
+
+        url, link_token = _decode_link_token(raw_input)
+        if not url:
+            url = (panel.url or "").strip().rstrip("/")
+        if not url:
+            raise ValueError("Could not determine panel URL from token")
+        _validate_panel_url(url)
+
+        try:
+            federation_token = _handshake(url, link_token)
+        except _HandshakeError as e:
+            return jsonify({"error": e.message}), 502
+
+        panel.federation_token = federation_token
+        panel.url = url
+        db.session.commit()
+
+        _nudge_panel_refresh(panel.id)
+
         return jsonify(panel.to_dict()), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

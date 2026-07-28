@@ -83,15 +83,24 @@ class TestLinkToken:
         assert decoded.endswith("|" + cfg.link_token)
         assert cfg.link_token_used is False
 
-    def test_returns_409_when_already_linked(self, client, admin_headers, db):
+    def test_issuing_on_a_linked_panel_is_allowed_and_revokes_the_old_token(self, client, admin_headers, db):
         cfg = db.session.get(FederationConfig, 1)
         cfg.federation_token = "existing-token"
         cfg.linked_at = int(time.time() * 1000)
         db.session.commit()
 
         resp = client.post("/api/federation/link-token", headers=admin_headers)
-        assert resp.status_code == 409
-        assert "already linked" in resp.get_json()["error"]
+        assert resp.status_code == 200
+        assert resp.get_json()["revoked"] is True
+
+        cfg = db.session.get(FederationConfig, 1)
+        assert cfg.federation_token is None
+        assert cfg.linked_at is None
+
+    def test_issuing_on_an_unlinked_panel_reports_nothing_was_revoked(self, client, admin_headers, db):
+        resp = client.post("/api/federation/link-token", headers=admin_headers)
+        assert resp.status_code == 200
+        assert resp.get_json()["revoked"] is False
 
     def test_allows_regenerate_when_not_fully_linked(self, client, admin_headers, db):
 

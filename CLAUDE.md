@@ -208,7 +208,7 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 
 - `packages/ui-core/src/` — everything shared by the three apps (55 files, every file under the directory regardless of extension — 33 `.ts`/`.tsx`, `index.css`, plus `fonts.css` and the 20 self-hosted Roboto/Roboto Mono `.woff2` files added in Phase 6 when the Google Fonts CDN link was dropped): `pages/` (`Dashboard`, `Routing`, `System`, `Login` — the four pages every role has), `components/inbound/` (`InboundForm`, `UserForm`), `components/ui/` (`Select`, `Modal`, `ConfirmationModal`, `Button`, `Input`, `Switch`, `TagInput`), `components/layout/` (`Layout`, `Sidebar`, `AnimatedBackground`), `components/DisplayConfigLoader.tsx`, `hooks/` (`useLinkedPanels`, `useVersionStatus`), `lib/` (`api.ts` — axios client with auth interceptor; `types.ts` — TS interfaces for every API entity; `protocols.ts` — protocol + stream-settings definitions; `panelRole.ts`/`assertPanelRole.ts` — role gating, see the deploy note below; `panelBase.ts`, `datetime.ts`, `devices.ts`, `routing-validation.ts`, `utils.ts`, `version.ts`), `stores/` (Zustand stores for auth + log state), `index.css`.
 - `packages/admin/src/` — admin-only surface (19 files, same counting rule as ui-core above — this one happens to be all `.ts`/`.tsx`): `App.tsx`, `main.tsx` (the entry points), and the master-only pages/components `pages/Statistics.tsx`, `pages/Panels.tsx` (federation management), `pages/Bot.tsx` (billing UI) plus `components/bot/` (`TariffsTab`, `TariffDrawer`, `TariffsTable`, `TariffRowMenu`, `UsersTab`, `UserDrawer`, `GrantsTab`, `PaymentsTab`, `PaymentStatusBadge`, `TextsTab`, `SettingsTab`, `TrialCard`) and `lib/bot.ts`.
-- `packages/node/src/` — **has no page of its own**: just `App.tsx`, `main.tsx`, `vite-env.d.ts` (3 files, same counting rule as the two bullets above). `App.tsx` wires up only the shared `Dashboard`/`Routing`/`System`/`Login` pages from `ui-core` (`Routing` further gated by `hasLocalXray`, which is always true for this image) — every route with its own page component lives in `ui-core` or `admin`, never in `node`.
+- `packages/node/src/` — **has no page of its own**: just `App.tsx`, `main.tsx`, `vite-env.d.ts` (3 files, same counting rule as the two bullets above). `App.tsx` wires up only the shared `Dashboard`/`Routing`/`System`/`Login` pages from `ui-core` (`Routing` further gated by `hasLocalXray`, which is always true for this image) — every route with its own page component lives in `ui-core` or `admin`, never in `node`. **Node-only surface therefore arrives as a gated tab inside a shared page, not as a route:** wave 4b's federation card is a `System` tab that ships from `ui-core` and renders only when `isWorker` — three gates in the bundle (the tab entry, its body, and `enabled: isWorker` on the `GET /api/federation/config` query, without which a master would 404 on every visit to System) plus a fourth in the backend, since `roles/master.py` registers no `federation` blueprint. The node's route count stays four. `backend/tests/test_federation_card_is_node_only.py` pins all of it.
 - `packages/sub-page/src/` — the subscription page a user opens in a browser, and the only package that is **not** an admin surface (18 files, same counting rule as the bullets above): `App.tsx`, `main.tsx`, `vite-env.d.ts`, `components/` (`Header`, `Hero`, `Summary`, `QrPanel`, `AppButtons`, `Nodes`, `Footer`, `Loading`, `ErrorState`), `hooks/useSubInfo.ts`, `lib/` (`deeplinks.ts`, `format.ts`, `i18n.ts`, `types.ts`), `index.css`. It has no router, no axios client and no auth store — it reads one endpoint, `GET /api/sub/u/<token>/info`. Three things set it apart from the two admin apps: it ships **no** `assertPanelRole()` call and reads no `panel-role` meta tag (it is served by Flask out of `panel-sub`, not by Nginx, and there is no role to get wrong); it carries **its own `index.css`** rather than importing `ui-core`'s, because that one applies `overflow-hidden` to `body` for the fixed-chrome admin layout and would make a scrolling page unreadable on a phone; and it is built into the `panel-sub` backend image by `backend/Dockerfile.sub` rather than into an Nginx image of its own. It still looks like the same product, but only one of the two reasons is actual sharing: `ui-core/src/fonts.css` (self-hosted Roboto) is imported by all three packages and is sub-page's **only** edge into `ui-core`, while the Tailwind theme is a *duplicated copy* — `ui-core` has no `tailwind.config.js`, each package declares its own palette, and sub-page's config does not even scan `../ui-core/src`. That distinction decides the release fan-out — see point 3 of the Phase 3d deploy note.
 
 Each of the two admin apps bakes its role at build time (`vite.config.ts`'s `define: { __EXPECTED_PANEL_ROLE__ }`) and asserts it at runtime against the `<meta name="panel-role">` tag that `entrypoint.sh` rewrites in `index.html` at container start (read by `lib/panelRole.ts`'s `readInjectedPanelRole()`). A meta tag, not an inline script: the reverse proxy's CSP sets `script-src 'self'`, which blocks inline `<script>` outright — see the deploy note below.
@@ -282,7 +282,7 @@ All API handlers follow a two-catch pattern. `ValueError` is the type for user-f
 
 ### Auth
 Four decorators in `app/utils.py`:
-- `token_required` — admin JWT only. Used on `/api/backup`, `/api/restore`, all `bot_admin` endpoints, `GET /api/inbounds` and all six `panels.py` handlers.
+- `token_required` — admin JWT only. Used on `/api/backup`, `/api/restore`, all `bot_admin` endpoints, `GET /api/inbounds`, every one of the ten `panels.py` handlers (wave 4b added `POST /panels/<id>/relink`), and the node-only `POST /api/federation/link-token` + `GET /api/federation/config`.
 - `bot_service_token_required` — fixed token from `SystemSetting('bot_service_token')`, compared in constant time. Used on all `bot_service.py` endpoints + `/billing/checkout`, **and on nothing else**.
 - `federation_token_required` — validates the `federation_token` from a linked panel's `FederationConfig`. Used on federation endpoints that remote panels call.
 - `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. Used on `/api/inbound` user/inbound CRUD **and the `/users/bulk-*` + `/users/reset-traffic` batch endpoints**, so linked panels can proxy operations (and the master can fan a batch out to children).
@@ -327,6 +327,14 @@ Single `_sync_after_provision` call after the loop: regenerates Xray config (or 
 ### Panel Federation
 
 A master panel manages remote *linked panels*. `LinkedPanel` rows store URL + a `federation_token`; `FederationConfig` is a singleton on the child storing the master's credentials. The master proxies user/inbound CRUD to linked panels via `services/panel_proxy.py` (`FederationClient`). `TariffItem.panel_id` optionally routes a tariff item to a specific linked panel — provisioning then creates the user there instead of locally. `poll_linked_panels` (10s) health-polls each panel — from the **cron service**, which since wave 2 is the single writer of both `LinkedPanel.status` in Postgres and the `panel:<id>:*` keys in the shared Redis. The thirteen `proxy_*` operations no longer fetch a snapshot themselves; they publish the panel id on `panel:refresh` and return, and the cron service polls that panel out of band (`_nudge_panel_refresh`). **Never `DEL` the snapshot key instead:** for the sub host a missing key does not mean "stale", it means "this panel has no remote clients", so it skips the panel entirely and a user who has just paid opens the link to a subscription with no node servers in it. Subscription links (`api/subscription.py`) can merge entries from linked panels visible to the requesting client (Redis-cached). Inbound CRUD endpoints accept admin JWT **and** federation tokens (`admin_or_federation_token_required`) so children can proxy operations back through the master.
+
+**Linking a node and revoking its token are the same endpoint, and the master never issues either.** `POST /api/federation/link-token` (admin JWT, node only) mints a fresh single-use link token **and revokes whatever access the panel currently grants** — it nulls `federation_token` and `linked_at` unconditionally and reports `revoked` in its reply. There is no separate rotation route and no 409: before wave 4b the endpoint refused once `federation_token` and `linked_at` were both set, which made a linked node's token unrevocable except by editing `federation_config` over SSH. The token handed to the admin is `base64url("<panel_url>|<raw_token>")`, where `panel_url` comes from the node's own `PANEL_DOMAIN` + `PANEL_SECRET_PATH` (`_build_panel_url`, falling back to `request.host`) — so a wrong `PANEL_DOMAIN` on a node sends the master to the wrong address, and the failure only surfaces as a handshake timeout. The node's System → Link card shows that URL, which is the only place an admin can catch it.
+
+On the master, `POST /api/panels/<id>/relink` (admin JWT) decodes that token, handshakes, and writes the new `federation_token` **and** URL into the **existing** `LinkedPanel` row. **Never re-link by deleting and re-adding the panel:** `delete_panel` runs `purge_tariff_items(TariffItem.panel_id == …)`, which removes every `TariffItem` of that panel and disables any tariff left with none — revoking a credential would cost live users their tariff layout. `tests/test_federation_token_rotation.py` asserts the `TariffItem` count survives; note that asserting the row's `id` is unchanged does **not** catch delete-and-add, because SQLite reuses the rowid when the deleted row was the only one (the guard leans on `created_at` and the tariff count instead). `relink` writes no status — the cron service owns `LinkedPanel.status`; it publishes on `panel:refresh` and lets the poll do it.
+
+Between the revoke and the re-link the node is unreachable to the master **entirely**: not polled, not provisioned, not managed, and `poll_linked_panels` marks it `offline` with the 401 as `last_error`. Provisioning in that window raises, so a payment stays `pending` and `poll_pending_payments` re-applies it after the re-link.
+
+`POST /api/federation/handshake` carries `@limiter.limit("30 per minute")` — it is the only unauthenticated route the node serves, and `Limiter` has no `default_limits`. Flask-Limiter is constructed without `swallow_errors`, so this also makes handshake fail with 500 when the node's own Redis is unreachable; it is the one federation route that now depends on it.
 
 **The provisioning contract carries two semantics, and which one you send decides who computes the expiry.** `POST /api/federation/provision` accepts `period_ms` **or** `expiry_ms` — exactly one; both or neither is a `ValueError` → 400. `period_ms` means *extend*: the node computes `max(now, client.expiry_time) + period_ms` itself, which is the only place the arithmetic can be correct, because an orchestrator's database holds no `Client` rows for node-issued clients (`Client` has no `panel_id` and the master does not mirror them). `expiry_ms` means *assign that exact date*, and exists for `backfill_tariff`, whose meaning is "give this user the same expiry he already has on his other nodes" — sending a period there would hand him `held_until + period` and drift one tariff's dates apart per node. Do not "simplify" the endpoint down to one field.
 
@@ -759,6 +767,58 @@ remove capability an operator may be using today, and it narrows a credential. R
    shows "no keys"; an old bot against a new bot-api is harmless. Also bump `sub`, `master`, `worker` and
    `cron` in the same rollout — a `panel-core` edit rebuilds all five backends, and `panel-links` (the new
    eighth distribution that carries share-link building) rebuilds `sub` alongside `bot-api`.
+
+### Deploy note — the federation token becomes revocable, and a node finally has a linking screen (Phase 8 wave 4b)
+
+This wave changes **no schema, no federation contract and no environment variable**, so it needs no
+fleet-wide lock-step and no `.env` edit. It gives away one capability that did not exist and takes away
+one that never worked. Read all six points.
+
+1. **Nothing happens to an already-linked node on its own.** The revoke fires only when an admin presses
+   the button on that node; until then `federation_config.federation_token` sits exactly where it was, and
+   the master keeps polling and provisioning as before. Upgrading master, worker and both frontends changes
+   no live state. This is the whole risk assessment — there is no migration and no start-up refusal.
+
+2. **`POST /api/federation/link-token` on a node is now destructive, and the old 409 that made it safe is
+   gone.** It used to answer `409 already linked` on a linked panel; it now revokes that panel's access and
+   issues a fresh token in the same call. **Anything home-grown that called this endpoint to "check whether
+   a token is pending" now disconnects the node from its master.** Nothing shipped in this repo did — no
+   bundle called it at all before this wave (§50) — but a provisioning script might have. Use
+   `GET /api/federation/config` for the read-only view; it is unchanged.
+
+3. **The revoke → re-link window is a real outage for that node, by design.** Between pressing the button
+   on the node and pasting the token into the master, the master cannot reach it at all: not polled (it goes
+   `offline` with `HTTP 401` as `last_error`), not provisioned, not managed, no inbound or user CRUD. A
+   purchase landing in that window raises, the payment stays `pending`, and `poll_pending_payments` (30s, on
+   the bot host) re-applies it once the panel is re-linked — money is not lost, but the user waits. Keep the
+   window short: issue the token and paste it in one sitting.
+
+4. **Re-link, never delete-and-add.** The master's new `POST /api/panels/<id>/relink` (Panels → Relink)
+   updates the existing row. Deleting the panel and adding it again looks equivalent and is not: `delete_panel`
+   cascades `purge_tariff_items`, removing every `TariffItem` of that panel and **disabling any tariff left
+   with no items** — live users lose the tariff. Relink also follows the node's address: the token carries the
+   node's own `PANEL_DOMAIN`, so a node that moved to a new domain is repointed by the same action. That cuts
+   both ways — pasting a token from a *different* node repoints this row, and its whole tariff layout, at that
+   other box. The panel list shows the resulting URL; check it after relinking.
+
+5. **A node whose own Redis is down can no longer be linked.** `POST /api/federation/handshake` gained a
+   `30 per minute` limit, and Flask-Limiter is configured not to swallow storage errors, so an unreachable
+   `RATELIMIT_STORAGE_URI` turns the handshake into an `HTTP 500` (verified by running it against a closed
+   port). Handshake was previously the one route that touched nothing but its own database. The node's Redis
+   is already mandatory and lives in the same compose stack, so this only bites a half-started node — but that
+   is exactly the state you are in when first bringing a node up.
+
+6. **A partial rollout fails loudly, in both directions.** A new master against an old node: pressing Relink
+   sends a handshake the old node answers `401 no pending link token` (its admin cannot mint one — it still
+   returns 409), and the master surfaces `Handshake failed: no pending link token`. A new node against an old
+   master: the node revokes and issues fine, but the master has no Relink button, so the only paths are
+   delete-and-add (point 4 — do not) or upgrading the master. Nothing is silently corrupted either way, and
+   the node's stored token is untouched until a handshake succeeds.
+
+   Bump `master`, `worker`, `frontend_admin` and `frontend_node` together: the `panel-adminapi` edit fans out
+   to master and worker (the master ships that distribution even though it registers no `federation` blueprint),
+   and the `ui-core` edit fans out to both frontend images. `sub`, `bot_api`, `cron`, `bot` and `caddy` are
+   untouched.
 
 ## Configuration
 

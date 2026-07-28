@@ -21,24 +21,27 @@ import {
   Heart,
   Github,
   Radar,
+  Link2,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
-import { formatDateForPicker, formatTime } from '@ui/lib/datetime';
+import { formatDateForPicker, formatDateTime, formatTime } from '@ui/lib/datetime';
 import { Modal } from '@ui/components/ui/Modal';
 import { useLogStore } from '@ui/stores/logStore';
 import { useAuthStore } from '@ui/stores/authStore';
 import { useVersionStatus } from '@ui/hooks/useVersionStatus';
-import { hasLocalXray } from '@ui/lib/panelRole';
+import { hasLocalXray, isWorker } from '@ui/lib/panelRole';
+import { FederationConfig } from '@ui/lib/types';
 
 const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_RESTORE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
-type SettingsTab = 'security' | 'core' | 'maintenance' | 'about';
+type SettingsTab = 'security' | 'core' | 'federation' | 'maintenance' | 'about';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'security', label: 'Security' },
   ...(hasLocalXray ? [{ id: 'core' as SettingsTab, label: 'Core' }] : []),
+  ...(isWorker ? [{ id: 'federation' as SettingsTab, label: 'Link' }] : []),
   { id: 'maintenance', label: 'Maintenance' },
   { id: 'about', label: 'About' },
 ];
@@ -65,6 +68,40 @@ export default function System() {
   const [geoipUrl, setGeoipUrl] = useState('');
   const [geositeUrl, setGeositeUrl] = useState('');
   const [activeTab, setActiveTab] = useState<SettingsTab>(hasLocalXray ? 'core' : 'security');
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const [isTokenCopied, setIsTokenCopied] = useState(false);
+
+  const { data: federation } = useQuery<FederationConfig>({
+    queryKey: ['federation-config'],
+    queryFn: async () => (await api.get('/federation/config')).data,
+    enabled: isWorker,
+  });
+
+  const linkTokenMutation = useMutation({
+    mutationFn: async () => (await api.post('/federation/link-token')).data,
+    onSuccess: (data: { revoked: boolean }) => {
+      setConfirmRevoke(false);
+      setIsTokenCopied(false);
+      queryClient.invalidateQueries({ queryKey: ['federation-config'] });
+      toast.success(
+        data.revoked
+          ? 'Access revoked. Paste the new token into the master panel to link again.'
+          : 'Link token issued'
+      );
+    },
+    onError: () => toast.error('Could not issue a link token'),
+  });
+
+  const handleCopyLinkToken = async () => {
+    if (!federation?.link_token) return;
+    try {
+      await navigator.clipboard.writeText(federation.link_token);
+      setIsTokenCopied(true);
+      setTimeout(() => setIsTokenCopied(false), 2000);
+    } catch {
+      toast.error('Could not copy to clipboard');
+    }
+  };
 
   const { data: systemSettings, isFetching: isSettingsFetching } = useQuery({
     queryKey: ['system-settings'],
@@ -444,6 +481,80 @@ export default function System() {
               </SettingsCard>
             )}
 
+            {isWorker && activeTab === 'federation' && (
+              <SettingsCard title="Master Link" icon={<Link2 size={18} className="text-primary" />}>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between rounded-xl border border-white/5 bg-black/20 px-4 py-3">
+                    <span className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                      Status
+                    </span>
+                    <span
+                      className={`text-sm font-semibold ${federation?.is_linked ? 'text-emerald-400' : 'text-gray-400'}`}
+                    >
+                      {federation?.is_linked ? 'Linked' : 'Not linked'}
+                    </span>
+                  </div>
+
+                  {federation?.master_url && (
+                    <div className="space-y-1 rounded-xl border border-white/5 bg-black/20 px-4 py-3">
+                      <div className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                        {federation.is_linked ? 'Master panel' : 'Last master panel'}
+                      </div>
+                      <div className="text-sm text-gray-200">
+                        {federation.master_name || 'Unnamed'}
+                      </div>
+                      <div className="break-all font-mono text-xs text-gray-500">
+                        {federation.master_url}
+                      </div>
+                      {federation.linked_at && (
+                        <div className="text-xs text-gray-500">
+                          Linked {formatDateTime(federation.linked_at)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {federation?.link_token && (
+                    <div className="space-y-2">
+                      <div className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                        Link token
+                      </div>
+                      <div className="max-h-28 overflow-y-auto break-all rounded-xl border border-white/5 bg-black/30 p-3 font-mono text-xs text-gray-300">
+                        {federation.link_token}
+                      </div>
+                      <Button
+                        variant="secondary"
+                        className={`w-full h-10 ${isTokenCopied ? 'text-green-400 border-green-400/30' : ''}`}
+                        onClick={handleCopyLinkToken}
+                      >
+                        {isTokenCopied ? (
+                          <Check size={16} className="mr-2" />
+                        ) : (
+                          <Copy size={16} className="mr-2" />
+                        )}
+                        {isTokenCopied ? 'Copied' : 'Copy token'}
+                      </Button>
+                      <p className="text-xs leading-relaxed text-gray-500">
+                        Paste it in the master panel — Panels → Add Panel for a new node, or Relink
+                        on an existing one. It carries this panel&apos;s address and works once.
+                      </p>
+                    </div>
+                  )}
+
+                  <Button
+                    className="h-11 w-full"
+                    variant={federation?.is_linked ? 'danger' : 'primary'}
+                    onClick={() =>
+                      federation?.is_linked ? setConfirmRevoke(true) : linkTokenMutation.mutate()
+                    }
+                    isLoading={linkTokenMutation.isPending}
+                  >
+                    {federation?.is_linked ? 'Revoke access & issue token' : 'Issue link token'}
+                  </Button>
+                </div>
+              </SettingsCard>
+            )}
+
             {activeTab === 'maintenance' && (
               <SettingsCard
                 title="Maintenance"
@@ -611,6 +722,16 @@ export default function System() {
             />
           </>
         )}
+
+        <ConfirmationModal
+          isOpen={confirmRevoke}
+          onClose={() => setConfirmRevoke(false)}
+          onConfirm={() => linkTokenMutation.mutate()}
+          title="Revoke access & issue token"
+          description="The master panel loses access to this node immediately: it stops being polled, provisioned and managed. It comes back once you paste the new token into the master panel and relink."
+          confirmText="Revoke"
+          isLoading={linkTokenMutation.isPending}
+        />
 
         <ConfirmationModal
           isOpen={confirmPassword}
