@@ -4,17 +4,9 @@ from typing import Tuple
 from sqlalchemy.exc import IntegrityError
 
 from panel_core.extensions import db
-from panel_core.models import Client, ClientDevice, Inbound
-from panel_core.panel_role import is_sub
+from panel_core.models import UserDevice
 
 GateState = str
-
-
-def effective_device_limit(client: Client, inbound: Inbound) -> int:
-
-    if client.device_limit is not None:
-        return int(client.device_limit)
-    return int(inbound.device_limit or 0)
 
 
 def subscription_device_settings():
@@ -33,13 +25,29 @@ def subscription_device_settings():
     return enabled, limit
 
 
-def list_devices(client_id: str):
-    return ClientDevice.query.filter_by(client_id=client_id).order_by(ClientDevice.last_seen.desc()).all()
+def list_user_devices(telegram_id):
+    if not telegram_id:
+        return []
+    return UserDevice.query.filter_by(telegram_id=telegram_id).order_by(UserDevice.last_seen.desc()).all()
 
 
-def revoke_device(client_id: str, device_id: int) -> bool:
+def count_user_devices(telegram_id):
+    if not telegram_id:
+        return 0
+    return UserDevice.query.filter_by(telegram_id=telegram_id).count()
 
-    row = ClientDevice.query.filter_by(id=device_id, client_id=client_id).first()
+
+def device_counts_by_user():
+
+    from sqlalchemy import func
+
+    rows = db.session.query(UserDevice.telegram_id, func.count(UserDevice.id)).group_by(UserDevice.telegram_id).all()
+    return {tg: int(count) for tg, count in rows if tg}
+
+
+def revoke_user_device(telegram_id, device_id: int) -> bool:
+
+    row = UserDevice.query.filter_by(id=device_id, telegram_id=telegram_id).first()
     if not row:
         return False
     db.session.delete(row)
@@ -47,95 +55,9 @@ def revoke_device(client_id: str, device_id: int) -> bool:
     return True
 
 
-def device_gate(client: Client, inbound: Inbound, headers: dict) -> Tuple[GateState, dict]:
+def user_device_gate(telegram_id, headers: dict) -> Tuple[GateState, dict]:
 
-    if is_sub():
-        return ("ok", {})
-
-    limit = effective_device_limit(client, inbound)
-    hwid = (headers.get("x-hwid") or "").strip()
-
-    if not hwid:
-        if limit > 0:
-            return (
-                "unsupported",
-                {"x-hwid-active": "true", "x-hwid-not-supported": "true"},
-            )
-
-        return ("ok", {})
-
-    base_headers = {"x-hwid-active": "true"}
-    now_ms = int(time.time() * 1000)
-
-    locked = db.session.query(Client).filter_by(id=client.id).with_for_update().first()
-    if locked is None:
-        return ("ok", base_headers)
-
-    existing = ClientDevice.query.filter_by(client_id=client.id, hwid=hwid).first()
-    if existing:
-        existing.last_seen = now_ms
-        existing.hits = (existing.hits or 0) + 1
-        ip = headers.get("_request_ip")
-        if ip:
-            existing.request_ip = ip[:64]
-        ua = headers.get("user-agent")
-        if ua:
-            existing.user_agent = ua[:512]
-        db.session.commit()
-        return ("ok", base_headers)
-
-    if limit > 0:
-        count = ClientDevice.query.filter_by(client_id=client.id).count()
-        if count >= limit:
-            db.session.commit()
-            return ("limit", {**base_headers, "x-hwid-max-devices-reached": "true"})
-
-    device = ClientDevice(
-        client_id=client.id,
-        hwid=hwid,
-        device_os=(headers.get("x-device-os") or "")[:32],
-        os_ver=(headers.get("x-ver-os") or "")[:32],
-        model=(headers.get("x-device-model") or "")[:128],
-        user_agent=(headers.get("user-agent") or "")[:512],
-        request_ip=(headers.get("_request_ip") or "")[:64],
-        first_seen=now_ms,
-        last_seen=now_ms,
-        hits=1,
-    )
-    db.session.add(device)
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        existing = ClientDevice.query.filter_by(client_id=client.id, hwid=hwid).first()
-        if existing:
-            existing.last_seen = now_ms
-            existing.hits = (existing.hits or 0) + 1
-            db.session.commit()
-    return ("ok", base_headers)
-
-
-def _primary_client_id_for_user(telegram_id):
-
-    rows = Client.query.filter_by(telegram_id=telegram_id, enable=True).with_entities(Client.id).all()
-    ids = sorted(r[0] for r in rows if r[0])
-    return ids[0] if ids else None
-
-
-def _user_distinct_hwids(telegram_id):
-
-    rows = (
-        ClientDevice.query.join(Client, ClientDevice.client_id == Client.id)
-        .filter(Client.telegram_id == telegram_id, Client.enable.is_(True))
-        .with_entities(ClientDevice.hwid)
-        .all()
-    )
-    return {r[0] for r in rows if r[0]}
-
-
-def user_device_gate(telegram_id, headers: dict):
-
-    if is_sub():
+    if not telegram_id:
         return ("ok", {})
 
     enabled, limit = subscription_device_settings()
@@ -148,18 +70,10 @@ def user_device_gate(telegram_id, headers: dict):
             return ("unsupported", {"x-hwid-active": "true", "x-hwid-not-supported": "true"})
         return ("ok", {})
 
-    primary = _primary_client_id_for_user(telegram_id)
-    if primary is None:
-        return ("ok", {})
-
     base_headers = {"x-hwid-active": "true"}
     now_ms = int(time.time() * 1000)
 
-    existing = (
-        ClientDevice.query.join(Client, ClientDevice.client_id == Client.id)
-        .filter(Client.telegram_id == telegram_id, ClientDevice.hwid == hwid)
-        .first()
-    )
+    existing = UserDevice.query.filter_by(telegram_id=telegram_id, hwid=hwid).first()
     if existing:
         existing.last_seen = now_ms
         existing.hits = (existing.hits or 0) + 1
@@ -172,11 +86,11 @@ def user_device_gate(telegram_id, headers: dict):
         db.session.commit()
         return ("ok", base_headers)
 
-    if limit > 0 and len(_user_distinct_hwids(telegram_id)) >= limit:
+    if limit > 0 and count_user_devices(telegram_id) >= limit:
         return ("limit", {**base_headers, "x-hwid-max-devices-reached": "true"})
 
-    device = ClientDevice(
-        client_id=primary,
+    device = UserDevice(
+        telegram_id=telegram_id,
         hwid=hwid,
         device_os=(headers.get("x-device-os") or "")[:32],
         os_ver=(headers.get("x-ver-os") or "")[:32],
@@ -192,7 +106,7 @@ def user_device_gate(telegram_id, headers: dict):
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        existing = ClientDevice.query.filter_by(client_id=primary, hwid=hwid).first()
+        existing = UserDevice.query.filter_by(telegram_id=telegram_id, hwid=hwid).first()
         if existing:
             existing.last_seen = now_ms
             existing.hits = (existing.hits or 0) + 1

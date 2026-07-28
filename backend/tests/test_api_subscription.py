@@ -101,12 +101,12 @@ def seed_disabled(app):
 
 
 _PATCH_PANEL = "panel_core.services.panel_proxy.get_panel_snapshot"
-_PATCH_DEVICE_GATE = "panel_core.services.device_tracking.device_gate"
+_PATCH_DEVICE_GATE = "panel_core.services.device_tracking.user_device_gate"
 _PATCH_SUB_CACHE_GET = "panel_core.services.sub_cache.get"
 _PATCH_SUB_CACHE_SET = "panel_core.services.sub_cache.set"
 
 
-def _device_gate_ok(client_obj, inbound_obj, headers):
+def _device_gate_ok(telegram_id, headers):
 
     return ("ok", {})
 
@@ -412,7 +412,7 @@ class TestForcedUAParam:
 
 class TestDeviceGateWarnConfig:
     def test_unsupported_state_returns_warn(self, client, seed_vless):
-        def _gate_unsupported(c, ib, hdrs):
+        def _gate_unsupported(telegram_id, hdrs):
             return ("unsupported", {"x-hwid-active": "true"})
 
         with (
@@ -426,7 +426,7 @@ class TestDeviceGateWarnConfig:
         assert "unsupported" in decoded.lower() or "127.0.0.1" in decoded
 
     def test_limit_state_returns_warn(self, client, seed_vless):
-        def _gate_limit(c, ib, hdrs):
+        def _gate_limit(telegram_id, hdrs):
             return ("limit", {"x-hwid-active": "true"})
 
         with (

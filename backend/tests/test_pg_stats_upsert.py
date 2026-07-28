@@ -69,30 +69,3 @@ def test_domain_stat_upsert_accumulates_on_conflict():
             text("SELECT hit_count FROM domain_stat WHERE domain='example.com' AND client_email='u@x'")
         ).scalar()
         assert hits == 7
-
-
-@pg_only
-def test_node_snapshot_upsert_accumulates_on_conflict():
-    from sqlalchemy import text
-
-    import panel_core.models  # noqa: F401
-
-    app, db = _pg_ctx()
-    with app.app_context():
-        db.session.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
-        db.session.commit()
-        from panel_core.pg_migrate import migrate_postgres_db
-
-        migrate_postgres_db()
-
-        from panel_core.services.stats import _upsert_node_snapshot
-
-        _upsert_node_snapshot(3, "user", "tg1_vless", "vless", 1000, 10, 20)
-        _upsert_node_snapshot(3, "user", "tg1_vless", "vless", 1000, 5, 7)
-        db.session.commit()
-
-        up, down = db.session.execute(
-            text("SELECT up, down FROM node_traffic_snapshot WHERE panel_id=3 AND entity_id='tg1_vless'")
-        ).fetchone()
-        assert up == 15
-        assert down == 27

@@ -46,4 +46,7 @@ def test_master_mode_unchanged(monkeypatch):
         pass
     assert any(r.startswith("/api/inbound") for r in rules)
     assert not any(r.startswith("/api/billing") for r in rules)
-    assert any(r.startswith("/api/sub") for r in rules)
+    assert not any(r.startswith("/api/sub") for r in rules), (
+        "since wave 3b subscriptions are served by the sub role alone. A master answering /api/sub/* "
+        "means the blueprint crept back onto an admin host, where it needs no authentication."
+    )

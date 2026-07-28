@@ -278,7 +278,11 @@ class TestSnapshot:
         assert cl["reset_day"] == 15
         assert cl["flow"] == "xtls-rprx-vision"
         assert cl["telegram_id"] == 42
-        assert cl["device_count"] == 0
+        assert "device_count" not in cl, (
+            "a node cannot count devices any more: since wave 3b the ledger is keyed by telegram_id "
+            "and lives in the shared Postgres, which a node never reaches. The master fills the count "
+            "from its own database when it overlays the snapshot."
+        )
 
     def test_snapshot_stream_settings_as_dict(self, client, federation_headers, db):
 

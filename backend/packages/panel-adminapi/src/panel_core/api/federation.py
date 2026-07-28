@@ -130,7 +130,6 @@ def snapshot():
 
         clients_data = []
         for c in ib.clients:
-            device_count = len(c.devices) if c.devices else 0
             clients_data.append(
                 {
                     "id": c.id,
@@ -143,7 +142,6 @@ def snapshot():
                     "reset_day": c.reset_day or 0,
                     "flow": c.flow or "",
                     "last_seen": c.last_seen if c.last_seen else None,
-                    "device_count": device_count,
                     "tariff_id": c.tariff_id,
                     "telegram_id": c.telegram_id,
                 }

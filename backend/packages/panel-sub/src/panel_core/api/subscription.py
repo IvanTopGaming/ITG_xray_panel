@@ -16,51 +16,6 @@ from panel_core.xray.protocol import stream_supports_vless_flow
 bp = Blueprint("subscription", __name__)
 
 
-def _try_proxy_sub_to_child(uuid_str: str, req) -> Response | None:
-
-    from panel_core.models import LinkedPanel
-    from panel_core.services.panel_proxy import get_panel_snapshot
-
-    for panel in LinkedPanel.query.filter_by(enable=True).all():
-        snapshot = get_panel_snapshot(panel.id)
-        if not snapshot:
-            continue
-        for ib_data in snapshot.get("inbounds", []):
-            for c in ib_data.get("clients", []):
-                if c.get("id") == uuid_str:
-                    try:
-                        ua = req.headers.get("User-Agent", "")
-                        import requests as _req
-
-                        resp = _req.get(
-                            f"{panel.url.rstrip('/')}/api/sub/{uuid_str}",
-                            headers={"User-Agent": ua},
-                            timeout=8,
-                            allow_redirects=False,
-                        )
-                        if resp.status_code == 200:
-                            return Response(
-                                resp.content,
-                                status=200,
-                                content_type=resp.headers.get("Content-Type", "text/plain"),
-                                headers={
-                                    k: v
-                                    for k, v in resp.headers.items()
-                                    if k.lower()
-                                    in (
-                                        "subscription-userinfo",
-                                        "profile-update-interval",
-                                        "profile-title",
-                                        "content-disposition",
-                                    )
-                                },
-                            )
-                    except Exception:
-                        pass
-                    return None
-    return None
-
-
 def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> list[str]:
 
     from urllib.parse import urlparse
@@ -328,51 +283,112 @@ def _warn_response(state: str, user_agent: str, extra_headers: dict) -> Response
     )
 
 
+def _filename_from_email(email, ext: str) -> str:
+
+    if not email:
+        return f"config.{ext}"
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(email))
+    return safe or "config"
+
+
 def _config_filename(client, ext: str) -> str:
 
-    if client is None or not client.email:
-        return f"config.{ext}"
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in client.email)
-    return safe or "config"
+    return _filename_from_email(None if client is None else client.email, ext)
+
+
+def _update_interval_hours() -> int:
+
+    setting = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
+    try:
+        interval = int(setting.value) if setting and setting.value else 24
+        if interval < 1:
+            interval = 24
+    except (ValueError, TypeError):
+        interval = 24
+    return interval
+
+
+def _resolve_user_agent() -> str:
+
+    user_agent = request.headers.get("User-Agent", "").lower()
+    forced_ua = (request.args.get("ua", "") or "").strip().lower()
+    if forced_ua in ("clash", "meta", "stash"):
+        return "clash"
+    if forced_ua in ("singbox", "sing-box", "nekobox"):
+        return "sing-box"
+    if forced_ua in ("v2ray", "v2rayng", "raw"):
+        return "v2ray"
+    return user_agent
+
+
+def _response_format(user_agent: str):
+
+    if any(x in user_agent for x in ("clash", "meta", "stash")):
+        return "clash", "text/yaml", "yaml"
+    if any(x in user_agent for x in ("sing-box", "nekobox")):
+        return "singbox", "application/json", "json"
+    return "v2ray", "text/plain; charset=utf-8", "txt"
+
+
+def _encode_links(links) -> str | None:
+
+    if not links:
+        return None
+    return base64.b64encode("\n".join(links).encode("utf-8")).decode("utf-8")
+
+
+def _gate_request_headers() -> dict:
+
+    return {
+        "x-hwid": request.headers.get("x-hwid", ""),
+        "x-device-os": request.headers.get("x-device-os", ""),
+        "x-ver-os": request.headers.get("x-ver-os", ""),
+        "x-device-model": request.headers.get("x-device-model", ""),
+        "user-agent": request.headers.get("User-Agent", ""),
+        "_request_ip": (request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()),
+    }
+
+
+def _userinfo_headers(*, up, down, total, expiry_ms, title) -> dict:
+
+    headers = {"Profile-Update-Interval": str(_update_interval_hours())}
+    expire_s = int(expiry_ms or 0) // 1000 if expiry_ms else 0
+    headers["subscription-userinfo"] = (
+        f"upload={int(up or 0)}; download={int(down or 0)}; total={int(total or 0)}; expire={expire_s}"
+    )
+    if title:
+        headers["profile-title"] = title
+    return headers
 
 
 def _user_headers(client=None) -> dict:
 
-    setting = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
-    try:
-        interval = int(setting.value) if setting and setting.value else 24
-        if interval < 1:
-            interval = 24
-    except (ValueError, TypeError):
-        interval = 24
-
-    headers = {"Profile-Update-Interval": str(interval)}
-
     if client is None:
-        return headers
+        return {"Profile-Update-Interval": str(_update_interval_hours())}
 
-    upload = int(client.up or 0)
-    download = int(client.down or 0)
-    total = int(client.limit_bytes or 0)
-    expire_ms = int(client.expiry_time or 0)
-    expire_s = expire_ms // 1000 if expire_ms else 0
+    return _userinfo_headers(
+        up=client.up,
+        down=client.down,
+        total=client.limit_bytes,
+        expiry_ms=client.expiry_time,
+        title=client.email,
+    )
 
-    headers["subscription-userinfo"] = f"upload={upload}; download={download}; total={total}; expire={expire_s}"
-    if client.email:
-        headers["profile-title"] = client.email
-    return headers
+
+def _snapshot_client_headers(client_data) -> dict:
+
+    return _userinfo_headers(
+        up=client_data.get("up", 0),
+        down=client_data.get("down", 0),
+        total=client_data.get("limit_bytes", 0),
+        expiry_ms=client_data.get("expiry_time", 0),
+        title=client_data.get("email") or "",
+    )
 
 
 def _aggregate_user_headers(clients) -> dict:
 
-    setting = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
-    try:
-        interval = int(setting.value) if setting and setting.value else 24
-        if interval < 1:
-            interval = 24
-    except (ValueError, TypeError):
-        interval = 24
-    headers = {"Profile-Update-Interval": str(interval)}
+    headers = {"Profile-Update-Interval": str(_update_interval_hours())}
 
     brand = SystemSetting.query.filter_by(key="brand_name").first()
     title = (brand.value if brand and brand.value else "Subscription").strip()[:25]
@@ -684,17 +700,7 @@ def get_subscription_aggregate(token):
 
     from panel_core.services.device_tracking import user_device_gate
 
-    gate_state, extra_headers = user_device_gate(
-        user.telegram_id,
-        {
-            "x-hwid": request.headers.get("x-hwid", ""),
-            "x-device-os": request.headers.get("x-device-os", ""),
-            "x-ver-os": request.headers.get("x-ver-os", ""),
-            "x-device-model": request.headers.get("x-device-model", ""),
-            "user-agent": request.headers.get("User-Agent", ""),
-            "_request_ip": (request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()),
-        },
-    )
+    gate_state, extra_headers = user_device_gate(user.telegram_id, _gate_request_headers())
     if gate_state != "ok":
         return _warn_response(gate_state, user_agent, extra_headers)
 
@@ -743,118 +749,55 @@ def get_subscription_aggregate(token):
 @bp.route("/sub/<path:uuid_str>", methods=["GET"])
 @limiter.limit("180 per minute")
 def get_subscription(uuid_str):
-    user_agent = request.headers.get("User-Agent", "").lower()
-
-    forced_ua = (request.args.get("ua", "") or "").strip().lower()
-    if forced_ua in ("clash", "meta", "stash"):
-        user_agent = "clash"
-    elif forced_ua in ("singbox", "sing-box", "nekobox"):
-        user_agent = "sing-box"
-    elif forced_ua in ("v2ray", "v2rayng", "raw"):
-        user_agent = "v2ray"
+    user_agent = _resolve_user_agent()
 
     client = db.session.get(Client, uuid_str)
-    if not client or not client.enable:
-        proxy_resp = _try_proxy_sub_to_child(uuid_str, request)
-        if proxy_resp is not None:
-            return proxy_resp
-        return "User not found", 404
-    inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
-    if not inbound:
-        return "User not found", 404
+    if client and client.enable:
+        inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
+        if not inbound:
+            return "User not found", 404
+        telegram_id = client.telegram_id
+        info_headers = _user_headers(client)
+        email = client.email
+        builders = {
+            "v2ray": lambda: _encode_links(get_subscription_content(uuid_str)),
+            "clash": lambda: generate_clash_config(uuid_str),
+            "singbox": lambda: generate_singbox_config(uuid_str),
+        }
+    else:
+        pair = _remote_pair_for_uuid(uuid_str)
+        if pair is None:
+            return "User not found", 404
+        host, ib_data, client_data, stream = pair
+        telegram_id = client_data.get("telegram_id")
+        info_headers = _snapshot_client_headers(client_data)
+        email = client_data.get("email") or ""
+        builders = {
+            "v2ray": lambda: _encode_links(_build_remote_link(host, ib_data, client_data)),
+            "clash": lambda: _remote_clash_config(host, ib_data, client_data, stream),
+            "singbox": lambda: _remote_singbox_config(host, ib_data, client_data, stream),
+        }
 
-    from panel_core.services.device_tracking import device_gate
+    from panel_core.services.device_tracking import user_device_gate
 
-    state, extra_headers = device_gate(
-        client,
-        inbound,
-        {
-            "x-hwid": request.headers.get("x-hwid", ""),
-            "x-device-os": request.headers.get("x-device-os", ""),
-            "x-ver-os": request.headers.get("x-ver-os", ""),
-            "x-device-model": request.headers.get("x-device-model", ""),
-            "user-agent": request.headers.get("User-Agent", ""),
-            "_request_ip": (request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()),
-        },
-    )
+    state, extra_headers = user_device_gate(telegram_id, _gate_request_headers())
     if state != "ok":
         return _warn_response(state, user_agent, extra_headers)
 
-    if any(x in user_agent for x in ["clash", "meta", "stash"]):
-        cached = sub_cache.get("clash", uuid_str)
-        if cached is not None:
-            return Response(
-                cached,
-                mimetype="text/yaml",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{_config_filename(client, "yaml")}"',
-                    **_user_headers(client),
-                    **extra_headers,
-                },
-            )
-        config = generate_clash_config(uuid_str)
-        if not config:
+    kind, mimetype, ext = _response_format(user_agent)
+    body = sub_cache.get(kind, uuid_str)
+    if body is None:
+        body = builders[kind]()
+        if not body:
             return "User not found", 404
-        sub_cache.set("clash", uuid_str, config)
-        return Response(
-            config,
-            mimetype="text/yaml",
-            headers={
-                "Content-Disposition": f'attachment; filename="{_config_filename(client, "yaml")}"',
-                **_user_headers(client),
-                **extra_headers,
-            },
-        )
+        sub_cache.set(kind, uuid_str, body)
 
-    if any(x in user_agent for x in ["sing-box", "nekobox"]):
-        cached = sub_cache.get("singbox", uuid_str)
-        if cached is not None:
-            return Response(
-                cached,
-                mimetype="application/json",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{_config_filename(client, "json")}"',
-                    **_user_headers(client),
-                    **extra_headers,
-                },
-            )
-        config = generate_singbox_config(uuid_str)
-        if not config:
-            return "User not found", 404
-        sub_cache.set("singbox", uuid_str, config)
-        return Response(
-            config,
-            mimetype="application/json",
-            headers={
-                "Content-Disposition": f'attachment; filename="{_config_filename(client, "json")}"',
-                **_user_headers(client),
-                **extra_headers,
-            },
-        )
-
-    cached = sub_cache.get("v2ray", uuid_str)
-    if cached is not None:
-        return Response(
-            cached,
-            mimetype="text/plain; charset=utf-8",
-            headers={
-                "Content-Disposition": f'attachment; filename="{_config_filename(client, "txt")}"',
-                **_user_headers(client),
-                **extra_headers,
-            },
-        )
-    links = get_subscription_content(uuid_str)
-    if not links:
-        return "User not found", 404
-    text_content = "\n".join(links)
-    encoded = base64.b64encode(text_content.encode("utf-8")).decode("utf-8")
-    sub_cache.set("v2ray", uuid_str, encoded)
     return Response(
-        encoded,
-        mimetype="text/plain; charset=utf-8",
+        body,
+        mimetype=mimetype,
         headers={
-            "Content-Disposition": f'attachment; filename="{_config_filename(client, "txt")}"',
-            **_user_headers(client),
+            "Content-Disposition": f'attachment; filename="{_filename_from_email(email, ext)}"',
+            **info_headers,
             **extra_headers,
         },
     )
@@ -907,14 +850,12 @@ def _get_local_subscription_content(uuid_str):
     return _build_share_links(host, ib.protocol, ib.port, stream, client.id, client.flow or "", ib.label or ib.tag)
 
 
-def _remote_inbound_client_pairs(telegram_id):
+def _iter_remote_pairs():
 
     from urllib.parse import urlparse
     from panel_core.models import LinkedPanel
     from panel_core.services.panel_proxy import get_panel_snapshot
 
-    if not telegram_id:
-        return
     for panel in LinkedPanel.query.filter_by(enable=True).all():
         snapshot = get_panel_snapshot(panel.id)
         if not snapshot:
@@ -928,7 +869,7 @@ def _remote_inbound_client_pairs(telegram_id):
             continue
         for ib_data in snapshot.get("inbounds", []):
             for c in ib_data.get("clients", []):
-                if c.get("telegram_id") != telegram_id or not c.get("enable", True):
+                if not c.get("enable", True):
                     continue
                 stream = ib_data.get("stream_settings", {})
                 if isinstance(stream, str):
@@ -937,6 +878,27 @@ def _remote_inbound_client_pairs(telegram_id):
                     except Exception:
                         stream = {}
                 yield host, ib_data, c, stream
+
+
+def _remote_inbound_client_pairs(telegram_id):
+
+    if not telegram_id:
+        return
+    for host, ib_data, c, stream in _iter_remote_pairs():
+        if c.get("telegram_id") != telegram_id:
+            continue
+        yield host, ib_data, c, stream
+
+
+def _remote_pair_for_uuid(uuid_str):
+
+    try:
+        for host, ib_data, c, stream in _iter_remote_pairs():
+            if c.get("id") == uuid_str:
+                return host, ib_data, c, stream
+    except Exception:
+        return None
+    return None
 
 
 def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
@@ -1078,6 +1040,58 @@ def _build_singbox_outbound(tag, protocol, host, port, stream, client_id, flow):
     return ob
 
 
+def _clash_document(proxies):
+
+    if not proxies:
+        return None
+    config = {
+        "port": 7890,
+        "socks-port": 7891,
+        "allow-lan": True,
+        "mode": "rule",
+        "log-level": "info",
+        "proxies": proxies,
+        "proxy-groups": [
+            {
+                "name": "FASTEST",
+                "type": "url-test",
+                "url": "http://www.gstatic.com/generate_204",
+                "interval": 300,
+                "proxies": [p["name"] for p in proxies],
+            }
+        ],
+        "rules": ["GEOIP,CN,DIRECT", "MATCH,FASTEST"],
+    }
+    return yaml.dump(config, sort_keys=False, allow_unicode=True)
+
+
+def _singbox_document(outbounds):
+
+    if not outbounds:
+        return None
+    config = {
+        "log": {"level": "info", "timestamp": True},
+        "dns": {
+            "servers": [
+                {"tag": "google", "type": "udp", "server": "8.8.8.8", "detour": "proxy"},
+                {"tag": "local", "type": "local"},
+            ]
+        },
+        "inbounds": [{"type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30"], "auto_route": True}],
+        "outbounds": outbounds + [{"type": "direct", "tag": "direct"}],
+        "route": {
+            "rules": [
+                {"action": "sniff"},
+                {"protocol": "dns", "action": "hijack-dns"},
+            ],
+            "final": "proxy",
+            "auto_detect_interface": True,
+            "default_domain_resolver": "local",
+        },
+    }
+    return json.dumps(config, indent=2)
+
+
 def generate_clash_config(uuid_str):
     client = db.session.get(Client, uuid_str)
     if not client or not client.enable:
@@ -1090,29 +1104,7 @@ def generate_clash_config(uuid_str):
     proxy_node = _build_clash_proxy(
         f"{ib.tag}-{client.email}", ib.protocol, host, ib.port, stream, client.id, client.flow or ""
     )
-
-    all_proxies = [proxy_node]
-    all_proxy_names = [proxy_node["name"]]
-
-    config = {
-        "port": 7890,
-        "socks-port": 7891,
-        "allow-lan": True,
-        "mode": "rule",
-        "log-level": "info",
-        "proxies": all_proxies,
-        "proxy-groups": [
-            {
-                "name": "FASTEST",
-                "type": "url-test",
-                "url": "http://www.gstatic.com/generate_204",
-                "interval": 300,
-                "proxies": all_proxy_names,
-            }
-        ],
-        "rules": ["GEOIP,CN,DIRECT", "MATCH,FASTEST"],
-    }
-    return yaml.dump(config, sort_keys=False, allow_unicode=True)
+    return _clash_document([proxy_node])
 
 
 def generate_singbox_config(uuid_str):
@@ -1125,30 +1117,36 @@ def generate_singbox_config(uuid_str):
     stream = json.loads(ib.stream_settings)
     host = os.getenv("PANEL_DOMAIN", "localhost")
     outbound = _build_singbox_outbound("proxy", ib.protocol, host, ib.port, stream, client.id, client.flow or "")
+    return _singbox_document([outbound])
 
-    all_outbounds = [outbound]
 
-    config = {
-        "log": {"level": "info", "timestamp": True},
-        "dns": {
-            "servers": [
-                {"tag": "google", "type": "udp", "server": "8.8.8.8", "detour": "proxy"},
-                {"tag": "local", "type": "local"},
-            ]
-        },
-        "inbounds": [{"type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30"], "auto_route": True}],
-        "outbounds": all_outbounds + [{"type": "direct", "tag": "direct"}],
-        "route": {
-            "rules": [
-                {"action": "sniff"},
-                {"protocol": "dns", "action": "hijack-dns"},
-            ],
-            "final": "proxy",
-            "auto_detect_interface": True,
-            "default_domain_resolver": "local",
-        },
-    }
-    return json.dumps(config, indent=2)
+def _remote_clash_config(host, ib_data, client_data, stream):
+
+    label = ib_data.get("label") or ib_data.get("tag", "remote")
+    proxy_node = _build_clash_proxy(
+        f"{label}-{client_data.get('email') or client_data.get('id', '')}",
+        ib_data.get("protocol", ""),
+        host,
+        ib_data.get("port", 443),
+        stream,
+        client_data.get("id", ""),
+        client_data.get("flow", ""),
+    )
+    return _clash_document([proxy_node])
+
+
+def _remote_singbox_config(host, ib_data, client_data, stream):
+
+    outbound = _build_singbox_outbound(
+        "proxy",
+        ib_data.get("protocol", ""),
+        host,
+        ib_data.get("port", 443),
+        stream,
+        client_data.get("id", ""),
+        client_data.get("flow", ""),
+    )
+    return _singbox_document([outbound])
 
 
 def generate_clash_config_for_user(telegram_id):
@@ -1198,28 +1196,7 @@ def generate_clash_config_for_user(telegram_id):
         except Exception:
             pass
 
-    if not proxies:
-        return None
-    names = [p["name"] for p in proxies]
-    config = {
-        "port": 7890,
-        "socks-port": 7891,
-        "allow-lan": True,
-        "mode": "rule",
-        "log-level": "info",
-        "proxies": proxies,
-        "proxy-groups": [
-            {
-                "name": "FASTEST",
-                "type": "url-test",
-                "url": "http://www.gstatic.com/generate_204",
-                "interval": 300,
-                "proxies": names,
-            }
-        ],
-        "rules": ["GEOIP,CN,DIRECT", "MATCH,FASTEST"],
-    }
-    return yaml.dump(config, allow_unicode=True, sort_keys=False)
+    return _clash_document(proxies)
 
 
 def generate_singbox_config_for_user(telegram_id):
@@ -1400,18 +1377,12 @@ def _user_page_nodes(telegram_id):
 
 def _user_device_summary(telegram_id):
 
-    from panel_core.services.device_tracking import list_devices, subscription_device_settings
+    from panel_core.services.device_tracking import count_user_devices, subscription_device_settings
 
     enabled, limit = subscription_device_settings()
     if not enabled:
         return None
-    clients = Client.query.filter_by(telegram_id=telegram_id, enable=True).all()
-    hwids = set()
-    for c in clients:
-        for d in list_devices(c.id):
-            if d.hwid:
-                hwids.add(d.hwid)
-    return {"count": len(hwids), "limit": limit}
+    return {"count": count_user_devices(telegram_id), "limit": limit}
 
 
 def _subscription_info_payload(user, token) -> dict:

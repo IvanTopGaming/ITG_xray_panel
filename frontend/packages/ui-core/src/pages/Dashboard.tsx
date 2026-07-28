@@ -5,14 +5,14 @@ import {
   Inbound,
   SystemStats,
   Client,
-  ClientDevice,
+  UserDevice,
   Outbound,
   Balancer,
   LinkedPanel,
 } from '@ui/lib/types';
 import { formatBytes, cn } from '@ui/lib/utils';
 import { formatDate } from '@ui/lib/datetime';
-import { generateLink, generateSubscriptionUrl } from '@ui/lib/protocols';
+import { generateLink } from '@ui/lib/protocols';
 import { deviceIcon, timeAgo } from '@ui/lib/devices';
 import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
 import { Button } from '@ui/components/ui/Button';
@@ -1412,7 +1412,7 @@ function UserRow({
   const [routingModal, setRoutingModal] = useState(false);
   const [selectedRoute, setSelectedRoute] = useState(client.preferred_outbound || '');
   const [devicesExpanded, setDevicesExpanded] = useState(false);
-  const [revokeTarget, setRevokeTarget] = useState<ClientDevice | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<UserDevice | null>(null);
   const [revokeLoading, setRevokeLoading] = useState(false);
 
   const effectiveDeviceLimit = client.device_limit ?? inbound.device_limit ?? 0;
@@ -1434,7 +1434,7 @@ function UserRow({
         })()
       : undefined;
   const link = generateLink(inbound, client, panelHost);
-  const subscriptionUrl = client.sub_url || generateSubscriptionUrl(client);
+  const subscriptionUrl = client.sub_url || '';
 
   const resetMutation = useMutation({
     mutationFn: () =>
@@ -1475,14 +1475,15 @@ function UserRow({
     },
   });
 
-  const devicesQueryKey = ['client-devices', client.id];
-  const devicesQuery = useQuery<ClientDevice[]>({
+  const deviceOwner = client.telegram_id ?? null;
+  const devicesQueryKey = ['user-devices', deviceOwner];
+  const devicesQuery = useQuery<UserDevice[]>({
     queryKey: devicesQueryKey,
     queryFn: async () => {
-      const res = await api.get<ClientDevice[]>(`/clients/${client.id}/devices`);
+      const res = await api.get<UserDevice[]>(`/users/${deviceOwner}/devices`);
       return res.data;
     },
-    enabled: devicesExpanded,
+    enabled: devicesExpanded && deviceOwner != null,
     refetchInterval: devicesExpanded ? 3000 : false,
     refetchOnWindowFocus: false,
   });
@@ -1503,7 +1504,7 @@ function UserRow({
       await queryClient.fetchQuery({
         queryKey: devicesQueryKey,
         queryFn: async () => {
-          const res = await api.get<ClientDevice[]>(`/clients/${client.id}/devices`);
+          const res = await api.get<UserDevice[]>(`/users/${deviceOwner}/devices`);
           return res.data;
         },
       });
@@ -1511,7 +1512,7 @@ function UserRow({
     setDevicesExpanded(true);
   };
 
-  const onRevokeDevice = (d: ClientDevice) => {
+  const onRevokeDevice = (d: UserDevice) => {
     setRevokeTarget(d);
   };
 
@@ -1519,9 +1520,9 @@ function UserRow({
     if (!revokeTarget) return;
     setRevokeLoading(true);
     try {
-      await api.delete(`/clients/${client.id}/devices/${revokeTarget.id}`);
+      await api.delete(`/users/${deviceOwner}/devices/${revokeTarget.id}`);
 
-      queryClient.setQueryData<ClientDevice[]>(devicesQueryKey, (prev) =>
+      queryClient.setQueryData<UserDevice[]>(devicesQueryKey, (prev) =>
         prev ? prev.filter((x) => x.id !== revokeTarget.id) : prev
       );
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
@@ -1673,36 +1674,37 @@ function UserRow({
                 </span>
               )}
             </div>
-            {(effectiveDeviceLimit > 0 || (client.device_count ?? 0) > 0) && (
-              <button
-                type="button"
-                onClick={toggleDevices}
-                title={devicesExpanded ? 'Hide devices' : 'Show devices'}
-                className={cn(
-                  'flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg border transition-colors',
-                  devicesExpanded
-                    ? 'bg-primary/15 text-primary border-primary/25'
-                    : 'bg-white/[0.06] text-white/70 border-white/[0.05] hover:bg-white/[0.09] hover:text-white'
-                )}
-              >
-                <Smartphone size={11} />
-                <span className="font-mono">
-                  {client.device_count ?? 0}
-                  {effectiveDeviceLimit > 0 ? ` / ${effectiveDeviceLimit}` : ''}
-                </span>
-                {devicesLoading ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <ChevronDown
-                    size={12}
-                    className={cn(
-                      'transition-transform duration-200',
-                      devicesExpanded && 'rotate-180'
-                    )}
-                  />
-                )}
-              </button>
-            )}
+            {deviceOwner != null &&
+              (effectiveDeviceLimit > 0 || (client.device_count ?? 0) > 0) && (
+                <button
+                  type="button"
+                  onClick={toggleDevices}
+                  title={devicesExpanded ? 'Hide devices' : 'Show devices'}
+                  className={cn(
+                    'flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg border transition-colors',
+                    devicesExpanded
+                      ? 'bg-primary/15 text-primary border-primary/25'
+                      : 'bg-white/[0.06] text-white/70 border-white/[0.05] hover:bg-white/[0.09] hover:text-white'
+                  )}
+                >
+                  <Smartphone size={11} />
+                  <span className="font-mono">
+                    {client.device_count ?? 0}
+                    {effectiveDeviceLimit > 0 ? ` / ${effectiveDeviceLimit}` : ''}
+                  </span>
+                  {devicesLoading ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <ChevronDown
+                      size={12}
+                      className={cn(
+                        'transition-transform duration-200',
+                        devicesExpanded && 'rotate-180'
+                      )}
+                    />
+                  )}
+                </button>
+              )}
           </div>
 
           <div className={cn('grid gap-1 sm:flex', USER_ACTION_GRID_COLS[actionCount])}>
@@ -1735,7 +1737,8 @@ function UserRow({
                 navigator.clipboard.writeText(subscriptionUrl);
                 toast.success('Subscription URL copied');
               }}
-              title="Copy sub URL"
+              disabled={!subscriptionUrl}
+              title={subscriptionUrl ? 'Copy sub URL' : 'SUB_DOMAIN is not configured'}
             >
               <Link2 size={13} />
             </Button>
@@ -1790,7 +1793,7 @@ function UserRow({
       </div>
 
       <AnimatePresence initial={false}>
-        {devicesExpanded && (effectiveDeviceLimit > 0 || (client.device_count ?? 0) > 0) && (
+        {devicesExpanded && deviceOwner != null && (
           <motion.div
             key="devices"
             initial={{ opacity: 0, height: 0 }}

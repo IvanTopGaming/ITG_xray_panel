@@ -205,11 +205,18 @@ def test_the_heavy_stack_is_declared_only_by_panel_worker():
     )
 
 
-def test_panel_worker_declares_panel_sub():
+def test_panel_worker_does_not_declare_panel_sub():
+    """Wave 3b: the node stopped serving subscriptions, so it stopped shipping them.
+
+    Dropping the blueprint registration and leaving the dependency would keep the suite green
+    while the image kept carrying the code — and the promised fan-out saving (three images
+    rebuilt per subscription edit down to one) would simply not arrive.
+    """
+
     declared = distributions_with_dependencies()["panel-worker"]
-    assert "panel-sub" in declared, (
-        "panel-worker must declare panel-sub: roles/worker.py registers the `subscription` blueprint, "
-        f"which ships from panel-sub. Declared: {sorted(declared)}"
+    assert "panel-sub" not in declared, (
+        f"panel-worker still declares panel-sub, but roles/worker.py registers no `subscription` "
+        f"blueprint any more. Declared: {sorted(declared)}"
     )
 
 
@@ -251,11 +258,13 @@ def test_panel_cron_ships_the_background_jobs():
         )
 
 
-def test_panel_master_declares_panel_sub():
+def test_panel_master_does_not_declare_panel_sub():
+    """Same cut as panel-worker: no registration, therefore no dependency."""
+
     declared = distributions_with_dependencies()["panel-master"]
-    assert "panel-sub" in declared, (
-        "panel-master must declare panel-sub: roles/master.py registers the `subscription` blueprint, "
-        f"which ships from panel-sub. Declared: {sorted(declared)}"
+    assert "panel-sub" not in declared, (
+        f"panel-master still declares panel-sub, but roles/master.py registers no `subscription` "
+        f"blueprint any more. Declared: {sorted(declared)}"
     )
 
 

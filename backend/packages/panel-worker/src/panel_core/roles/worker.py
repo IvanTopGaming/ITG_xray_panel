@@ -45,7 +45,6 @@ def create_app():
         outbound,
         routing,
         system,
-        subscription,
         statistics,
         federation,
     )
@@ -55,18 +54,11 @@ def create_app():
     app.register_blueprint(outbound.bp, url_prefix="/api")
     app.register_blueprint(routing.bp, url_prefix="/api")
     app.register_blueprint(system.bp, url_prefix="/api")
-    app.register_blueprint(subscription.bp, url_prefix="/api")
     app.register_blueprint(statistics.bp, url_prefix="/api")
     app.register_blueprint(federation.bp, url_prefix="/api")
 
-    migrate_schema(app, sqlite_path)
-    bootstrap_defaults(app)
-
-    if not os.path.isfile(subscription.sub_page_index_path()):
-        app.logger.info(
-            "subscription page bundle is absent (expected on this role) — /api/sub/u/<token> answers 503 to a "
-            "browser and serves configs to client apps as usual. Set SUB_DOMAIN so links point at the sub host."
-        )
+    migrate_schema(app, sqlite_path, seed_bot_texts=False)
+    bootstrap_defaults(app, bot_service_token=False)
 
     if not (os.getenv("SHARED_REDIS_URI", "") or "").strip():
         app.logger.warning(

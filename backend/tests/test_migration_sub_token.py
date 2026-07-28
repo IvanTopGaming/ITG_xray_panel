@@ -87,5 +87,5 @@ def test_unique_index_present(telegram_user_pre_v18):
     assert "ix_telegram_user_sub_token" in idx_names
 
 
-def test_current_db_version_is_24():
-    assert CURRENT_DB_VERSION == 24
+def test_current_db_version_is_at_least_24():
+    assert CURRENT_DB_VERSION >= 24

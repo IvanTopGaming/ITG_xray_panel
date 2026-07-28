@@ -3,7 +3,7 @@ import json
 import pytest
 
 from panel_core.extensions import db
-from panel_core.models import Client, ClientDevice, Inbound, SystemSetting, TelegramUser
+from panel_core.models import Client, Inbound, SystemSetting, TelegramUser, UserDevice
 
 
 REALITY_STREAM = json.dumps(
@@ -175,7 +175,7 @@ def test_device_summary_hidden_without_limit(app, user_three_keys):
         assert _user_device_summary(800) is None
 
 
-def test_device_summary_counts_unique_hwids(app, user_three_keys):
+def test_device_summary_counts_the_accounts_devices(app, user_three_keys):
     import time
 
     from panel_core.api.subscription import _user_device_summary
@@ -184,9 +184,9 @@ def test_device_summary_counts_unique_hwids(app, user_three_keys):
     with app.app_context():
         db.session.add(SystemSetting(key="device_limit_enabled", value="true"))
         db.session.add(SystemSetting(key="device_limit_per_user", value="3"))
-        db.session.add(ClientDevice(client_id="c1", hwid="hw-A", first_seen=now_ms, last_seen=now_ms))
-        db.session.add(ClientDevice(client_id="c3", hwid="hw-A", first_seen=now_ms, last_seen=now_ms))
-        db.session.add(ClientDevice(client_id="c3", hwid="hw-B", first_seen=now_ms, last_seen=now_ms))
+        db.session.add(UserDevice(telegram_id=800, hwid="hw-A", first_seen=now_ms, last_seen=now_ms))
+        db.session.add(UserDevice(telegram_id=800, hwid="hw-B", first_seen=now_ms, last_seen=now_ms))
+        db.session.add(UserDevice(telegram_id=801, hwid="hw-C", first_seen=now_ms, last_seen=now_ms))
         db.session.commit()
         summary = _user_device_summary(800)
         assert summary is not None

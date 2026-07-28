@@ -5,8 +5,8 @@ import secrets
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
-from panel_core.models import Inbound, Client, ClientDevice, TelegramUser, TariffItem
-from panel_core.services.sub_links import build_aggregate_sub_url
+from panel_core.models import Inbound, Client, TelegramUser, TariffItem
+from panel_core.services.sub_links import build_aggregate_sub_url, build_client_sub_url
 from panel_core.utils import (
     token_required,
     admin_or_bot_token_required,
@@ -128,16 +128,20 @@ def _extract_ss_method(stream_settings_raw):
     return ""
 
 
+def _client_sub_url(telegram_id, client_id, token_map):
+
+    aggregate = build_aggregate_sub_url(token_map.get(telegram_id)) if telegram_id else None
+    return aggregate or build_client_sub_url(client_id)
+
+
 @bp.route("/inbounds", methods=["GET"])
 @admin_or_bot_token_required
 def get_inbounds():
-    from sqlalchemy import func
+    from panel_core.services.device_tracking import device_counts_by_user
 
     inbounds = Inbound.query.all()
 
-    counts = dict(
-        db.session.query(ClientDevice.client_id, func.count(ClientDevice.id)).group_by(ClientDevice.client_id).all()
-    )
+    counts = device_counts_by_user()
 
     _tok_map = dict(
         db.session.query(TelegramUser.telegram_id, TelegramUser.sub_token)
@@ -165,8 +169,8 @@ def get_inbounds():
             clients_data = []
             for c in ib.clients:
                 d = c.to_dict()
-                d["device_count"] = int(counts.get(c.id, 0))
-                d["sub_url"] = build_aggregate_sub_url(_tok_map.get(c.telegram_id)) if c.telegram_id else None
+                d["device_count"] = int(counts.get(c.telegram_id, 0))
+                d["sub_url"] = _client_sub_url(c.telegram_id, c.id, _tok_map)
                 clients_data.append(d)
         else:
             clients_data = []
@@ -210,6 +214,10 @@ def get_inbounds():
                 ib_data["panel_name"] = panel.name
                 if "clients" in ib_data:
                     ib_data["settings"] = {"clients": ib_data.pop("clients")}
+                for c in ib_data.get("settings", {}).get("clients", []):
+                    telegram_id = c.get("telegram_id")
+                    c["device_count"] = int(counts.get(telegram_id, 0))
+                    c["sub_url"] = _client_sub_url(telegram_id, c.get("id"), _tok_map)
                 if "stream_settings" in ib_data and "streamSettings" not in ib_data:
                     ib_data["streamSettings"] = ib_data.pop("stream_settings")
                 result.append(ib_data)
@@ -1202,30 +1210,24 @@ def bulk_set_flow_route():
         return jsonify({"error": "Internal server error"}), 500
 
 
-@bp.route("/clients/<client_id>/devices", methods=["GET"])
+@bp.route("/users/<int:telegram_id>/devices", methods=["GET"])
 @token_required
-def admin_list_devices(client_id):
-    client = db.session.get(Client, client_id)
-    if not client:
-        return jsonify({"error": "Not found"}), 404
-    from panel_core.services.device_tracking import list_devices
+def admin_list_user_devices(telegram_id):
+    from panel_core.services.device_tracking import list_user_devices
 
-    devices = list_devices(client_id)
+    devices = list_user_devices(telegram_id)
     return jsonify([d.to_dict(include_admin_fields=True) for d in devices])
 
 
-@bp.route("/clients/<client_id>/devices/<int:device_id>", methods=["DELETE"])
+@bp.route("/users/<int:telegram_id>/devices/<int:device_id>", methods=["DELETE"])
 @token_required
-def admin_revoke_device(client_id, device_id):
-    client = db.session.get(Client, client_id)
-    if not client:
-        return jsonify({"error": "Not found"}), 404
-    from panel_core.services.device_tracking import revoke_device
+def admin_revoke_user_device(telegram_id, device_id):
+    from panel_core.services.device_tracking import revoke_user_device
 
-    if not revoke_device(client_id, device_id):
+    if not revoke_user_device(telegram_id, device_id):
         return jsonify({"error": "Not found"}), 404
     try:
-        sub_cache.invalidate_user(client_id)
+        sub_cache.invalidate_user_aggregate(telegram_id)
     except Exception:
         pass
     return ("", 204)

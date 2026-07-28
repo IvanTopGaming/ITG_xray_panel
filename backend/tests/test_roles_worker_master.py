@@ -39,7 +39,6 @@ def test_worker_role_composition(monkeypatch, tmp_path):
         "outbound",
         "routing",
         "system",
-        "subscription",
         "statistics",
         "federation",
     }
@@ -68,7 +67,6 @@ def test_master_role_composition(monkeypatch, tmp_path):
         "outbound",
         "routing",
         "system",
-        "subscription",
         "statistics",
         "bot_admin",
         "panels",

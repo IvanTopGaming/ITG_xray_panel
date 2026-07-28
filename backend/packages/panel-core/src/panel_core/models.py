@@ -79,7 +79,6 @@ class Client(db.Model):
         nullable=True,
         index=True,
     )
-    devices = db.relationship("ClientDevice", backref="client", lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
         ips = []
@@ -130,23 +129,6 @@ class TrafficSnapshot(db.Model):
         db.Index("ix_ts_entity", "entity_type", "entity_id", "inbound_tag"),
         db.Index("ix_ts_type_bucket", "entity_type", "bucket"),
         db.Index("ix_ts_type_bucket_cover", "entity_type", "bucket", "entity_id", "inbound_tag", "up", "down"),
-    )
-
-
-class NodeTrafficSnapshot(db.Model):
-    __tablename__ = "node_traffic_snapshot"
-    id = db.Column(db.Integer, primary_key=True)
-    panel_id = db.Column(db.Integer, nullable=False)
-    entity_type = db.Column(db.String(10), nullable=False)
-    entity_id = db.Column(db.String(150), nullable=False)
-    inbound_tag = db.Column(db.String(50), nullable=False, default="")
-    bucket = db.Column(db.BigInteger, nullable=False)
-    up = db.Column(db.BigInteger, default=0)
-    down = db.Column(db.BigInteger, default=0)
-    __table_args__ = (
-        db.UniqueConstraint("panel_id", "entity_type", "entity_id", "inbound_tag", "bucket", name="uq_nts"),
-        db.Index("ix_nts_panel_bucket", "panel_id", "bucket"),
-        db.Index("ix_nts_bucket", "bucket"),
     )
 
 
@@ -205,15 +187,10 @@ class DomainStat(db.Model):
     )
 
 
-class ClientDevice(db.Model):
-    __tablename__ = "client_device"
+class UserDevice(db.Model):
+    __tablename__ = "user_device"
     id = db.Column(db.Integer, primary_key=True)
-    client_id = db.Column(
-        db.String(128),
-        db.ForeignKey("client.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    telegram_id = db.Column(db.BigInteger, nullable=False, index=True)
     hwid = db.Column(db.String(128), nullable=False)
     device_os = db.Column(db.String(32), default="")
     os_ver = db.Column(db.String(32), default="")
@@ -224,7 +201,7 @@ class ClientDevice(db.Model):
     last_seen = db.Column(db.BigInteger, nullable=False)
     hits = db.Column(db.Integer, default=1)
 
-    __table_args__ = (db.UniqueConstraint("client_id", "hwid", name="uq_client_hwid"),)
+    __table_args__ = (db.UniqueConstraint("telegram_id", "hwid", name="uq_user_hwid"),)
 
     def to_dict(self, *, include_admin_fields=False):
         out = {

@@ -1,7 +1,7 @@
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from panel_core.extensions import db
-from panel_core.db_migration import CURRENT_DB_VERSION
+from panel_core.db_migration import CURRENT_DB_VERSION, RETIRED_TABLES
 
 
 def _drop_foreign_keys():
@@ -13,6 +13,19 @@ def _drop_foreign_keys():
     for tbl, conname in rows:
         db.session.execute(text('ALTER TABLE {} DROP CONSTRAINT IF EXISTS "{}"'.format(tbl, conname)))
     return len(rows)
+
+
+def _drop_retired_tables():
+
+    dropped = 0
+    inspector = inspect(db.engine)
+    existing = set(inspector.get_table_names())
+    for table in RETIRED_TABLES:
+        if table not in existing:
+            continue
+        db.session.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
+        dropped += 1
+    return dropped
 
 
 def _ensure_schema_version():
@@ -36,6 +49,7 @@ def migrate_postgres_db(logger=None):
             lock_conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
             lock_conn.commit()
         db.create_all()
+        retired = _drop_retired_tables()
         dropped = _drop_foreign_keys()
         _ensure_schema_version()
         _seed_bot_texts_pg(force=False)
@@ -57,14 +71,17 @@ def migrate_postgres_db(logger=None):
                 pass
     if logger:
         logger.warning(
-            "Postgres schema init: %s FK constraint(s) dropped, schema_version=%s, bot_texts_reseeded=%s",
+            "Postgres schema init: %s FK constraint(s) dropped, %s retired table(s) dropped, "
+            "schema_version=%s, bot_texts_reseeded=%s",
             dropped,
+            retired,
             CURRENT_DB_VERSION,
             reseeded,
         )
     return {
         "new_version": CURRENT_DB_VERSION,
         "foreign_keys_dropped": dropped,
+        "retired_tables_dropped": retired,
         "bot_texts_force_reseeded": reseeded,
     }
 

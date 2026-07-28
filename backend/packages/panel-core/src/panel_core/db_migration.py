@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 24
+CURRENT_DB_VERSION = 25
 CURRENT_BOT_TEXTS_VERSION = 17
 
 
@@ -166,27 +166,17 @@ def _ensure_stats_tables(cursor: sqlite3.Cursor) -> int:
     return created
 
 
-def _ensure_node_traffic_table(cursor: sqlite3.Cursor) -> int:
-    if _table_exists(cursor, "node_traffic_snapshot"):
-        return 0
-    cursor.execute(
-        """
-        CREATE TABLE node_traffic_snapshot (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            panel_id    INTEGER NOT NULL,
-            entity_type TEXT    NOT NULL,
-            entity_id   TEXT    NOT NULL,
-            inbound_tag TEXT    NOT NULL DEFAULT '',
-            bucket      INTEGER NOT NULL,
-            up          INTEGER DEFAULT 0,
-            down        INTEGER DEFAULT 0,
-            CONSTRAINT uq_nts UNIQUE (panel_id, entity_type, entity_id, inbound_tag, bucket)
-        )
-        """
-    )
-    cursor.execute("CREATE INDEX IF NOT EXISTS ix_nts_panel_bucket ON node_traffic_snapshot (panel_id, bucket)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS ix_nts_bucket ON node_traffic_snapshot (bucket)")
-    return 1
+RETIRED_TABLES = ("node_traffic_snapshot", "client_device")
+
+
+def _drop_retired_tables(cursor: sqlite3.Cursor) -> int:
+    dropped = 0
+    for table in RETIRED_TABLES:
+        if not _table_exists(cursor, table):
+            continue
+        cursor.execute(f"DROP TABLE {table}")
+        dropped += 1
+    return dropped
 
 
 def _ensure_notification_claim_table(cursor: sqlite3.Cursor) -> int:
@@ -317,15 +307,15 @@ def _ensure_federation_config_table(cursor: sqlite3.Cursor) -> int:
     return 1
 
 
-def _ensure_client_device_table(cursor: sqlite3.Cursor) -> int:
+def _ensure_user_device_table(cursor: sqlite3.Cursor) -> int:
 
-    if _table_exists(cursor, "client_device"):
+    if _table_exists(cursor, "user_device"):
         return 0
     cursor.execute(
         """
-        CREATE TABLE client_device (
+        CREATE TABLE user_device (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id   VARCHAR(128) NOT NULL,
+            telegram_id BIGINT       NOT NULL,
             hwid        VARCHAR(128) NOT NULL,
             device_os   VARCHAR(32)  DEFAULT '',
             os_ver      VARCHAR(32)  DEFAULT '',
@@ -335,12 +325,11 @@ def _ensure_client_device_table(cursor: sqlite3.Cursor) -> int:
             first_seen  BIGINT       NOT NULL,
             last_seen   BIGINT       NOT NULL,
             hits        INTEGER      DEFAULT 1,
-            FOREIGN KEY (client_id) REFERENCES client(id) ON DELETE CASCADE
+            CONSTRAINT uq_user_hwid UNIQUE (telegram_id, hwid)
         )
         """
     )
-    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_client_hwid ON client_device(client_id, hwid)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS ix_client_device_client_id ON client_device(client_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_user_device_telegram_id ON user_device(telegram_id)")
     return 1
 
 
@@ -827,7 +816,7 @@ def _set_db_version(cursor: sqlite3.Cursor, version: int) -> None:
     cursor.execute(f"PRAGMA user_version = {int(version)}")
 
 
-def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
+def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True) -> Dict[str, int]:
     if not db_path:
         raise ValueError("db_path is required")
 
@@ -838,19 +827,19 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         old_version = _get_db_version(cursor)
 
         stats_tables = _ensure_stats_tables(cursor)
-        node_traffic_table = _ensure_node_traffic_table(cursor)
+        retired_tables_dropped = _drop_retired_tables(cursor)
         notification_claim_table = _ensure_notification_claim_table(cursor)
         provision_receipt_table = _ensure_provision_receipt_table(cursor)
         stats_indexes = _ensure_stats_indexes(cursor)
         stats_cover_indexes = _ensure_stats_cover_indexes(cursor)
         linked_panel_table = _ensure_linked_panel_table(cursor)
         federation_config_table = _ensure_federation_config_table(cursor)
-        client_device_table = _ensure_client_device_table(cursor)
+        user_device_table = _ensure_user_device_table(cursor)
         billing_tables = _ensure_billing_tables(cursor)
         client_billing_columns = _alter_client_billing_columns(cursor)
-        bot_texts_seeded = _seed_bot_texts(cursor)
+        bot_texts_seeded = _seed_bot_texts(cursor) if seed_bot_texts else 0
         bot_texts_customized_marked = _ensure_bot_text_customized_column(cursor)
-        bot_texts_force_reseeded = _maybe_force_reseed_bot_texts(cursor)
+        bot_texts_force_reseeded = _maybe_force_reseed_bot_texts(cursor) if seed_bot_texts else False
         schema_changes = _ensure_schema_columns(cursor)
         sub_tokens_backfilled = _backfill_sub_tokens(cursor)
         removed_legacy_inbounds, normalized_streams = _cleanup_legacy_inbounds(cursor)
@@ -865,14 +854,14 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "old_version": old_version,
             "new_version": CURRENT_DB_VERSION,
             "stats_tables_created": stats_tables,
-            "node_traffic_table_created": node_traffic_table,
+            "retired_tables_dropped": retired_tables_dropped,
             "notification_claim_table_created": notification_claim_table,
             "provision_receipt_table_created": provision_receipt_table,
             "stats_indexes_created": stats_indexes,
             "stats_cover_indexes_created": stats_cover_indexes,
             "linked_panel_table_created": linked_panel_table,
             "federation_config_table_created": federation_config_table,
-            "client_device_table_created": client_device_table,
+            "user_device_table_created": user_device_table,
             "billing_tables_created": billing_tables,
             "client_billing_columns_added": client_billing_columns,
             "bot_texts_seeded": bot_texts_seeded,
@@ -886,14 +875,14 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         }
         changed = (
             stats_tables > 0
-            or node_traffic_table > 0
+            or retired_tables_dropped > 0
             or notification_claim_table > 0
             or provision_receipt_table > 0
             or stats_indexes > 0
             or stats_cover_indexes > 0
             or linked_panel_table > 0
             or federation_config_table > 0
-            or client_device_table > 0
+            or user_device_table > 0
             or billing_tables > 0
             or client_billing_columns > 0
             or bot_texts_seeded > 0

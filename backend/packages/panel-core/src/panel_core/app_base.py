@@ -146,11 +146,11 @@ def _resolve_admin_bootstrap_credentials(panel_host):
     return username, password
 
 
-def run_startup_migration(app, db_path):
+def run_startup_migration(app, db_path, *, seed_bot_texts=True):
     if is_postgres(app.config["SQLALCHEMY_DATABASE_URI"]):
         return migrate_postgres_db(logger=app.logger)
     db.create_all()
-    return migrate_sqlite_db(db_path, logger=app.logger)
+    return migrate_sqlite_db(db_path, logger=app.logger, seed_bot_texts=seed_bot_texts)
 
 
 def db_path():
@@ -257,10 +257,10 @@ SCHEMA_MISSING_HINT = (
 )
 
 
-def migrate_schema(app, db_path):
+def migrate_schema(app, db_path, *, seed_bot_texts=True):
     with app.app_context():
         try:
-            report = run_startup_migration(app, db_path)
+            report = run_startup_migration(app, db_path, seed_bot_texts=seed_bot_texts)
             if report.get("bot_texts_force_reseeded"):
                 try:
                     from panel_core.services import bot_events
@@ -286,7 +286,7 @@ def _require_schema():
         raise RuntimeError(SCHEMA_MISSING_HINT)
 
 
-def bootstrap_defaults(app):
+def bootstrap_defaults(app, *, bot_service_token=True):
     panel_host = _panel_domain_host()
 
     with app.app_context():
@@ -296,14 +296,15 @@ def bootstrap_defaults(app):
             from .models import SystemSetting
             import secrets
 
-            existing = SystemSetting.query.filter_by(key="bot_service_token").first()
-            if existing is None or not existing.value:
-                if existing is None:
-                    existing = SystemSetting(key="bot_service_token", value="")
-                    db.session.add(existing)
-                existing.value = secrets.token_urlsafe(32)
-                db.session.commit()
-                app.logger.info("Generated initial bot_service_token")
+            if bot_service_token:
+                existing = SystemSetting.query.filter_by(key="bot_service_token").first()
+                if existing is None or not existing.value:
+                    if existing is None:
+                        existing = SystemSetting(key="bot_service_token", value="")
+                        db.session.add(existing)
+                    existing.value = secrets.token_urlsafe(32)
+                    db.session.commit()
+                    app.logger.info("Generated initial bot_service_token")
 
             direct_ob = Outbound.query.filter_by(tag="direct").first()
             block_ob = Outbound.query.filter_by(tag="block").first()

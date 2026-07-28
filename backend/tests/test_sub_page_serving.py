@@ -26,21 +26,22 @@ SERVING_DOC = (
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
 TOPOLOGY_DOC = (
-    "One image bakes the page bundle, three roles register the subscription blueprint. That asymmetry "
-    "is the whole reason SUB_DOMAIN stopped being optional: with it empty, build_aggregate_sub_url "
-    "falls back to PANEL_DOMAIN, caddy/routes.yaml sends that to the master, and the master has no "
-    "bundle — so the browser branch 503s where a rendered page used to be, while client apps keep "
-    "getting configs and nobody notices. It is a deployment-topology rule, enforced by nothing at "
-    "runtime, so CLAUDE.md carrying it is the only thing standing between a deployer and that trap. "
-    "This guard fails when the topology changes without the prose, or the prose without the topology."
+    "One image bakes the page bundle and exactly one role serves the subscription routes. Until wave 3b "
+    "three roles registered the blueprint while one image baked a bundle, and that asymmetry was a trap: "
+    "with SUB_DOMAIN empty, build_aggregate_sub_url fell back to PANEL_DOMAIN, caddy/routes.yaml sent "
+    "that to the master, and the master had no bundle — so a browser got 503 where a page used to be "
+    "while client apps kept getting configs and nobody noticed. Wave 3b removed both halves: the "
+    "blueprint from master and worker, and the fallback from sub_links. SUB_DOMAIN is now the only way a "
+    "subscription link exists at all. It is a deployment-topology rule enforced by nothing at runtime, "
+    "so CLAUDE.md carrying it is what stands between a deployer and a dead link. This guard fails when "
+    "the topology changes without the prose, or the prose without the topology."
 )
 
-ROLES_SERVING_THE_SUBSCRIPTION_ROUTES = {"master", "worker", "sub"}
+ROLES_SERVING_THE_SUBSCRIPTION_ROUTES = {"sub"}
 
 TOPOLOGY_CLAIMS = {
-    "the Subscription links section": "**Only the `sub` role serves the subscription page.**",
-    "the Configuration SUB_DOMAIN bullet": "`SUB_DOMAIN` *(required for the subscription page)*",
-    "the Phase 3d fan-out rule": "**Phase 6 is a standing exception to the three-image fan-out above",
+    "the Subscription links section": "**Only the `sub` role serves subscriptions at all.**",
+    "the Configuration SUB_DOMAIN bullet": "`SUB_DOMAIN` *(required — subscriptions do not work without it)*",
 }
 
 
@@ -61,16 +62,16 @@ def _dockerfiles_baking_a_frontend_bundle():
     return found
 
 
-def test_exactly_one_image_bakes_the_bundle_that_three_roles_serve_routes_for():
+def test_the_one_role_that_serves_subscriptions_is_the_one_that_bakes_the_bundle():
     roles = _roles_registering_the_subscription_blueprint()
     bakers = _dockerfiles_baking_a_frontend_bundle()
 
     assert roles == ROLES_SERVING_THE_SUBSCRIPTION_ROUTES, (
         f"{sorted(roles)} register the subscription blueprint, not "
-        f"{sorted(ROLES_SERVING_THE_SUBSCRIPTION_ROUTES)}. If master or worker dropped it, they no "
-        f"longer 503 a browser and the SUB_DOMAIN-is-required rule is obsolete — rewrite the CLAUDE.md "
-        f"passages this guard pins instead of leaving them to mislead. If a fourth role gained it, that "
-        f"role has just inherited the same bundle-less page.\n\n{TOPOLOGY_DOC}"
+        f"{sorted(ROLES_SERVING_THE_SUBSCRIPTION_ROUTES)}. A second role gaining it takes back "
+        f"everything wave 3b bought: an unauthenticated endpoint on an admin host, a three-image "
+        f"rebuild for every subscription edit, and a role serving the page routes with no bundle "
+        f"behind them.\n\n{TOPOLOGY_DOC}"
     )
     assert bakers == {"Dockerfile.sub"}, (
         f"{sorted(bakers)} bake a frontend bundle, not just Dockerfile.sub. If a second image now "
@@ -101,16 +102,15 @@ def test_no_host_example_calls_sub_domain_optional(example):
     assert path.is_file(), f"{example} does not exist; the single .env.example was split per host."
     lines = path.read_text().splitlines()
     assert any(line.startswith("SUB_DOMAIN=") for line in lines), (
-        f"{example} no longer sets SUB_DOMAIN. Every one of these four hosts reads it: the sub host "
-        f"serves it, and the master, the node and bot-api all build subscription links out of it via "
-        f"services/sub_links.build_aggregate_sub_url.\n\n{TOPOLOGY_DOC}"
+        f"{example} no longer sets SUB_DOMAIN. All four hosts read it: the sub host serves it, and the "
+        f"master, the node and bot-api all build subscription links out of it via "
+        f"services/sub_links — with no fallback since wave 3b.\n\n{TOPOLOGY_DOC}"
     )
     documentation = [line for line in lines if line.startswith("# SUB_DOMAIN")]
     assert documentation, f"{example} sets SUB_DOMAIN without documenting it at all\n\n{TOPOLOGY_DOC}"
     assert "optional" not in documentation[0].lower(), (
-        f"{example} calls SUB_DOMAIN optional: {documentation[0]!r}. It is optional only for config "
-        f"delivery; for the subscription page it is the difference between a page and a "
-        f"503.\n\n{TOPOLOGY_DOC}"
+        f"{example} calls SUB_DOMAIN optional: {documentation[0]!r}. Since wave 3b it is not: without it "
+        f"there is no subscription link at all, for a browser or for a client app.\n\n{TOPOLOGY_DOC}"
     )
 
 

@@ -4,13 +4,15 @@ import pytest
 
 from tests.schema import ensure_schema
 
+# §8.1 (wave 3b): `subscription` belongs to the sub role and to no other. A master or a node
+# registering it exposed an unauthenticated endpoint on an admin host and made every edit to the
+# subscription code a three-image release.
 WORKER_BLUEPRINTS = {
     "auth",
     "inbound",
     "outbound",
     "routing",
     "system",
-    "subscription",
     "statistics",
     "federation",
 }

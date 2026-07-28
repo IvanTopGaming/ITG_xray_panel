@@ -6,8 +6,8 @@ Statistics endpoints read `traffic_snapshot` and `domain_stat`, and nothing writ
 those into the master's Postgres. Statistics were declared node-local, so the transport was
 deleted instead of being given a consumer.
 
-The table itself still exists; dropping it is a schema change and belongs to the migration
-wave. These tests pin the absence of the pipeline, which is the part that would creep back.
+Wave 3b dropped the table itself, since it bumped the schema anyway. These tests pin the
+absence of the pipeline, which is the part that would creep back.
 """
 
 import ast

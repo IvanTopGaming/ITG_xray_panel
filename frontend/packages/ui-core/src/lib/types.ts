@@ -26,13 +26,14 @@ export interface Client {
   preferred_outbound?: string;
   device_limit?: number | null;
   device_count?: number;
+  telegram_id?: number | null;
   tariff_id?: number | null;
   panel_id?: number | null;
   panel_name?: string;
   sub_url?: string | null;
 }
 
-export interface ClientDevice {
+export interface UserDevice {
   id: number;
   device_os: string;
   os_ver: string;

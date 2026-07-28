@@ -160,16 +160,22 @@ class TestGetInbounds:
         resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
         assert resp.get_json()[0]["label"] == "Germany VPN"
 
-    def test_client_sub_url_exposed(self, app, client, auth_headers, monkeypatch):
+    def test_client_sub_url_points_at_the_sub_host(self, app, client, auth_headers, monkeypatch):
+        """The Dashboard's copy button has nowhere else to point.
+
+        This role serves no /api/sub/* at all since wave 3b, so a link built from its own domain
+        would be a 404 handed to an admin. A client tied to a Telegram account gets the aggregate
+        link; one created by hand gets the per-UUID link on the same host.
+        """
 
         from panel_core.models import TelegramUser
 
         monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
-        monkeypatch.delenv("SUB_DOMAIN", raising=False)
+        monkeypatch.setenv("SUB_DOMAIN", "sub.example.com")
 
         ib = _make_inbound()
+        c_no_tg = _make_client(inbound_tag=ib.tag, email="no-tg")
         _make_client(inbound_tag=ib.tag, email="with-tg", telegram_id=555)
-        _make_client(inbound_tag=ib.tag, email="no-tg")
         db.session.add(TelegramUser(telegram_id=555, sub_token="someToken"))
         db.session.commit()
 
@@ -177,8 +183,23 @@ class TestGetInbounds:
         assert resp.status_code == 200
         clients = resp.get_json()[0]["settings"]["clients"]
         by_email = {c["email"]: c for c in clients}
-        assert by_email["with-tg"]["sub_url"].endswith("/api/sub/u/someToken")
-        assert by_email["no-tg"]["sub_url"] is None
+        assert by_email["with-tg"]["sub_url"] == "https://sub.example.com/api/sub/u/someToken"
+        assert by_email["no-tg"]["sub_url"] == f"https://sub.example.com/api/sub/{c_no_tg.id}"
+        assert "panel.example.com" not in resp.get_data(as_text=True)
+
+    def test_client_sub_url_is_absent_without_a_sub_domain(self, app, client, auth_headers, monkeypatch):
+        """No fallback: an unset SUB_DOMAIN yields no link rather than a link to this host."""
+
+        monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
+        monkeypatch.delenv("SUB_DOMAIN", raising=False)
+
+        ib = _make_inbound()
+        _make_client(inbound_tag=ib.tag, email="no-tg")
+        db.session.commit()
+
+        resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
+        clients = resp.get_json()[0]["settings"]["clients"]
+        assert clients[0]["sub_url"] is None
 
 
 class TestCreateInbound:

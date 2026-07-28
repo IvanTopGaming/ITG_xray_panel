@@ -1,5 +1,4 @@
 import { Inbound, Client } from './types';
-import { panelBase } from './panelBase';
 
 function normalizeRealityPublicKey(value: string): string {
   const key = (value || '').trim();
@@ -39,12 +38,6 @@ function normalizeShadowsocks2022Key(value: string): string {
   } catch {
     return key;
   }
-}
-
-function resolvePanelApiPath(path: string): string {
-  const panelBaseNorm = panelBase.endsWith('/') ? panelBase : `${panelBase}/`;
-  const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
-  return new URL(`${panelBaseNorm}${normalizedPath}`, window.location.origin).toString();
 }
 
 function appendPathHostParams(
@@ -189,8 +182,4 @@ export function generateLink(
   }
 
   return '';
-}
-
-export function generateSubscriptionUrl(client: Client): string {
-  return resolvePanelApiPath(`api/sub/${encodeURIComponent(client.id)}`);
 }

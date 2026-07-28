@@ -42,5 +42,5 @@ def test_schema_patch_adds_egress_columns(outbound_pre_v21):
     assert {"send_through", "public_ip", "gateway"} <= cols
 
 
-def test_current_db_version_is_24():
-    assert CURRENT_DB_VERSION == 24
+def test_current_db_version_is_at_least_24():
+    assert CURRENT_DB_VERSION >= 24

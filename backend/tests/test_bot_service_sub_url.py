@@ -47,7 +47,13 @@ def test_get_user_state_includes_sub_url(client, app, monkeypatch):
     assert data["sub_url"] == "https://sub.example.com/api/sub/u/tok-900-bbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
-def test_get_user_state_no_sub_domain_uses_panel_fallback(client, app, monkeypatch):
+def test_get_user_state_without_a_sub_domain_hands_out_no_link_at_all(client, app, monkeypatch):
+    """Wave 3b removed the PANEL_DOMAIN fallback: no link beats a link that cannot work.
+
+    The fallback pointed at the master, which since this wave serves no /api/sub/* whatsoever.
+    Every link the bot hands a user is built here, in bot-api's own process, which is why
+    docker-compose.bot.yml demands SUB_DOMAIN through `:?` rather than defaulting it.
+    """
 
     monkeypatch.delenv("SUB_DOMAIN", raising=False)
     monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
@@ -63,10 +69,7 @@ def test_get_user_state_no_sub_domain_uses_panel_fallback(client, app, monkeypat
         "/api/bot-service/users/901/state",
         headers={"Authorization": "Bearer testtoken2"},
     )
-    assert (
-        resp.get_json()["sub_url"]
-        == "https://panel.example.com/secret123/api/sub/u/tok-901-cccccccccccccccccccccccccccc"
-    )
+    assert resp.get_json()["sub_url"] is None
 
 
 def test_get_user_state_no_domains_returns_none(client, app, monkeypatch):
