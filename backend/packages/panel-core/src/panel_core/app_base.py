@@ -286,7 +286,27 @@ def _require_schema():
         raise RuntimeError(SCHEMA_MISSING_HINT)
 
 
-def bootstrap_defaults(app, *, bot_service_token=True):
+SYSTEM_OUTBOUND_TAGS = ("direct", "block")
+
+
+def _drop_system_outbounds(app):
+
+    stale = Outbound.query.filter(Outbound.tag.in_(SYSTEM_OUTBOUND_TAGS)).all()
+    if not stale:
+        return 0
+    for ob in stale:
+        db.session.delete(ob)
+    db.session.commit()
+    app.logger.info(
+        "Removed %d seeded system outbound(s) (%s): this role has no Xray to route through, "
+        "outbounds live on the nodes",
+        len(stale),
+        ", ".join(sorted(ob.tag for ob in stale)),
+    )
+    return len(stale)
+
+
+def bootstrap_defaults(app, *, bot_service_token=True, system_outbounds=True):
     panel_host = _panel_domain_host()
 
     with app.app_context():
@@ -306,17 +326,20 @@ def bootstrap_defaults(app, *, bot_service_token=True):
                     db.session.commit()
                     app.logger.info("Generated initial bot_service_token")
 
-            direct_ob = Outbound.query.filter_by(tag="direct").first()
-            block_ob = Outbound.query.filter_by(tag="block").first()
-            if not direct_ob:
-                db.session.add(Outbound(tag="direct", protocol="freedom", enable=True))
-            elif not bool(getattr(direct_ob, "enable", True)):
-                direct_ob.enable = True
-            if not block_ob:
-                db.session.add(Outbound(tag="block", protocol="blackhole", enable=True))
-            elif not bool(getattr(block_ob, "enable", True)):
-                block_ob.enable = True
-            db.session.commit()
+            if system_outbounds:
+                direct_ob = Outbound.query.filter_by(tag="direct").first()
+                block_ob = Outbound.query.filter_by(tag="block").first()
+                if not direct_ob:
+                    db.session.add(Outbound(tag="direct", protocol="freedom", enable=True))
+                elif not bool(getattr(direct_ob, "enable", True)):
+                    direct_ob.enable = True
+                if not block_ob:
+                    db.session.add(Outbound(tag="block", protocol="blackhole", enable=True))
+                elif not bool(getattr(block_ob, "enable", True)):
+                    block_ob.enable = True
+                db.session.commit()
+            else:
+                _drop_system_outbounds(app)
 
             generate_config_file(validate=False)
 

@@ -13,7 +13,7 @@ import { cn } from '@ui/lib/utils';
 import { useAuthStore, AuthState } from '@ui/stores/authStore';
 import { motion } from 'framer-motion';
 import { useVersionStatus } from '@ui/hooks/useVersionStatus';
-import { hasLocalXray, isWorker } from '@ui/lib/panelRole';
+import { isWorker } from '@ui/lib/panelRole';
 
 export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const location = useLocation();
@@ -22,7 +22,6 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
   const { hasUpdates } = useVersionStatus();
 
   const WORKER_HIDDEN = new Set(['/statistics', '/panels', '/bot']);
-  const LOCAL_XRAY_ONLY = new Set(['/routing']);
   const navItems = [
     { icon: LayoutDashboard, label: 'Panel', path: '/' },
     { icon: BarChart3, label: 'Stats', path: '/statistics' },
@@ -30,11 +29,7 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
     { icon: RouteIcon, label: 'Routing', path: '/routing' },
     { icon: BotIcon, label: 'Bot', path: '/bot' },
     { icon: Settings, label: 'System', path: '/system' },
-  ].filter(
-    (item) =>
-      !(isWorker && WORKER_HIDDEN.has(item.path)) &&
-      !(!hasLocalXray && LOCAL_XRAY_ONLY.has(item.path))
-  );
+  ].filter((item) => !(isWorker && WORKER_HIDDEN.has(item.path)));
 
   const handleNav = (path: string) => {
     navigate(path);

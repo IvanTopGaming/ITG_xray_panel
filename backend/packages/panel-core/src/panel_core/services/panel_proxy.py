@@ -16,6 +16,13 @@ _LAST_POLL_TTL = 300
 REFRESH_CHANNEL = "panel:refresh"
 
 
+class RemotePanelError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
 class FederationClient:
     def __init__(self, url: str, federation_token: str) -> None:
         self.base_url = url.rstrip("/")
@@ -47,8 +54,92 @@ class FederationClient:
         )
         return resp.json()
 
+    def _call_reporting(self, verb: str, path: str, **kwargs):
+
+        t0 = time.monotonic()
+        try:
+            resp = getattr(self._session, verb)(f"{self.base_url}{path}", **kwargs)
+        except Exception as exc:
+            logger.warning(
+                "federation %s %s unreachable in %.0f ms: %s",
+                verb.upper(),
+                path,
+                (time.monotonic() - t0) * 1000,
+                exc,
+            )
+            raise RemotePanelError(502, f"Panel is unreachable: {exc}") from exc
+
+        if resp.status_code >= 400:
+            body = {}
+            try:
+                parsed = resp.json()
+                if isinstance(parsed, dict):
+                    body = parsed
+            except Exception:
+                body = {}
+            message = str(body.get("error") or body.get("message") or "").strip()
+            logger.warning(
+                "federation %s %s -> HTTP %s: %s",
+                verb.upper(),
+                path,
+                resp.status_code,
+                message or "(no message)",
+            )
+            raise RemotePanelError(resp.status_code, message or f"Panel answered HTTP {resp.status_code}")
+
+        logger.debug(
+            "federation %s %s -> HTTP %s in %.0f ms",
+            verb.upper(),
+            path,
+            resp.status_code,
+            (time.monotonic() - t0) * 1000,
+        )
+        try:
+            return resp.json()
+        except Exception as exc:
+            raise RemotePanelError(502, "Panel answered with something that is not JSON") from exc
+
     def snapshot(self) -> dict:
         return self._call("get", "/api/federation/snapshot", timeout=(2, 5))
+
+    def list_outbounds(self) -> list:
+        return self._call_reporting("get", "/api/outbounds", timeout=8)
+
+    def create_outbound(self, payload: dict) -> dict:
+        return self._call_reporting("post", "/api/outbounds", json=payload, timeout=8)
+
+    def update_outbound(self, tag: str, payload: dict) -> dict:
+        return self._call_reporting("put", f"/api/outbounds/{tag}", json=payload, timeout=8)
+
+    def delete_outbound(self, tag: str) -> dict:
+        return self._call_reporting("delete", f"/api/outbounds/{tag}", timeout=8)
+
+    def list_balancers(self) -> list:
+        return self._call_reporting("get", "/api/balancers", timeout=8)
+
+    def create_balancer(self, payload: dict) -> dict:
+        return self._call_reporting("post", "/api/balancers", json=payload, timeout=8)
+
+    def update_balancer(self, tag: str, payload: dict) -> dict:
+        return self._call_reporting("put", f"/api/balancers/{tag}", json=payload, timeout=8)
+
+    def delete_balancer(self, tag: str) -> dict:
+        return self._call_reporting("delete", f"/api/balancers/{tag}", timeout=8)
+
+    def list_routing_profiles(self) -> list:
+        return self._call_reporting("get", "/api/routing-profiles", timeout=8)
+
+    def create_routing_profile(self, payload: dict) -> dict:
+        return self._call_reporting("post", "/api/routing-profiles", json=payload, timeout=8)
+
+    def update_routing_profile(self, profile_id: int, payload: dict) -> dict:
+        return self._call_reporting("put", f"/api/routing-profiles/{profile_id}", json=payload, timeout=8)
+
+    def delete_routing_profile(self, profile_id: int) -> dict:
+        return self._call_reporting("delete", f"/api/routing-profiles/{profile_id}", timeout=8)
+
+    def reset_inbound_traffic(self, tag: str) -> dict:
+        return self._call_reporting("post", f"/api/inbounds/{tag}/reset-traffic", timeout=30)
 
     def create_inbound(self, payload: dict) -> dict:
         return self._call("post", "/api/inbounds", json=payload, timeout=8)
@@ -324,6 +415,110 @@ def proxy_provision(
             f"It is running a federation contract this panel no longer speaks — update the node to the same "
             f"release as the master and retry."
         )
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def _client_for(panel_id: int) -> tuple[LinkedPanel, FederationClient]:
+
+    panel = _get_panel_or_raise(panel_id)
+    return panel, FederationClient(panel.url, panel.federation_token)
+
+
+def proxy_list_outbounds(panel_id: int) -> list:
+
+    _, client = _client_for(panel_id)
+    return client.list_outbounds()
+
+
+def proxy_create_outbound(panel_id: int, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.create_outbound(payload)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_update_outbound(panel_id: int, tag: str, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.update_outbound(tag, payload)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_delete_outbound(panel_id: int, tag: str) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.delete_outbound(tag)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_list_balancers(panel_id: int) -> list:
+
+    _, client = _client_for(panel_id)
+    return client.list_balancers()
+
+
+def proxy_create_balancer(panel_id: int, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.create_balancer(payload)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_update_balancer(panel_id: int, tag: str, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.update_balancer(tag, payload)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_delete_balancer(panel_id: int, tag: str) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.delete_balancer(tag)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_list_routing_profiles(panel_id: int) -> list:
+
+    _, client = _client_for(panel_id)
+    return client.list_routing_profiles()
+
+
+def proxy_create_routing_profile(panel_id: int, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.create_routing_profile(payload)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_update_routing_profile(panel_id: int, profile_id: int, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.update_routing_profile(profile_id, payload)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_delete_routing_profile(panel_id: int, profile_id: int) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.delete_routing_profile(profile_id)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_reset_inbound_traffic(panel_id: int, tag: str) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.reset_inbound_traffic(tag)
     _nudge_panel_refresh(panel.id)
     return result
 

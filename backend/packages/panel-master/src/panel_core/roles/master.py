@@ -30,7 +30,7 @@ def create_app():
     app.register_blueprint(bot_admin.bp, url_prefix="/api")
     app.register_blueprint(panels.bp, url_prefix="/api")
 
-    bootstrap_defaults(app)
+    bootstrap_defaults(app, system_outbounds=False)
 
     app.logger.info("backend ready (db=%s, no scheduled jobs on this role)", sqlite_path)
     return app

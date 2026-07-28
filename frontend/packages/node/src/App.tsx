@@ -5,7 +5,6 @@ import 'react-toastify/dist/ReactToastify.css';
 
 import { useAuthStore, AuthState } from '@ui/stores/authStore';
 import { panelBase } from '@ui/lib/panelBase';
-import { hasLocalXray } from '@ui/lib/panelRole';
 import { Layout } from '@ui/components/layout/Layout';
 import Login from '@ui/pages/Login';
 import Dashboard from '@ui/pages/Dashboard';
@@ -45,10 +44,7 @@ function App() {
             }
           >
             <Route index element={<Dashboard />} />
-            <Route
-              path="routing"
-              element={hasLocalXray ? <Routing /> : <Navigate to="/" replace />}
-            />
+            <Route path="routing" element={<Routing />} />
             <Route path="system" element={<System />} />
           </Route>
         </Routes>

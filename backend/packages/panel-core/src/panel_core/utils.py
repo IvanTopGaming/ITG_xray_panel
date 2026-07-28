@@ -202,6 +202,36 @@ def admin_or_federation_token_required(f):
     return decorated
 
 
+def audit_privileged_change(module_logger, action):
+
+    source = request.remote_addr or "an unknown address"
+    if getattr(g, "auth_via", None) == "federation":
+        module_logger.warning("%s over the federation token from %s", action, source)
+    else:
+        module_logger.info("%s by a panel admin from %s", action, source)
+
+
+def remote_panel_failure(exc):
+
+    status = int(getattr(exc, "status_code", 502) or 502)
+    message = str(getattr(exc, "message", "") or exc)
+    if status == 401:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "The node rejected this master's federation token. "
+                        "Issue a fresh link token on the node and relink the panel."
+                    )
+                }
+            ),
+            401,
+        )
+    if status in (400, 404, 409):
+        return jsonify({"error": message}), status
+    return jsonify({"error": message}), 502
+
+
 def validate_password(password):
     if len(password) < 8:
         return "Password must be at least 8 characters long"

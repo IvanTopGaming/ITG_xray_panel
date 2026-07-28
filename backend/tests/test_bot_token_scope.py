@@ -43,6 +43,22 @@ WRITE_ENDPOINTS = (
     ("POST", "/api/users/reset-traffic"),
     ("POST", "/api/restart"),
     ("GET", "/api/stats/system"),
+    ("POST", "/api/inbounds/probe/reset-traffic"),
+    ("POST", "/api/outbounds"),
+    ("PUT", "/api/outbounds/probe"),
+    ("DELETE", "/api/outbounds/probe"),
+    ("POST", "/api/balancers"),
+    ("PUT", "/api/balancers/probe"),
+    ("DELETE", "/api/balancers/probe"),
+    ("POST", "/api/routing-profiles"),
+    ("PUT", "/api/routing-profiles/1"),
+    ("DELETE", "/api/routing-profiles/1"),
+)
+
+READ_ENDPOINTS_ON_THE_FEDERATION_DECORATOR = (
+    ("GET", "/api/outbounds"),
+    ("GET", "/api/balancers"),
+    ("GET", "/api/routing-profiles"),
 )
 
 
@@ -168,6 +184,23 @@ def test_the_bot_service_token_cannot_write_through_the_federation_decorator(cli
         f"{method} {path} accepted the bot service token (HTTP {resp.status_code}). Anything other than "
         "401 means authorization passed — a 501 from the has_local_xray gate or a 400 from validation "
         "is still a pass."
+    )
+
+
+@pytest.mark.parametrize("method,path", READ_ENDPOINTS_ON_THE_FEDERATION_DECORATOR)
+def test_the_bot_service_token_cannot_read_a_nodes_network_either(client, method, path):
+    """Wave 4c-2 moved thirteen more handlers onto `admin_or_federation_token_required`.
+
+    These three are the reads. They are separated from `WRITE_ENDPOINTS` because they are the ones
+    that would fail *quietly*: before this wave they carried `token_required` and answered 200 with
+    the master's own rows, so the question "does the bot token open them" had never been asked of
+    the decorator that now guards them.
+    """
+
+    resp = client.open(path, method=method, headers={"Authorization": f"Bearer {BOT_TOKEN}"})
+    assert resp.status_code == 401, (
+        f"{method} {path} accepted the bot service token (HTTP {resp.status_code}). Through `panel_id` "
+        "these reach every node's outbounds, balancers and routing profiles."
     )
 
 

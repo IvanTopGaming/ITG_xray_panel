@@ -1,21 +1,36 @@
 import ipaddress
 import json
+import logging
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import Outbound, Balancer, Client
-from panel_core.utils import token_required, normalize_tag
+from panel_core.utils import (
+    admin_or_federation_token_required,
+    audit_privileged_change,
+    normalize_tag,
+    remote_panel_failure,
+    token_required,
+)
 from panel_core.services.egress import allocate_bind_ip
 from panel_core.xray.facade import generate_config_file, has_local_xray, restart_xray_container
 
+logger = logging.getLogger(__name__)
+
 bp = Blueprint("outbound", __name__)
 XRAY_OUTBOUNDS_UNSUPPORTED = (
-    "Outbounds are configured on the node that runs Xray; this role has no local Xray instance."
+    "Outbounds are configured on the node that runs Xray; this role has no local Xray instance. "
+    "Supply panel_id to route the operation to a node."
 )
 XRAY_BALANCERS_UNSUPPORTED = (
-    "Balancers are configured on the node that runs Xray; this role has no local Xray instance."
+    "Balancers are configured on the node that runs Xray; this role has no local Xray instance. "
+    "Supply panel_id to route the operation to a node."
+)
+XRAY_OUTBOUND_HEALTH_UNSUPPORTED = (
+    "Outbound health is probed from the machine the traffic leaves through; this role has no local Xray "
+    "instance. Open the node's own panel to see it."
 )
 ALLOWED_BALANCER_STRATEGIES = {"random", "leastLoad", "leastPing"}
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -160,9 +175,24 @@ def _probe_outbound(host, port, timeout_sec=1.5):
         return max(1, int(elapsed))
 
 
+def _requested_panel_id():
+    return request.args.get("panel_id", type=int)
+
+
 @bp.route("/outbounds", methods=["GET"])
-@token_required
+@admin_or_federation_token_required
 def get_outbounds():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_list_outbounds
+
+        try:
+            return jsonify(proxy_list_outbounds(panel_id))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     outbounds = Outbound.query.all()
     return jsonify(
         [
@@ -185,6 +215,8 @@ def get_outbounds():
 @bp.route("/outbounds/health", methods=["GET"])
 @token_required
 def get_outbounds_health():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_OUTBOUND_HEALTH_UNSUPPORTED}), 501
     checked_at = int(time.time() * 1000)
     outbounds = Outbound.query.all()
     result = []
@@ -244,9 +276,20 @@ def get_outbounds_health():
 
 
 @bp.route("/outbounds", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def create_outbound():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_create_outbound
+
+        try:
+            return jsonify(proxy_create_outbound(panel_id, request.get_json(silent=True) or {})), 201
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_OUTBOUNDS_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
@@ -284,6 +327,7 @@ def create_outbound():
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"outbound '{new_ob.tag}' created")
         return jsonify({"tag": new_ob.tag}), 201
     except ValueError as e:
         db.session.rollback()
@@ -293,9 +337,20 @@ def create_outbound():
 
 
 @bp.route("/outbounds/<tag>", methods=["PUT"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def update_outbound(tag):
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_update_outbound
+
+        try:
+            return jsonify(proxy_update_outbound(panel_id, tag, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_OUTBOUNDS_UNSUPPORTED}), 501
     try:
@@ -328,6 +383,7 @@ def update_outbound(tag):
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"outbound '{tag}' updated")
         return jsonify({"status": "updated"}), 200
     except ValueError as e:
         db.session.rollback()
@@ -337,9 +393,20 @@ def update_outbound(tag):
 
 
 @bp.route("/outbounds/<tag>", methods=["DELETE"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def delete_outbound(tag):
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_delete_outbound
+
+        try:
+            return jsonify(proxy_delete_outbound(panel_id, tag))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_OUTBOUNDS_UNSUPPORTED}), 501
     try:
@@ -374,6 +441,7 @@ def delete_outbound(tag):
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"outbound '{tag}' deleted")
         return jsonify({"status": "deleted"}), 200
     except ValueError as e:
         db.session.rollback()
@@ -383,8 +451,19 @@ def delete_outbound(tag):
 
 
 @bp.route("/balancers", methods=["GET"])
-@token_required
+@admin_or_federation_token_required
 def get_balancers():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_list_balancers
+
+        try:
+            return jsonify(proxy_list_balancers(panel_id))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     balancers = Balancer.query.all()
     return jsonify(
         [
@@ -401,9 +480,20 @@ def get_balancers():
 
 
 @bp.route("/balancers", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def create_balancer():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_create_balancer
+
+        try:
+            return jsonify(proxy_create_balancer(panel_id, request.get_json(silent=True) or {})), 201
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_BALANCERS_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
@@ -438,6 +528,7 @@ def create_balancer():
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"balancer '{new_bal.tag}' created")
         return jsonify({"tag": new_bal.tag}), 201
     except ValueError as e:
         db.session.rollback()
@@ -447,9 +538,20 @@ def create_balancer():
 
 
 @bp.route("/balancers/<tag>", methods=["PUT"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def update_balancer(tag):
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_update_balancer
+
+        try:
+            return jsonify(proxy_update_balancer(panel_id, tag, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_BALANCERS_UNSUPPORTED}), 501
     try:
@@ -491,6 +593,7 @@ def update_balancer(tag):
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"balancer '{tag}' updated")
         return jsonify({"status": "updated"}), 200
     except ValueError as e:
         db.session.rollback()
@@ -500,9 +603,20 @@ def update_balancer(tag):
 
 
 @bp.route("/balancers/<tag>", methods=["DELETE"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def delete_balancer(tag):
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_delete_balancer
+
+        try:
+            return jsonify(proxy_delete_balancer(panel_id, tag))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_BALANCERS_UNSUPPORTED}), 501
     try:
@@ -518,6 +632,7 @@ def delete_balancer(tag):
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"balancer '{tag}' deleted")
         return jsonify({"status": "deleted"}), 200
     except ValueError as e:
         db.session.rollback()

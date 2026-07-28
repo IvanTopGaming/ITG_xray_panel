@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@ui/lib/api';
+import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
+import { isWorker } from '@ui/lib/panelRole';
 import {
   RoutingProfile,
   RoutingRule,
@@ -30,6 +32,8 @@ import {
   Pause,
   ChevronDown,
   Lock,
+  PlugZap,
+  RefreshCw,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { validateRuleFieldPrefixes } from '@ui/lib/routing-validation';
@@ -53,45 +57,156 @@ const ROUTING_TABS = [
   { id: 'balancers', label: 'Balancers' },
 ] as const;
 
+const PanelScopeContext = createContext<number | null>(null);
+
+export function usePanelScope() {
+  return useContext(PanelScopeContext);
+}
+
+export function scopedPath(path: string, panelId: number | null) {
+  if (!panelId) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}panel_id=${panelId}`;
+}
+
+export function remoteErrorMessage(error: unknown): string {
+  const anyError = error as any;
+  return (
+    anyError?.response?.data?.error ||
+    anyError?.message ||
+    'The node did not answer. It may be down, or the master may no longer be linked to it.'
+  );
+}
+
+export function PanelUnreachable({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 px-6 border border-red-500/20 rounded-3xl bg-red-500/[0.04] text-center">
+      <div className="p-4 rounded-full bg-red-500/10 mb-4">
+        <PlugZap size={32} className="text-red-400" />
+      </div>
+      <h3 className="text-lg font-bold text-red-200">This node did not answer</h3>
+      <p className="text-sm text-red-300/70 mt-1 max-w-lg break-words">
+        {remoteErrorMessage(error)}
+      </p>
+      <p className="text-xs text-gray-500 mt-3 max-w-lg">
+        Nothing is shown rather than an empty list, so an outbound that already exists on the node
+        is not created twice.
+      </p>
+      <Button variant="secondary" className="mt-5" onClick={onRetry}>
+        <RefreshCw size={16} className="mr-2" /> Retry
+      </Button>
+    </div>
+  );
+}
+
+function PanelPicker({
+  panels,
+  panelId,
+  onChange,
+}: {
+  panels: { id: number; name: string; enable?: boolean }[];
+  panelId: number | null;
+  onChange: (id: number | null) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Node</span>
+      <div className="w-64">
+        <Select
+          value={panelId != null ? String(panelId) : ''}
+          onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+          options={panels.map((p) => ({ value: String(p.id), label: p.name }))}
+        />
+      </div>
+      <span className="text-xs text-gray-500">
+        Outbounds, profiles and balancers live on the node that carries the traffic.
+      </span>
+    </div>
+  );
+}
+
 export default function Routing() {
   const [tab, setTab] = useState<'profiles' | 'outbounds' | 'balancers'>('profiles');
+  const [panelId, setPanelId] = useState<number | null>(null);
+  const { data: panels, isLoading: panelsLoading } = useLinkedPanels(!isWorker);
+
+  const selectablePanels = useMemo(
+    () => (panels || []).filter((p) => p.enable !== false),
+    [panels]
+  );
+
+  useEffect(() => {
+    if (isWorker) return;
+    if (panelId != null && selectablePanels.some((p) => p.id === panelId)) return;
+    setPanelId(selectablePanels.length ? selectablePanels[0].id : null);
+  }, [selectablePanels, panelId]);
+
+  // A master with no node picked yet would query its own (empty) tables and show a list that reads
+  // as "this node has nothing" — the exact lie this wave removes. Render nothing until the scope is
+  // known. A node is always its own scope, so it never waits.
+  const scopeResolved = isWorker || panelId != null;
+
+  if (!isWorker && !panelsLoading && selectablePanels.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 border border-white/5 rounded-3xl bg-[#1a1625]/30 text-center">
+        <div className="p-4 rounded-full bg-white/5 mb-4">
+          <Route size={32} className="text-gray-500" />
+        </div>
+        <h3 className="text-lg font-bold text-gray-300">No nodes to route</h3>
+        <p className="text-sm text-gray-500 mt-1 max-w-md">
+          This panel runs no Xray of its own. Link a node on the Panels page, then its outbounds,
+          routing profiles and balancers are managed from here.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6 pb-10">
-      <div className="flex gap-1 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] w-fit overflow-x-auto">
-        {ROUTING_TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className="relative px-5 py-2 text-xs font-bold uppercase tracking-wider rounded-xl transition-colors whitespace-nowrap"
-            style={{ color: tab === t.id ? '#fff' : 'rgba(156,163,175,1)' }}
-          >
-            {tab === t.id && (
-              <motion.div
-                layoutId="routingTabPill"
-                className="absolute inset-0 bg-gradient-to-br from-primary/25 to-violet-600/20 rounded-xl border border-white/[0.1] shadow-[0_0_12px_rgba(208,188,255,0.12)]"
-                transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-              />
-            )}
-            <span className="relative z-10">{t.label}</span>
-          </button>
-        ))}
-      </div>
+    <PanelScopeContext.Provider value={isWorker ? null : panelId}>
+      <div className="space-y-6 pb-10">
+        {!isWorker && (
+          <PanelPicker panels={selectablePanels} panelId={panelId} onChange={setPanelId} />
+        )}
+        <div className="flex gap-1 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] w-fit overflow-x-auto">
+          {ROUTING_TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className="relative px-5 py-2 text-xs font-bold uppercase tracking-wider rounded-xl transition-colors whitespace-nowrap"
+              style={{ color: tab === t.id ? '#fff' : 'rgba(156,163,175,1)' }}
+            >
+              {tab === t.id && (
+                <motion.div
+                  layoutId="routingTabPill"
+                  className="absolute inset-0 bg-gradient-to-br from-primary/25 to-violet-600/20 rounded-xl border border-white/[0.1] shadow-[0_0_12px_rgba(208,188,255,0.12)]"
+                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                />
+              )}
+              <span className="relative z-10">{t.label}</span>
+            </button>
+          ))}
+        </div>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={tab}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -4 }}
-          transition={{ duration: 0.16, ease: 'easeOut' }}
-        >
-          {tab === 'profiles' && <ProfilesView />}
-          {tab === 'outbounds' && <OutboundsView />}
-          {tab === 'balancers' && <BalancersView />}
-        </motion.div>
-      </AnimatePresence>
-    </div>
+        {scopeResolved ? (
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={`${tab}:${panelId ?? 'local'}`}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              {tab === 'profiles' && <ProfilesView />}
+              {tab === 'outbounds' && <OutboundsView />}
+              {tab === 'balancers' && <BalancersView />}
+            </motion.div>
+          </AnimatePresence>
+        ) : (
+          <div className="py-16 text-center text-sm text-gray-500">
+            Select a node to manage its outbounds, routing profiles and balancers.
+          </div>
+        )}
+      </div>
+    </PanelScopeContext.Provider>
   );
 }
 
@@ -99,20 +214,30 @@ function ProfilesView() {
   const [modal, setModal] = useState(false);
   const [editingProfile, setEditingProfile] = useState<RoutingProfile | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const panelId = usePanelScope();
 
-  const { data: profiles, isLoading } = useQuery({
-    queryKey: ['routing-profiles'],
-    queryFn: async () => (await api.get<RoutingProfile[]>('/routing-profiles')).data,
+  const {
+    data: profiles,
+    isLoading,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ['routing-profiles', panelId],
+    queryFn: async () =>
+      (await api.get<RoutingProfile[]>(scopedPath('/routing-profiles', panelId))).data,
+    retry: false,
   });
 
   const { data: outbounds } = useQuery({
-    queryKey: ['outbounds'],
-    queryFn: async () => (await api.get<Outbound[]>('/outbounds')).data,
+    queryKey: ['outbounds', panelId],
+    queryFn: async () => (await api.get<Outbound[]>(scopedPath('/outbounds', panelId))).data,
+    retry: false,
   });
 
   const { data: balancers } = useQuery({
-    queryKey: ['balancers'],
-    queryFn: async () => (await api.get<Balancer[]>('/balancers')).data,
+    queryKey: ['balancers', panelId],
+    queryFn: async () => (await api.get<Balancer[]>(scopedPath('/balancers', panelId))).data,
+    retry: false,
   });
 
   const openCreate = () => {
@@ -126,27 +251,30 @@ function ProfilesView() {
 
   const queryClient = useQueryClient();
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => api.delete(`/routing-profiles/${id}`),
+    mutationFn: (id: number) => api.delete(scopedPath(`/routing-profiles/${id}`, panelId)),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['routing-profiles'] });
+      queryClient.invalidateQueries({ queryKey: ['routing-profiles', panelId] });
       toast.success('Profile deleted');
       setDeleteId(null);
     },
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
   const toggleProfileMutation = useMutation({
     mutationFn: ({ id, enable }: { id: number; enable: boolean }) =>
-      api.put(`/routing-profiles/${id}`, { enable }),
+      api.put(scopedPath(`/routing-profiles/${id}`, panelId), { enable }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['routing-profiles'] });
+      queryClient.invalidateQueries({ queryKey: ['routing-profiles', panelId] });
       toast.success('Profile status updated');
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || 'Failed to update profile'),
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
 
   const allTargets = [
     ...(outbounds?.map((o) => o.tag) || ['direct', 'block']),
     ...(balancers?.map((b) => b.tag) || []),
   ];
+
+  if (error) return <PanelUnreachable error={error} onRetry={() => refetch()} />;
 
   return (
     <div className="space-y-6">
@@ -285,10 +413,14 @@ function ProfileEditor({
   );
   const [expandedRules, setExpandedRules] = useState<Set<number>>(new Set());
   const queryClient = useQueryClient();
+  const panelId = usePanelScope();
 
   const { data: inbounds } = useQuery({
-    queryKey: ['inbounds'],
-    queryFn: async () => (await api.get<Inbound[]>('/inbounds')).data,
+    queryKey: ['inbounds', panelId ? `panel:${panelId}` : 'local'],
+    queryFn: async () =>
+      (await api.get<Inbound[]>(panelId ? `/inbounds?panel=${panelId}` : '/inbounds?panel=local'))
+        .data,
+    retry: false,
   });
 
   const inboundTagSuggestions = useMemo(
@@ -318,14 +450,14 @@ function ProfileEditor({
   const mutation = useMutation({
     mutationFn: (data: any) =>
       profile
-        ? api.put(`/routing-profiles/${profile.id}`, data)
-        : api.post('/routing-profiles', data),
+        ? api.put(scopedPath(`/routing-profiles/${profile.id}`, panelId), data)
+        : api.post(scopedPath('/routing-profiles', panelId), data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['routing-profiles'] });
+      queryClient.invalidateQueries({ queryKey: ['routing-profiles', panelId] });
       toast.success('Saved');
       onClose();
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || 'Failed to save profile'),
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
 
   const addRule = () => {
@@ -673,30 +805,39 @@ function OutboundsView() {
   const [editingOutbound, setEditingOutbound] = useState<Outbound | null>(null);
   const [deleteTag, setDeleteTag] = useState<string | null>(null);
 
-  const { data: outbounds, isLoading } = useQuery({
-    queryKey: ['outbounds'],
-    queryFn: async () => (await api.get<Outbound[]>('/outbounds')).data,
+  const panelId = usePanelScope();
+
+  const {
+    data: outbounds,
+    isLoading,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ['outbounds', panelId],
+    queryFn: async () => (await api.get<Outbound[]>(scopedPath('/outbounds', panelId))).data,
+    retry: false,
   });
 
   const queryClient = useQueryClient();
   const deleteMutation = useMutation({
-    mutationFn: (tag: string) => api.delete(`/outbounds/${tag}`),
+    mutationFn: (tag: string) => api.delete(scopedPath(`/outbounds/${tag}`, panelId)),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['outbounds'] });
+      queryClient.invalidateQueries({ queryKey: ['outbounds', panelId] });
       toast.success('Outbound deleted');
       setDeleteTag(null);
     },
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
   const toggleOutboundMutation = useMutation({
     mutationFn: ({ tag, enable }: { tag: string; enable: boolean }) =>
-      api.put(`/outbounds/${tag}`, { enable }),
+      api.put(scopedPath(`/outbounds/${tag}`, panelId), { enable }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['outbounds'] });
-      queryClient.invalidateQueries({ queryKey: ['balancers'] });
-      queryClient.invalidateQueries({ queryKey: ['routing-profiles'] });
+      queryClient.invalidateQueries({ queryKey: ['outbounds', panelId] });
+      queryClient.invalidateQueries({ queryKey: ['balancers', panelId] });
+      queryClient.invalidateQueries({ queryKey: ['routing-profiles', panelId] });
       toast.success('Outbound status updated');
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || 'Failed to update outbound'),
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
 
   const openEdit = (o: Outbound) => {
@@ -707,6 +848,8 @@ function OutboundsView() {
     setEditingOutbound(null);
     setModal(true);
   };
+
+  if (error) return <PanelUnreachable error={error} onRetry={() => refetch()} />;
 
   return (
     <div className="space-y-6">
@@ -989,15 +1132,18 @@ function OutboundEditor({ outbound, onClose }: { outbound: Outbound | null; onCl
   };
 
   const queryClient = useQueryClient();
+  const panelId = usePanelScope();
   const mutation = useMutation({
     mutationFn: (data: any) =>
-      isEdit ? api.put(`/outbounds/${outbound.tag}`, data) : api.post('/outbounds', data),
+      isEdit
+        ? api.put(scopedPath(`/outbounds/${outbound.tag}`, panelId), data)
+        : api.post(scopedPath('/outbounds', panelId), data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['outbounds'] });
+      queryClient.invalidateQueries({ queryKey: ['outbounds', panelId] });
       toast.success('Outbound Saved');
       onClose();
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || 'Error saving'),
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
 
   const handleSave = () => {
@@ -1174,42 +1320,55 @@ function BalancersView() {
   const [deleteTag, setDeleteTag] = useState<string | null>(null);
   const [editingBalancer, setEditingBalancer] = useState<Balancer | null>(null);
 
-  const { data: balancers, isLoading } = useQuery({
-    queryKey: ['balancers'],
-    queryFn: async () => (await api.get<Balancer[]>('/balancers')).data,
+  const panelId = usePanelScope();
+
+  const {
+    data: balancers,
+    isLoading,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ['balancers', panelId],
+    queryFn: async () => (await api.get<Balancer[]>(scopedPath('/balancers', panelId))).data,
+    retry: false,
   });
 
   const { data: outbounds } = useQuery({
-    queryKey: ['outbounds'],
-    queryFn: async () => (await api.get<Outbound[]>('/outbounds')).data,
+    queryKey: ['outbounds', panelId],
+    queryFn: async () => (await api.get<Outbound[]>(scopedPath('/outbounds', panelId))).data,
+    retry: false,
   });
   const { data: outboundHealth, isFetching: isHealthFetching } = useQuery({
     queryKey: ['outbounds-health'],
     queryFn: async () => (await api.get<OutboundHealth[]>('/outbounds/health')).data,
     refetchInterval: 30000,
+    enabled: !panelId,
+    retry: false,
   });
+  const healthShown = !panelId;
   const healthMap = new Map<string, OutboundHealth>(
     (outboundHealth || []).map((item) => [item.tag, item])
   );
 
   const queryClient = useQueryClient();
   const deleteMutation = useMutation({
-    mutationFn: (tag: string) => api.delete(`/balancers/${tag}`),
+    mutationFn: (tag: string) => api.delete(scopedPath(`/balancers/${tag}`, panelId)),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['balancers'] });
+      queryClient.invalidateQueries({ queryKey: ['balancers', panelId] });
       toast.success('Balancer deleted');
       setDeleteTag(null);
     },
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
   const toggleBalancerMutation = useMutation({
     mutationFn: ({ tag, enable }: { tag: string; enable: boolean }) =>
-      api.put(`/balancers/${tag}`, { enable }),
+      api.put(scopedPath(`/balancers/${tag}`, panelId), { enable }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['balancers'] });
-      queryClient.invalidateQueries({ queryKey: ['routing-profiles'] });
+      queryClient.invalidateQueries({ queryKey: ['balancers', panelId] });
+      queryClient.invalidateQueries({ queryKey: ['routing-profiles', panelId] });
       toast.success('Balancer status updated');
     },
-    onError: (e: any) => toast.error(e.response?.data?.error || 'Failed to update balancer'),
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
 
   const openCreate = () => {
@@ -1224,6 +1383,8 @@ function BalancersView() {
     setModal(false);
     setEditingBalancer(null);
   };
+
+  if (error) return <PanelUnreachable error={error} onRetry={() => refetch()} />;
 
   return (
     <div className="space-y-6">
@@ -1279,11 +1440,13 @@ function BalancersView() {
                         <Activity size={12} className="text-green-500" />
                       )}
                     </div>
-                    <div className="text-[10px] text-gray-500 mt-1">
-                      {isHealthFetching
-                        ? 'Checking health...'
-                        : `Healthy ${healthy.length}/${b.selector.length}${avgRtt !== null ? ` • avg ${avgRtt}ms` : ''}`}
-                    </div>
+                    {healthShown && (
+                      <div className="text-[10px] text-gray-500 mt-1">
+                        {isHealthFetching
+                          ? 'Checking health...'
+                          : `Healthy ${healthy.length}/${b.selector.length}${avgRtt !== null ? ` • avg ${avgRtt}ms` : ''}`}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="mb-3">
@@ -1299,11 +1462,17 @@ function BalancersView() {
                     {b.selector.map((s) => (
                       <span
                         key={s}
-                        className={`px-2 py-1 rounded text-xs font-mono border ${healthClass(healthMap.get(s)?.status || 'unknown')}`}
-                        title={healthMap.get(s)?.endpoint || ''}
+                        className={`px-2 py-1 rounded text-xs font-mono border ${
+                          healthShown
+                            ? healthClass(healthMap.get(s)?.status || 'unknown')
+                            : 'border-white/10 bg-white/5 text-gray-300'
+                        }`}
+                        title={healthShown ? healthMap.get(s)?.endpoint || '' : ''}
                       >
                         {s}
-                        {healthMap.get(s)?.rttMs ? ` • ${healthMap.get(s)?.rttMs}ms` : ''}
+                        {healthShown && healthMap.get(s)?.rttMs
+                          ? ` • ${healthMap.get(s)?.rttMs}ms`
+                          : ''}
                       </span>
                     ))}
                   </div>
@@ -1368,6 +1537,7 @@ function BalancersView() {
           outbounds={outbounds || []}
           healthMap={healthMap}
           healthLoading={isHealthFetching}
+          healthShown={healthShown}
         />
       </Modal>
       <ConfirmationModal
@@ -1387,12 +1557,14 @@ function BalancerEditor({
   outbounds,
   healthMap,
   healthLoading,
+  healthShown,
 }: {
   balancer?: Balancer | null;
   onClose: () => void;
   outbounds: Outbound[];
   healthMap: Map<string, OutboundHealth>;
   healthLoading: boolean;
+  healthShown: boolean;
 }) {
   const isEdit = !!balancer;
   const [tag, setTag] = useState(balancer?.tag || '');
@@ -1408,15 +1580,18 @@ function BalancerEditor({
   }, [balancer]);
 
   const queryClient = useQueryClient();
+  const panelId = usePanelScope();
   const mutation = useMutation({
     mutationFn: (data: any) =>
-      isEdit ? api.put(`/balancers/${balancer!.tag}`, data) : api.post('/balancers', data),
+      isEdit
+        ? api.put(scopedPath(`/balancers/${balancer!.tag}`, panelId), data)
+        : api.post(scopedPath('/balancers', panelId), data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['balancers'] });
+      queryClient.invalidateQueries({ queryKey: ['balancers', panelId] });
       toast.success(isEdit ? 'Balancer updated' : 'Balancer created');
       onClose();
     },
-    onError: (e: any) => toast.error(e.response?.data?.error),
+    onError: (e: any) => toast.error(remoteErrorMessage(e)),
   });
 
   const toggleOutbound = (t: string) => {
@@ -1476,11 +1651,13 @@ function BalancerEditor({
         />
       </div>
 
-      <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-gray-400">
-        {healthLoading
-          ? 'Checking outbound health...'
-          : `Selected healthy: ${healthyCount}/${selected.length}${averageRtt !== null ? ` • avg RTT ${averageRtt}ms` : ''}`}
-      </div>
+      {healthShown && (
+        <div className="rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-gray-400">
+          {healthLoading
+            ? 'Checking outbound health...'
+            : `Selected healthy: ${healthyCount}/${selected.length}${averageRtt !== null ? ` • avg RTT ${averageRtt}ms` : ''}`}
+        </div>
+      )}
 
       <div className="space-y-2">
         <label className="text-xs uppercase font-bold text-gray-500">Select Outbounds</label>
@@ -1496,12 +1673,14 @@ function BalancerEditor({
                 <div className="font-bold text-sm">{o.tag}</div>
                 <div className="flex items-center justify-between mt-1">
                   <div className="text-[10px] uppercase opacity-70">{o.protocol}</div>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded border ${healthClass(healthMap.get(o.tag)?.status || 'unknown')}`}
-                  >
-                    {healthMap.get(o.tag)?.status || 'unknown'}
-                    {healthMap.get(o.tag)?.rttMs ? ` • ${healthMap.get(o.tag)?.rttMs}ms` : ''}
-                  </span>
+                  {healthShown && (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded border ${healthClass(healthMap.get(o.tag)?.status || 'unknown')}`}
+                    >
+                      {healthMap.get(o.tag)?.status || 'unknown'}
+                      {healthMap.get(o.tag)?.rttMs ? ` • ${healthMap.get(o.tag)?.rttMs}ms` : ''}
+                    </span>
+                  )}
                 </div>
               </div>
             ))}

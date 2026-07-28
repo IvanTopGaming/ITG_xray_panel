@@ -1,14 +1,22 @@
 import json
+import logging
 from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import RoutingProfile, Outbound, Balancer
-from panel_core.utils import token_required
+from panel_core.utils import (
+    admin_or_federation_token_required,
+    audit_privileged_change,
+    remote_panel_failure,
+)
 from panel_core.xray.facade import generate_config_file, has_local_xray, restart_xray_container
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("routing", __name__)
 
 XRAY_ROUTING_UNSUPPORTED = (
-    "Routing profiles are configured on the node that runs Xray; this role has no local Xray instance."
+    "Routing profiles are configured on the node that runs Xray; this role has no local Xray instance. "
+    "Supply panel_id to route the operation to a node."
 )
 
 MAX_PROFILE_NAME_LEN = 50
@@ -148,9 +156,24 @@ def _ensure_rule_targets_exist(rules):
             raise ValueError(f"Rule #{idx} has unknown outbound target: {target}")
 
 
+def _requested_panel_id():
+    return request.args.get("panel_id", type=int)
+
+
 @bp.route("/routing-profiles", methods=["GET"])
-@token_required
+@admin_or_federation_token_required
 def get_profiles():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_list_routing_profiles
+
+        try:
+            return jsonify(proxy_list_routing_profiles(panel_id))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     profiles = RoutingProfile.query.all()
     result = []
     for profile in profiles:
@@ -170,9 +193,20 @@ def get_profiles():
 
 
 @bp.route("/routing-profiles", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def create_profile():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_create_routing_profile
+
+        try:
+            return jsonify(proxy_create_routing_profile(panel_id, request.get_json(silent=True) or {})), 201
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_ROUTING_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
@@ -192,6 +226,7 @@ def create_profile():
         )
         db.session.add(p)
         db.session.commit()
+        audit_privileged_change(logger, f"routing profile '{p.name}' created")
         return jsonify({"id": p.id, "name": p.name, "enable": bool(p.enable)}), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -200,9 +235,20 @@ def create_profile():
 
 
 @bp.route("/routing-profiles/<int:pid>", methods=["PUT"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def update_profile(pid):
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_update_routing_profile
+
+        try:
+            return jsonify(proxy_update_routing_profile(panel_id, pid, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_ROUTING_UNSUPPORTED}), 501
     try:
@@ -227,6 +273,7 @@ def update_profile(pid):
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"routing profile '{p.name}' updated")
         return jsonify({"status": "updated"}), 200
     except ValueError as e:
         db.session.rollback()
@@ -236,21 +283,34 @@ def update_profile(pid):
 
 
 @bp.route("/routing-profiles/<int:pid>", methods=["DELETE"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def delete_profile(pid):
+    panel_id = _requested_panel_id()
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_delete_routing_profile
+
+        try:
+            return jsonify(proxy_delete_routing_profile(panel_id, pid))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_ROUTING_UNSUPPORTED}), 501
     try:
         p = db.session.get(RoutingProfile, pid)
         if not p:
             return jsonify({"error": "Not found"}), 404
+        profile_name = p.name
         for ib in p.inbounds:
             ib.routing_profile_id = None
         db.session.delete(p)
         generate_config_file()
         db.session.commit()
         restart_xray_container()
+        audit_privileged_change(logger, f"routing profile '{profile_name}' deleted")
         return jsonify({"status": "deleted"}), 200
     except ValueError as e:
         db.session.rollback()

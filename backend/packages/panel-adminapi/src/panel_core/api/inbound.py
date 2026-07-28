@@ -550,9 +550,21 @@ def delete_inbound(tag):
 
 
 @bp.route("/inbounds/<tag>/reset-traffic", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def reset_ib_traffic(tag):
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_reset_inbound_traffic
+        from panel_core.utils import remote_panel_failure
+
+        try:
+            return jsonify(proxy_reset_inbound_traffic(panel_id, tag))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_LOCAL_INBOUND_UNSUPPORTED}), 501
     try:
