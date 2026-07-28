@@ -264,6 +264,7 @@ def apply_payment(payment: Payment) -> None:
             telegram_id=payment.telegram_id,
             tariff=tariff,
             source="yookassa",
+            operation_id=f"pay:{payment.id}",
         )
     except LocalXrayUnavailable as exc:
         db.session.rollback()

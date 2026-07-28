@@ -423,3 +423,16 @@ class NotificationClaim(db.Model):
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     __table_args__ = (db.UniqueConstraint("telegram_id", "tariff_id", "scope", "kind", name="uq_notification_claim"),)
+
+
+class ProvisionReceipt(db.Model):
+    __tablename__ = "provision_receipt"
+
+    id = db.Column(db.Integer, primary_key=True)
+    idempotency_key = db.Column(db.String(128), nullable=False)
+    inbound_tag = db.Column(db.String(50), nullable=False)
+    telegram_id = db.Column(db.BigInteger, nullable=False)
+    response_json = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+
+    __table_args__ = (db.UniqueConstraint("idempotency_key", "inbound_tag", name="uq_provision_receipt"),)

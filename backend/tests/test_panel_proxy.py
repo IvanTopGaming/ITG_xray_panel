@@ -356,7 +356,7 @@ class TestNudgePanelRefresh:
         mock_redis = MagicMock()
         mock_redis.publish.side_effect = requests.ConnectionError("boom")
         mock_client = MagicMock()
-        mock_client.provision.return_value = {"client": {"id": "x"}}
+        mock_client.provision.return_value = {"client": {"id": "x"}, "expires_at_ms": 1}
 
         with (
             patch("panel_core.services.panel_proxy.FederationClient", return_value=mock_client),
@@ -364,7 +364,7 @@ class TestNudgePanelRefresh:
         ):
             result = proxy_provision(panel.id, 42, "vless-in", {"expiry_ms": 1})
 
-        assert result == {"client": {"id": "x"}}
+        assert result == {"client": {"id": "x"}, "expires_at_ms": 1}
 
     def test_a_lost_nudge_needs_no_journal_unlike_the_event_bus(self, app, db):
 

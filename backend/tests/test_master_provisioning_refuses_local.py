@@ -68,7 +68,7 @@ def test_master_refuses_to_provision_a_local_tariff_item(master_app, protocol):
         tariff = _seed_local_tariff(protocol, 20000 + len(protocol))
 
         with pytest.raises(gw.LocalXrayUnavailable) as excinfo:
-            provisioning.apply_tariff_for_user(4242, tariff, source="test")
+            provisioning.apply_tariff_for_user(4242, tariff, source="test", operation_id="test-op")
 
         message = str(excinfo.value)
         assert "Local Only" in message
@@ -123,7 +123,7 @@ def test_master_refuses_to_extend_an_existing_local_client(master_app, protocol)
         db.session.commit()
 
         with pytest.raises(gw.LocalXrayUnavailable):
-            provisioning.apply_tariff_for_user(4244, tariff, source="test")
+            provisioning.apply_tariff_for_user(4244, tariff, source="test", operation_id="test-op")
 
         db.session.rollback()
         untouched = Client.query.filter_by(telegram_id=4244).one()
@@ -161,7 +161,7 @@ def test_worker_still_provisions_the_same_tariff(monkeypatch, tmp_path):
 
         gw.set_xray_gateway(_Recording())
 
-        provisioning.apply_tariff_for_user(4245, tariff, source="test")
+        provisioning.apply_tariff_for_user(4245, tariff, source="test", operation_id="test-op")
 
         assert Client.query.filter_by(telegram_id=4245).count() == 1
         assert calls == ["apply_config", "restart"]

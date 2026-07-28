@@ -47,7 +47,13 @@ def auto_renew_free_users() -> None:
                 logger.info("auto_renew: access_paused publish failed: %s", exc)
             continue
         try:
-            result = apply_tariff_for_user(grant.telegram_id, tariff, source="auto_renew")
+            due_at = grant.next_renewal_at
+            result = apply_tariff_for_user(
+                grant.telegram_id,
+                tariff,
+                source="auto_renew",
+                operation_id=f"renew:{grant.id}:{int(due_at.timestamp())}",
+            )
             grant.next_renewal_at = now + timedelta(days=tariff.period_days)
             db.session.commit()
             logger.info("auto_renew: renewed tg=%s tariff=%s", grant.telegram_id, grant.tariff_id)

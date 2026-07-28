@@ -318,6 +318,12 @@ def proxy_provision(
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.provision(telegram_id, inbound_tag, params)
+    if not isinstance(result, dict) or result.get("expires_at_ms") is None:
+        raise ValueError(
+            f"Panel '{panel.name}' answered the provisioning request without an expiry. "
+            f"It is running a federation contract this panel no longer speaks — update the node to the same "
+            f"release as the master and retry."
+        )
     _nudge_panel_refresh(panel.id)
     return result
 

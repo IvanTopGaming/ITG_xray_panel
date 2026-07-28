@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 23
+CURRENT_DB_VERSION = 24
 CURRENT_BOT_TEXTS_VERSION = 17
 
 
@@ -207,6 +207,25 @@ def _ensure_notification_claim_table(cursor: sqlite3.Cursor) -> int:
     )
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS ix_notification_claim_tariff ON notification_claim (telegram_id, tariff_id)"
+    )
+    return 1
+
+
+def _ensure_provision_receipt_table(cursor: sqlite3.Cursor) -> int:
+    if _table_exists(cursor, "provision_receipt"):
+        return 0
+    cursor.execute(
+        """
+        CREATE TABLE provision_receipt (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT   NOT NULL,
+            inbound_tag     TEXT   NOT NULL,
+            telegram_id     BIGINT NOT NULL,
+            response_json   TEXT   NOT NULL,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_provision_receipt UNIQUE (idempotency_key, inbound_tag)
+        )
+        """
     )
     return 1
 
@@ -821,6 +840,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
         stats_tables = _ensure_stats_tables(cursor)
         node_traffic_table = _ensure_node_traffic_table(cursor)
         notification_claim_table = _ensure_notification_claim_table(cursor)
+        provision_receipt_table = _ensure_provision_receipt_table(cursor)
         stats_indexes = _ensure_stats_indexes(cursor)
         stats_cover_indexes = _ensure_stats_cover_indexes(cursor)
         linked_panel_table = _ensure_linked_panel_table(cursor)
@@ -847,6 +867,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             "stats_tables_created": stats_tables,
             "node_traffic_table_created": node_traffic_table,
             "notification_claim_table_created": notification_claim_table,
+            "provision_receipt_table_created": provision_receipt_table,
             "stats_indexes_created": stats_indexes,
             "stats_cover_indexes_created": stats_cover_indexes,
             "linked_panel_table_created": linked_panel_table,
@@ -867,6 +888,7 @@ def migrate_sqlite_db(db_path: str, logger=None) -> Dict[str, int]:
             stats_tables > 0
             or node_traffic_table > 0
             or notification_claim_table > 0
+            or provision_receipt_table > 0
             or stats_indexes > 0
             or stats_cover_indexes > 0
             or linked_panel_table > 0

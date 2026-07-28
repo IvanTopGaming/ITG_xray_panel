@@ -192,7 +192,7 @@ def test_provisioning_error_names_the_tariff_and_the_inbound(app, db):
     gw.set_xray_gateway(gw.RemoteXrayGateway())
 
     with pytest.raises(gw.LocalXrayUnavailable) as excinfo:
-        provisioning.apply_tariff_for_user(9001, tariff, source="test")
+        provisioning.apply_tariff_for_user(9001, tariff, source="test", operation_id="test-op")
 
     message = str(excinfo.value)
     assert "Legacy Local" in message
@@ -220,7 +220,7 @@ def test_provisioning_still_works_on_a_gateway_with_local_xray(app, db):
 
     gw.set_xray_gateway(_Recording())
 
-    provisioning.apply_tariff_for_user(9002, tariff, source="test")
+    provisioning.apply_tariff_for_user(9002, tariff, source="test", operation_id="test-op")
 
     assert Client.query.filter_by(telegram_id=9002).count() == 1
     assert calls == ["apply_config", "restart"]

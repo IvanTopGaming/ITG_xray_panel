@@ -1,8 +1,11 @@
+import json
 import logging
 import secrets
 import time
 import uuid
 from typing import TYPE_CHECKING
+
+from sqlalchemy.exc import IntegrityError
 
 from panel_core.extensions import db
 from panel_core.models import Client, Inbound, LinkedPanel, NotificationLog
@@ -131,16 +134,86 @@ def _create_client_for_item(
     return client
 
 
+def _validate_provision_semantics(
+    expiry_ms: int | None,
+    period_ms: int | None,
+    idempotency_key: str | None,
+) -> None:
+
+    if (expiry_ms is None) == (period_ms is None):
+        raise ValueError(
+            "provision takes exactly one of 'period_ms' (extend by that many milliseconds) "
+            "or 'expiry_ms' (set that absolute expiry), never both and never neither"
+        )
+    if period_ms is not None:
+        if period_ms < 0:
+            raise ValueError("'period_ms' must not be negative")
+        if not idempotency_key:
+            raise ValueError(
+                "'idempotency_key' is required alongside 'period_ms': extending is not idempotent on its own, "
+                "so a retried request would add the period twice"
+            )
+
+
+def _find_receipt(idempotency_key: str, inbound_tag: str) -> dict | None:
+
+    from panel_core.models import ProvisionReceipt
+
+    prior = ProvisionReceipt.query.filter_by(idempotency_key=idempotency_key, inbound_tag=inbound_tag).first()
+    if prior is None:
+        return None
+    try:
+        return json.loads(prior.response_json)
+    except (TypeError, ValueError):
+        logger.warning(
+            "provision receipt %r/%r is unreadable; treating the request as new",
+            idempotency_key,
+            inbound_tag,
+        )
+        return None
+
+
+def _target_expiry_ms(
+    client: Client | None,
+    *,
+    now_ms: int,
+    expiry_ms: int | None,
+    period_ms: int | None,
+) -> int:
+
+    if period_ms is None:
+        return expiry_ms
+
+    current = client.expiry_time if client is not None else None
+    if current == 0:
+        return 0
+    return max(now_ms, current or 0) + period_ms
+
+
 def provision_single_item(
     *,
     telegram_id: int,
     inbound_tag: str,
-    expiry_ms: int,
     limit_bytes: int,
+    expiry_ms: int | None = None,
+    period_ms: int | None = None,
     tariff_id: int | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
 
+    _validate_provision_semantics(expiry_ms, period_ms, idempotency_key)
     _require_local_xray(f"provisioning local inbound {inbound_tag!r} for telegram_id {telegram_id}")
+
+    if idempotency_key:
+        replay = _find_receipt(idempotency_key, inbound_tag)
+        if replay is not None:
+            logger.info(
+                "provision replay tg=%s tag=%s key=%s — returning the stored result untouched",
+                telegram_id,
+                inbound_tag,
+                idempotency_key,
+            )
+            return replay
 
     now_ms = int(time.time() * 1000)
     inbound = Inbound.query.filter_by(tag=inbound_tag).first()
@@ -148,6 +221,7 @@ def provision_single_item(
         raise ValueError(f"Inbound {inbound_tag!r} not found")
 
     client = Client.query.filter_by(telegram_id=telegram_id, inbound_tag=inbound_tag).first()
+    expiry_ms = _target_expiry_ms(client, now_ms=now_ms, expiry_ms=expiry_ms, period_ms=period_ms)
 
     new_clients: list[Client] = []
     extended_clients_with_state: list[tuple[Client, bool]] = []
@@ -204,10 +278,47 @@ def provision_single_item(
         db.session.add(client)
         new_clients.append(client)
 
-    db.session.commit()
+    db.session.flush()
+    result = {"client": client.to_dict(), "expires_at_ms": expiry_ms}
+
+    if idempotency_key:
+        from panel_core.models import ProvisionReceipt
+
+        db.session.add(
+            ProvisionReceipt(
+                idempotency_key=idempotency_key,
+                inbound_tag=inbound_tag,
+                telegram_id=telegram_id,
+                response_json=json.dumps(result),
+            )
+        )
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        replay = _find_receipt(idempotency_key, inbound_tag) if idempotency_key else None
+        if replay is None:
+            raise
+        logger.info(
+            "provision raced on key=%s tag=%s — the concurrent request won, returning its result",
+            idempotency_key,
+            inbound_tag,
+        )
+        return replay
+
     _sync_after_provision(new_clients, extended_clients_with_state)
 
-    return {"client": client.to_dict(), "expires_at_ms": expiry_ms}
+    return result
+
+
+def _collapse_expiries(expiries: list[int], *, fallback: int) -> int:
+
+    if not expiries:
+        return fallback
+    if 0 in expiries:
+        return 0
+    return max(expiries)
 
 
 def clear_notification_claims(*, telegram_id: int, tariff_id: int | None) -> None:
@@ -225,13 +336,17 @@ def apply_tariff_for_user(
     tariff: "Tariff",
     *,
     source: str,
+    operation_id: str,
 ) -> dict:
+
+    if not operation_id:
+        raise ValueError("operation_id is required — it is what stops a retry from granting a second period")
 
     period_ms = tariff.period_days * 86400_000
     now_ms = int(time.time() * 1000)
 
     existing = list(Client.query.filter_by(telegram_id=telegram_id).all())
-    existing_max_expiry = max((c.expiry_time for c in existing), default=0)
+    existing_max_expiry = max((c.expiry_time or 0 for c in existing), default=0)
 
     new_expiry_ms = max(now_ms, existing_max_expiry) + period_ms
 
@@ -242,17 +357,24 @@ def apply_tariff_for_user(
         tags = ", ".join(sorted(repr(item.inbound_tag) for item in local_items))
         _require_local_xray(f"provisioning tariff {tariff.name!r} on local inbound(s) {tags}")
 
+    remote_expiries: list[int] = []
     for item in remote_items:
         from panel_core.services.panel_proxy import proxy_provision
 
         limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
         try:
-            proxy_provision(
+            remote = proxy_provision(
                 item.panel_id,
                 telegram_id,
                 item.inbound_tag,
-                {"expiry_ms": new_expiry_ms, "limit_bytes": limit_bytes, "tariff_id": tariff.id},
+                {
+                    "period_ms": period_ms,
+                    "limit_bytes": limit_bytes,
+                    "tariff_id": tariff.id,
+                    "idempotency_key": operation_id,
+                },
             )
+            remote_expiries.append(int(remote["expires_at_ms"]))
         except Exception as exc:
             logger.error("proxy_provision failed for panel=%s tag=%s: %s", item.panel_id, item.inbound_tag, exc)
             raise
@@ -268,7 +390,8 @@ def apply_tariff_for_user(
         )
         if client is not None:
             was_enabled = bool(client.enable)
-            client.expiry_time = new_expiry_ms
+            if client.expiry_time != 0:
+                client.expiry_time = new_expiry_ms
             client.limit_bytes = limit_bytes
             client.up = 0
             client.down = 0
@@ -307,18 +430,23 @@ def apply_tariff_for_user(
     _sync_after_provision(new_clients, extended_clients_with_state)
     sub_cache.invalidate_user_aggregate(telegram_id)
     logger.info(
-        "provisioned tg=%s tariff=%s source=%s new=%d extended=%d",
+        "provisioned tg=%s tariff=%s source=%s op=%s new=%d extended=%d remote=%d",
         telegram_id,
         tariff.id,
         source,
+        operation_id,
         len(new_clients),
         len(extended_clients_with_state),
+        len(remote_items),
     )
 
     all_provisioned = new_clients + [c for c, _ in extended_clients_with_state]
+    reported = list(remote_expiries)
+    if local_items:
+        reported.append(new_expiry_ms)
     return {
         "clients": [c.to_dict() for c in all_provisioned],
-        "expires_at_ms": new_expiry_ms,
+        "expires_at_ms": _collapse_expiries(reported, fallback=new_expiry_ms),
         "source": source,
     }
 

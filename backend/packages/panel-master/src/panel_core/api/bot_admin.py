@@ -1,6 +1,7 @@
 import logging
 import secrets
 import time
+import uuid
 from datetime import datetime, timedelta
 
 import yaml
@@ -572,10 +573,10 @@ def create_grant(tg_id):
         grant.note = note
 
     if billing == "free":
-        result = apply_tariff_for_user(tg_id, tariff, source="admin_grant")
+        result = apply_tariff_for_user(tg_id, tariff, source="admin_grant", operation_id=f"grant:{uuid.uuid4().hex}")
         grant.next_renewal_at = datetime.utcnow() + timedelta(days=tariff.period_days)
     elif billing == "gift":
-        result = apply_tariff_for_user(tg_id, tariff, source="admin_gift")
+        result = apply_tariff_for_user(tg_id, tariff, source="admin_gift", operation_id=f"gift:{uuid.uuid4().hex}")
         grant.next_renewal_at = None
     else:
         result = None

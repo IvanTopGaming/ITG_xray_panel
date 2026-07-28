@@ -175,7 +175,12 @@ def activate_trial():
         return jsonify({"error": "trial already used"}), 409
 
     try:
-        result = apply_tariff_for_user(tg_id, trial_tariff, source="trial")
+        result = apply_tariff_for_user(
+            tg_id,
+            trial_tariff,
+            source="trial",
+            operation_id=f"trial:{tg_id}:{trial_tariff.id}",
+        )
     except Exception:
         db.session.rollback()
         db.session.execute(update(TelegramUser).where(TelegramUser.telegram_id == tg_id).values(trial_used_at=None))

@@ -172,7 +172,7 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 - **`root_path` and `instance_path` are passed to `Flask` explicitly** (`app_base.py`: `Flask("panel_core", root_path=PACKAGE_ROOT, instance_path=INSTANCE_PATH)`). Flask derives `root_path` from the package's `__file__` (a namespace package has none) and `instance_path` via `_find_package_path`, whose namespace branch does a bare `next()` over the search locations and raises `StopIteration` as soon as more than one location contributes — so leaving either to auto-discovery would break the moment the package is actually split. `INSTANCE_PATH` is `sys.prefix/var/panel_core-instance`: `sys.prefix` is unambiguous no matter how many distributions contribute, while any formula derived from the package location is not. Production installs `panel-core` **editable** (`uv sync --frozen --no-dev` in `backend/Dockerfile`), so this changed the value from `/app/packages/panel-core/src/instance` — harmless, because nothing reads `instance_path`. The only way to make it meaningful is a *relative* sqlite `DATABASE_URL` (`sqlite:///panel.db`), which Flask-SQLAlchemy resolves against `app.instance_path`. Nothing reaches that path today. Three of the eight compose files set `DATABASE_URL` at all — `docker-compose.{master,sub,bot}.yml`, each as a pass-through `${DATABASE_URL:?…}` that the compose file itself does not constrain, and `.env.{master,sub,bot}.example` fill all three with a `postgresql+psycopg2://…` URI. `docker-compose.node.yml` deliberately sets none (see the role paragraph above): the worker falls through `db_config.database_uri()` to `sqlite:///` + `app_base.db_path()`, which is **absolute** (`$CWD/db/panel.db`, mounted from `./db_data`) and therefore never consults `instance_path`. So a relative sqlite URI would have to be set by hand, against the only three roles whose compose requires the variable and expects Postgres — it is reachable, but nothing in the repo produces it.
 
 - `app/app_base.py` + `app/dispatch.py` + `app/roles/{master,worker,sub,botapi}.py` — Flask app factories; register blueprints, extensions, ProxyFix, APScheduler jobs per role
-- `app/models.py` — SQLAlchemy models (22 total). Core: `Admin`, `Inbound`, `Client`, `Outbound`, `RoutingProfile`, `Balancer`, `SystemSetting`, `TrafficSnapshot`, `NodeTrafficSnapshot`, `DomainStat`, `LinkedPanel`, `FederationConfig`, `ClientDevice`. Billing/bot: `Tariff`, `TariffItem`, `UserTariffAccess`, `Payment`, `BotText`, `BotEvent`, `TelegramUser`, `NotificationLog`, `NotificationClaim`. **FK enforcement is OFF** — `extensions.py` sets WAL/synchronous/busy_timeout/temp_store but **not** `PRAGMA foreign_keys=ON`, so FK constraints are advisory (deleting a parent leaves dangling child refs rather than cascading/erroring; e.g. `delete_tariff_permanent` can orphan `Client.tariff_id`). Exception: deleting a `LinkedPanel` (`delete_panel`) or an `Inbound` (`delete_inbound`, local + remote-via-`panel_id`) app-level cascades the matching `TariffItem` rows through `services/tariffs.purge_tariff_items`, which also disables any tariff left with zero items — so a removed panel/inbound can no longer orphan a `TariffItem` and 500 provisioning.
+- `app/models.py` — SQLAlchemy models (23 total). Core: `Admin`, `Inbound`, `Client`, `Outbound`, `RoutingProfile`, `Balancer`, `SystemSetting`, `TrafficSnapshot`, `NodeTrafficSnapshot`, `DomainStat`, `LinkedPanel`, `FederationConfig`, `ClientDevice`. Billing/bot: `Tariff`, `TariffItem`, `UserTariffAccess`, `Payment`, `BotText`, `BotEvent`, `TelegramUser`, `NotificationLog`, `NotificationClaim`, `ProvisionReceipt` (the node-side idempotency ledger — see Panel Federation). **FK enforcement is OFF** — `extensions.py` sets WAL/synchronous/busy_timeout/temp_store but **not** `PRAGMA foreign_keys=ON`, so FK constraints are advisory (deleting a parent leaves dangling child refs rather than cascading/erroring; e.g. `delete_tariff_permanent` can orphan `Client.tariff_id`). Exception: deleting a `LinkedPanel` (`delete_panel`) or an `Inbound` (`delete_inbound`, local + remote-via-`panel_id`) app-level cascades the matching `TariffItem` rows through `services/tariffs.purge_tariff_items`, which also disables any tariff left with zero items — so a removed panel/inbound can no longer orphan a `TariffItem` and 500 provisioning.
 - `app/extensions.py` — Shared Flask extensions (db, migrate, APScheduler, Flask-Limiter, SQLite PRAGMAs)
 - `app/utils.py` — JWT helpers + auth decorators: `token_required` (admin JWT only), `bot_service_token_required` (bot service token only), `admin_or_bot_token_required` (accepts either), `federation_token_required` (validates federation token from linked panels), `admin_or_federation_token_required` (accepts admin JWT or federation token). The latter two support the Panel Federation system. `admin_or_bot_token_required` is used on `/api/inbound`, `/api/panels`, and most `/api/system` endpoints — **but NOT on `/api/backup` and `/api/restore`** which take admin-only after the ultrareview hardening.
 - `app/api/`
@@ -261,7 +261,7 @@ Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted fro
 | `cleanup_old_payments` | 24h | Runs on the **`bot` role only**; cancels `pending > 24h` (and publishes `payment_cancelled` so users find out); deletes terminal records `> 90d` |
 | `replay_undelivered_bot_events` | 60s | Runs on the **cron service** (over Postgres) **and on every worker** (over that node's own SQLite, which nothing central can reach). Re-publishes any `bot_event` row with `delivered_at IS NULL` and `created_at < now - 30s` |
 | `check_latest_version` | 6h | Runs on the **cron service only**; fetches the published `versions.json` from GitHub and persists it into the `latest_versions` `SystemSetting`, which is what lets the master render the "update available" indicator on System → About from another container |
-| `cleanup_bot_events` | 24h | Runs on the **cron service** (over Postgres) **and on every worker** (over its own SQLite); prunes delivered `bot_event` rows > 7d, undelivered > 30d, and `NotificationClaim` rows > 90d |
+| `cleanup_bot_events` | 24h | Runs on the **cron service** (over Postgres) **and on every worker** (over its own SQLite); prunes delivered `bot_event` rows > 7d, undelivered > 30d, and `NotificationClaim` + `ProvisionReceipt` rows > 90d. The receipt window has to outlive every retry that could reach the node — the longest is `cleanup_old_payments` re-applying a >24h payment — so 90 days is far more than needed, on purpose |
 
 ### Backend error handling pattern
 All API handlers follow a two-catch pattern. `ValueError` is the type for user-facing validation errors — propagated as HTTP 400 with the message shown to the user. Bare `Exception` means an unexpected server fault and returns HTTP 500 with a generic message. Always raise `ValueError` (not `Exception`) for input validation failures so the error reaches the user.
@@ -286,26 +286,40 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
    - Idempotency fast-path: `if payment.status == 'succeeded': return`
    - **Atomic claim**: `UPDATE payment SET status='processing' WHERE id=:id AND status='pending'`; if rowcount=0, the poll cron already grabbed it — return
    - Re-validate tariff (still purchasable, items not removed, private+no-grant → fail)
-   - `provisioning.apply_tariff_for_user` → extends or creates a `Client` per `TariffItem`
-   - Sets `status='succeeded'`, publishes `payment_succeeded` to `bot:events`
+   - `provisioning.apply_tariff_for_user(..., operation_id=f"pay:{payment.id}")` → extends or creates a `Client` per `TariffItem`
+   - Sets `status='succeeded'`, publishes `payment_succeeded` to `bot:events` with the `expires_at_ms` **the nodes reported**, which is what the user is shown
    - On provisioning exception, releases claim back to `pending` so the poll cron retries
 
 `poll_pending_payments` (30s) is the fallback when the webhook never arrived; it targets payments aged 30s–24h and runs the same `apply_payment`.
 
+**That retry is why `operation_id` is `pay:<payment_id>` and not a fresh value per attempt.** A multi-node tariff whose second node is down raises after the first node has already been extended, and nothing rolls it back; the payment goes back to `pending` and the cron re-runs the *whole* grant every 30 seconds for up to 24 hours. Before this contract that was harmless — the node assigned an absolute date, so a repeat was idempotent by accident. Now the node adds, and the only thing standing between a stuck payment and a user with several years of access is that every retry carries the same key. Keep the key derived from the payment, never from the attempt.
+
 ### Provisioning (`services/provisioning.py`)
 
-`apply_tariff_for_user(telegram_id, tariff, source)` is the **single gateway** for every grant path (admin grant, trial, paid webhook, free auto-renew). For each `TariffItem`:
-- If `item.panel_id` is set → `proxy_provision` to that linked panel (the user is created/extended remotely, not locally).
+`apply_tariff_for_user(telegram_id, tariff, *, source, operation_id)` is the **single gateway** for every grant path (admin grant, trial, paid webhook, free auto-renew). `operation_id` is mandatory — it is the idempotency key that travels to every node (see Panel Federation for what it is per entry point and why). For each `TariffItem`:
+- If `item.panel_id` is set → `proxy_provision` to that linked panel with **`period_ms`, never a computed expiry** — the node adds the period to whatever the user still had. This role cannot compute that date: node-issued clients have no `Client` row here, so any expiry it derives is wrong by exactly the remainder it cannot see. That was the bug (a 10-day remainder plus a 30-day purchase yielded 30 days, and the ten paid days vanished at checkout).
 - Else if a `Client` already exists for the same (telegram_id, inbound_tag): extend it — bump `expiry_time`, reset `up/down/last_reset_time`, refresh `limit_bytes`, set `enable=True`, clear `traffic_*` `NotificationLog` rows (so the new cycle's warnings can fire).
 - Otherwise create a new `Client` with a unique email (`tg<id>_<inbound_tag>` or `_<hex6>` on collision).
 
+**`expiry_time == 0` means "never expires" and is preserved on both branches.** Buying a period on top of unlimited access refreshes the traffic limit and `enable` but leaves the expiry at `0`; adding a period would silently demote the user to a 30-day plan. `NULL` is *not* the same value — it means a damaged row (see the reply check in Panel Federation) and is counted from `now`, so a corrupted client does not become permanent.
+
+**The returned `expires_at_ms` comes back from the nodes**, not from this role's own arithmetic: `apply_payment` puts it into the `payment_succeeded` event and the bot shows it to the user, so computing it locally would report 30 days while the node wrote 40. Several nodes yield several dates; `_collapse_expiries` picks one by the same rule `_collect_tariff_holders` already uses for backfill — **`0` absorbs everything, otherwise take the max** (a plain `max()` is wrong precisely because unlimited sorts below every date).
+
 Every call also clears that user's `NotificationClaim` rows for the tariff (`clear_notification_claims`), so the next expiry/traffic cycle can warn again after a renewal instead of staying suppressed by a stale cross-node claim.
 
-Single `_sync_after_provision` call after the loop: regenerates Xray config (or gRPC-patches for vless/vmess fast-path), restarts container if needed, and invalidates the Redis sub-cache. `backfill_tariff` idempotently ensures every active holder has a key on every tariff inbound (local + remote) without touching existing keys.
+Single `_sync_after_provision` call after the loop: regenerates Xray config (or gRPC-patches for vless/vmess fast-path), restarts container if needed, and invalidates the Redis sub-cache. `backfill_tariff` idempotently ensures every active holder has a key on every tariff inbound (local + remote) without touching existing keys — and it is the one caller that legitimately sends `expiry_ms` rather than `period_ms`.
 
 ### Panel Federation
 
 A master panel manages remote *linked panels*. `LinkedPanel` rows store URL + a `federation_token`; `FederationConfig` is a singleton on the child storing the master's credentials. The master proxies user/inbound CRUD to linked panels via `services/panel_proxy.py` (`FederationClient`). `TariffItem.panel_id` optionally routes a tariff item to a specific linked panel — provisioning then creates the user there instead of locally. `poll_linked_panels` (10s) health-polls each panel — from the **cron service**, which since wave 2 is the single writer of both `LinkedPanel.status` in Postgres and the `panel:<id>:*` keys in the shared Redis. The thirteen `proxy_*` operations no longer fetch a snapshot themselves; they publish the panel id on `panel:refresh` and return, and the cron service polls that panel out of band (`_nudge_panel_refresh`). **Never `DEL` the snapshot key instead:** for the sub host a missing key does not mean "stale", it means "this panel has no remote clients", so it skips the panel entirely and a user who has just paid opens the link to a subscription with no node servers in it. Subscription links (`api/subscription.py`) can merge entries from linked panels visible to the requesting client (Redis-cached). Inbound CRUD endpoints accept admin JWT **and** federation tokens (`admin_or_federation_token_required`) so children can proxy operations back through the master.
+
+**The provisioning contract carries two semantics, and which one you send decides who computes the expiry.** `POST /api/federation/provision` accepts `period_ms` **or** `expiry_ms` — exactly one; both or neither is a `ValueError` → 400. `period_ms` means *extend*: the node computes `max(now, client.expiry_time) + period_ms` itself, which is the only place the arithmetic can be correct, because an orchestrator's database holds no `Client` rows for node-issued clients (`Client` has no `panel_id` and the master does not mirror them). `expiry_ms` means *assign that exact date*, and exists for `backfill_tariff`, whose meaning is "give this user the same expiry he already has on his other nodes" — sending a period there would hand him `held_until + period` and drift one tariff's dates apart per node. Do not "simplify" the endpoint down to one field.
+
+`period_ms` additionally **requires an `idempotency_key`**, and the rule generalises: *a key is required exactly where the operation is not idempotent on its own.* Assigning an absolute date is idempotent by construction; adding a period is not, and the retries are routine — `poll_pending_payments` re-runs a partially-failed multi-node grant every 30s, and the nodes that already succeeded are never rolled back (`provisioning.py`'s remote loop raises on the first failure). The node stores the key with its own reply in `provision_receipt` (unique on `(idempotency_key, inbound_tag)`) and replays that stored reply on a repeat, adding nothing — the reply matters because `apply_payment` puts its `expires_at_ms` into the `payment_succeeded` event the bot shows the user. There are two layers here: the fast path reads the receipt before mutating, and a concurrent request that slips past it fails the unique constraint, rolls back and returns the winner's result. Removing either one alone leaves the suite green, so do not delete the `IntegrityError` branch as dead code.
+
+Callers pass a **natural key per entry point** (`operation_id` on `apply_tariff_for_user`, mandatory): `pay:<payment_id>`, `renew:<grant_id>:<due_ts>`, `trial:<tg>:<tariff_id>`, `grant:<uuid>` / `gift:<uuid>`. The first two are stable across exactly the automatic retries that exist; the last two have no automatic retry, so a repeat is an admin's intent rather than a fault.
+
+**There is no contract version, deliberately.** `handshake` used to return a hardcoded `panel_version: 15` that nothing read; it is gone, and `tests/test_api_federation.py` now fails if it comes back. Compatibility is guaranteed by deploying the whole fleet in one wave — backwards compatibility holds only within minor releases, and major ones do not offer it. What replaced the version is a **reply check**: `proxy_provision` raises a `ValueError` naming the panel if the node answers without an `expires_at_ms`, which is exactly what a node left on an older release does when handed `period_ms`. That converts a silent success into a loud refusal, but it cannot prevent the damage — the stale node has already written `NULL` into that client's `expiry_time`, and one such row makes `check_limits_and_reset` raise `TypeError` on every 60s run, so **that node stops enforcing expiry and traffic limits for everybody**. Update nodes in the same wave; this is not a "when convenient" item.
 
 **Destructive user ops read a LIVE snapshot.** `block_user` / `unblock_user` / `revoke_tariff_from_user` in `bot_admin.py` enumerate the user's remote clients via `_remote_clients_by_telegram_id_live()` (which calls `fetch_panel_snapshot_live` per enabled panel), **not** the cached `get_panel_snapshot` — a stale/missing cache must never let a remote disable silently no-op. Panels that can't be reached are surfaced in the response's `panel_failures` (not skipped). `revoke_tariff_from_user` matches remote clients by the tariff's `(panel_id, inbound_tag)` items **and** `tariff_id` (mirroring the local match by `tariff_id`), so two tariffs sharing a remote inbound don't cross-disable. The read-only users UI still uses the cached `_remote_clients_by_telegram_id()`.
 
@@ -359,7 +373,9 @@ On startup, `direct` (freedom) and `block` (blackhole) outbounds are auto-create
 
 For local development on SQLite this means `uv run python run.py` on an empty database fails the same way — run `uv run python migrate_db.py` first, or bring up the cron role once.
 
-`panel_core.db_migration` (standalone entrypoint: `backend/migrate_db.py`) is a custom migration system (not Flask-Migrate). Current schema version is **`23`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count. When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
+`panel_core.db_migration` (standalone entrypoint: `backend/migrate_db.py`) is a custom migration system (not Flask-Migrate). Current schema version is **`24`**, tracked via `PRAGMA user_version`. The script is idempotent — runs on every backend startup, uses `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` (with `_add_column_if_missing` guard) for column additions. All `ALTER`s are SQLite metadata-only (O(1)), so migration time is independent of row count. When adding a new table: add a `_ensure_<name>_table` function, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
+
+**The Postgres side is a different mechanism with a different reach, and the difference bites on columns.** `migrate_postgres_db` (`pg_migrate.py`) is `db.create_all()` + dropping FK constraints + recording `schema_version` + seeding bot texts. Its only `ALTER` is `DROP CONSTRAINT`. So a **new table** arrives on both databases by itself (`create_all` on the cron service for Postgres, and on a node before `migrate_sqlite_db` for SQLite), while a **new column on an existing table** reaches Postgres only on a virgin database — on a live one nothing adds it and the first query through the model raises `UndefinedColumn`. This has never fired because no column has been added to an existing model since the Postgres path appeared; it is why the wave-3a idempotency key is a table rather than a column on `Client`. Before any change that genuinely needs a column, teach `migrate_postgres_db` to diff the models against `information_schema` — in its own change, not bundled into the wave that needs it.
 
 Bot texts have their own version: `CURRENT_BOT_TEXTS_VERSION = 17`. A bump triggers a one-shot **force-reseed** (only when `stored < CURRENT`): it DELETEs the `_REMOVED_BOT_TEXT_KEYS` tuple (purging orphan rows for keys dropped from the YAML) and then upserts every `(key, lang)` pair from `app/data/bot_texts_defaults.yaml` (~74 keys × RU/EN). The upsert **preserves admin-edited rows** — `bot_text.customized` (set to `1` whenever an admin saves a text via Bot → Texts) is honoured by `ON CONFLICT … DO UPDATE … WHERE customized = 0`, so a force-reseed refreshes only untouched defaults and never reverts customizations. On the v19 migration that added the column, rows whose stored text already diverged from the YAML default are back-filled `customized=1` to protect pre-existing edits. When you remove a key from the YAML, append it to `_REMOVED_BOT_TEXT_KEYS` (the purge ignores `customized`, since a removed key is dead regardless).
 
@@ -582,6 +598,50 @@ it out.
    is publish-only by design. It logs one line and gives up, and the stale entry expires within
    `SUB_CACHE_TTL_SECONDS` (60). Widening the node ACL was rejected; that narrowness is what makes a node
    safe to place in an untrusted segment.
+
+### Deploy note — the federation provisioning contract breaks, and there is no version to negotiate it (Phase 8 wave 3a)
+
+This wave changes how a node is told to extend a subscription, bumps the schema, and deliberately
+removes the only thing that looked like a compatibility check. **Master, bot-api, cron and every node
+deploy in one wave.** Read all six points before rolling it out.
+
+1. **A node left on an older image is not merely unsupported — it damages data on the first grant.**
+   The orchestrator now sends `period_ms`; an old node looks for `expiry_ms`, does not find it, writes
+   `NULL` into that client's `expiry_time` and answers HTTP 200. One such row makes that node's
+   `check_limits_and_reset` raise `TypeError` on every 60-second run, so **the node stops enforcing
+   expiry and traffic limits for every user it serves**, not just the damaged one. Repair is manual:
+   set the row's `expiry_time` (0 for unlimited, or a real timestamp) once the node is updated.
+   Provisioning itself recovers on its own — the payment stays `pending` and the poll cron re-applies it.
+
+2. **What the panel does instead of a version check.** `proxy_provision` refuses a reply that carries no
+   `expires_at_ms` and raises a `ValueError` naming the panel and telling the operator to update it. So the
+   failure is loud and the payment is never marked succeeded — but the refusal lands *after* the stale node
+   has written its `NULL`, because preventing that would require knowing the node's version before the call.
+   `handshake`'s `panel_version` is **gone** (it was a hardcoded `15` that nothing read); compatibility is a
+   property of deploying together, not of negotiation, and backwards compatibility is offered only within
+   minor releases.
+
+3. **`CURRENT_DB_VERSION` goes 23 → 24: a new `provision_receipt` table.** It is the node's idempotency
+   ledger — the key of the operation plus the reply it produced. Nodes migrate their own SQLite on start;
+   the shared Postgres gets the table from the cron service. Deploy order therefore still matters and is
+   unchanged: **data tier → cron → master, sub, bot-api**, with nodes anywhere after the data tier.
+   Nothing needs to be done by hand.
+
+4. **Rolling back one host is not safe in either direction.** A new orchestrator against an old node is
+   point 1. An old orchestrator against a new node sends `expiry_ms` with no key, which the new node
+   still accepts (that semantics is kept for `backfill_tariff`) — so it works, but it silently restores
+   the very defect this wave fixes: the purchased period replaces the remainder instead of extending it.
+   If you must roll back, roll back the whole fleet.
+
+5. **Users whose renewal landed during the broken era are not retroactively repaired.** This wave stops
+   the remainder from being eaten; it does not refund the days already lost. If you want to compensate,
+   do it with an admin gift after the rollout — and note that a gift now *adds* to what the user has,
+   which is the point.
+
+6. **Unlimited clients (`expiry_time = 0`) change behaviour, in their favour.** Buying a period on top of
+   unlimited access used to demote it to a dated subscription; it now refreshes the traffic limit and
+   leaves the access unlimited. If any of your tariffs relied on the old behaviour to put an expiry on a
+   manually-created permanent client, it no longer will.
 
 ## Configuration
 

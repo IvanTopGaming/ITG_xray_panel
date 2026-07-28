@@ -269,7 +269,7 @@ def test_bot_role_local_only_tariff_raises_local_xray_unavailable(bot_role_app):
 
         tariff = db.session.get(Tariff, tariff_id)
         with pytest.raises(LocalXrayUnavailable) as excinfo:
-            apply_tariff_for_user(4242, tariff, source="trial")
+            apply_tariff_for_user(4242, tariff, source="trial", operation_id="test-op")
 
     assert "panel_id" in str(excinfo.value)
 

@@ -102,7 +102,6 @@ def handshake():
         {
             "federation_token": federation_token,
             "name": panel_name,
-            "panel_version": 15,
             "inbound_count": inbound_count,
         }
     ), 200
@@ -220,8 +219,10 @@ def provision():
     telegram_id = data.get("telegram_id")
     inbound_tag = data.get("inbound_tag")
     expiry_ms = data.get("expiry_ms")
+    period_ms = data.get("period_ms")
     limit_bytes = data.get("limit_bytes")
     tariff_id = data.get("tariff_id")
+    idempotency_key = data.get("idempotency_key")
 
     if telegram_id is None or inbound_tag is None:
         return jsonify({"error": "telegram_id and inbound_tag are required"}), 400
@@ -236,8 +237,10 @@ def provision():
             telegram_id=telegram_id,
             inbound_tag=inbound_tag,
             expiry_ms=expiry_ms,
+            period_ms=period_ms,
             limit_bytes=limit_bytes,
             tariff_id=tariff_id,
+            idempotency_key=idempotency_key,
         )
         return jsonify(result), 200
     except ValueError as exc:

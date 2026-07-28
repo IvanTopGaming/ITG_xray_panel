@@ -127,8 +127,12 @@ class TestHandshake:
         assert "federation_token" in body
         assert len(body["federation_token"]) > 20
         assert body["name"] == "Panel"
-        assert body["panel_version"] == 15
         assert isinstance(body["inbound_count"], int)
+        assert "panel_version" not in body, (
+            "the handshake must not advertise a contract version: compatibility between hosts is guaranteed "
+            "by deploying the whole fleet in one wave, not by negotiation, and a version nobody reads is "
+            "worse than none at all"
+        )
 
         cfg = db.session.get(FederationConfig, 1)
         assert cfg.federation_token == body["federation_token"]
