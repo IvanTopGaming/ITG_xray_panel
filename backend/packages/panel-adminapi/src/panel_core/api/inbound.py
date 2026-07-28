@@ -546,9 +546,13 @@ def delete_inbound(tag):
 @token_required
 @limiter.limit("30 per minute")
 def reset_ib_traffic(tag):
+    if not has_local_xray():
+        return jsonify({"error": XRAY_LOCAL_INBOUND_UNSUPPORTED}), 501
     try:
         reset_inbound_traffic(tag)
         return jsonify({"status": "reset"}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
 

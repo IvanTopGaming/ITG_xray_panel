@@ -4,13 +4,16 @@ import time
 
 import requests
 
-from panel_core.extensions import db, get_redis
+from panel_core.extensions import db, get_shared_redis
 from panel_core.models import LinkedPanel
 
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_TTL = 60
 _STATUS_TTL = 120
+_LAST_POLL_TTL = 300
+
+REFRESH_CHANNEL = "panel:refresh"
 
 
 class FederationClient:
@@ -104,9 +107,13 @@ def _status_key(panel_id: int) -> str:
     return f"panel:{panel_id}:status"
 
 
+def _last_poll_key(panel_id: int) -> str:
+    return f"panel:{panel_id}:last_poll"
+
+
 def get_panel_snapshot(panel_id: int) -> dict | None:
 
-    r = get_redis()
+    r = get_shared_redis()
     if r is None:
         return None
     try:
@@ -119,28 +126,68 @@ def get_panel_snapshot(panel_id: int) -> dict | None:
         return None
 
 
-def _refresh_panel_cache(panel: LinkedPanel) -> None:
+def get_panel_liveness(panel_id: int) -> tuple[str | None, int | None]:
 
-    client = FederationClient(panel.url, panel.federation_token)
-    r = get_redis()
+    r = get_shared_redis()
+    if r is None:
+        return None, None
     try:
-        data = client.snapshot()
+        raw_status = r.get(_status_key(panel_id))
+        status = None
+        if raw_status is not None:
+            status = raw_status.decode() if isinstance(raw_status, bytes) else str(raw_status)
+        raw_poll = r.get(_last_poll_key(panel_id))
+        last_poll = int(raw_poll) if raw_poll else None
+        return status, last_poll
     except Exception as exc:
-        logger.info("panel_proxy: cache refresh failed for panel %d: %s", panel.id, exc)
-        if r is not None:
-            try:
-                r.setex(_status_key(panel.id), _STATUS_TTL, "offline")
-            except Exception:
-                pass
-        return
+        logger.debug("panel_proxy: liveness read failed for panel %d: %s", panel_id, exc)
+        return None, None
 
-    if r is not None:
-        try:
-            encoded = json.dumps(data).encode()
-            r.setex(_snapshot_key(panel.id), _SNAPSHOT_TTL, encoded)
-            r.setex(_status_key(panel.id), _STATUS_TTL, "online")
-        except Exception as exc:
-            logger.debug("panel_proxy: Redis write failed for panel %d: %s", panel.id, exc)
+
+def store_panel_snapshot(panel_id: int, data: dict, last_poll_ms: int) -> None:
+
+    r = get_shared_redis()
+    if r is None:
+        return
+    try:
+        r.setex(_snapshot_key(panel_id), _SNAPSHOT_TTL, json.dumps(data).encode())
+        r.setex(_status_key(panel_id), _STATUS_TTL, "online")
+        r.setex(_last_poll_key(panel_id), _LAST_POLL_TTL, str(last_poll_ms))
+    except Exception as exc:
+        logger.debug("panel_proxy: snapshot write failed for panel %d: %s", panel_id, exc)
+
+
+def store_panel_offline(panel_id: int) -> None:
+
+    r = get_shared_redis()
+    if r is None:
+        return
+    try:
+        r.setex(_status_key(panel_id), _STATUS_TTL, "offline")
+    except Exception as exc:
+        logger.debug("panel_proxy: offline marker write failed for panel %d: %s", panel_id, exc)
+
+
+def forget_panel(panel_id: int) -> None:
+
+    r = get_shared_redis()
+    if r is None:
+        return
+    try:
+        r.delete(_snapshot_key(panel_id), _status_key(panel_id), _last_poll_key(panel_id))
+    except Exception as exc:
+        logger.debug("panel_proxy: key removal failed for panel %d: %s", panel_id, exc)
+
+
+def _nudge_panel_refresh(panel_id: int) -> None:
+
+    r = get_shared_redis()
+    if r is None:
+        return
+    try:
+        r.publish(REFRESH_CHANNEL, str(panel_id))
+    except Exception as exc:
+        logger.debug("panel_proxy: refresh nudge failed for panel %d: %s", panel_id, exc)
 
 
 def _get_panel_or_raise(panel_id: int) -> LinkedPanel:
@@ -150,8 +197,6 @@ def _get_panel_or_raise(panel_id: int) -> LinkedPanel:
         raise ValueError(f"Panel {panel_id} not found")
     if not panel.enable:
         raise ValueError(f"Panel '{panel.name}' is disabled")
-    if panel.status == "offline":
-        raise ValueError(f"Panel '{panel.name}' is offline")
     return panel
 
 
@@ -160,7 +205,7 @@ def proxy_create_user(panel_id: int, inbound_tag: str, user_data: dict) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.create_user(inbound_tag, user_data)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -169,7 +214,7 @@ def proxy_update_user(panel_id: int, inbound_tag: str, user_data: dict) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.update_user(inbound_tag, user_data)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -178,7 +223,7 @@ def proxy_delete_user(panel_id: int, inbound_tag: str, email: str) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.delete_user(inbound_tag, email)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -187,7 +232,7 @@ def proxy_bulk_delete_users(panel_id: int, users: list) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.bulk_delete_users(users)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -196,7 +241,7 @@ def proxy_bulk_enable_users(panel_id: int, users: list, enable: bool) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.bulk_enable_users(users, enable)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -205,7 +250,7 @@ def proxy_bulk_adjust_days(panel_id: int, users: list, days: int, mode: str) -> 
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.bulk_adjust_days(users, days, mode)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -214,7 +259,7 @@ def proxy_bulk_adjust_traffic(panel_id: int, users: list, gb: int, mode: str) ->
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.bulk_adjust_traffic(users, gb, mode)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -223,7 +268,7 @@ def proxy_bulk_reset_traffic(panel_id: int, users: list) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.reset_traffic(users)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -232,7 +277,7 @@ def proxy_bulk_set_flow(panel_id: int, users: list, flow: str) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.bulk_set_flow(users, flow)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -241,7 +286,7 @@ def proxy_create_inbound(panel_id: int, payload: dict) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.create_inbound(payload)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -250,7 +295,7 @@ def proxy_update_inbound(panel_id: int, tag: str, payload: dict) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.update_inbound(tag, payload)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -259,7 +304,7 @@ def proxy_delete_inbound(panel_id: int, tag: str) -> dict:
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.delete_inbound(tag)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 
@@ -273,7 +318,7 @@ def proxy_provision(
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
     result = client.provision(telegram_id, inbound_tag, params)
-    _refresh_panel_cache(panel)
+    _nudge_panel_refresh(panel.id)
     return result
 
 

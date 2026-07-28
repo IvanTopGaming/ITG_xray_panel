@@ -117,7 +117,7 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 bash <(curl -fsSL https://raw.githubusercontent.com/IvanTopGaming/ITG_xray_panel/main/scripts/install_prod.sh)
 ```
 
-Downloads `docker-compose.yml`, `caddy/routes.yaml`, the cert helper and `.env.example`, then generates a fresh `.env` with strong random secrets (and prints the admin password + secret path once).
+Downloads `docker-compose.yml`, `caddy/routes.yaml`, the cert helper and `.env.example`, then generates a fresh `.env` with strong random secrets (and prints the admin password + secret path once). **This path is currently broken and frozen pending a from-scratch installer:** the monolithic compose files it downloads no longer describe a working stack, and `.env.example` no longer exists — the split deployment uses one example file per host (`.env.{master,node,sub,bot,data}.example`).
 
 ### 2 · Point DNS and edit `.env`
 
@@ -252,7 +252,8 @@ SQLite at `./db_data/panel.db`, ~20 tables, with a custom schema-versioned migra
 | ----------------------- | ------------------------- | ------------------------------------------------------------ |
 | `SUB_DOMAIN`            | empty                     | Dedicated subscription domain; clean `https://sub/...` links |
 | `PANEL_ADMIN_USER`      | `admin`                   | Admin username                                               |
-| `RATELIMIT_STORAGE_URI` | `redis://redis:6379/0`    | Redis URI (`memory://` only for local domains)               |
+| `RATELIMIT_STORAGE_URI` | `redis://redis:6379/0`    | **This box's own** Redis: rate limits and this role's subscription cache (`memory://` only for local domains) |
+| `SHARED_REDIS_URI`      | required                  | The **data-tier** Redis: the `bot:events` bus, the node snapshots and the `panel:refresh` nudge. Demanded via `:?` on master, node, sub, bot and cron — there is no fallback |
 | `CORS_ORIGINS`          | `https://${PANEL_DOMAIN}` | Comma-separated allowed origins                              |
 | `TELEGRAM_PROXY_URL`    | empty                     | HTTP/SOCKS5 proxy the bot uses to reach Telegram             |
 | `EGRESS_INTERNAL_TOKEN` | empty                     | Shared token between `backend` and the `xray-egress` sidecar (only for dedicated egress IP) |
@@ -357,7 +358,7 @@ docker buildx build --build-arg UI_PACKAGE=node --build-context project=. \
 
 Every push runs: `ruff check` + `ruff format --check` (backend & bot), `npm run typecheck`, ESLint, Prettier, the frontend build, the backend test suite, and hadolint. All must pass before code reaches `main`.
 
-Releases are driven entirely by **`versions.json` on `main`**: bump the services you want to ship, mirror the pins in `.env.example`, and merge. CI diffs `versions.json` against the previous commit and builds **only the services whose version changed**. See `CLAUDE.md` for the full workflow, including the federation deploy-ordering rule (deploy the master and every linked panel in the same wave whenever the DB schema version changes).
+Releases are driven entirely by **`versions.json` on `main`**: bump the services you want to ship, mirror the pins in every `.env.<host>.example` that declares them, and merge. CI diffs `versions.json` against the previous commit and builds **only the services whose version changed**. See `CLAUDE.md` for the full workflow, including the federation deploy-ordering rule (deploy the master and every linked panel in the same wave whenever the DB schema version changes).
 
 </details>
 

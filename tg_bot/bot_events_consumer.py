@@ -38,10 +38,9 @@ async def _resolve_bot(source: BotSource) -> Bot:
 
 
 def _redis_uri() -> Optional[str]:
-    for env_name in ("BOT_EVENTS_REDIS_URI", "RATELIMIT_STORAGE_URI"):
-        raw = (os.getenv(env_name) or "").strip()
-        if raw.startswith(("redis://", "rediss://")):
-            return raw
+    raw = (os.getenv("SHARED_REDIS_URI") or "").strip()
+    if raw.startswith(("redis://", "rediss://")):
+        return raw
     return None
 
 

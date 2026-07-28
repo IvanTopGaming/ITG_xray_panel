@@ -52,6 +52,7 @@ ROLE_DISPATCH_EXEMPTIONS = frozenset(
         ("panel-core", "dispatch.py", "panel_core.roles.botapi", "panel-botapi"),
         ("panel-core", "dispatch.py", "panel_core.roles.master", "panel-master"),
         ("panel-core", "dispatch.py", "panel_core.roles.worker", "panel-worker"),
+        ("panel-core", "dispatch.py", "panel_core.roles.cron", "panel-cron"),
     }
 )
 

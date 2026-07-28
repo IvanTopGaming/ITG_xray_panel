@@ -87,13 +87,29 @@ def test_exactly_one_image_bakes_the_bundle_that_three_roles_serve_routes_for():
         )
 
 
-def test_env_example_does_not_call_sub_domain_optional():
-    env = (REPO / ".env.example").read_text()
-    sub_domain_comment = [line for line in env.splitlines() if line.startswith("# SUB_DOMAIN")]
-    assert sub_domain_comment, f".env.example no longer documents SUB_DOMAIN at all\n\n{TOPOLOGY_DOC}"
-    assert "optional" not in sub_domain_comment[0].lower(), (
-        f".env.example still calls SUB_DOMAIN optional: {sub_domain_comment[0]!r}. It is optional only "
-        f"for config delivery; for the subscription page it is the difference between a page and a "
+HOST_EXAMPLES_SETTING_SUB_DOMAIN = [
+    ".env.master.example",
+    ".env.node.example",
+    ".env.sub.example",
+    ".env.bot.example",
+]
+
+
+@pytest.mark.parametrize("example", HOST_EXAMPLES_SETTING_SUB_DOMAIN)
+def test_no_host_example_calls_sub_domain_optional(example):
+    path = REPO / example
+    assert path.is_file(), f"{example} does not exist; the single .env.example was split per host."
+    lines = path.read_text().splitlines()
+    assert any(line.startswith("SUB_DOMAIN=") for line in lines), (
+        f"{example} no longer sets SUB_DOMAIN. Every one of these four hosts reads it: the sub host "
+        f"serves it, and the master, the node and bot-api all build subscription links out of it via "
+        f"services/sub_links.build_aggregate_sub_url.\n\n{TOPOLOGY_DOC}"
+    )
+    documentation = [line for line in lines if line.startswith("# SUB_DOMAIN")]
+    assert documentation, f"{example} sets SUB_DOMAIN without documenting it at all\n\n{TOPOLOGY_DOC}"
+    assert "optional" not in documentation[0].lower(), (
+        f"{example} calls SUB_DOMAIN optional: {documentation[0]!r}. It is optional only for config "
+        f"delivery; for the subscription page it is the difference between a page and a "
         f"503.\n\n{TOPOLOGY_DOC}"
     )
 

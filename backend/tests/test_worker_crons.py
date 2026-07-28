@@ -1,7 +1,9 @@
 DATA_PLANE = {"sync_traffic", "check_limits", "parse_logs"}
-DB_MAINTENANCE = {"cleanup_stats"}
+# §8.5: cleanup_stats is node-only — DomainStat is written by parse_logs, a worker cron.
+WORKER_ONLY_MAINTENANCE = {"cleanup_stats"}
 EVENT_BUS = {"cleanup_bot_events", "replay_undelivered_bot_events"}
-MASTER_ONLY = {
+# Wave 2 moved every one of these off the master onto the cron service.
+CRON_ONLY = {
     "auto_renew_free_users",
     "poll_linked_panels",
     "check_latest_version",
@@ -36,15 +38,22 @@ def _job_ids(monkeypatch, role):
 def test_worker_registers_only_data_plane_crons(monkeypatch):
     ids = _job_ids(monkeypatch, "worker")
     assert DATA_PLANE.issubset(ids)
-    assert DB_MAINTENANCE.issubset(ids)
-    assert ids.isdisjoint(MASTER_ONLY)
+    assert WORKER_ONLY_MAINTENANCE.issubset(ids)
+    assert ids.isdisjoint(CRON_ONLY)
     assert ids.isdisjoint(BOT_API_ONLY)
 
 
-def test_master_registers_master_crons(monkeypatch):
+def test_master_registers_no_crons_at_all(monkeypatch):
     ids = _job_ids(monkeypatch, "master")
-    assert MASTER_ONLY.issubset(ids)
-    assert DB_MAINTENANCE.issubset(ids)
+    assert ids == set()
+
+
+def test_cron_service_registers_the_jobs_that_left_the_master(monkeypatch):
+    ids = _job_ids(monkeypatch, "cron")
+    assert ids == CRON_ONLY | EVENT_BUS
+    assert ids.isdisjoint(DATA_PLANE)
+    assert ids.isdisjoint(WORKER_ONLY_MAINTENANCE)
+    assert ids.isdisjoint(BOT_API_ONLY)
 
 
 def test_master_does_not_register_payment_crons(monkeypatch):
@@ -67,6 +76,9 @@ def test_worker_registers_event_bus_crons(monkeypatch):
     assert EVENT_BUS.issubset(ids)
 
 
-def test_master_still_registers_event_bus_crons(monkeypatch):
-    ids = _job_ids(monkeypatch, "master")
-    assert EVENT_BUS.issubset(ids)
+def test_the_node_keeps_its_own_event_bus_crons(monkeypatch):
+    ids = _job_ids(monkeypatch, "worker")
+    assert EVENT_BUS.issubset(ids), (
+        "a node keeps its own replay/cleanup crons because they work on its LOCAL SQLite, which the central "
+        "cron service cannot reach. Wave 2 took these jobs off the master, it did not centralise them."
+    )

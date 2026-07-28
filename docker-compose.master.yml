@@ -24,15 +24,15 @@ services:
       - GRPC_DNS_RESOLVER=native
       - PYTHONUNBUFFERED=1
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - SUB_DOMAIN=${SUB_DOMAIN:-}
       - PANEL_USER=${PANEL_ADMIN_USER:-admin}
       - PANEL_PASSWORD=${PANEL_ADMIN_PASSWORD:?PANEL_ADMIN_PASSWORD is required}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
       - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
-      - BOT_EVENTS_REDIS_URI=${BOT_EVENTS_REDIS_URI:?BOT_EVENTS_REDIS_URI is required}
+      - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
       - EGRESS_INTERNAL_TOKEN=${EGRESS_INTERNAL_TOKEN:-}
-      - EGRESS_UPLINK_IFACE=${EGRESS_UPLINK_IFACE:-eth0}
       - PANEL_ROLE=master
       - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
     env_file:
@@ -82,8 +82,6 @@ services:
     environment:
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - PANEL_ROLE=master
-    env_file:
-      - .env
     networks:
       - panel-net
 
@@ -100,12 +98,13 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
+      # The master host serves the admin panel and nothing else. caddy/routes.yaml drops
+      # every route whose ${VAR} interpolates empty, so handing this container only these
+      # two variables is what keeps the sub/bot/proxy routes off this box — see the
+      # "Deploy note — every host serves only its own domains" section of CLAUDE.md.
+      # Never add env_file here: it re-injects the whole .env regardless of this block.
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
-      - PROXY_DOMAIN=${PROXY_DOMAIN:?PROXY_DOMAIN is required}
-      - SUB_DOMAIN=${SUB_DOMAIN:-}
-    env_file:
-      - .env
     depends_on:
       frontend:
         condition: service_healthy

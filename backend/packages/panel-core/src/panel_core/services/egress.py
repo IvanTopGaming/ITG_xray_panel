@@ -1,10 +1,8 @@
 import ipaddress
 import os
-import re
 
 DEFAULT_POOL_RANGE = "172.28.0.128-172.28.0.254"
 DEFAULT_BIND_PREFIX = 24
-DEFAULT_UPLINK_IFACE = "eth0"
 
 
 def _valid_ip(v):
@@ -55,45 +53,3 @@ def build_bind_ips():
         .all()
     )
     return [{"send_through": o.send_through, "prefix": prefix} for o in rows if _valid_ip(o.send_through)]
-
-
-def build_host_script(iface=None):
-    from panel_core.models import Outbound
-
-    iface = iface or os.environ.get("EGRESS_UPLINK_IFACE", DEFAULT_UPLINK_IFACE)
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", iface or ""):
-        raise ValueError("Invalid egress uplink interface name")
-    rows = (
-        Outbound.query.filter(Outbound.public_ip.isnot(None), Outbound.public_ip != "")
-        .order_by(Outbound.public_ip)
-        .all()
-    )
-
-    lines = [
-        "#!/usr/bin/env bash",
-        "set -euo pipefail",
-        "",
-        "iptables -t nat -N EGRESS_SNAT 2>/dev/null || true",
-        "iptables -t nat -C POSTROUTING -j EGRESS_SNAT 2>/dev/null || iptables -t nat -I POSTROUTING -j EGRESS_SNAT",
-        "iptables -t nat -F EGRESS_SNAT",
-        "",
-    ]
-
-    table = 100
-    for o in rows:
-        if not (_valid_ip(o.public_ip) and _valid_ip(o.send_through) and _valid_ip(o.gateway)):
-            continue
-        pub = o.public_ip
-        lines.append(f"ip addr show dev {iface} | grep -qw {pub} || ip addr add {pub}/32 dev {iface}")
-        if o.send_through:
-            lines.append(f"iptables -t nat -A EGRESS_SNAT -s {o.send_through} -j SNAT --to-source {pub}")
-        if o.gateway:
-            lines.append(f'ip rule list | grep -q "from {pub} lookup {table}" || ip rule add from {pub} table {table}')
-            lines.append(
-                f"ip route show table {table} | grep -q default || "
-                f"ip route add default via {o.gateway} dev {iface} table {table}"
-            )
-            table += 1
-        lines.append("")
-
-    return "\n".join(lines) + "\n"

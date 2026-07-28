@@ -11,7 +11,7 @@ export interface ServiceStatus {
   isLocal?: boolean;
 }
 
-const BACKEND_ROLE_ORDER = ['master', 'worker', 'sub', 'bot_api'] as const;
+const BACKEND_ROLE_ORDER = ['master', 'worker', 'sub', 'bot_api', 'cron'] as const;
 
 export function useVersionStatus() {
   const query = useQuery({

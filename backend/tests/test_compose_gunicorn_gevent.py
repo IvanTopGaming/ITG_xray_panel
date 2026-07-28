@@ -12,6 +12,7 @@ EXPECTED_GUNICORN_ENTRY_POINTS = {
     ("docker-compose.node.yml", "backend"),
     ("docker-compose.sub.yml", "sub-backend"),
     ("docker-compose.bot.yml", "bot-api"),
+    ("docker-compose.cron.yml", "cron"),
     ("docker-compose.prod.yml", "backend"),
     ("docker-compose.staging.yml", "backend"),
 }

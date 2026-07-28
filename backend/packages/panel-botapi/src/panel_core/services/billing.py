@@ -13,6 +13,7 @@ from yookassa import Configuration
 from panel_core.extensions import db
 from panel_core.models import Payment, SystemSetting, Tariff, UserTariffAccess
 from panel_core.services import bot_events, provisioning
+from panel_core.xray.gateway import LocalXrayUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,23 @@ def handle_refund(payment: Payment) -> None:
     )
 
 
+def _fail_payment(payment: Payment, reason: str) -> None:
+
+    payment.status = "failed"
+    db.session.commit()
+    bot_events.publish(
+        "payment_failed",
+        payment.telegram_id,
+        {
+            "payment_id": payment.id,
+            "reason": reason,
+            "lang": (payment.metadata_json or {}).get("lang", "ru"),
+            "chat_id": payment.chat_id,
+            "message_id": payment.message_id,
+        },
+    )
+
+
 def apply_payment(payment: Payment) -> None:
 
     if payment.status == "succeeded":
@@ -233,19 +251,7 @@ def apply_payment(payment: Payment) -> None:
             rejected = True
 
     if rejected:
-        payment.status = "failed"
-        db.session.commit()
-        bot_events.publish(
-            "payment_failed",
-            payment.telegram_id,
-            {
-                "payment_id": payment.id,
-                "reason": "tariff_unavailable",
-                "lang": (payment.metadata_json or {}).get("lang", "ru"),
-                "chat_id": payment.chat_id,
-                "message_id": payment.message_id,
-            },
-        )
+        _fail_payment(payment, "tariff_unavailable")
         logger.warning(
             "billing.apply_payment marked failed: payment=%s tariff=%s no longer available",
             payment.id,
@@ -259,6 +265,16 @@ def apply_payment(payment: Payment) -> None:
             tariff=tariff,
             source="yookassa",
         )
+    except LocalXrayUnavailable as exc:
+        db.session.rollback()
+        _fail_payment(payment, "provisioning_impossible")
+        logger.error(
+            "billing.apply_payment marked failed: payment=%s tariff=%s cannot be provisioned by this role: %s",
+            payment.id,
+            payment.tariff_id,
+            exc,
+        )
+        return
     except Exception:
         db.session.rollback()
         db.session.execute(update(Payment).where(Payment.id == payment.id).values(status="pending"))

@@ -26,7 +26,6 @@ from panel_core.services.runtime_identity import build_runtime_email, parse_runt
 from panel_core.services.traffic_store import (  # noqa: F401 — re-exported under the original names
     _ten_min_bucket,
     _upsert_snapshot,
-    _upsert_node_snapshot,
     _upsert_domain_stat,
     bulk_delete_users,
     cleanup_old_domain_stats,

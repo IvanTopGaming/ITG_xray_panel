@@ -36,7 +36,7 @@ def test_poll_skips_db_write_when_status_unchanged(app, db):
 
     with (
         patch("panel_core.jobs.panels.FederationClient", return_value=_client_mock()),
-        patch("panel_core.jobs.panels.get_redis", return_value=mock_redis),
+        patch("panel_core.services.panel_proxy.get_shared_redis", return_value=mock_redis),
         patch.object(db.session, "commit") as mock_commit,
     ):
         poll_linked_panels()
@@ -55,7 +55,7 @@ def test_poll_commits_on_status_change(app, db):
             "panel_core.jobs.panels.FederationClient",
             return_value=_client_mock(snapshot={"timestamp": 1781200000}),
         ),
-        patch("panel_core.jobs.panels.get_redis", return_value=MagicMock()),
+        patch("panel_core.services.panel_proxy.get_shared_redis", return_value=MagicMock()),
     ):
         poll_linked_panels()
 
@@ -71,7 +71,7 @@ def test_poll_offline_commits_once_then_skips(app, db):
 
     with (
         patch("panel_core.jobs.panels.FederationClient", return_value=failing),
-        patch("panel_core.jobs.panels.get_redis", return_value=MagicMock()),
+        patch("panel_core.services.panel_proxy.get_shared_redis", return_value=MagicMock()),
     ):
         poll_linked_panels()
         db.session.refresh(panel)

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.schema import ensure_schema
+
 ROLES = ("master", "worker", "sub", "botapi")
 
 CONFTEST = Path(__file__).resolve().parent / "conftest.py"
@@ -107,6 +109,7 @@ def test_run_py_patches_sockets_before_importing_dispatch(tmp_path):
         "package now, so importing it runs no code at all: every entry point owns this ordering itself."
     )
     entry_point = str(Path(__file__).resolve().parents[1] / "run.py")
+    ensure_schema(f"sqlite:///{tmp_path}/run.db")
     probe = f"""
 import builtins
 import os
@@ -161,7 +164,7 @@ def test_every_role_installs_the_psycopg_wait_callback(role, monkeypatch, tmp_pa
     monkeypatch.setenv("PANEL_ADMIN_USER", "admin")
     monkeypatch.setenv("PANEL_ADMIN_PASSWORD", "admin")
     monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{role}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/{role}.db"))
 
     pg_compat._patched = False
 

@@ -32,6 +32,7 @@ COPY packages/panel-worker/pyproject.toml packages/panel-worker/
 COPY packages/panel-master/pyproject.toml packages/panel-master/
 COPY packages/panel-sub/pyproject.toml packages/panel-sub/
 COPY packages/panel-botapi/pyproject.toml packages/panel-botapi/
+COPY packages/panel-cron/pyproject.toml packages/panel-cron/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --package panel-sub --no-install-workspace
 

@@ -2,6 +2,8 @@ import pytest
 
 from tests.import_graph import SRC_ROOTS, SRC_ROOTS_DOC, discovered_directories, root_label
 
+from tests.schema import ensure_schema
+
 HINT = (
     "A namespace package cannot carry __init__.py: the moment two distributions ship into the same "
     "directory, only the one owning __init__.py would be importable. Move whatever the file held "
@@ -79,7 +81,7 @@ def test_the_app_builds_when_the_namespace_spans_two_distributions(tmp_path, mon
     monkeypatch.setenv("PANEL_ADMIN_USER", "admin")
     monkeypatch.setenv("PANEL_ADMIN_PASSWORD", "admin")
     monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/spread.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/spread.db"))
 
     from panel_core.dispatch import create_app
 

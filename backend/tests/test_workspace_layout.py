@@ -216,9 +216,14 @@ def test_panel_worker_declares_panel_sub():
 MASTER_MODULES = (
     "api/bot_admin.py",
     "api/panels.py",
+    "roles/master.py",
+)
+
+# Wave 2: the background jobs left the master for a service that runs on its own host.
+CRON_MODULES = (
     "jobs/billing.py",
     "jobs/panels.py",
-    "roles/master.py",
+    "roles/cron.py",
 )
 
 
@@ -230,6 +235,20 @@ def test_panel_master_ships_the_orchestrator_surface():
     for relative in MASTER_MODULES:
         path = source_path(relative)
         assert "panel-master" in path.parts, f"{relative} resolved to {path}, expected it under packages/panel-master"
+
+
+def test_panel_cron_ships_the_background_jobs():
+    from tests.import_graph import SRC_ROOTS, source_path
+
+    roots = {root.parents[1].name for root in SRC_ROOTS}
+    assert "panel-cron" in roots, f"panel-cron must be a distribution under packages/; found {sorted(roots)}"
+    for relative in CRON_MODULES:
+        path = source_path(relative)
+        assert "panel-cron" in path.parts, (
+            f"{relative} resolved to {path}, expected it under packages/panel-cron. These jobs moved off the "
+            f"master so that its outage stops halting free-tariff renewal, event replay and node polling; "
+            f"leaving one behind in panel-master would put it back in the master's image and its process."
+        )
 
 
 def test_panel_master_declares_panel_sub():
@@ -286,7 +305,7 @@ def test_the_roles_declare_the_admin_surface_they_register():
         )
 
 
-def test_the_workspace_has_exactly_the_six_planned_distributions():
+def test_the_workspace_has_exactly_the_seven_planned_distributions():
     expected = {
         "panel-core",
         "panel-adminapi",
@@ -294,11 +313,12 @@ def test_the_workspace_has_exactly_the_six_planned_distributions():
         "panel-master",
         "panel-sub",
         "panel-botapi",
+        "panel-cron",
     }
     actual = set(distributions_with_dependencies())
     assert actual == expected, (
-        f"the workspace holds {sorted(actual)}, expected {sorted(expected)}. Phase 3c-3 is the last cut; "
-        "a seventh distribution or a missing one means the layout drifted from the design."
+        f"the workspace holds {sorted(actual)}, expected {sorted(expected)}. Phase 8 wave 2 added panel-cron "
+        "as the last cut; an eighth distribution or a missing one means the layout drifted from the design."
     )
 
 

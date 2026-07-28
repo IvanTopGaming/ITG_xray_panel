@@ -2,6 +2,8 @@ import os
 
 import pytest
 
+from tests.schema import ensure_schema
+
 WORKER_BLUEPRINTS = {
     "auth",
     "inbound",
@@ -12,7 +14,8 @@ WORKER_BLUEPRINTS = {
     "statistics",
     "federation",
 }
-MASTER_BLUEPRINTS = WORKER_BLUEPRINTS | {"bot_admin", "panels"}
+# §8.2: the five `federation` endpoints are child-side; the master is never a child.
+MASTER_BLUEPRINTS = (WORKER_BLUEPRINTS - {"federation"}) | {"bot_admin", "panels"}
 SUB_BLUEPRINTS = {"subscription"}
 BOT_BLUEPRINTS = {"bot_service", "billing"}
 
@@ -35,19 +38,25 @@ PAYMENT_JOBS = {
 }
 WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS | EVENT_BUS_JOBS
 BOT_JOBS = PAYMENT_JOBS
-MASTER_JOBS = DB_MAINTENANCE_JOBS | {
+# §8.4 (wave 2): every background job moved off the master onto the cron service, so the
+# master is now a pure request-serving API with no scheduler at all.
+MASTER_JOBS = set()
+CRON_JOBS = {
+    ("poll_linked_panels", 10),
+    ("replay_undelivered_bot_events", 60),
     ("auto_renew_free_users", 900),
     ("cleanup_bot_events", 86400),
-    ("replay_undelivered_bot_events", 60),
-    ("poll_linked_panels", 10),
     ("check_latest_version", 21600),
 }
+# The cron service registers no blueprint: /healthz and /readyz come from build_base_app.
+CRON_BLUEPRINTS = set()
 
 CASES = [
     ("sub", SUB_BLUEPRINTS, set()),
     ("bot", BOT_BLUEPRINTS, BOT_JOBS),
     ("worker", WORKER_BLUEPRINTS, WORKER_JOBS),
     ("master", MASTER_BLUEPRINTS, MASTER_JOBS),
+    ("cron", CRON_BLUEPRINTS, CRON_JOBS),
 ]
 
 
@@ -62,7 +71,7 @@ def _reset_scheduler():
 
 def _build(role, monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", role)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/parity-{role}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/parity-{role}.db"))
     monkeypatch.chdir(tmp_path)
 
     _reset_scheduler()
@@ -91,7 +100,7 @@ def test_role_registers_exactly_its_blueprints_and_jobs(role, blueprints, jobs, 
     assert _jobs() == jobs
 
 
-@pytest.mark.parametrize("role", ["sub", "bot", "worker", "master"])
+@pytest.mark.parametrize("role", ["sub", "bot", "worker", "master", "cron"])
 def test_every_role_serves_health_endpoints(role, monkeypatch, tmp_path):
     app = _build(role, monkeypatch, tmp_path)
     client = app.test_client()
@@ -101,7 +110,7 @@ def test_every_role_serves_health_endpoints(role, monkeypatch, tmp_path):
 
 def test_default_role_is_master(monkeypatch, tmp_path):
     monkeypatch.delenv("PANEL_ROLE", raising=False)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/parity-default.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/parity-default.db"))
     monkeypatch.chdir(tmp_path)
 
     _reset_scheduler()
@@ -118,6 +127,25 @@ def test_master_registers_no_data_plane_jobs(monkeypatch, tmp_path):
     assert {job_id for job_id, _interval in _jobs()} & data_plane_ids == set()
 
 
+def test_the_master_runs_no_scheduler_at_all(monkeypatch, tmp_path):
+    _build("master", monkeypatch, tmp_path)
+    assert _jobs() == set(), (
+        "the master registered a scheduled job. Wave 2 moved every one of them to the cron service so the "
+        "master stops being a single point of failure for background work — and so that its -w 1 gunicorn "
+        "limit, which exists only because APScheduler is pinned to a web worker, can eventually be lifted. "
+        "A job re-added here silently restores both problems."
+    )
+
+
+def test_the_cron_service_serves_no_api(monkeypatch, tmp_path):
+    app = _build("cron", monkeypatch, tmp_path)
+    api_rules = [r.rule for r in app.url_map.iter_rules() if r.rule.startswith("/api")]
+    assert api_rules == [], (
+        f"the cron service exposes {api_rules}. It publishes no ports and its host has no Caddy or "
+        f"certificate; anything reachable here is reachable by nothing and only widens the image."
+    )
+
+
 def test_worker_registers_every_data_plane_job(monkeypatch, tmp_path):
     _build("worker", monkeypatch, tmp_path)
     assert DATA_PLANE_JOBS <= _jobs()
@@ -125,7 +153,7 @@ def test_worker_registers_every_data_plane_job(monkeypatch, tmp_path):
 
 def test_role_env_is_read_case_insensitively(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "  WORKER  ")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/parity-case.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/parity-case.db"))
     monkeypatch.chdir(tmp_path)
 
     _reset_scheduler()

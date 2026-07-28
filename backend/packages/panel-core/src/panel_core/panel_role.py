@@ -6,8 +6,9 @@ ROLE_MASTER = "master"
 ROLE_WORKER = "worker"
 ROLE_SUB = "sub"
 ROLE_BOT = "bot"
+ROLE_CRON = "cron"
 
-NAMED_ROLES = (ROLE_WORKER, ROLE_SUB, ROLE_BOT)
+NAMED_ROLES = (ROLE_WORKER, ROLE_SUB, ROLE_BOT, ROLE_CRON)
 KNOWN_ROLES = NAMED_ROLES + (ROLE_MASTER,)
 
 
@@ -50,3 +51,7 @@ def is_sub():
 
 def is_bot_api():
     return current_role() == ROLE_BOT
+
+
+def is_cron():
+    return current_role() == ROLE_CRON

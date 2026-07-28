@@ -7,6 +7,7 @@ from panel_core.app_base import (
     build_base_app,
     db_path,
     ensure_scheduler_job,
+    migrate_schema,
     start_scheduler,
 )
 from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered_bot_events
@@ -58,12 +59,19 @@ def create_app():
     app.register_blueprint(statistics.bp, url_prefix="/api")
     app.register_blueprint(federation.bp, url_prefix="/api")
 
-    bootstrap_defaults(app, sqlite_path)
+    migrate_schema(app, sqlite_path)
+    bootstrap_defaults(app)
 
-    if not (os.getenv("BOT_EVENTS_REDIS_URI", "") or "").strip():
+    if not os.path.isfile(subscription.sub_page_index_path()):
+        app.logger.info(
+            "subscription page bundle is absent (expected on this role) — /api/sub/u/<token> answers 503 to a "
+            "browser and serves configs to client apps as usual. Set SUB_DOMAIN so links point at the sub host."
+        )
+
+    if not (os.getenv("SHARED_REDIS_URI", "") or "").strip():
         app.logger.warning(
-            "BOT_EVENTS_REDIS_URI is not set - notification events will go to this node's local "
-            "Redis and never reach the bot. Point it at the data-tier Redis."
+            "SHARED_REDIS_URI is not set - this node cannot reach the data-tier Redis, so no traffic or "
+            "expiry notification will ever reach the bot. Point it at the data-tier Redis."
         )
 
     app.logger.info("backend ready (db=%s, scheduler started)", sqlite_path)

@@ -138,7 +138,7 @@ def test_list_panels_overlays_live_status_from_redis(client, admin_token, db):
         f"panel:{panel.id}:last_poll": b"1781200000000",
     }.get(key)
 
-    with patch("panel_core.api.panels.get_redis", return_value=fake):
+    with patch("panel_core.services.panel_proxy.get_shared_redis", return_value=fake):
         resp = client.get("/api/panels", headers=_auth(admin_token))
 
     assert resp.status_code == 200
@@ -156,7 +156,7 @@ def test_list_panels_keeps_db_values_when_redis_empty(client, admin_token, db):
     fake = MagicMock()
     fake.get.return_value = None
 
-    with patch("panel_core.api.panels.get_redis", return_value=fake):
+    with patch("panel_core.services.panel_proxy.get_shared_redis", return_value=fake):
         resp = client.get("/api/panels", headers=_auth(admin_token))
 
     item = next(p for p in resp.get_json() if p["id"] == panel.id)
@@ -350,7 +350,7 @@ def test_delete_panel(client, admin_token, db):
     assert db.session.get(LinkedPanel, panel_id) is None
 
 
-@patch("panel_core.api.panels.get_redis")
+@patch("panel_core.services.panel_proxy.get_shared_redis")
 def test_delete_panel_cleans_redis(mock_get_redis, client, admin_token, db):
     mock_redis = MagicMock()
     mock_get_redis.return_value = mock_redis
@@ -359,7 +359,9 @@ def test_delete_panel_cleans_redis(mock_get_redis, client, admin_token, db):
 
     resp = client.delete(f"/api/panels/{panel_id}", headers=_auth(admin_token))
     assert resp.status_code == 200
-    mock_redis.delete.assert_called_once_with(f"panel:{panel_id}:snapshot", f"panel:{panel_id}:status")
+    mock_redis.delete.assert_called_once_with(
+        f"panel:{panel_id}:snapshot", f"panel:{panel_id}:status", f"panel:{panel_id}:last_poll"
+    )
 
 
 def test_delete_panel_not_found(client, admin_token):

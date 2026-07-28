@@ -34,7 +34,6 @@ def test_traffic_store_exposes_the_master_facing_api():
     for name in (
         "_ten_min_bucket",
         "_upsert_snapshot",
-        "_upsert_node_snapshot",
         "_upsert_domain_stat",
         "cleanup_old_domain_stats",
         "cleanup_stats_job",

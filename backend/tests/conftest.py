@@ -83,6 +83,16 @@ def _reset_xray_gateway():
 
 
 @pytest.fixture(autouse=True)
+def _reset_redis_clients():
+
+    from panel_core.extensions import reset_redis_clients
+
+    reset_redis_clients()
+    yield
+    reset_redis_clients()
+
+
+@pytest.fixture(autouse=True)
 def _reset_grpc_channel():
 
     from panel_core.xray import grpc_client as _grpc_client_module

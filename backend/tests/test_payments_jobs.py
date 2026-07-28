@@ -438,3 +438,103 @@ def test_cleanup_deletes_ancient_cancelled(app, tariff):
     with app.app_context():
         cleanup_old_payments()
         assert db.session.get(Payment, pid) is None
+
+
+def _insert_processing(app, tariff_id, age_seconds, yk_id="yk-stranded"):
+    """A row that was atomically claimed and then never finished — the process died mid-apply."""
+    with app.app_context():
+        p = Payment(
+            yookassa_id=yk_id,
+            telegram_id=42,
+            tariff_id=tariff_id,
+            tariff_snapshot={"name": "x", "price_rub": 150, "period_days": 30, "items": []},
+            amount_rub=150,
+            status="processing",
+            confirmation_url="https://yookassa.test/pay/stranded",
+            metadata_json={"lang": "ru"},
+        )
+        db.session.add(p)
+        db.session.flush()
+        p.created_at = dt.datetime.utcnow() - dt.timedelta(seconds=age_seconds)
+        db.session.commit()
+        return p.id
+
+
+def test_cleanup_releases_a_payment_stranded_in_processing(app, tariff):
+    """§23: `processing` is written by the atomic claim and read by nobody.
+
+    A crash between the claim and the end of `apply_payment` left the row in a status that no
+    cron selects: both `poll_pending_payments` and `cleanup_old_payments` filtered on `pending`.
+    Money taken, no access, no recovery path at all. At >24h no apply can still be in flight,
+    so releasing it there is safe — the claim keeps guarding against double provisioning.
+    """
+    pid = _insert_processing(app, tariff, age_seconds=25 * 3600)
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish"),
+        patch("panel_core.jobs.payments.bot_events.publish"),
+    ):
+        mock_find.return_value = SimpleNamespace(status="succeeded")
+        mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
+        cleanup_old_payments()
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "succeeded"
+    mock_provision.assert_called_once()
+
+
+def test_cleanup_cancels_a_stranded_processing_row_yookassa_never_took(app, tariff):
+    pid = _insert_processing(app, tariff, age_seconds=25 * 3600, yk_id="yk-stranded-dead")
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
+    ):
+        mock_find.return_value = SimpleNamespace(status="canceled")
+        cleanup_old_payments()
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "cancelled"
+    assert mock_publish.call_args.args[0] == "payment_cancelled"
+
+
+def test_cleanup_leaves_a_fresh_processing_row_alone(app, tariff):
+    """The 24h bound is the whole safety argument: a running apply must not be released."""
+    pid = _insert_processing(app, tariff, age_seconds=60, yk_id="yk-inflight")
+    from panel_core.jobs.payments import cleanup_old_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch("panel_core.jobs.payments.bot_events.publish"),
+    ):
+        cleanup_old_payments()
+        mock_find.assert_not_called()
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "processing"
+
+
+def test_poll_never_touches_processing_rows(app, tariff):
+    """`poll_pending_payments` must keep filtering on `pending` only.
+
+    Widening it would race a live `apply_payment`; recovery belongs to the 24h cleaner.
+    """
+    pid = _insert_processing(app, tariff, age_seconds=600, yk_id="yk-poll-processing")
+    from panel_core.jobs.payments import poll_pending_payments
+
+    with (
+        app.app_context(),
+        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
+    ):
+        poll_pending_payments()
+        mock_find.assert_not_called()
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "processing"

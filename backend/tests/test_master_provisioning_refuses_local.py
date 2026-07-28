@@ -5,6 +5,8 @@ import pytest
 from panel_core.xray import gateway as gw
 from panel_core.xray.local import LocalXrayGateway
 
+from tests.schema import ensure_schema
+
 PROTOCOLS = ["vless", "trojan"]
 
 
@@ -26,7 +28,7 @@ def _scheduler_teardown():
 @pytest.fixture
 def master_app(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "master")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/master-provision.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/master-provision.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)
@@ -132,7 +134,7 @@ def test_master_refuses_to_extend_an_existing_local_client(master_app, protocol)
 
 def test_worker_still_provisions_the_same_tariff(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "worker")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/worker-provision.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/worker-provision.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)

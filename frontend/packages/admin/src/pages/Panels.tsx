@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@ui/lib/api';
-import { LinkedPanel, FederationConfig, Inbound } from '@ui/lib/types';
+import { LinkedPanel, Inbound } from '@ui/lib/types';
 import { Button } from '@ui/components/ui/Button';
 import { Modal } from '@ui/components/ui/Modal';
 import { Input } from '@ui/components/ui/Input';
@@ -17,15 +17,9 @@ import {
   WifiOff,
   HelpCircle,
   Zap,
-  Link2,
-  Copy,
-  Check,
   Shield,
   Layers,
   Clock,
-  Eye,
-  EyeOff,
-  KeyRound,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -68,21 +62,12 @@ export default function Panels() {
   const [editingPanel, setEditingPanel] = useState<LinkedPanel | null>(null);
   const [editFormData, setEditFormData] = useState<EditPanelForm>({ name: '', enable: true });
   const [unlinkTarget, setUnlinkTarget] = useState<LinkedPanel | null>(null);
-  const [copiedToken, setCopiedToken] = useState(false);
-  const [showTokenModal, setShowTokenModal] = useState(false);
-  const [tokenRevealed, setTokenRevealed] = useState(false);
   const [, setTick] = useState(0);
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
-
-  const { data: federationConfig, isLoading: fedLoading } = useQuery<FederationConfig>({
-    queryKey: ['federation', 'config'],
-    queryFn: () => api.get('/federation/config').then((r) => r.data),
-    refetchInterval: 30000,
-  });
 
   const { data: panels = [], isLoading: panelsLoading } = useQuery<LinkedPanel[]>({
     queryKey: ['panels'],
@@ -147,28 +132,9 @@ export default function Panels() {
     onError: () => toast.error('Test request failed'),
   });
 
-  const generateTokenMutation = useMutation({
-    mutationFn: () => api.post('/federation/link-token'),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['federation', 'config'] });
-      toast.success('Link token generated');
-    },
-    onError: (err: any) => {
-      toast.error(err?.response?.data?.error || 'Failed to generate token');
-    },
-  });
-
   const openEdit = (panel: LinkedPanel) => {
     setEditingPanel(panel);
     setEditFormData({ name: panel.name, enable: panel.enable });
-  };
-
-  const handleCopyToken = (token: string) => {
-    navigator.clipboard.writeText(token).then(() => {
-      setCopiedToken(true);
-      toast.success('Token copied to clipboard');
-      setTimeout(() => setCopiedToken(false), 2000);
-    });
   };
 
   const localClientCount = inbounds.reduce(
@@ -176,56 +142,11 @@ export default function Panels() {
     0
   );
 
-  if (fedLoading) {
-    return <div className="text-center text-gray-500 py-12">Loading...</div>;
-  }
-
   return (
     <div className="space-y-6">
-      {federationConfig?.is_linked && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white/[0.02] border border-emerald-500/20 rounded-2xl p-5 space-y-4"
-        >
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-emerald-500/10">
-              <Link2 size={20} className="text-emerald-400" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-white">
-                Linked to {federationConfig.master_name || 'Master'}
-              </h2>
-              <p
-                className="text-xs text-gray-400 font-mono truncate"
-                title={federationConfig.master_url || ''}
-              >
-                {federationConfig.master_url || 'N/A'}
-              </p>
-            </div>
-            {federationConfig.linked_at && (
-              <span className="ml-auto text-xs text-gray-500">
-                {formatDateTime(federationConfig.linked_at)}
-              </span>
-            )}
-          </div>
-        </motion.div>
-      )}
-
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Panels</h1>
         <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setTokenRevealed(false);
-              setCopiedToken(false);
-              setShowTokenModal(true);
-            }}
-          >
-            <KeyRound size={16} />
-            <span className="ml-1.5">Link Token</span>
-          </Button>
           <Button
             onClick={() => {
               setAddFormData(EMPTY_ADD_FORM);
@@ -270,70 +191,6 @@ export default function Panels() {
           </div>
         </div>
       </motion.div>
-
-      <Modal isOpen={showTokenModal} onClose={() => setShowTokenModal(false)} title="Link Token">
-        <div className="space-y-4">
-          <p className="text-sm text-gray-400">
-            Generate a token to let a master panel link to this instance. Copy and paste it into the
-            master's "Add Panel" form.
-          </p>
-
-          {federationConfig?.link_token ? (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-black/40 py-2.5 pl-3 pr-1">
-                <div className="flex-1 truncate font-mono text-sm text-white/90">
-                  {tokenRevealed
-                    ? federationConfig.link_token
-                    : '•'.repeat(Math.min(federationConfig.link_token.length, 40))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleCopyToken(federationConfig.link_token!)}
-                  title="Copy"
-                  className="rounded-lg p-1.5 text-white/50 transition-colors hover:bg-white/[0.06] hover:text-white/90"
-                >
-                  {copiedToken ? (
-                    <Check className="h-4 w-4 text-emerald-300" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTokenRevealed((s) => !s)}
-                  title={tokenRevealed ? 'Hide' : 'Reveal'}
-                  className="rounded-lg p-1.5 text-white/50 transition-colors hover:bg-white/[0.06] hover:text-white/90"
-                >
-                  {tokenRevealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  generateTokenMutation.mutate();
-                  setTokenRevealed(false);
-                  setCopiedToken(false);
-                }}
-                disabled={generateTokenMutation.isPending}
-              >
-                <Zap size={14} />
-                <span className="ml-1">Regenerate</span>
-              </Button>
-            </div>
-          ) : (
-            <Button
-              onClick={() => generateTokenMutation.mutate()}
-              disabled={generateTokenMutation.isPending}
-            >
-              <Zap size={16} />
-              <span className="ml-1.5">
-                {generateTokenMutation.isPending ? 'Generating...' : 'Generate Token'}
-              </span>
-            </Button>
-          )}
-        </div>
-      </Modal>
 
       {panelsLoading ? (
         <div className="text-center text-gray-500 py-12">Loading...</div>

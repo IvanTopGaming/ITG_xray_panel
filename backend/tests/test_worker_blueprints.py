@@ -14,7 +14,8 @@ def _rules(monkeypatch, role):
 
     scheduler.remove_all_jobs()
     rules = {r.rule for r in app.url_map.iter_rules()}
-    scheduler.shutdown(wait=False)
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
     return rules
 
 

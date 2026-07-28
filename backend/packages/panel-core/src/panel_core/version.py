@@ -2,7 +2,7 @@ import json
 import os
 import pathlib
 
-from panel_core.panel_role import ROLE_BOT, ROLE_MASTER, ROLE_SUB, ROLE_WORKER, current_role
+from panel_core.panel_role import ROLE_BOT, ROLE_CRON, ROLE_MASTER, ROLE_SUB, ROLE_WORKER, current_role
 
 
 def _ancestor_candidates():
@@ -30,6 +30,7 @@ VERSION_KEY_BY_ROLE = {
     ROLE_WORKER: "worker",
     ROLE_SUB: "sub",
     ROLE_BOT: "bot_api",
+    ROLE_CRON: "cron",
 }
 
 

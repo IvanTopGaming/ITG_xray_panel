@@ -8,6 +8,7 @@ members = [
     "panel-adminapi",
     "panel-botapi",
     "panel-core",
+    "panel-cron",
     "panel-master",
     "panel-sub",
     "panel-worker",
@@ -410,6 +411,7 @@ dependencies = [
     { name = "panel-adminapi" },
     { name = "panel-botapi" },
     { name = "panel-core" },
+    { name = "panel-cron" },
     { name = "panel-master" },
     { name = "panel-sub" },
     { name = "panel-worker" },
@@ -426,6 +428,7 @@ requires-dist = [
     { name = "panel-adminapi", editable = "packages/panel-adminapi" },
     { name = "panel-botapi", editable = "packages/panel-botapi" },
     { name = "panel-core", editable = "packages/panel-core" },
+    { name = "panel-cron", editable = "packages/panel-cron" },
     { name = "panel-master", editable = "packages/panel-master" },
     { name = "panel-sub", editable = "packages/panel-sub" },
     { name = "panel-worker", editable = "packages/panel-worker" },
@@ -600,6 +603,17 @@ requires-dist = [
     { name = "redis" },
     { name = "requests" },
 ]
+
+[[package]]
+name = "panel-cron"
+version = "0.1.0"
+source = { editable = "packages/panel-cron" }
+dependencies = [
+    { name = "panel-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "panel-core", editable = "packages/panel-core" }]
 
 [[package]]
 name = "panel-master"

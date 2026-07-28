@@ -5,6 +5,7 @@ import sys
 import pytest
 
 from tests.import_graph import HEAVY_ROOTS, HEAVY_ROOTS_DOC
+from tests.schema import ensure_schema
 
 LIGHT_ROLES = ("master", "sub", "botapi")
 PANEL_ROLE_BY_MODULE = {"master": "master", "sub": "sub", "botapi": "bot"}
@@ -51,7 +52,7 @@ def test_light_role_boots_without_heavy_dependencies(role, tmp_path):
         **os.environ,
         **BASE_ENV,
         "PANEL_ROLE": PANEL_ROLE_BY_MODULE[role],
-        "DATABASE_URL": f"sqlite:///{tmp_path}/{role}.db",
+        "DATABASE_URL": ensure_schema(f"sqlite:///{tmp_path}/{role}.db"),
     }
     result = subprocess.run(
         [sys.executable, "-c", PROBE.format(module=role, roots=HEAVY_MODULE_ROOTS)],
@@ -103,7 +104,7 @@ def test_revoke_payment_access_does_not_pull_in_the_worker_grpc_stack(tmp_path):
         **os.environ,
         **BASE_ENV,
         "PANEL_ROLE": "master",
-        "DATABASE_URL": f"sqlite:///{tmp_path}/revoke.db",
+        "DATABASE_URL": ensure_schema(f"sqlite:///{tmp_path}/revoke.db"),
     }
     result = subprocess.run(
         [sys.executable, "-c", REVOKE_PAYMENT_ACCESS_PROBE],

@@ -5,6 +5,8 @@ import pytest
 from panel_core.xray import gateway as gw
 from panel_core.xray.local import LocalXrayGateway
 
+from tests.schema import ensure_schema
+
 CASES = [
     ("worker", "worker", LocalXrayGateway),
     ("master", "master", gw.RemoteXrayGateway),
@@ -31,7 +33,7 @@ def _scheduler_teardown():
 @pytest.mark.parametrize("module_name,role,expected", CASES, ids=[c[0] for c in CASES])
 def test_role_installs_its_gateway(module_name, role, expected, monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", role)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{module_name}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/{module_name}.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)
@@ -45,7 +47,7 @@ def test_role_installs_its_gateway(module_name, role, expected, monkeypatch, tmp
 @pytest.mark.parametrize("module_name,role,expected", CASES, ids=[c[0] for c in CASES])
 def test_preconfigured_gateway_wins(module_name, role, expected, monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", role)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{module_name}-preset.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/{module_name}-preset.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
 
@@ -81,7 +83,7 @@ class _Sentinel:
 @pytest.mark.parametrize("module_name,role,expected", CASES, ids=[c[0] for c in CASES])
 def test_lazy_default_does_not_latch_and_preempt_the_role(module_name, role, expected, monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", role)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{module_name}-lazy.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/{module_name}-lazy.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)
@@ -101,7 +103,7 @@ def test_lazy_default_does_not_latch_and_preempt_the_role(module_name, role, exp
 @pytest.mark.parametrize("module_name,role,expected", CASES, ids=[c[0] for c in CASES])
 def test_role_installs_its_gateway_under_the_bare_autouse_fixture(module_name, role, expected, monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", role)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{module_name}-bare.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/{module_name}-bare.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
 
@@ -131,7 +133,7 @@ def test_the_autouse_fixture_does_not_preempt_the_role_binding():
 
 def test_master_gateway_refuses_local_user_mutation(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "master")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/master-refuse.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/master-refuse.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)

@@ -41,6 +41,13 @@ IMAGE_TARGETS = {
         "env_var": "BOT_API_IMAGE",
         "dockerfile": "backend/Dockerfile",
     },
+    "cron": {
+        "package": "panel-cron",
+        "image": "ghcr.io/ivantopgaming/panel-cron",
+        "compose": "docker-compose.cron.yml",
+        "env_var": "CRON_IMAGE",
+        "dockerfile": "backend/Dockerfile",
+    },
 }
 
 FRONTEND_IMAGE_TARGETS = {
@@ -68,6 +75,7 @@ VERSION_PINNED_ENV_VARS = {
     "worker": "WORKER_IMAGE",
     "sub": "SUB_IMAGE",
     "bot_api": "BOT_API_IMAGE",
+    "cron": "CRON_IMAGE",
     "frontend_admin": "FRONTEND_ADMIN_IMAGE",
     "frontend_node": "FRONTEND_NODE_IMAGE",
     "caddy": "CADDY_IMAGE",
@@ -83,14 +91,30 @@ THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY = {
 
 VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN = {
     "xray_core_ref": "build-time Xray-core git ref compiled into the worker image; it is a ref, not an "
-    "image tag, so no .env.example *_IMAGE var pins it",
+    "image tag, so no .env.<host>.example *_IMAGE var pins it",
 }
+
+# The single .env.example is gone: one file could not be correct for every host (see
+# tests/test_env_examples.py). Each image pin now lives in the example of the host that
+# actually runs it -- and a tag shared by several hosts, CADDY_IMAGE above all, has to
+# agree in every one of them, which is a drift surface the split created.
+ENV_EXAMPLE_BY_COMPOSE = {
+    "docker-compose.master.yml": ".env.master.example",
+    "docker-compose.node.yml": ".env.node.example",
+    "docker-compose.sub.yml": ".env.sub.example",
+    "docker-compose.bot.yml": ".env.bot.example",
+    "docker-compose.cron.yml": ".env.cron.example",
+    "docker-compose.postgres.yml": ".env.data.example",
+}
+
+ENV_EXAMPLES = sorted(set(ENV_EXAMPLE_BY_COMPOSE.values()))
 
 DRIFT_DOC = (
     "The per-role image split spreads one fact across five files: versions.json (the version), the two "
-    "Dockerfiles (how it is built), the compose file (which variable names it), .env.example (the pin) "
-    "and .github/workflows/release.yml (what CI builds). Nothing outside this guard notices when they "
-    "disagree, and the failure mode is silent: a stack comes up on a stale or wrong-role image."
+    "Dockerfiles (how it is built), the compose file (which variable names it), that host's "
+    ".env.<host>.example (the pin) and .github/workflows/release.yml (what CI builds). Nothing outside "
+    "this guard notices when they disagree, and the failure mode is silent: a stack comes up on a stale "
+    "or wrong-role image."
 )
 
 
@@ -113,7 +137,7 @@ def _case_branch(text, service, workflow):
     return match.group(1)
 
 
-def test_versions_json_names_exactly_the_four_backend_images():
+def test_versions_json_names_exactly_the_five_backend_images():
     data = json.loads(_read("versions.json"))
     for key in IMAGE_TARGETS:
         assert key in data, f"versions.json has no '{key}' version\n\n{DRIFT_DOC}"
@@ -136,35 +160,46 @@ def test_each_compose_stack_names_its_own_image_variable(service):
 @pytest.mark.parametrize("service", sorted(IMAGE_TARGETS))
 def test_env_example_pins_every_role_image(service):
     target = IMAGE_TARGETS[service]
-    text = _read(".env.example")
+    example = ENV_EXAMPLE_BY_COMPOSE[target["compose"]]
+    text = _read(example)
     assert re.search(rf"^{target['env_var']}={re.escape(target['image'])}:v", text, re.M), (
-        f".env.example has no {target['env_var']}={target['image']}:v… pin\n\n{DRIFT_DOC}"
+        f"{example} has no {target['env_var']}={target['image']}:v… pin, though {target['compose']} — the "
+        f"compose file that host runs — demands it\n\n{DRIFT_DOC}"
     )
-    assert not re.search(r"^BACKEND_IMAGE=", text, re.M), f".env.example still pins BACKEND_IMAGE\n\n{DRIFT_DOC}"
+    for other in ENV_EXAMPLES:
+        assert not re.search(r"^BACKEND_IMAGE=", _read(other), re.M), f"{other} still pins BACKEND_IMAGE\n\n{DRIFT_DOC}"
 
 
 @pytest.mark.parametrize("version_key", sorted(VERSION_PINNED_ENV_VARS))
 def test_env_example_pin_tracks_the_versions_json_it_was_bumped_from(version_key):
     versions = json.loads(_read("versions.json"))
     env_var = VERSION_PINNED_ENV_VARS[version_key]
-    text = _read(".env.example")
     assert version_key in versions, f"versions.json has no '{version_key}' version\n\n{DRIFT_DOC}"
     expected_version = versions[version_key]
-    assert re.search(rf"^{env_var}=\S+:v{re.escape(expected_version)}$", text, re.M), (
-        f".env.example's {env_var} pin does not equal 'v' + versions.json's '{version_key}' "
-        f"({expected_version}). A pin can go stale in either direction — bump one file and forget the "
-        f"other — and this is the only check that would ever notice.\n\n{DRIFT_DOC}"
+    declaring = [example for example in ENV_EXAMPLES if re.search(rf"^{env_var}=", _read(example), re.M)]
+    assert declaring, (
+        f"no .env.<host>.example pins {env_var} at all, so versions.json's '{version_key}' reaches no "
+        f"deployer. Every image belongs to some host's file.\n\n{DRIFT_DOC}"
     )
+    for example in declaring:
+        assert re.search(rf"^{env_var}=\S+:v{re.escape(expected_version)}$", _read(example), re.M), (
+            f"{example}'s {env_var} pin does not equal 'v' + versions.json's '{version_key}' "
+            f"({expected_version}). A pin can go stale in either direction — bump one file and forget the "
+            f"other — and since the split, a shared tag like CADDY_IMAGE has four places to go stale "
+            f"in. This is the only check that would ever notice.\n\n{DRIFT_DOC}"
+        )
 
 
-def test_every_image_var_in_env_example_is_either_version_pinned_or_explicitly_third_party():
-    text = _read(".env.example")
-    declared = set(re.findall(r"^(\w+_IMAGE)=", text, re.M))
+def test_every_image_var_in_env_examples_is_either_version_pinned_or_explicitly_third_party():
+    declared = set()
+    for example in ENV_EXAMPLES:
+        declared |= set(re.findall(r"^(\w+_IMAGE)=", _read(example), re.M))
+    assert declared, "no *_IMAGE pins found in any .env.<host>.example — this guard would pass vacuously."
     accounted_for = set(VERSION_PINNED_ENV_VARS.values()) | set(THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY)
     unaccounted = declared - accounted_for
     assert unaccounted == set(), (
-        f".env.example declares {sorted(unaccounted)} but this guard has no opinion on them — add each "
-        f"to VERSION_PINNED_ENV_VARS (if versions.json should own its tag) or to "
+        f"the .env.<host>.example files declare {sorted(unaccounted)} but this guard has no opinion on "
+        f"them — add each to VERSION_PINNED_ENV_VARS (if versions.json should own its tag) or to "
         f"THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY (with a reason) so a new *_IMAGE var can't "
         f"silently drift unchecked.\n\n{DRIFT_DOC}"
     )
@@ -177,7 +212,7 @@ def test_every_versions_json_key_is_either_env_pinned_or_explicitly_a_non_image_
     assert unaccounted == set(), (
         f"versions.json declares {sorted(unaccounted)} but no .env.example *_IMAGE var pins it, and this "
         f"guard has no opinion on it either. Add each to VERSION_PINNED_ENV_VARS (if it should own an "
-        f".env.example *_IMAGE pin) or to VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN (with a reason, the way "
+        f".env.<host>.example *_IMAGE pin) or to VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN (with a reason, the way "
         f"xray_core_ref is a build-time ref rather than an image) so a new versions.json key can't "
         f"silently drift unchecked.\n\n{DRIFT_DOC}"
     )
@@ -285,13 +320,15 @@ def test_each_compose_stack_names_its_own_frontend_image_variable(target_key):
 @pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
 def test_env_example_pins_every_frontend_image(target_key):
     target = FRONTEND_IMAGE_TARGETS[target_key]
-    text = _read(".env.example")
-    assert re.search(rf"^{target['env_var']}={re.escape(target['image'])}:v", text, re.M), (
-        f".env.example has no {target['env_var']}={target['image']}:v… pin\n\n{DRIFT_DOC}"
+    example = ENV_EXAMPLE_BY_COMPOSE[target["compose"]]
+    assert re.search(rf"^{target['env_var']}={re.escape(target['image'])}:v", _read(example), re.M), (
+        f"{example} has no {target['env_var']}={target['image']}:v… pin, though {target['compose']} — the "
+        f"compose file that host runs — demands it\n\n{DRIFT_DOC}"
     )
-    assert not re.search(r"^FRONTEND_IMAGE=", text, re.M), (
-        f".env.example still pins the retired single FRONTEND_IMAGE\n\n{DRIFT_DOC}"
-    )
+    for other in ENV_EXAMPLES:
+        assert not re.search(r"^FRONTEND_IMAGE=", _read(other), re.M), (
+            f"{other} still pins the retired single FRONTEND_IMAGE\n\n{DRIFT_DOC}"
+        )
 
 
 @pytest.mark.parametrize("target_key", sorted(FRONTEND_IMAGE_TARGETS))
@@ -450,7 +487,7 @@ def test_frontend_backend_role_order_matches_the_backend_version_keys():
 
 def test_every_workspace_member_pyproject_is_copied_into_every_build():
     members = sorted(p.parent.name for p in (REPO / "backend" / "packages").glob("*/pyproject.toml"))
-    assert len(members) == 6, f"expected six workspace members, found {members}"
+    assert len(members) == 7, f"expected seven workspace members, found {members}"
     for dockerfile in ("backend/Dockerfile", "backend/Dockerfile.worker", "backend/Dockerfile.sub"):
         text = _read(dockerfile)
         missing = [m for m in members if f"packages/{m}/pyproject.toml" not in text]

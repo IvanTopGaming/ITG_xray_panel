@@ -8,11 +8,11 @@ services:
       - PYTHONUNBUFFERED=1
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
-      - PROXY_DOMAIN=${PROXY_DOMAIN:-}
       - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
       - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:?RATELIMIT_STORAGE_URI is required}
+      - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
     env_file:
       - .env
@@ -52,12 +52,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
-      - PANEL_DOMAIN=${PANEL_DOMAIN:-}
-      - PROXY_DOMAIN=${PROXY_DOMAIN:-}
+      # The sub host serves SUB_DOMAIN and nothing else. caddy/routes.yaml drops every
+      # route whose ${VAR} interpolates empty, and the `sub` route is the only one that
+      # references no other variable — PANEL_SECRET_PATH is read solely by the `panel`
+      # route's api_path, which is dropped here anyway.
+      # Never add env_file here: it re-injects the whole .env regardless of this block.
       - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
-    env_file:
-      - .env
     depends_on:
       sub-backend:
         condition: service_healthy

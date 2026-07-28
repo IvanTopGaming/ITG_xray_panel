@@ -164,11 +164,12 @@ async def test_payment_events_do_not_claim():
 
 
 async def test_redis_uri_accepts_rediss(monkeypatch):
-    monkeypatch.setenv("BOT_EVENTS_REDIS_URI", "rediss://data-tier:6379/0")
+    monkeypatch.setenv("SHARED_REDIS_URI", "rediss://data-tier:6379/0")
     assert consumer._redis_uri() == "rediss://data-tier:6379/0"
 
 
-async def test_redis_uri_falls_back_to_ratelimit(monkeypatch):
-    monkeypatch.delenv("BOT_EVENTS_REDIS_URI", raising=False)
+async def test_redis_uri_never_falls_back_to_the_rate_limit_store(monkeypatch):
+
+    monkeypatch.delenv("SHARED_REDIS_URI", raising=False)
     monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://local:6379/0")
-    assert consumer._redis_uri() == "redis://local:6379/0"
+    assert consumer._redis_uri() is None

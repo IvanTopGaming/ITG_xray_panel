@@ -32,7 +32,7 @@ jobs:
           SHORT_SHA="${SHA:0:7}"
           XRAY_REF=$(python3 -c "import json; print(json.load(open('versions.json'))['xray_core_ref'])")
 
-          for SERVICE in master worker sub bot_api frontend_admin frontend_node caddy bot; do
+          for SERVICE in master worker sub bot_api cron frontend_admin frontend_node caddy bot; do
             case $SERVICE in
               master)
                 CONTEXT="./backend"
@@ -48,6 +48,11 @@ jobs:
                 CONTEXT="./backend"
                 IMAGE="ghcr.io/ivantopgaming/panel-bot-api"
                 BUILD_ARGS="--build-arg PANEL_PACKAGE=panel-botapi --build-context project=."
+                ;;
+              cron)
+                CONTEXT="./backend"
+                IMAGE="ghcr.io/ivantopgaming/panel-cron"
+                BUILD_ARGS="--build-arg PANEL_PACKAGE=panel-cron --build-context project=."
                 ;;
               worker)
                 CONTEXT="./backend"

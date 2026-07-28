@@ -7,6 +7,8 @@ import pytest
 from panel_core.xray import gateway as gw
 from panel_core.xray.local import LocalXrayGateway
 
+from tests.schema import ensure_schema
+
 
 def _reset_scheduler():
     from panel_core.extensions import scheduler
@@ -25,7 +27,7 @@ def _scheduler_teardown():
 
 def _build_role_app(role, monkeypatch, tmp_path, name):
     monkeypatch.setenv("PANEL_ROLE", role)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{name}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/{name}.db"))
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)

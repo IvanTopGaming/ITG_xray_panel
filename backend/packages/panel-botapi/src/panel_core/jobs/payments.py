@@ -135,7 +135,7 @@ def cleanup_old_payments() -> None:
     now = dt.datetime.utcnow()
     stuck = (
         Payment.query.filter(
-            Payment.status == "pending",
+            Payment.status.in_(("pending", "processing")),
             Payment.created_at < now - dt.timedelta(hours=24),
         )
         .order_by(Payment.created_at.asc())
@@ -144,6 +144,15 @@ def cleanup_old_payments() -> None:
     )
     cancelled = []
     for payment in stuck:
+        if payment.status == "processing":
+            logger.warning(
+                "cleanup_old_payments: payment=%s yk=%s was stranded in 'processing' — a crash between the "
+                "atomic claim and the end of apply_payment; releasing it back to pending",
+                payment.id,
+                payment.yookassa_id,
+            )
+            payment.status = "pending"
+            db.session.commit()
         if payment.confirmation_url is None:
             logger.info(
                 "cleanup_old_payments: payment=%s yk=%s never reached a yookassa checkout page; cancelling locally",

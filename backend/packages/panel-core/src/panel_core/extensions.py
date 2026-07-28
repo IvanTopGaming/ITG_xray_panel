@@ -55,8 +55,41 @@ limiter = Limiter(
     storage_uri=(os.getenv("RATELIMIT_STORAGE_URI", "memory://").strip() or "memory://"),
 )
 
+LOCAL_REDIS_URI_ENV = "RATELIMIT_STORAGE_URI"
+SHARED_REDIS_URI_ENV = "SHARED_REDIS_URI"
+
+_REDIS_SCHEMES = ("redis://", "rediss://")
+
+_redis_logger = logging.getLogger("app.redis")
+
 _redis_client_cached = False
 _redis_client = None
+
+_shared_redis_cached = False
+_shared_redis_client = None
+
+
+def _build_redis(uri, **kwargs):
+    try:
+        import redis  # type: ignore
+
+        return redis.Redis.from_url(uri, decode_responses=False, **kwargs)
+    except Exception:
+        return None
+
+
+def shared_redis_uri():
+
+    return (os.getenv(SHARED_REDIS_URI_ENV, "") or "").strip()
+
+
+def reset_redis_clients():
+
+    global _redis_client_cached, _redis_client, _shared_redis_cached, _shared_redis_client
+    _redis_client_cached = False
+    _redis_client = None
+    _shared_redis_cached = False
+    _shared_redis_client = None
 
 
 def get_redis():
@@ -66,19 +99,38 @@ def get_redis():
         return _redis_client
     _redis_client_cached = True
 
-    uri = (os.getenv("RATELIMIT_STORAGE_URI", "") or "").strip()
-    if not (uri.startswith("redis://") or uri.startswith("rediss://")):
+    uri = (os.getenv(LOCAL_REDIS_URI_ENV, "") or "").strip()
+    if not uri.startswith(_REDIS_SCHEMES):
         _redis_client = None
         return None
-    try:
-        import redis  # type: ignore
-
-        _redis_client = redis.Redis.from_url(
-            uri,
-            socket_connect_timeout=1,
-            socket_timeout=1,
-            decode_responses=False,
-        )
-    except Exception:
-        _redis_client = None
+    _redis_client = _build_redis(uri, socket_connect_timeout=1, socket_timeout=1)
     return _redis_client
+
+
+def get_shared_redis():
+
+    global _shared_redis_cached, _shared_redis_client
+    if _shared_redis_cached:
+        return _shared_redis_client
+    _shared_redis_cached = True
+
+    uri = shared_redis_uri()
+    if not uri.startswith(_REDIS_SCHEMES):
+        if uri:
+            _redis_logger.warning(
+                "%s=%r is not a redis:// or rediss:// URI; the shared tier is unreachable from this role",
+                SHARED_REDIS_URI_ENV,
+                uri,
+            )
+        _shared_redis_client = None
+        return None
+    _shared_redis_client = _build_redis(uri, socket_connect_timeout=1, socket_timeout=1)
+    return _shared_redis_client
+
+
+def new_shared_redis_subscriber():
+
+    uri = shared_redis_uri()
+    if not uri.startswith(_REDIS_SCHEMES):
+        return None
+    return _build_redis(uri, socket_connect_timeout=1)

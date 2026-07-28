@@ -3,8 +3,9 @@ import time
 import requests
 from flask import Blueprint, request, jsonify
 
-from panel_core.extensions import db, get_redis
+from panel_core.extensions import db
 from panel_core.models import LinkedPanel, SystemSetting, TariffItem
+from panel_core.services.panel_proxy import forget_panel, get_panel_liveness
 from panel_core.services.tariffs import purge_tariff_items
 from panel_core.utils import token_required, admin_or_bot_token_required
 
@@ -75,18 +76,12 @@ def _validate_panel_url(url: str) -> str:
 def list_panels():
     panels = LinkedPanel.query.order_by(LinkedPanel.id).all()
     items = [p.to_dict() for p in panels]
-    r = get_redis()
-    if r is not None:
-        for item in items:
-            try:
-                status = r.get(f"panel:{item['id']}:status")
-                if status:
-                    item["status"] = status.decode() if isinstance(status, bytes) else str(status)
-                last_poll = r.get(f"panel:{item['id']}:last_poll")
-                if last_poll:
-                    item["last_poll"] = int(last_poll)
-            except Exception:
-                break
+    for item in items:
+        status, last_poll = get_panel_liveness(item["id"])
+        if status:
+            item["status"] = status
+        if last_poll:
+            item["last_poll"] = last_poll
     return jsonify(items), 200
 
 
@@ -204,12 +199,7 @@ def delete_panel(panel_id):
         db.session.delete(panel)
         db.session.commit()
 
-        redis = get_redis()
-        if redis:
-            try:
-                redis.delete(f"panel:{panel_id}:snapshot", f"panel:{panel_id}:status")
-            except Exception:
-                pass
+        forget_panel(panel_id)
 
         return (
             jsonify(

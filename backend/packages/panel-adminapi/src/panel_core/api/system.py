@@ -12,7 +12,7 @@ from flask import Blueprint, after_this_request, jsonify, request, send_file, Re
 from panel_core.utils import token_required, admin_or_federation_token_required
 from panel_core.extensions import limiter, db
 from panel_core.models import SystemSetting
-from panel_core.services.egress import build_bind_ips, build_host_script
+from panel_core.services.egress import build_bind_ips
 from panel_core.xray.facade import (
     has_local_xray,
     restart_xray_container,
@@ -389,20 +389,3 @@ def egress_bind_ips():
     if not hmac.compare_digest(provided, expected):
         return jsonify({"error": "forbidden"}), 403
     return jsonify(build_bind_ips())
-
-
-@bp.route("/system/egress/host-script", methods=["GET"])
-@token_required
-def egress_host_script():
-    try:
-        iface = request.args.get("iface") or None
-        script = build_host_script(iface)
-        return Response(
-            script,
-            mimetype="text/plain",
-            headers={"Content-Disposition": "attachment; filename=egress-setup.sh"},
-        )
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception:
-        return jsonify({"error": "Internal server error"}), 500

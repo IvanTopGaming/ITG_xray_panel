@@ -17,8 +17,10 @@ services:
       - "ssl_key_file=/certs/server.key"
       - "-c"
       - "password_encryption=scram-sha-256"
+    # POSTGRES_BIND defaults to loopback on purpose: an unset value must not publish the
+    # data tier to the internet. Set it to this VM's private-network address in .env.
     ports:
-      - "${POSTGRES_BIND:-0.0.0.0}:5432:5432"
+      - "${POSTGRES_BIND:-127.0.0.1}:5432:5432"
     volumes:
       - ./pg_data:/var/lib/postgresql/data
       - ./pg_certs:/certs:ro
@@ -34,8 +36,12 @@ services:
     environment:
       REDIS_PANEL_PASSWORD: ${REDIS_PANEL_PASSWORD:?REDIS_PANEL_PASSWORD is required}
       REDIS_NODE_PASSWORD: ${REDIS_NODE_PASSWORD:?REDIS_NODE_PASSWORD is required}
+    # REDIS_BIND defaults to loopback on purpose. This Redis runs WITHOUT TLS, so the ACL
+    # password and the bot:events payload (telegram_id, e-mail) cross the wire in clear —
+    # it must never be reachable from the public internet. Set it to this VM's
+    # private-network address in .env, or run the bus over rediss://.
     ports:
-      - "${REDIS_BIND:-0.0.0.0}:6379:6379"
+      - "${REDIS_BIND:-127.0.0.1}:6379:6379"
     entrypoint:
       - "sh"
       - "-c"

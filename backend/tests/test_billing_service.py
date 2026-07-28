@@ -341,3 +341,54 @@ def test_apply_payment_marks_failed_when_private_tariff_lost_grant(app, public_t
         assert db.session.get(Payment, pid).status == "failed"
     mock_provision.assert_not_called()
     assert mock_publish.call_args.args[0] == "payment_failed"
+
+
+def test_apply_payment_fails_loudly_when_the_role_cannot_provision(app, public_tariff):
+    """§7.6: a tariff this role can never materialise must end as `failed`, not linger pending.
+
+    `apply_tariff_for_user` already refuses the local branch on a role without a local Xray
+    (phase 3b). What was missing is the consequence: every exception was treated as transient,
+    so the row went back to `pending`, the 30 s poll retried it forever and `cleanup_old_payments`
+    hit the same error and `continue`d — the payment could never reach a terminal state and the
+    user was never told anything.
+    """
+    from panel_core.xray.gateway import LocalXrayUnavailable
+
+    pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
+    ):
+        mock_provision.side_effect = LocalXrayUnavailable("no local xray on this role")
+        billing.apply_payment(db.session.get(Payment, pid))
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "failed"
+
+    mock_publish.assert_called_once()
+    event_type, tg_id, payload = mock_publish.call_args.args
+    assert event_type == "payment_failed"
+    assert tg_id == 42
+    assert payload["reason"] == "provisioning_impossible"
+
+
+def test_apply_payment_returns_a_transient_failure_to_pending(app, public_tariff):
+    """Control for the test above: the discrimination must be real, not a blanket `failed`.
+
+    An unreachable node is retryable — the row has to go back to `pending` so the poll picks it
+    up, and the exception has to propagate so the caller knows nothing was granted.
+    """
+    pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
+        pytest.raises(RuntimeError),
+    ):
+        mock_provision.side_effect = RuntimeError("node unreachable")
+        billing.apply_payment(db.session.get(Payment, pid))
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "pending"
+    mock_publish.assert_not_called()

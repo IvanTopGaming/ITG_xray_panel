@@ -924,6 +924,34 @@ class TestResetInboundTraffic:
         resp = client.post("/api/inbounds/x/reset-traffic")
         assert resp.status_code == 401
 
+    def test_reset_inbound_traffic_501_without_a_local_xray(self, client, auth_headers):
+        """§26: this was the 13th inbound route and the only one with no capability gate.
+
+        On an orchestrator it reached the DB, found no Inbound and raised a bare `Exception`,
+        which the handler could only turn into a 500. The other twelve routes gate first and
+        say where the operation belongs.
+        """
+        from panel_core.api.inbound import XRAY_LOCAL_INBOUND_UNSUPPORTED
+        from panel_core.xray import gateway as gw
+
+        gw.set_xray_gateway(gw.RemoteXrayGateway())
+
+        resp = client.post("/api/inbounds/whatever/reset-traffic", headers=auth_headers)
+
+        assert resp.status_code == 501
+        assert resp.get_json() == {"error": XRAY_LOCAL_INBOUND_UNSUPPORTED}
+
+    def test_reset_inbound_traffic_unknown_tag_is_400_not_500(self, client, auth_headers):
+        """`reset_inbound_traffic` raised a bare Exception for a missing row.
+
+        The project contract is that user-facing validation failures are `ValueError` and reach
+        the caller as 400; a bare Exception is reserved for genuine server faults.
+        """
+        resp = client.post("/api/inbounds/does-not-exist/reset-traffic", headers=auth_headers)
+
+        assert resp.status_code == 400
+        assert resp.get_json() == {"error": "Inbound not found"}
+
 
 class TestBulkCrossPanelRouting:
     def test_bulk_delete_routes_remote_group_and_keeps_local(self, app, client, auth_headers):

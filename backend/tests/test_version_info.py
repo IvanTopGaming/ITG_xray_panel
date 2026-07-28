@@ -154,7 +154,7 @@ def test_version_check_keeps_previous_on_failure(monkeypatch):
 
 
 def test_version_key_is_mapped_per_role_not_taken_from_the_role_name():
-    from panel_core.panel_role import ROLE_BOT, ROLE_MASTER, ROLE_SUB, ROLE_WORKER
+    from panel_core.panel_role import ROLE_BOT, ROLE_CRON, ROLE_MASTER, ROLE_SUB, ROLE_WORKER
     from panel_core.version import VERSION_KEY_BY_ROLE
 
     assert VERSION_KEY_BY_ROLE == {
@@ -162,6 +162,7 @@ def test_version_key_is_mapped_per_role_not_taken_from_the_role_name():
         ROLE_WORKER: "worker",
         ROLE_SUB: "sub",
         ROLE_BOT: "bot_api",
+        ROLE_CRON: "cron",
     }
     assert VERSION_KEY_BY_ROLE[ROLE_BOT] != ROLE_BOT, (
         "the bot-api role is named 'bot', and versions.json already has a 'bot' key holding the "
@@ -241,3 +242,51 @@ def test_version_endpoint_shape(client, auth_headers, monkeypatch):
     assert body["running"]["bot"] is None
     assert body["latest"]["backend"] == "2.1.11"
     assert body["latest_checked_at"] == 4242.0
+
+
+def test_the_fetched_versions_survive_the_process_that_fetched_them(app, monkeypatch):
+
+    from panel_core.services import version_check
+
+    version_check._CACHE["latest"] = None
+    version_check._CACHE["checked_at"] = None
+    monkeypatch.setattr(version_check.time, "time", lambda: 7000.0)
+    monkeypatch.setattr(version_check, "_http_get_json", lambda url, timeout=5: {"master": "9.9.9"})
+
+    version_check.fetch_latest()
+
+    version_check._CACHE["latest"] = None
+    version_check._CACHE["checked_at"] = None
+
+    got = version_check.get_latest()
+    assert got["latest"] == {"master": "9.9.9"}, (
+        "the result did not outlive the in-process cache. Wave 2 moved check_latest_version off the master "
+        "onto the cron service, which runs in a different container: an in-memory-only cache would leave "
+        "System -> About permanently green because the process that fetches and the process that renders "
+        "are no longer the same one."
+    )
+    assert got["checked_at"] == 7000.0
+
+
+def test_a_persisted_result_wins_over_a_stale_in_process_cache(app, monkeypatch):
+
+    from panel_core.services import version_check
+
+    monkeypatch.setattr(version_check.time, "time", lambda: 8000.0)
+    monkeypatch.setattr(version_check, "_http_get_json", lambda url, timeout=5: {"master": "3.0.0"})
+    version_check.fetch_latest()
+
+    version_check._CACHE["latest"] = {"master": "0.0.1"}
+    version_check._CACHE["checked_at"] = 1.0
+
+    assert version_check.get_latest()["latest"] == {"master": "3.0.0"}
+
+
+def test_reading_without_an_app_context_falls_back_instead_of_raising(monkeypatch):
+
+    from panel_core.services import version_check
+
+    version_check._CACHE["latest"] = {"master": "1.2.3"}
+    version_check._CACHE["checked_at"] = 42.0
+
+    assert version_check.get_latest()["latest"] == {"master": "1.2.3"}

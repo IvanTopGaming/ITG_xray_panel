@@ -8,10 +8,16 @@ services:
       - PYTHONUNBUFFERED=1
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
-      - PROXY_DOMAIN=${PROXY_DOMAIN:-}
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      # bot-api builds every subscription link the bot hands a user, in its own process,
+      # out of its own environment (services/sub_links.build_aggregate_sub_url, reached
+      # from GET /bot-service/users/<id>/state). Without SUB_DOMAIN it silently falls back
+      # to PANEL_DOMAIN + PANEL_SECRET_PATH, which routes to the master, which bakes no
+      # page bundle — a valid URL that 503s in a browser. Required, not optional.
+      - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
       - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
       - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:?RATELIMIT_STORAGE_URI is required}
+      - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
     env_file:
       - .env
@@ -47,6 +53,7 @@ services:
       - BOT_SERVICE_TOKEN=${BOT_SERVICE_TOKEN:-}
       - BOT_LOG_LEVEL=${BOT_LOG_LEVEL:-INFO}
       - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:?RATELIMIT_STORAGE_URI is required}
+      - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
       - PYTHONUNBUFFERED=1
     env_file:
       - .env

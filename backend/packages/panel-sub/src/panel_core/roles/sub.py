@@ -23,5 +23,5 @@ def create_app():
             index_path,
         )
 
-    app.logger.info("backend ready (db=%s, scheduler started)", sqlite_path)
+    app.logger.info("backend ready (db=%s, no scheduled jobs on this role)", sqlite_path)
     return app

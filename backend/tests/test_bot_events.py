@@ -66,26 +66,33 @@ def test_publish_leaves_delivered_at_null_when_redis_publish_fails(app, db):
     assert row.delivered_at is None
 
 
-def test_event_bus_uri_prefers_dedicated_env(monkeypatch):
-    from panel_core.services.bot_events import event_bus_uri
+def test_the_bus_reads_the_shared_uri(monkeypatch):
+    from panel_core.extensions import shared_redis_uri
 
     monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://local:6379/0")
-    monkeypatch.setenv("BOT_EVENTS_REDIS_URI", "redis://data-tier:6379/0")
-    assert event_bus_uri() == "redis://data-tier:6379/0"
+    monkeypatch.setenv("SHARED_REDIS_URI", "redis://data-tier:6379/0")
+    assert shared_redis_uri() == "redis://data-tier:6379/0"
 
 
-def test_event_bus_uri_falls_back_to_ratelimit_uri(monkeypatch):
-    from panel_core.services.bot_events import event_bus_uri
+def test_the_bus_never_falls_back_to_the_local_redis(monkeypatch):
+
+    from panel_core.extensions import shared_redis_uri
 
     monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://local:6379/0")
-    monkeypatch.delenv("BOT_EVENTS_REDIS_URI", raising=False)
-    assert event_bus_uri() == "redis://local:6379/0"
+    monkeypatch.delenv("SHARED_REDIS_URI", raising=False)
+    assert shared_redis_uri() == "", (
+        "the shared-tier URI fell back to the local Redis. That fallback is exactly how a master or a node "
+        "published every bot event into a Redis nobody subscribes to: PUBLISH with no subscriber still "
+        "returns success, so the bot_event row was stamped delivered_at and the replay cron never retried "
+        "it. The event was lost for good, silently. An unset variable must yield nothing, and the compose "
+        "files demand it with :? so the stack refuses to start instead."
+    )
 
 
 def test_get_redis_accepts_rediss_scheme(monkeypatch):
     from panel_core.services import bot_events
 
-    monkeypatch.setenv("BOT_EVENTS_REDIS_URI", "rediss://data-tier:6379/0")
+    monkeypatch.setenv("SHARED_REDIS_URI", "rediss://data-tier:6379/0")
     with patch("redis.Redis.from_url") as from_url:
         from_url.return_value = MagicMock()
         client = bot_events._get_redis()
@@ -96,5 +103,5 @@ def test_get_redis_accepts_rediss_scheme(monkeypatch):
 def test_get_redis_rejects_non_redis_scheme(monkeypatch):
     from panel_core.services import bot_events
 
-    monkeypatch.setenv("BOT_EVENTS_REDIS_URI", "memory://")
+    monkeypatch.setenv("SHARED_REDIS_URI", "memory://")
     assert bot_events._get_redis() is None

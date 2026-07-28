@@ -160,7 +160,7 @@ def db_path():
     return os.path.join(db_folder, "panel.db")
 
 
-def build_base_app(role):
+def build_base_app(role, *, public_surface=True):
     from panel_core.pg_compat import patch_gevent_psycopg
 
     patch_gevent_psycopg()
@@ -185,20 +185,22 @@ def build_base_app(role):
     }
 
     panel_host = _panel_domain_host()
-    rate_limit_storage = os.getenv("RATELIMIT_STORAGE_URI", "memory://").strip() or "memory://"
-    if not _is_local_domain(panel_host) and rate_limit_storage.startswith("memory://"):
-        raise RuntimeError(
-            "RATELIMIT_STORAGE_URI must use a persistent backend in production (e.g. redis://redis:6379/0)."
-        )
-    secret_key = os.getenv("SECRET_KEY", "").strip()
-    if not _is_local_domain(panel_host) and _is_insecure_secret(secret_key):
-        raise RuntimeError(
-            "SECRET_KEY is missing or weak for non-local PANEL_DOMAIN. Use a random value with at least 32 characters."
-        )
+    if public_surface:
+        rate_limit_storage = os.getenv("RATELIMIT_STORAGE_URI", "memory://").strip() or "memory://"
+        if not _is_local_domain(panel_host) and rate_limit_storage.startswith("memory://"):
+            raise RuntimeError(
+                "RATELIMIT_STORAGE_URI must use a persistent backend in production (e.g. redis://redis:6379/0)."
+            )
+        secret_key = os.getenv("SECRET_KEY", "").strip()
+        if not _is_local_domain(panel_host) and _is_insecure_secret(secret_key):
+            raise RuntimeError(
+                "SECRET_KEY is missing or weak for non-local PANEL_DOMAIN. "
+                "Use a random value with at least 32 characters."
+            )
 
     from panel_core.db_config import validate_database_uri
 
-    validate_database_uri(app.config["SQLALCHEMY_DATABASE_URI"], _is_local_domain(panel_host))
+    validate_database_uri(app.config["SQLALCHEMY_DATABASE_URI"], public_surface and _is_local_domain(panel_host))
 
     CORS(app, resources={r"/api/*": {"origins": _cors_origins()}})
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -248,13 +250,18 @@ def audit_tariff_items_without_panel_id(app):
     return rows
 
 
-def bootstrap_defaults(app, db_path):
-    panel_host = _panel_domain_host()
+SCHEMA_MISSING_HINT = (
+    "The database schema is not initialized. Since phase 8 wave 2 exactly one service migrates each "
+    "database: the cron service owns the shared Postgres, a node owns its own SQLite. Deploy order is "
+    "data tier -> cron -> master/sub/bot-api."
+)
 
+
+def migrate_schema(app, db_path):
     with app.app_context():
         try:
-            _migration_report = run_startup_migration(app, db_path)
-            if _migration_report.get("bot_texts_force_reseeded"):
+            report = run_startup_migration(app, db_path)
+            if report.get("bot_texts_force_reseeded"):
                 try:
                     from panel_core.services import bot_events
 
@@ -266,6 +273,25 @@ def bootstrap_defaults(app, db_path):
                     )
             db.session.remove()
             db.engine.dispose()
+        except Exception:
+            app.logger.exception("Schema migration failed")
+            raise
+    return report
+
+
+def _require_schema():
+    from sqlalchemy import inspect
+
+    if not inspect(db.engine).has_table("admin"):
+        raise RuntimeError(SCHEMA_MISSING_HINT)
+
+
+def bootstrap_defaults(app):
+    panel_host = _panel_domain_host()
+
+    with app.app_context():
+        try:
+            _require_schema()
 
             from .models import SystemSetting
             import secrets

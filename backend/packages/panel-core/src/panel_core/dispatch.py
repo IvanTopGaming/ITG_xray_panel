@@ -1,4 +1,4 @@
-from panel_core.panel_role import is_worker, is_sub, is_bot_api
+from panel_core.panel_role import is_worker, is_sub, is_bot_api, is_cron
 
 
 def create_app():
@@ -6,6 +6,10 @@ def create_app():
         from panel_core.roles import sub
 
         return sub.create_app()
+    if is_cron():
+        from panel_core.roles import cron
+
+        return cron.create_app()
     if is_bot_api():
         from panel_core.roles import botapi
 

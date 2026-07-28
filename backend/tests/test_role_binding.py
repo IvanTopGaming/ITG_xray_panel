@@ -3,6 +3,8 @@ import os
 
 import pytest
 
+from tests.schema import ensure_schema
+
 ROLE_MODULES = [
     ("sub", "sub"),
     ("botapi", "bot"),
@@ -52,7 +54,7 @@ def _expected_guards(role):
 @pytest.mark.parametrize("module_name,role", ROLE_MODULES, ids=[m for m, _ in ROLE_MODULES])
 def test_factory_binds_its_own_role_when_env_is_unset(module_name, role, monkeypatch, tmp_path):
     monkeypatch.delenv("PANEL_ROLE", raising=False)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/bind-{module_name}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/bind-{module_name}.db"))
     monkeypatch.chdir(tmp_path)
 
     _create(module_name)
@@ -65,7 +67,7 @@ def test_factory_binds_its_own_role_when_env_is_unset(module_name, role, monkeyp
 def test_factory_refuses_to_boot_on_a_contradicting_env_role(module_name, role, monkeypatch, tmp_path):
     contradiction = CONTRADICTIONS[role]
     monkeypatch.setenv("PANEL_ROLE", contradiction)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/clash-{module_name}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/clash-{module_name}.db"))
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -80,7 +82,7 @@ def test_factory_refuses_to_boot_on_a_contradicting_env_role(module_name, role, 
 @pytest.mark.parametrize("module_name,role", ROLE_MODULES, ids=[m for m, _ in ROLE_MODULES])
 def test_factory_accepts_a_matching_env_role(module_name, role, monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", role.upper())
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/match-{module_name}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/match-{module_name}.db"))
     monkeypatch.chdir(tmp_path)
 
     _create(module_name)
@@ -90,7 +92,7 @@ def test_factory_accepts_a_matching_env_role(module_name, role, monkeypatch, tmp
 
 
 def _bot_app(monkeypatch, tmp_path, db_name):
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/{db_name}.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/{db_name}.db"))
     monkeypatch.chdir(tmp_path)
 
     from panel_core.roles import botapi
@@ -118,7 +120,7 @@ def test_bot_role_refuses_to_boot_with_a_contradicting_panel_role(monkeypatch, t
 
 def test_root_dispatcher_still_routes_by_env_role(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "sub")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/dispatch.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/dispatch.db"))
     monkeypatch.chdir(tmp_path)
 
     _reset_scheduler()
