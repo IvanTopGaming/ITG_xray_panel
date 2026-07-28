@@ -323,7 +323,20 @@ def panel_backup(panel_id):
             allow_redirects=False,
         )
         if resp.status_code != 200:
-            return jsonify({"error": "Backup failed"}), resp.status_code
+            if resp.status_code == 401:
+                return jsonify(
+                    {
+                        "error": (
+                            f"Panel '{panel.name}' rejected this master's federation token. "
+                            f"Issue a fresh link token on the node and relink the panel."
+                        )
+                    }
+                ), 401
+            try:
+                remote_error = resp.json().get("error")
+            except Exception:
+                remote_error = None
+            return jsonify({"error": remote_error or "Backup failed"}), resp.status_code
         from flask import Response
 
         return Response(

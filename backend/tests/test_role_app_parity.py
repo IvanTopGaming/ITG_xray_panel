@@ -15,9 +15,13 @@ WORKER_BLUEPRINTS = {
     "system",
     "statistics",
     "federation",
+    "backup",
 }
 # §8.2: the five `federation` endpoints are child-side; the master is never a child.
-MASTER_BLUEPRINTS = (WORKER_BLUEPRINTS - {"federation"}) | {"bot_admin", "panels"}
+# §7.10 (wave 4c-1): `backup` is node-side for the same kind of reason — both routes copy a SQLite
+# file, and the master keeps its data in Postgres, where the old pair answered a misleading 404 and
+# a `{"status": "restored"}` that had restored nothing.
+MASTER_BLUEPRINTS = (WORKER_BLUEPRINTS - {"federation", "backup"}) | {"bot_admin", "panels"}
 SUB_BLUEPRINTS = {"subscription"}
 BOT_BLUEPRINTS = {"bot_service", "billing"}
 

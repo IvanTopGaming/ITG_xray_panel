@@ -4,7 +4,7 @@ import jwt
 import re
 import tempfile
 from functools import wraps
-from flask import request, jsonify
+from flask import g, request, jsonify
 
 from panel_core.extensions import db
 
@@ -100,6 +100,7 @@ def token_required(f):
         current_pwd_version = int(admin.password_changed_at or 0)
         if token_pwd_version != current_pwd_version:
             return jsonify({"message": "Token is invalid!"}), 401
+        g.auth_via = "admin"
         return f(*args, **kwargs)
 
     return decorated
@@ -145,6 +146,7 @@ def federation_token_required(f):
         token = request.headers.get("X-Federation-Token", "")
         if not token or not _check_federation_token(token):
             return jsonify({"error": "invalid or missing federation token"}), 401
+        g.auth_via = "federation"
         return f(*args, **kwargs)
 
     return decorated
@@ -156,6 +158,7 @@ def admin_or_federation_token_required(f):
     def decorated(*args, **kwargs):
         fed_token = request.headers.get("X-Federation-Token", "")
         if fed_token and _check_federation_token(fed_token):
+            g.auth_via = "federation"
             return f(*args, **kwargs)
 
         header = request.headers.get("Authorization", "")
@@ -193,6 +196,7 @@ def admin_or_federation_token_required(f):
         current_pwd_version = int(admin.password_changed_at or 0)
         if token_pwd_version != current_pwd_version:
             return jsonify({"message": "Token is invalid!"}), 401
+        g.auth_via = "admin"
         return f(*args, **kwargs)
 
     return decorated

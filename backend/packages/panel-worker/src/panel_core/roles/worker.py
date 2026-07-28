@@ -41,6 +41,7 @@ def create_app():
 
     from panel_core.api import (
         auth,
+        backup,
         inbound,
         outbound,
         routing,
@@ -56,6 +57,7 @@ def create_app():
     app.register_blueprint(system.bp, url_prefix="/api")
     app.register_blueprint(statistics.bp, url_prefix="/api")
     app.register_blueprint(federation.bp, url_prefix="/api")
+    app.register_blueprint(backup.bp, url_prefix="/api")
 
     migrate_schema(app, sqlite_path, seed_bot_texts=False)
     bootstrap_defaults(app, bot_service_token=False)

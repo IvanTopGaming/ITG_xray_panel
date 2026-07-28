@@ -21,6 +21,8 @@ import {
   Layers,
   Clock,
   Link2,
+  Download,
+  Upload,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -40,6 +42,9 @@ const EMPTY_ADD_FORM: AddPanelForm = {
   name: '',
   link_token: '',
 };
+
+const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
+const ALLOWED_RESTORE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
 
 type EditPanelForm = {
   name: string;
@@ -65,6 +70,10 @@ export default function Panels() {
   const [unlinkTarget, setUnlinkTarget] = useState<LinkedPanel | null>(null);
   const [relinkTarget, setRelinkTarget] = useState<LinkedPanel | null>(null);
   const [relinkToken, setRelinkToken] = useState('');
+  const [backupBusyId, setBackupBusyId] = useState<number | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<LinkedPanel | null>(null);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreConfirmName, setRestoreConfirmName] = useState('');
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -149,9 +158,66 @@ export default function Panels() {
     onError: () => toast.error('Test request failed'),
   });
 
+  const restorePanelMutation = useMutation({
+    mutationFn: (data: { id: number; file: File }) => {
+      const formData = new FormData();
+      formData.append('file', data.file);
+      return api.post(`/panels/${data.id}/restore`, formData);
+    },
+    onSuccess: () => {
+      closeRestore();
+      toast.success('Backup uploaded. The node is restarting.');
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.data?.error || 'Restore failed');
+    },
+  });
+
   const openEdit = (panel: LinkedPanel) => {
     setEditingPanel(panel);
     setEditFormData({ name: panel.name, enable: panel.enable });
+  };
+
+  const closeRestore = () => {
+    setRestoreTarget(null);
+    setRestoreFile(null);
+    setRestoreConfirmName('');
+  };
+
+  const downloadBackup = async (panel: LinkedPanel) => {
+    setBackupBusyId(panel.id);
+    try {
+      const res = await api.get(`/panels/${panel.id}/backup`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+      link.href = url;
+      link.setAttribute('download', `${panel.name.replace(/[^\w.-]+/g, '_')}-${stamp}.db`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error(`Could not fetch a backup from "${panel.name}"`);
+    } finally {
+      setBackupBusyId(null);
+    }
+  };
+
+  const pickRestoreFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.currentTarget.value = '';
+    if (!file) return;
+    const lowered = file.name.toLowerCase();
+    if (!ALLOWED_RESTORE_EXTENSIONS.some((ext) => lowered.endsWith(ext))) {
+      toast.error('Unsupported backup format');
+      return;
+    }
+    if (file.size > MAX_RESTORE_FILE_BYTES) {
+      toast.error('Backup file is too large (max 50 MB)');
+      return;
+    }
+    setRestoreFile(file);
   };
 
   const localClientCount = inbounds.reduce(
@@ -287,7 +353,7 @@ export default function Panels() {
                     </div>
                   )}
 
-                  <div className="flex gap-2 pt-1">
+                  <div className="flex flex-wrap gap-2 pt-1">
                     <Button
                       variant="secondary"
                       size="sm"
@@ -296,6 +362,27 @@ export default function Panels() {
                     >
                       <Zap size={14} />
                       <span className="ml-1">Test</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => downloadBackup(panel)}
+                      isLoading={backupBusyId === panel.id}
+                    >
+                      <Download size={14} />
+                      <span className="ml-1">Backup</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setRestoreFile(null);
+                        setRestoreConfirmName('');
+                        setRestoreTarget(panel);
+                      }}
+                    >
+                      <Upload size={14} />
+                      <span className="ml-1">Restore</span>
                     </Button>
                     <Button variant="secondary" size="sm" onClick={() => openEdit(panel)}>
                       <Pencil size={14} />
@@ -411,6 +498,60 @@ export default function Panels() {
               disabled={updatePanelMutation.isPending}
             >
               {updatePanelMutation.isPending ? 'Saving...' : 'Update'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={!!restoreTarget} onClose={closeRestore} title="Restore panel database">
+        <div className="space-y-4">
+          <div className="text-sm text-red-300/90 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+            This replaces the entire database of{' '}
+            <span className="font-semibold text-red-200">{restoreTarget?.name}</span> — its
+            inbounds, its keys and its clients — and restarts the node. It cannot be undone from
+            here.
+          </div>
+
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">Backup file</label>
+            <div className="relative">
+              <input
+                type="file"
+                accept=".db,.sqlite,.sqlite3"
+                className="absolute inset-0 opacity-0 cursor-pointer z-10"
+                onChange={pickRestoreFile}
+              />
+              <div className="h-11 flex items-center px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-gray-300 truncate">
+                {restoreFile ? restoreFile.name : 'Choose a .db file…'}
+              </div>
+            </div>
+          </div>
+
+          <Input
+            label={`Type "${restoreTarget?.name ?? ''}" to confirm`}
+            placeholder={restoreTarget?.name}
+            value={restoreConfirmName}
+            onChange={(e) => setRestoreConfirmName(e.target.value)}
+          />
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={closeRestore}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() =>
+                restoreTarget &&
+                restoreFile &&
+                restorePanelMutation.mutate({ id: restoreTarget.id, file: restoreFile })
+              }
+              disabled={
+                !restoreFile ||
+                restoreConfirmName.trim() !== restoreTarget?.name ||
+                restorePanelMutation.isPending
+              }
+            >
+              {restorePanelMutation.isPending ? 'Restoring...' : 'Restore'}
             </Button>
           </div>
         </div>

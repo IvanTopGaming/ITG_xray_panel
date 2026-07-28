@@ -120,7 +120,7 @@ bash scripts/generate_local_cert.sh   # self-signed cert for local domains
 | Service | Role |
 |---|---|
 | `xray` | Xray-core proxy engine |
-| `backend` (`master`) | Admin API only (gunicorn + gevent, single worker) — runs the `panel-master` image; no local Xray, no billing surface, no scheduler, and since wave 3b **no subscription surface** |
+| `backend` (`master`) | Admin API only (gunicorn + gevent, single worker) — runs the `panel-master` image; no local Xray, no billing surface, no scheduler, since wave 3b **no subscription surface**, and since wave 4c-1 **no backup surface** (`/api/backup` and `/api/restore` are node-only) |
 | `backend` (`worker`/node) | Same Flask app plus the local Xray driver — runs the `panel-worker` image, the only one of the five per-role images carrying the Xray binary and the generated protobuf stubs. Serves no subscription route since wave 3b |
 | `backend` (`sub`) | Subscription links only, and the **only** role that serves them — runs the `panel-sub` image, which also serves the React subscription page baked in at `/app/ui`. It is a **writer** of the shared Postgres: the device ledger (`user_device`) is written here on every config request |
 | `backend` (`bot-api`) | `/bot-service/*` and the whole billing surface — runs the `panel-bot-api` image |
@@ -149,7 +149,7 @@ That data-tier Redis ACLs two users: `node` (`-@all +publish +select &bot:events
 | Distribution | Ships | Deps |
 |---|---|---|
 | `panel-core` | the shared foundation — everything not listed in the other seven rows | flask (+sqlalchemy/migrate/cors/limiter/apscheduler), gunicorn, gevent, psycopg2-binary, psycogreen, redis, pyjwt, requests, pyyaml, cryptography |
-| `panel-adminapi` | `api/{auth,inbound,outbound,routing,statistics,system,federation}.py` | `panel-core` + **psutil** |
+| `panel-adminapi` | `api/{auth,inbound,outbound,routing,statistics,system,federation,backup}.py` | `panel-core` + **psutil** |
 | `panel-worker` | `xray/{local,engine,grpc_client}.py`, `services/stats.py`, `roles/worker.py` | `panel-core`, `panel-adminapi`, `panel-sub` + **docker, filelock, grpcio, grpcio-tools, protobuf** |
 | `panel-master` | `api/{bot_admin,panels}.py`, `roles/master.py` | `panel-core`, `panel-adminapi`, `panel-sub` |
 | `panel-sub` | `api/subscription.py`, `roles/sub.py` | `panel-core`, `panel-links` |
@@ -179,6 +179,7 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 - `app/api/`
   - `auth` — login / logout
   - `inbound`, `outbound`, `routing`, `panels`, `federation`, `subscription`, `statistics`, `system` — core panel
+  - `backup` — `GET /api/backup` + `POST /api/restore`, **registered only by `roles/worker.py`**; both copy a SQLite file, which the master (Postgres) does not have. See Auth below
   - `billing` — YooKassa checkout + webhook. The webhook is **unsigned**, so the body is treated only as a trigger: the handler re-fetches the authoritative status from YooKassa (`fetch_remote_status`) before provisioning, so a forged notification does nothing
   - `bot_admin` — admin UI endpoints (tariffs, texts, users, grants, payments, settings) — JWT-protected
   - `bot_service` — endpoints the bot itself calls (runtime-config, texts, users, trial, tariffs, payments) — bot service token only
@@ -282,10 +283,14 @@ All API handlers follow a two-catch pattern. `ValueError` is the type for user-f
 
 ### Auth
 Four decorators in `app/utils.py`:
-- `token_required` — admin JWT only. Used on `/api/backup`, `/api/restore`, all `bot_admin` endpoints, `GET /api/inbounds`, every one of the ten `panels.py` handlers (wave 4b added `POST /panels/<id>/relink`), and the node-only `POST /api/federation/link-token` + `GET /api/federation/config`.
+- `token_required` — admin JWT only. Used on all `bot_admin` endpoints, `GET /api/inbounds`, every one of the ten `panels.py` handlers (wave 4b added `POST /panels/<id>/relink`), and the node-only `POST /api/federation/link-token` + `GET /api/federation/config`.
 - `bot_service_token_required` — fixed token from `SystemSetting('bot_service_token')`, compared in constant time. Used on all `bot_service.py` endpoints + `/billing/checkout`, **and on nothing else**.
 - `federation_token_required` — validates the `federation_token` from a linked panel's `FederationConfig`. Used on federation endpoints that remote panels call.
-- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. Used on `/api/inbound` user/inbound CRUD **and the `/users/bulk-*` + `/users/reset-traffic` batch endpoints**, so linked panels can proxy operations (and the master can fan a batch out to children).
+- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. Sixteen handlers: twelve in `inbound.py` (user/inbound CRUD **and the `/users/bulk-*` + `/users/reset-traffic` batch endpoints**, so linked panels can proxy operations and the master can fan a batch out to children), `/api/restart` and `/api/stats/system` in `system.py`, and — since wave 4c-1 — `GET /api/backup` + `POST /api/restore` in the node-only `backup.py`.
+
+All three decorators stamp `g.auth_via` (`"admin"` / `"federation"`) on the way through, which is how `backup.py` can log *which credential* took a node's database and not merely that someone did. A federated backup or restore leaves a WARNING on the node; the node's own admin leaves an INFO.
+
+**`GET /api/backup` and `POST /api/restore` live in their own blueprint that only `roles/worker.py` registers, so the master answers 404 on both.** They used to sit in `system.py` under `token_required` — admin JWT only — while `panels.py` proxied to them with nothing but an `X-Federation-Token`, so backing a node up from the master answered 401 from the first release and no path to it existed. Both halves are gone: the routes take the federation token now, and they are node-only, because both copy a SQLite file and the master keeps its data in Postgres. There, `/api/backup` answered `404 "DB not found"` (which reads as *your database is gone*) and `/api/restore` tore down the live Postgres pool, wrote the upload where nothing reads it, restarted the worker and answered `{"status": "restored"}` — a disaster-recovery path confirming a recovery that never happened. A cheap `is_postgres()` refusal (409, naming `pg-backup`) also guards the handlers themselves, because `docker-compose.node.yml` merely omits `DATABASE_URL` rather than forbidding it. **The master's own database is backed up by the `pg-backup` container in `docker-compose.postgres.yml`, never through the panel** — System → Maintenance says so where the buttons used to be.
 
 **The bot service token opens `/bot-service/*` and `/billing/checkout` and nothing else — that is a wave-4a change, and it is bigger than it reads.** Two separate paths used to accept it on the admin API. The explicit one was `admin_or_bot_token_required` on seven endpoints (`GET /api/inbounds` plus all six in `panels.py`). The quiet one was a third branch **inside** `admin_or_federation_token_required` — `if _check_bot_service_token(token)` — which put another 14 endpoints behind the same token: inbound and user CRUD, all six batch operations, `/api/restart` and `/api/stats/system`. So a leaked bot token could create and delete any user and any inbound, on the master and through it on any node by `panel_id`. Both are gone, along with `_check_bot_service_token` itself. The branch was unreachable in practice only because `tg_bot/api_service.py` was broken — restoring the bot by handing it admin endpoints, the obvious-looking fix, would have reopened it. `tests/test_bot_token_scope.py` builds the master role's app and asserts 401 on all 21, plus both positive paths.
 
@@ -491,7 +496,7 @@ Release is **driven entirely by `versions.json`** on `main`. You decide what to 
 Force-pushing rewrites history — CI can't diff against the old SHA and falls back to `HEAD~1..HEAD`. Avoid force-pushing `main`; use feature branches.
 
 ### Panel Federation deploy ordering
-When the schema bumps (any `CURRENT_DB_VERSION` change), **deploy master and all linked panels in the same wave**. A master on a newer schema may push user/tariff structures that an older linked panel can't parse. Backup first (`GET /api/backup`), then `docker compose pull && up -d` everywhere.
+When the schema bumps (any `CURRENT_DB_VERSION` change), **deploy master and all linked panels in the same wave**. A master on a newer schema may push user/tariff structures that an older linked panel can't parse. Back up first — the data tier with the `pg-backup` container, each node from its card on the master's Panels page (`GET /api/panels/<id>/backup`, wave 4c-1) — then `docker compose pull && up -d` everywhere. **There is no `GET /api/backup` on the master**; it answers 404 and, before wave 4c-1, answered `404 "DB not found"`, so an older runbook naming it produced nothing.
 
 ### Deploy note — the payment surface moved to bot-api (Phase 3c-2)
 
@@ -737,8 +742,8 @@ remove capability an operator may be using today, and it narrows a credential. R
    since phase 3c-2 and answering "0/N Online" with an empty server list. **Fleet management is the
    master panel's job from here on.** One gap worth knowing before you look for it: backing up a node
    *through* the master answers 401 and always has (the master sends only `X-Federation-Token` while
-   the node's `/api/backup` takes an admin JWT), so until wave 4c a node is backed up in its own panel
-   with its own admin login.
+   the node's `/api/backup` takes an admin JWT), so until wave 4c-1 a node is backed up in its own
+   panel with its own admin login. Wave 4c-1 closes that; see its deploy note below.
 
 2. **The bot service token no longer opens any admin endpoint.** It reaches `/bot-service/*` and
    `/billing/checkout`, and nothing else. Twenty-one endpoints stop accepting it: `GET /api/inbounds`,
@@ -819,6 +824,69 @@ one that never worked. Read all six points.
    to master and worker (the master ships that distribution even though it registers no `federation` blueprint),
    and the `ui-core` edit fans out to both frontend images. `sub`, `bot_api`, `cron`, `bot` and `caddy` are
    untouched.
+
+### Deploy note — a node can finally be backed up from the master, and the master stops offering a backup it never had (Phase 8 wave 4c-1)
+
+This wave changes **no schema, no federation contract and no environment variable**, so it needs no
+fleet-wide lock-step and no `.env` edit. It restores a capability that never worked, removes two
+buttons that lied, and — the part to read carefully — **widens what a leaked federation token can
+do**. Read all six points.
+
+1. **The federation token now reaches a node's entire database.** `GET /api/backup` and
+   `POST /api/restore` accept it, so a holder can download the node's SQLite file whole and upload a
+   replacement. The increment is smaller than it sounds and bigger than it looks. Smaller, because
+   `/api/federation/snapshot` already handed the same token every inbound with every client, their
+   UUIDs and their `telegram_id`s; what is new is the **rest** of the file — the node's own admin
+   password hash, its routing profiles, its settings — and the ability to **overwrite** it. Bigger,
+   because the token sits in the master's Postgres in clear text (it must, or the master could not
+   present it), travels in every `pg_dump` of the data tier, and is not scoped per operation.
+
+   **How to kill one (the wave-4b procedure, and the reason 4b shipped first):** on the node, System →
+   Link → *Revoke access & issue token*; that nulls the current token on the spot and hands you a
+   fresh single-use link token. Then on the master, Panels → the panel's card → *Relink*, and paste
+   it. Never delete and re-add the panel instead: `delete_panel` cascades `purge_tariff_items`, which
+   removes every `TariffItem` of that panel and disables any tariff left with none. Between the revoke
+   and the relink the node is unreachable to the master entirely — polling, provisioning and CRUD all
+   fail — so keep the window to one sitting; a purchase landing inside it stays `pending` and
+   `poll_pending_payments` re-applies it afterwards.
+
+2. **`/api/backup` and `/api/restore` no longer exist on the master, sub or bot-api — 404, not an
+   error message.** They moved into a blueprint only `roles/worker.py` registers. Nothing is lost:
+   on the master they never worked. `/api/backup` answered `404 "DB not found"` because it looked for
+   a SQLite file a Postgres role does not have, and `/api/restore` accepted an upload, disposed of the
+   live Postgres connection pool, wrote the file where nothing reads it, restarted the worker and
+   answered `{"status": "restored"}`. **If any runbook of yours says "take a backup from the master
+   panel before upgrading", it has been producing nothing this whole time** — see point 3.
+
+3. **The master's own database is backed up by the `pg-backup` container in
+   `docker-compose.postgres.yml`, on the data tier, and never through the panel.** System →
+   Maintenance now says exactly that where the two buttons used to be. Nothing to configure: that
+   container is already part of the data-tier stack.
+
+4. **Backing a node up is a new button, not a restored one.** `Panels.tsx` never called
+   `/panels/<id>/backup` or `/panels/<id>/restore` from any bundle — their only caller was the bot's
+   admin menu, deleted in wave 4a. Each panel card now carries **Backup** (streams the node's file
+   through the master straight into the admin's browser — it is never stored on the master) and
+   **Restore** (file picker plus a confirmation that requires typing the panel's name, because
+   pouring one node's database into another cannot be undone from the panel). What lands in the
+   admin's Downloads folder is that node's keys and clients in the clear; treat it accordingly.
+   `/panels/<id>/system-stats` and `/panels/<id>/restart` remain without any caller — their
+   authorisation was always correct, there is simply no button.
+
+5. **A node writes down who took its database.** Every federated `/api/backup` or `/api/restore`
+   leaves a WARNING on the node naming the credential and the source address; the node's own admin
+   leaves an INFO. No new table, no schema change — the container's existing json-file rotation
+   (50 MB × 5) covers it.
+
+6. **Deploy order does not matter, and a partial rollout degrades quietly rather than breaking.** An
+   old master against a new node: the Backup button does not exist on the master, so nothing changes.
+   A new master against an old node: pressing Backup answers 401, and the master now says so in words
+   — *"Panel 'X' rejected this master's federation token. Issue a fresh link token on the node and
+   relink the panel"* — which is misleading in this one case (the node is simply old), so update the
+   node. Bump `master`, `worker`, `sub`, `bot_api`, `cron`, `frontend_admin` and `frontend_node`
+   together: the `panel-core` edit (`utils.py`) fans out to all five backends, `panel-adminapi` to
+   master and worker, `panel-master` to its own image, and the `ui-core` edit to both frontends.
+   `bot` and `caddy` are untouched.
 
 ## Configuration
 

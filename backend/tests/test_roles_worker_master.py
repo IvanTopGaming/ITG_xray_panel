@@ -41,6 +41,7 @@ def test_worker_role_composition(monkeypatch, tmp_path):
         "system",
         "statistics",
         "federation",
+        "backup",
     }
     assert _jobs() == {
         ("sync_traffic", 10),

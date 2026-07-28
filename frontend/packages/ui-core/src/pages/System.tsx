@@ -561,33 +561,49 @@ export default function System() {
                 icon={<Server size={18} className="text-secondary" />}
               >
                 <div className="space-y-3">
-                  <Button
-                    variant="secondary"
-                    className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
-                    onClick={handleBackup}
-                  >
-                    <div className="p-2 bg-black/20 rounded-lg mr-3">
-                      <Download size={16} />
-                    </div>
-                    Backup Database
-                  </Button>
-                  <div className="relative">
-                    <input
-                      type="file"
-                      accept=".db,.sqlite,.sqlite3"
-                      className="absolute inset-0 opacity-0 cursor-pointer z-10"
-                      onChange={handleRestore}
-                    />
-                    <Button
-                      variant="secondary"
-                      className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
-                    >
-                      <div className="p-2 bg-black/20 rounded-lg mr-3">
-                        <Upload size={16} />
+                  {hasLocalXray ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
+                        onClick={handleBackup}
+                      >
+                        <div className="p-2 bg-black/20 rounded-lg mr-3">
+                          <Download size={16} />
+                        </div>
+                        Backup Database
+                      </Button>
+                      <div className="relative">
+                        <input
+                          type="file"
+                          accept=".db,.sqlite,.sqlite3"
+                          className="absolute inset-0 opacity-0 cursor-pointer z-10"
+                          onChange={handleRestore}
+                        />
+                        <Button
+                          variant="secondary"
+                          className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
+                        >
+                          <div className="p-2 bg-black/20 rounded-lg mr-3">
+                            <Upload size={16} />
+                          </div>
+                          Restore Database
+                        </Button>
                       </div>
-                      Restore Database
-                    </Button>
-                  </div>
+                    </>
+                  ) : (
+                    <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 text-sm text-gray-400">
+                      <p className="text-gray-300 font-medium mb-1">
+                        Database backup lives elsewhere
+                      </p>
+                      <p>
+                        This panel keeps its data in Postgres. Back the data tier up with the{' '}
+                        <span className="text-gray-200 font-mono">pg-backup</span> container from{' '}
+                        <span className="text-gray-200 font-mono">docker-compose.postgres.yml</span>
+                        . A node&apos;s own database is backed up from its card on the Panels page.
+                      </p>
+                    </div>
+                  )}
                   {hasLocalXray && (
                     <>
                       <Button
