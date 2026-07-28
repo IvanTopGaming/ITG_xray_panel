@@ -5,7 +5,7 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 CURRENT_DB_VERSION = 25
-CURRENT_BOT_TEXTS_VERSION = 17
+CURRENT_BOT_TEXTS_VERSION = 18
 
 
 _REMOVED_BOT_TEXT_KEYS = (
@@ -20,6 +20,10 @@ _REMOVED_BOT_TEXT_KEYS = (
     "home.menu_header",
     "home.subscription_active",
     "home.title",
+    "qr.select_title",
+    "qr.server_label",
+    "stats.key.per_server",
+    "stats.key.unavailable",
     "menu.keys",
     "menu.settings",
     "settings.language",

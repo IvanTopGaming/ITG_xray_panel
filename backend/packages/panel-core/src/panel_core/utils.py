@@ -129,68 +129,6 @@ def bot_service_token_required(f):
     return decorated
 
 
-def _check_bot_service_token(token: str) -> bool:
-    import secrets as _secrets
-    from panel_core.models import SystemSetting
-
-    setting = SystemSetting.query.filter_by(key="bot_service_token").first()
-    if setting is None or not setting.value:
-        return False
-    return _secrets.compare_digest(token, setting.value)
-
-
-def admin_or_bot_token_required(f):
-
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        header = request.headers.get("Authorization", "")
-        scheme, _, value = header.partition(" ")
-        if scheme.lower() != "bearer" or not value.strip():
-            return jsonify({"message": "Token is missing!"}), 401
-        token = value.strip()
-
-        if _check_bot_service_token(token):
-            return f(*args, **kwargs)
-
-        try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        except jwt.ExpiredSignatureError:
-            return jsonify({"message": "Token is expired!"}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({"message": "Token is invalid!"}), 401
-
-        if payload.get("role") != "admin":
-            return jsonify({"message": "Token is invalid!"}), 401
-
-        from panel_core.models import Admin
-        from panel_core.extensions import db
-
-        admin = None
-        admin_id = payload.get("admin_id")
-        if admin_id is not None:
-            try:
-                admin = db.session.get(Admin, int(admin_id))
-            except (TypeError, ValueError):
-                admin = None
-        if admin is None and payload.get("user"):
-            admin = Admin.query.filter_by(username=payload.get("user")).first()
-        if admin is None:
-            return jsonify({"message": "Token is invalid!"}), 401
-
-        token_pwd_version = payload.get("pwdv")
-        try:
-            token_pwd_version = int(token_pwd_version)
-        except (TypeError, ValueError):
-            return jsonify({"message": "Token is invalid!"}), 401
-
-        current_pwd_version = int(admin.password_changed_at or 0)
-        if token_pwd_version != current_pwd_version:
-            return jsonify({"message": "Token is invalid!"}), 401
-        return f(*args, **kwargs)
-
-    return decorated
-
-
 def _check_federation_token(token: str) -> bool:
     import hmac
     from panel_core.models import FederationConfig
@@ -225,8 +163,6 @@ def admin_or_federation_token_required(f):
         if scheme.lower() != "bearer" or not value.strip():
             return jsonify({"message": "Token is missing!"}), 401
         token = value.strip()
-        if _check_bot_service_token(token):
-            return f(*args, **kwargs)
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         except jwt.ExpiredSignatureError:

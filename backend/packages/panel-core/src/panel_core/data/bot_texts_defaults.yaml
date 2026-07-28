@@ -81,12 +81,9 @@ keys.actions.show_again:
   ru: "🔄 Показать ключи снова"
   en: "🔄 Show keys again"
 
-qr.select_title:
-  ru: "🖥️ <b>Выбор сервера</b>\nКакой ключ показать в виде QR-кода:"
-  en: "🖥️ <b>Select server</b>\nChoose which key to display as a QR code:"
-qr.server_label:
-  ru: "🖥️ {name}"
-  en: "🖥️ {name}"
+qr.no_link:
+  ru: "❌ Для этого ключа нет ссылки — обновите подписку или обратитесь в поддержку"
+  en: "❌ No link for this key — refresh your subscription or contact support"
 
 notification.button.renew:
   ru: "💎 Продлить подписку"
@@ -220,9 +217,6 @@ stats.grand_total:
 stats.actions.refresh:
   ru: "🔄 Обновить"
   en: "🔄 Refresh"
-stats.key.unavailable:
-  ru: "🔑 <b>{email}</b> — ❌ недоступно"
-  en: "🔑 <b>{email}</b> — ❌ unavailable"
 stats.key.status_active:
   ru: "🟢 Активен"
   en: "🟢 Active"
@@ -241,9 +235,6 @@ stats.key.unlimited:
 stats.key.expiry_label:
   ru: "📅 Истекает: <b>{expiry}</b>"
   en: "📅 Expiry: <b>{expiry}</b>"
-stats.key.per_server:
-  ru: "🖥 Трафик по серверам:"
-  en: "🖥 Traffic per server:"
 stats.expiry.permanent:
   ru: "♾️ Бессрочно"
   en: "♾️ Permanent"

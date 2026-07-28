@@ -8,10 +8,9 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import config
-from api_service import panel_api
 from backend_client import BackendClient
 from bot_events_consumer import run_consumer
-from handlers import admin, catalog, user
+from handlers import catalog, user
 from i18n import I18n
 from middleware import LangMiddleware
 from runtime_config import runtime_config
@@ -49,7 +48,6 @@ async def main() -> None:
             await asyncio.sleep(3600)
 
     await runtime_config.bootstrap()
-    await panel_api.reload_from_runtime()
 
     bot = _build_bot()
     dp = Dispatcher(storage=MemoryStorage())
@@ -61,17 +59,12 @@ async def main() -> None:
     dp.message.middleware(middleware)
     dp.callback_query.middleware(middleware)
 
-    dp.include_router(admin.router)
     dp.include_router(user.router)
     dp.include_router(catalog.router)
 
     state: dict[str, object] = {"bot": bot}
 
     async def on_runtime_change(session_changed: bool) -> None:
-        try:
-            await panel_api.reload_from_runtime()
-        except Exception as exc:
-            logger.exception("runtime-change: panel_api reload failed: %s", exc)
         if not session_changed:
             return
 
@@ -111,7 +104,6 @@ async def main() -> None:
             except (asyncio.CancelledError, Exception):
                 pass
         await backend.close()
-        await panel_api.close()
         await runtime_config.close()
         try:
             await state["bot"].session.close()  # type: ignore[union-attr]

@@ -7,7 +7,7 @@ from panel_core.extensions import db
 from panel_core.models import LinkedPanel, SystemSetting, TariffItem
 from panel_core.services.panel_proxy import forget_panel, get_panel_liveness
 from panel_core.services.tariffs import purge_tariff_items
-from panel_core.utils import token_required, admin_or_bot_token_required
+from panel_core.utils import token_required
 
 bp = Blueprint("panels", __name__)
 
@@ -72,7 +72,7 @@ def _validate_panel_url(url: str) -> str:
 
 
 @bp.route("/panels", methods=["GET"])
-@admin_or_bot_token_required
+@token_required
 def list_panels():
     panels = LinkedPanel.query.order_by(LinkedPanel.id).all()
     items = [p.to_dict() for p in panels]
@@ -217,7 +217,7 @@ def delete_panel(panel_id):
 
 
 @bp.route("/panels/<int:panel_id>/system-stats", methods=["GET"])
-@admin_or_bot_token_required
+@token_required
 def panel_system_stats(panel_id):
     panel = db.session.get(LinkedPanel, panel_id)
     if not panel:
@@ -235,7 +235,7 @@ def panel_system_stats(panel_id):
 
 
 @bp.route("/panels/<int:panel_id>/restart", methods=["POST"])
-@admin_or_bot_token_required
+@token_required
 def panel_restart(panel_id):
     panel = db.session.get(LinkedPanel, panel_id)
     if not panel:
@@ -253,7 +253,7 @@ def panel_restart(panel_id):
 
 
 @bp.route("/panels/<int:panel_id>/backup", methods=["GET"])
-@admin_or_bot_token_required
+@token_required
 def panel_backup(panel_id):
     panel = db.session.get(LinkedPanel, panel_id)
     if not panel:
@@ -280,7 +280,7 @@ def panel_backup(panel_id):
 
 
 @bp.route("/panels/<int:panel_id>/restore", methods=["POST"])
-@admin_or_bot_token_required
+@token_required
 def panel_restore(panel_id):
     panel = db.session.get(LinkedPanel, panel_id)
     if not panel:
@@ -302,7 +302,7 @@ def panel_restore(panel_id):
 
 
 @bp.route("/panels/<int:panel_id>/test", methods=["POST"])
-@admin_or_bot_token_required
+@token_required
 def test_panel(panel_id):
     try:
         panel = db.session.get(LinkedPanel, panel_id)

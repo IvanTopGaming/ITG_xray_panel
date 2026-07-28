@@ -1,9 +1,8 @@
 import base64
-import binascii
 import json
 import os
 import time
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 import yaml
 from flask import Blueprint, jsonify, request, Response, send_from_directory
 from panel_core.extensions import limiter, db
@@ -11,6 +10,17 @@ from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
 from panel_core.services.sub_links import build_aggregate_sub_url  # noqa: F401 — re-exported under the original name
 from panel_core.xray.protocol import stream_supports_vless_flow
+from panel_core.services.share_links import (
+    build_remote_link,
+    build_share_links,
+    extract_tls_alpn,
+    extract_tls_server_name,
+    extract_tls_utls_fingerprint,
+    extract_transport_path_host,
+    is_ss2022_method,
+    normalize_reality_public_key,
+    normalize_ss2022_key,
+)
 
 
 bp = Blueprint("subscription", __name__)
@@ -44,7 +54,7 @@ def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> l
                     continue
                 if not c.get("enable", True):
                     continue
-                remote_links.extend(_build_remote_link(panel_host, ib_data, c))
+                remote_links.extend(build_remote_link(panel_host, ib_data, c))
     return remote_links
 
 
@@ -77,122 +87,6 @@ def _remote_clients_for_headers(telegram_id):
     except Exception:
         pass
     return out
-
-
-def _build_share_links(host, protocol, port, stream, client_id, flow, label) -> list[str]:
-
-    if not isinstance(stream, dict):
-        stream = {}
-    network = stream.get("network", "tcp")
-    security = stream.get("security", "none")
-    uuid = quote(str(client_id), safe="")
-    remark = quote(str(label), safe="")
-
-    def _add_transport(query):
-        if network == "grpc":
-            query["serviceName"] = stream.get("grpcSettings", {}).get("serviceName", "grpc")
-        else:
-            t_path, t_host = _extract_transport_path_host(stream)
-            if t_path:
-                query["path"] = t_path
-            if t_host:
-                query["host"] = t_host
-
-    def _add_reality(query):
-        rs = stream.get("realitySettings", {}) or {}
-        query["pbk"] = _normalize_reality_public_key(rs.get("publicKey", ""))
-        query["fp"] = rs.get("fingerprint", "chrome")
-        query["sni"] = (rs.get("serverNames") or ["google.com"])[0]
-        query["sid"] = (rs.get("shortIds") or [""])[0]
-        spx = rs.get("spiderX", "")
-        if spx:
-            query["spx"] = spx
-
-    def _add_tls(query):
-        sni = _extract_tls_server_name(stream)
-        if sni:
-            query["sni"] = sni
-        alpn = _extract_tls_alpn(stream)
-        if alpn:
-            query["alpn"] = ",".join(alpn)
-        fp = _extract_tls_utls_fingerprint(stream)
-        if fp:
-            query["fp"] = fp
-
-    if protocol == "vless":
-        query = {"type": network, "security": security}
-        _add_transport(query)
-        if security == "reality":
-            _add_reality(query)
-        elif security == "tls":
-            _add_tls(query)
-        if flow and stream_supports_vless_flow(stream):
-            query["flow"] = flow
-        return [f"vless://{uuid}@{host}:{port}?{urlencode(query)}#{remark}"]
-
-    if protocol == "vmess":
-        if network == "grpc":
-            v_path, v_host = stream.get("grpcSettings", {}).get("serviceName", ""), ""
-        else:
-            v_path, v_host = _extract_transport_path_host(stream)
-        v_conf = {
-            "v": "2",
-            "ps": str(label),
-            "add": host,
-            "port": port,
-            "id": str(client_id),
-            "aid": "0",
-            "net": network,
-            "type": "none",
-            "host": v_host,
-            "path": v_path,
-            "tls": security,
-        }
-        if security == "tls":
-            sni = _extract_tls_server_name(stream)
-            if sni:
-                v_conf["sni"] = sni
-        return [f"vmess://{base64.b64encode(json.dumps(v_conf).encode()).decode()}"]
-
-    if protocol == "trojan":
-        query = {"security": security, "type": network}
-        _add_transport(query)
-        if security == "reality":
-            _add_reality(query)
-        elif security == "tls":
-            _add_tls(query)
-        return [f"trojan://{uuid}@{host}:{port}?{urlencode(query)}#{remark}"]
-
-    if protocol == "shadowsocks":
-        method = stream.get("ssMethod", "2022-blake3-aes-128-gcm")
-        server_pass = str(stream.get("ssPassword", "") or "").strip()
-        user_pass = str(client_id or "").strip()
-        if _is_ss2022_method(method):
-            server_pass = _normalize_ss2022_key(server_pass)
-            user_pass = _normalize_ss2022_key(user_pass)
-        user_part = f"{method}:{server_pass}:{user_pass}" if _is_ss2022_method(method) else f"{method}:{user_pass}"
-        return [f"ss://{base64.b64encode(user_part.encode()).decode()}@{host}:{port}#{remark}"]
-
-    return []
-
-
-def _build_remote_link(host: str, ib_data: dict, client_data: dict) -> list[str]:
-
-    stream = ib_data.get("stream_settings", {})
-    if isinstance(stream, str):
-        try:
-            stream = json.loads(stream)
-        except Exception:
-            stream = {}
-    return _build_share_links(
-        host,
-        ib_data.get("protocol", ""),
-        ib_data.get("port", 443),
-        stream,
-        client_data.get("id", ""),
-        client_data.get("flow", ""),
-        ib_data.get("label") or ib_data.get("tag", "remote"),
-    )
 
 
 WARN_REMARK = {
@@ -423,119 +317,9 @@ def _aggregate_user_headers(clients) -> dict:
     return headers
 
 
-SS2022_METHODS = {
-    "2022-blake3-aes-128-gcm",
-    "2022-blake3-aes-256-gcm",
-    "2022-blake3-chacha20-poly1305",
-}
-
-
-def _normalize_reality_public_key(public_key):
-    key = (public_key or "").strip()
-    if not key:
-        return ""
-
-    padded = key + ("=" * ((4 - len(key) % 4) % 4))
-    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
-        try:
-            raw = decoder(padded)
-            if len(raw) == 32:
-                return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
-        except (ValueError, binascii.Error):
-            continue
-    return key.replace("+", "-").replace("/", "_").rstrip("=")
-
-
-def _is_ss2022_method(method):
-    return str(method or "").strip().lower() in SS2022_METHODS
-
-
-def _normalize_ss2022_key(value):
-    key = str(value or "").strip()
-    if not key:
-        return ""
-    padded = key + ("=" * ((4 - len(key) % 4) % 4))
-    for decoder in (
-        lambda raw: base64.b64decode(raw, validate=True),
-        lambda raw: base64.b64decode(raw, altchars=b"-_", validate=True),
-    ):
-        try:
-            decoded = decoder(padded)
-        except (ValueError, binascii.Error):
-            continue
-        if decoded:
-            return base64.b64encode(decoded).decode("utf-8")
-    return key
-
-
-def _extract_tls_server_name(stream):
-    tls_settings = stream.get("tlsSettings", {})
-    if isinstance(tls_settings, dict):
-        name = str(tls_settings.get("serverName", "") or "").strip()
-        if name:
-            return name
-
-    ws_headers = stream.get("wsSettings", {}).get("headers", {})
-    if isinstance(ws_headers, dict):
-        return str(ws_headers.get("Host", "") or "").strip()
-    return ""
-
-
-def _extract_tls_alpn(stream):
-    tls_settings = stream.get("tlsSettings", {})
-    if not isinstance(tls_settings, dict):
-        return []
-
-    raw = tls_settings.get("alpn", [])
-    if isinstance(raw, list):
-        return [str(item).strip() for item in raw if str(item).strip()]
-    if isinstance(raw, str):
-        return [item.strip() for item in raw.split(",") if item.strip()]
-    return []
-
-
-def _extract_tls_utls_fingerprint(stream):
-    tls_settings = stream.get("tlsSettings", {})
-    if not isinstance(tls_settings, dict):
-        return ""
-    return str(tls_settings.get("_utlsFingerprint", "") or "").strip()
-
-
-def _extract_transport_path_host(stream):
-
-    network = stream.get("network", "tcp")
-    if network not in ("ws", "xhttp", "httpupgrade", "splithttp"):
-        return "", ""
-
-    path = str(stream.get("wsPath", "") or "").strip()
-    host = str(stream.get("wsHost", "") or "").strip()
-
-    if not path or not host:
-        nested_key = {
-            "ws": "wsSettings",
-            "xhttp": "xhttpSettings",
-            "httpupgrade": "httpUpgradeSettings",
-            "splithttp": "splitHttpSettings",
-        }[network]
-        sub = stream.get(nested_key, {})
-        if isinstance(sub, dict):
-            path = path or str(sub.get("path", "") or "")
-            if network == "ws":
-                headers = sub.get("headers", {})
-                if isinstance(headers, dict):
-                    host = host or str(headers.get("Host", "") or "")
-            else:
-                host = host or str(sub.get("host", "") or "")
-
-    path = (path or "/").strip()
-    if not path.startswith("/"):
-        path = "/" + path
-    return path, host.strip()
-
-
 def _apply_clash_transport(proxy_node, stream):
     network = str(stream.get("network", "tcp") or "tcp").strip().lower()
-    path, host = _extract_transport_path_host(stream)
+    path, host = extract_transport_path_host(stream)
 
     if network == "grpc":
         proxy_node["network"] = "grpc"
@@ -571,7 +355,7 @@ def _apply_clash_transport(proxy_node, stream):
 
 def _apply_singbox_transport(outbound, stream):
     network = str(stream.get("network", "tcp") or "tcp").strip().lower()
-    path, host = _extract_transport_path_host(stream)
+    path, host = extract_transport_path_host(stream)
 
     if network == "grpc":
         outbound["transport"] = {
@@ -773,7 +557,7 @@ def get_subscription(uuid_str):
         info_headers = _snapshot_client_headers(client_data)
         email = client_data.get("email") or ""
         builders = {
-            "v2ray": lambda: _encode_links(_build_remote_link(host, ib_data, client_data)),
+            "v2ray": lambda: _encode_links(build_remote_link(host, ib_data, client_data)),
             "clash": lambda: _remote_clash_config(host, ib_data, client_data, stream),
             "singbox": lambda: _remote_singbox_config(host, ib_data, client_data, stream),
         }
@@ -847,7 +631,7 @@ def _get_local_subscription_content(uuid_str):
         return None
     stream = json.loads(ib.stream_settings)
     host = os.getenv("PANEL_DOMAIN", "localhost")
-    return _build_share_links(host, ib.protocol, ib.port, stream, client.id, client.flow or "", ib.label or ib.tag)
+    return build_share_links(host, ib.protocol, ib.port, stream, client.id, client.flow or "", ib.label or ib.tag)
 
 
 def _iter_remote_pairs():
@@ -918,15 +702,15 @@ def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
         n["servername"] = (r.get("serverNames") or ["google.com"])[0]
         n["client-fingerprint"] = r.get("fingerprint", "chrome")
         n["reality-opts"] = {
-            "public-key": _normalize_reality_public_key(r.get("publicKey", "")),
+            "public-key": normalize_reality_public_key(r.get("publicKey", "")),
             "short-id": (r.get("shortIds") or [""])[0],
         }
 
     def _tls(n):
-        sni = _extract_tls_server_name(stream)
+        sni = extract_tls_server_name(stream)
         if sni:
             n["servername"] = sni
-        fp = _extract_tls_utls_fingerprint(stream)
+        fp = extract_tls_utls_fingerprint(stream)
         if fp:
             n["client-fingerprint"] = fp
 
@@ -965,11 +749,11 @@ def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
         method = stream.get("ssMethod", "chacha20-poly1305")
         server_pass = str(stream.get("ssPassword", "") or "").strip()
         user_pass = str(client_id or "").strip()
-        if _is_ss2022_method(method):
-            server_pass = _normalize_ss2022_key(server_pass)
-            user_pass = _normalize_ss2022_key(user_pass)
+        if is_ss2022_method(method):
+            server_pass = normalize_ss2022_key(server_pass)
+            user_pass = normalize_ss2022_key(user_pass)
         node["cipher"] = method
-        node["password"] = f"{server_pass}:{user_pass}" if _is_ss2022_method(method) else user_pass
+        node["password"] = f"{server_pass}:{user_pass}" if is_ss2022_method(method) else user_pass
 
     _apply_clash_transport(node, stream)
     return node
@@ -984,13 +768,13 @@ def _build_singbox_outbound(tag, protocol, host, port, stream, client_id, flow):
 
     def _tls():
         p = {"enabled": True}
-        sni = _extract_tls_server_name(stream)
+        sni = extract_tls_server_name(stream)
         if sni:
             p["server_name"] = sni
-        alpn = _extract_tls_alpn(stream)
+        alpn = extract_tls_alpn(stream)
         if alpn:
             p["alpn"] = alpn
-        fp = _extract_tls_utls_fingerprint(stream)
+        fp = extract_tls_utls_fingerprint(stream)
         if fp:
             p["utls"] = {"enabled": True, "fingerprint": fp}
         return p
@@ -1003,7 +787,7 @@ def _build_singbox_outbound(tag, protocol, host, port, stream, client_id, flow):
             "utls": {"enabled": True, "fingerprint": r.get("fingerprint", "chrome")},
             "reality": {
                 "enabled": True,
-                "public_key": _normalize_reality_public_key(r.get("publicKey", "")),
+                "public_key": normalize_reality_public_key(r.get("publicKey", "")),
                 "short_id": (r.get("shortIds") or [""])[0],
             },
         }
@@ -1031,10 +815,10 @@ def _build_singbox_outbound(tag, protocol, host, port, stream, client_id, flow):
         ob["method"] = method
         server_pass = str(stream.get("ssPassword", "") or "").strip()
         user_pass = str(client_id or "").strip()
-        if _is_ss2022_method(method):
-            server_pass = _normalize_ss2022_key(server_pass)
-            user_pass = _normalize_ss2022_key(user_pass)
-        ob["password"] = f"{server_pass}:{user_pass}" if _is_ss2022_method(method) else user_pass
+        if is_ss2022_method(method):
+            server_pass = normalize_ss2022_key(server_pass)
+            user_pass = normalize_ss2022_key(user_pass)
+        ob["password"] = f"{server_pass}:{user_pass}" if is_ss2022_method(method) else user_pass
 
     _apply_singbox_transport(ob, stream)
     return ob

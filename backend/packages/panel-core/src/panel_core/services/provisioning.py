@@ -312,7 +312,7 @@ def provision_single_item(
     return result
 
 
-def _collapse_expiries(expiries: list[int], *, fallback: int) -> int:
+def collapse_expiries(expiries: list[int], *, fallback: int) -> int:
 
     if not expiries:
         return fallback
@@ -446,7 +446,7 @@ def apply_tariff_for_user(
         reported.append(new_expiry_ms)
     return {
         "clients": [c.to_dict() for c in all_provisioned],
-        "expires_at_ms": _collapse_expiries(reported, fallback=new_expiry_ms),
+        "expires_at_ms": collapse_expiries(reported, fallback=new_expiry_ms),
         "source": source,
     }
 

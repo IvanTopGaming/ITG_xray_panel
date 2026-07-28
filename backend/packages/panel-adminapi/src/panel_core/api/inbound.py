@@ -9,7 +9,6 @@ from panel_core.models import Inbound, Client, TelegramUser, TariffItem
 from panel_core.services.sub_links import build_aggregate_sub_url, build_client_sub_url
 from panel_core.utils import (
     token_required,
-    admin_or_bot_token_required,
     admin_or_federation_token_required,
     normalize_tag,
     normalize_email,
@@ -135,7 +134,7 @@ def _client_sub_url(telegram_id, client_id, token_map):
 
 
 @bp.route("/inbounds", methods=["GET"])
-@admin_or_bot_token_required
+@token_required
 def get_inbounds():
     from panel_core.services.device_tracking import device_counts_by_user
 

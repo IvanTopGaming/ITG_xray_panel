@@ -1,12 +1,11 @@
 [project]
-name = "panel-sub"
+name = "panel-links"
 version = "0.1.0"
 requires-python = "==3.12.*"
-dependencies = ["panel-core", "panel-links"]
+dependencies = ["panel-core"]
 
 [tool.uv.sources]
 panel-core = { workspace = true }
-panel-links = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

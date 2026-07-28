@@ -487,7 +487,7 @@ def test_frontend_backend_role_order_matches_the_backend_version_keys():
 
 def test_every_workspace_member_pyproject_is_copied_into_every_build():
     members = sorted(p.parent.name for p in (REPO / "backend" / "packages").glob("*/pyproject.toml"))
-    assert len(members) == 7, f"expected seven workspace members, found {members}"
+    assert len(members) == 8, f"expected eight workspace members, found {members}"
     for dockerfile in ("backend/Dockerfile", "backend/Dockerfile.worker", "backend/Dockerfile.sub"):
         text = _read(dockerfile)
         missing = [m for m in members if f"packages/{m}/pyproject.toml" not in text]

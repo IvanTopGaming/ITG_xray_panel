@@ -314,7 +314,7 @@ def test_the_roles_declare_the_admin_surface_they_register():
         )
 
 
-def test_the_workspace_has_exactly_the_seven_planned_distributions():
+def test_the_workspace_has_exactly_the_eight_planned_distributions():
     expected = {
         "panel-core",
         "panel-adminapi",
@@ -323,11 +323,50 @@ def test_the_workspace_has_exactly_the_seven_planned_distributions():
         "panel-sub",
         "panel-botapi",
         "panel-cron",
+        "panel-links",
     }
     actual = set(distributions_with_dependencies())
     assert actual == expected, (
-        f"the workspace holds {sorted(actual)}, expected {sorted(expected)}. Phase 8 wave 2 added panel-cron "
-        "as the last cut; an eighth distribution or a missing one means the layout drifted from the design."
+        f"the workspace holds {sorted(actual)}, expected {sorted(expected)}. Phase 8 wave 4a added panel-links "
+        "as the last cut; a ninth distribution or a missing one means the layout drifted from the design."
+    )
+
+
+LINK_BUILDER_CONSUMERS = ("panel-sub", "panel-botapi")
+
+
+def test_panel_links_is_declared_by_the_two_roles_that_hand_out_links():
+    """Wave 4a: share-link building left panel-sub so bot-api could reach it.
+
+    The whole point of the cut is the rebuild fan-out. panel-sub alone would leave bot-api unable to
+    import the builder; panel-core would rebuild all five backend images on every link edit, which is
+    exactly the win wave 3b bought by taking the subscription blueprint off master and worker.
+    """
+
+    declared = distributions_with_dependencies()
+
+    for name in LINK_BUILDER_CONSUMERS:
+        assert "panel-links" in declared[name], (
+            f"{name} must declare panel-links — it builds share links from panel_core.services.share_links. "
+            f"Declared: {sorted(declared[name])}"
+        )
+
+    offenders = sorted(
+        name for name, deps in declared.items() if "panel-links" in deps and name not in LINK_BUILDER_CONSUMERS
+    )
+    assert offenders == [], (
+        f"only {list(LINK_BUILDER_CONSUMERS)} may declare panel-links, but {offenders} do too. Putting it in "
+        "panel-core (or in any role every image depends on) makes every edit to link building rebuild all "
+        "five backend images instead of two."
+    )
+
+
+def test_share_links_ships_from_panel_links_and_nothing_else_does():
+    from tests.import_graph import source_path
+
+    path = source_path("services/share_links.py")
+    assert "panel-links" in path.parts, (
+        f"services/share_links.py resolved to {path}, expected it under packages/panel-links"
     )
 
 

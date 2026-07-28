@@ -9,6 +9,7 @@ members = [
     "panel-botapi",
     "panel-core",
     "panel-cron",
+    "panel-links",
     "panel-master",
     "panel-sub",
     "panel-worker",
@@ -412,6 +413,7 @@ dependencies = [
     { name = "panel-botapi" },
     { name = "panel-core" },
     { name = "panel-cron" },
+    { name = "panel-links" },
     { name = "panel-master" },
     { name = "panel-sub" },
     { name = "panel-worker" },
@@ -429,6 +431,7 @@ requires-dist = [
     { name = "panel-botapi", editable = "packages/panel-botapi" },
     { name = "panel-core", editable = "packages/panel-core" },
     { name = "panel-cron", editable = "packages/panel-cron" },
+    { name = "panel-links", editable = "packages/panel-links" },
     { name = "panel-master", editable = "packages/panel-master" },
     { name = "panel-sub", editable = "packages/panel-sub" },
     { name = "panel-worker", editable = "packages/panel-worker" },
@@ -554,12 +557,14 @@ version = "0.1.0"
 source = { editable = "packages/panel-botapi" }
 dependencies = [
     { name = "panel-core" },
+    { name = "panel-links" },
     { name = "yookassa" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "panel-core", editable = "packages/panel-core" },
+    { name = "panel-links", editable = "packages/panel-links" },
     { name = "yookassa", specifier = ">=3.0,<4.0" },
 ]
 
@@ -616,20 +621,29 @@ dependencies = [
 requires-dist = [{ name = "panel-core", editable = "packages/panel-core" }]
 
 [[package]]
+name = "panel-links"
+version = "0.1.0"
+source = { editable = "packages/panel-links" }
+dependencies = [
+    { name = "panel-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "panel-core", editable = "packages/panel-core" }]
+
+[[package]]
 name = "panel-master"
 version = "0.1.0"
 source = { editable = "packages/panel-master" }
 dependencies = [
     { name = "panel-adminapi" },
     { name = "panel-core" },
-    { name = "panel-sub" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "panel-adminapi", editable = "packages/panel-adminapi" },
     { name = "panel-core", editable = "packages/panel-core" },
-    { name = "panel-sub", editable = "packages/panel-sub" },
 ]
 
 [[package]]
@@ -638,10 +652,14 @@ version = "0.1.0"
 source = { editable = "packages/panel-sub" }
 dependencies = [
     { name = "panel-core" },
+    { name = "panel-links" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "panel-core", editable = "packages/panel-core" }]
+requires-dist = [
+    { name = "panel-core", editable = "packages/panel-core" },
+    { name = "panel-links", editable = "packages/panel-links" },
+]
 
 [[package]]
 name = "panel-worker"
@@ -654,7 +672,6 @@ dependencies = [
     { name = "grpcio-tools" },
     { name = "panel-adminapi" },
     { name = "panel-core" },
-    { name = "panel-sub" },
     { name = "protobuf" },
 ]
 
@@ -666,7 +683,6 @@ requires-dist = [
     { name = "grpcio-tools", specifier = "==1.66.2" },
     { name = "panel-adminapi", editable = "packages/panel-adminapi" },
     { name = "panel-core", editable = "packages/panel-core" },
-    { name = "panel-sub", editable = "packages/panel-sub" },
     { name = "protobuf", specifier = "==5.28.3" },
 ]
 

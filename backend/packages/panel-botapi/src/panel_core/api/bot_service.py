@@ -210,15 +210,22 @@ def get_user_state(tg_id):
     ).first() is not None
 
     clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
-    clients_data = [c.to_dict() for c in clients]
+    clients_data = [{**c.to_dict(), "links": []} for c in clients]
+
+    from urllib.parse import urlparse
 
     from panel_core.models import LinkedPanel
     from panel_core.services.panel_proxy import get_panel_snapshot
+    from panel_core.services.share_links import build_remote_link
 
     for panel in LinkedPanel.query.filter_by(enable=True).all():
         snapshot = get_panel_snapshot(panel.id)
         if not snapshot:
             continue
+        try:
+            panel_host = urlparse(panel.url).hostname or ""
+        except ValueError:
+            panel_host = ""
         for ib_data in snapshot.get("inbounds", []):
             for c in ib_data.get("clients", []):
                 if c.get("telegram_id") != tg_id or not c.get("enable", True):
@@ -230,11 +237,17 @@ def get_user_state(tg_id):
                         "inbound_label": ib_data.get("label") or ib_data.get("tag", ""),
                         "panel_id": panel.id,
                         "panel_name": panel.name,
+                        "links": build_remote_link(panel_host, ib_data, c) if panel_host else [],
                     }
                 )
 
     if clients_data:
-        expires_at_ms = max(c.get("expiry_time", 0) or 0 for c in clients_data)
+        from panel_core.services.provisioning import collapse_expiries
+
+        expires_at_ms = collapse_expiries(
+            [int(c.get("expiry_time", 0) or 0) for c in clients_data],
+            fallback=0,
+        )
     else:
         expires_at_ms = None
 

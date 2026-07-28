@@ -126,9 +126,9 @@ def _browser_ua():
 
 class TestShareLinkFlowCompat:
     def test_drops_flow_on_xhttp_stream(self):
-        from panel_core.api.subscription import _build_share_links
+        from panel_core.services.share_links import build_share_links
 
-        links = _build_share_links(
+        links = build_share_links(
             "example.com",
             "vless",
             443,
@@ -141,9 +141,9 @@ class TestShareLinkFlowCompat:
         assert "flow=" not in links[0]
 
     def test_keeps_flow_on_tcp_reality_stream(self):
-        from panel_core.api.subscription import _build_share_links
+        from panel_core.services.share_links import build_share_links
 
-        links = _build_share_links(
+        links = build_share_links(
             "example.com",
             "vless",
             443,
@@ -156,9 +156,9 @@ class TestShareLinkFlowCompat:
         assert "flow=xtls-rprx-vision" in links[0]
 
     def test_drops_flow_on_tcp_without_tls(self):
-        from panel_core.api.subscription import _build_share_links
+        from panel_core.services.share_links import build_share_links
 
-        links = _build_share_links(
+        links = build_share_links(
             "example.com",
             "vless",
             443,
@@ -512,21 +512,21 @@ class TestSubCacheHit:
 
 
 def test_extract_transport_path_host_reads_nested_and_flat():
-    from panel_core.api.subscription import _extract_transport_path_host
+    from panel_core.services.share_links import extract_transport_path_host
 
-    assert _extract_transport_path_host(
+    assert extract_transport_path_host(
         {"network": "xhttp", "xhttpSettings": {"path": "/realpath", "host": "edge.example.com"}}
     ) == ("/realpath", "edge.example.com")
 
-    assert _extract_transport_path_host({"network": "xhttp", "wsPath": "/flat", "wsHost": "cdn.example.com"}) == (
+    assert extract_transport_path_host({"network": "xhttp", "wsPath": "/flat", "wsHost": "cdn.example.com"}) == (
         "/flat",
         "cdn.example.com",
     )
 
-    assert _extract_transport_path_host({"network": "ws", "wsPath": "noslash"}) == ("/noslash", "")
+    assert extract_transport_path_host({"network": "ws", "wsPath": "noslash"}) == ("/noslash", "")
 
-    assert _extract_transport_path_host({"network": "tcp"}) == ("", "")
-    assert _extract_transport_path_host({"network": "grpc"}) == ("", "")
+    assert extract_transport_path_host({"network": "tcp"}) == ("", "")
+    assert extract_transport_path_host({"network": "grpc"}) == ("", "")
 
 
 def test_local_xhttp_link_includes_path_and_host(app):
@@ -566,7 +566,7 @@ def test_local_xhttp_link_includes_path_and_host(app):
 def test_remote_xhttp_link_includes_path_and_host():
 
     from urllib.parse import urlparse, parse_qs
-    from panel_core.api.subscription import _build_remote_link
+    from panel_core.services.share_links import build_remote_link
 
     ib_data = {
         "protocol": "vless",
@@ -580,7 +580,7 @@ def test_remote_xhttp_link_includes_path_and_host():
             "tlsSettings": {"serverName": "child.example.com"},
         },
     }
-    links = _build_remote_link("child.example.com", ib_data, {"id": "00000000-0000-0000-0000-0000000000aa", "flow": ""})
+    links = build_remote_link("child.example.com", ib_data, {"id": "00000000-0000-0000-0000-0000000000aa", "flow": ""})
     assert len(links) == 1
     q = parse_qs(urlparse(links[0]).query)
     assert q.get("type") == ["xhttp"]
@@ -594,13 +594,13 @@ def test_remote_xhttp_link_includes_path_and_host():
         "label": "gRPC",
         "stream_settings": {"network": "grpc", "security": "tls", "grpcSettings": {"serviceName": "mygrpc"}},
     }
-    g = parse_qs(urlparse(_build_remote_link("c", grpc_ib, {"id": "x", "flow": ""})[0]).query)
+    g = parse_qs(urlparse(build_remote_link("c", grpc_ib, {"id": "x", "flow": ""})[0]).query)
     assert g.get("serviceName") == ["mygrpc"]
 
 
 def test_local_and_remote_builders_are_unified():
 
-    from panel_core.api.subscription import _build_share_links, _build_remote_link
+    from panel_core.services.share_links import build_remote_link, build_share_links
 
     stream = {
         "network": "xhttp",
@@ -610,8 +610,8 @@ def test_local_and_remote_builders_are_unified():
     }
     for proto in ("vless", "vmess", "trojan"):
         ib_data = {"protocol": proto, "port": 443, "tag": "t", "label": "L", "stream_settings": stream}
-        remote = _build_remote_link("host.example.com", ib_data, {"id": "uuid-9", "flow": ""})
-        direct = _build_share_links("host.example.com", proto, 443, stream, "uuid-9", "", "L")
+        remote = build_remote_link("host.example.com", ib_data, {"id": "uuid-9", "flow": ""})
+        direct = build_share_links("host.example.com", proto, 443, stream, "uuid-9", "", "L")
         assert remote == direct, f"local/remote diverge for {proto}"
 
 
@@ -671,19 +671,15 @@ def _matrix_payload(proto, net, sec):
 @_pytest.mark.parametrize("proto,net,sec", _MATRIX, ids=lambda v: v if isinstance(v, str) else "")
 def test_link_matrix(proto, net, sec):
     from panel_core.xray.protocol import _build_stream_settings
-    from panel_core.api.subscription import (
-        _build_share_links,
-        _build_remote_link,
-        _apply_clash_transport,
-        _apply_singbox_transport,
-    )
+    from panel_core.api.subscription import _apply_clash_transport, _apply_singbox_transport
+    from panel_core.services.share_links import build_remote_link, build_share_links
 
     stream = _build_stream_settings(_matrix_payload(proto, net, sec))
     flow = "xtls-rprx-vision" if (proto == "vless" and net == "tcp" and sec in ("reality", "tls")) else ""
     uuid = "11111111-1111-1111-1111-111111111111"
 
-    local = _build_share_links("host.example.com", proto, 443, stream, uuid, flow, "Lbl")
-    remote = _build_remote_link(
+    local = build_share_links("host.example.com", proto, 443, stream, uuid, flow, "Lbl")
+    remote = build_remote_link(
         "host.example.com",
         {"protocol": proto, "port": 443, "label": "Lbl", "stream_settings": stream},
         {"id": uuid, "flow": flow},

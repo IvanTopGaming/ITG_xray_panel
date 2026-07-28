@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml uv.lock ./
 COPY packages/panel-core/pyproject.toml packages/panel-core/
+COPY packages/panel-links/pyproject.toml packages/panel-links/
 COPY packages/panel-adminapi/pyproject.toml packages/panel-adminapi/
 COPY packages/panel-worker/pyproject.toml packages/panel-worker/
 COPY packages/panel-master/pyproject.toml packages/panel-master/
