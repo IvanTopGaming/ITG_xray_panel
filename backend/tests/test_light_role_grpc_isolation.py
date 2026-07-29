@@ -234,9 +234,23 @@ def test_bot_role_trial_activate_provisions_on_a_node(bot_role_app, bot_role_cli
 
 
 def test_bot_role_trial_activate_refuses_a_local_only_tariff(bot_role_app, bot_role_client):
+    """Since wave 5a the refusal lands before the claim, so it reads as "no trial", not as a crash.
+
+    It used to be a 500: `activate_trial` claimed `trial_used_at`, called `apply_tariff_for_user`, took
+    `LocalXrayUnavailable` in the face and rolled the claim back. The rollback worked, so nothing was
+    lost -- but the bot got an unexplained 500 for a tariff that was never going to be issued. It is now
+    filtered out while the trial tariff is being chosen, which is also why `trial_available` in
+    `GET /users/<id>/state` reports false for it in the first place.
+    """
+
     from panel_core.models import TelegramUser
 
     _seed_trial_tariff(bot_role_app, panel_id=None)
+    with bot_role_app.app_context():
+        from panel_core.extensions import db
+
+        db.session.add(TelegramUser(telegram_id=4242, language="ru"))
+        db.session.commit()
 
     resp = bot_role_client.post(
         "/api/bot-service/trial/activate",
@@ -244,7 +258,10 @@ def test_bot_role_trial_activate_refuses_a_local_only_tariff(bot_role_app, bot_r
         headers=AUTH,
     )
 
-    assert resp.status_code == 500
+    assert resp.status_code == 404, (
+        f"expected the undeliverable trial tariff to be refused as 'no trial tariff configured' "
+        f"(HTTP {resp.status_code}). A 500 here means the refusal is still happening inside provisioning."
+    )
     assert _local_client_count(bot_role_app) == 0
     assert bot_role_app.xray_gateway_spy.apply_config_calls == 0, (
         f"a refused local-only tariff still reached apply_config "

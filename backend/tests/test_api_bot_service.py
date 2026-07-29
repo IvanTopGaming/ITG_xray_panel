@@ -1,6 +1,6 @@
 import pytest
 
-from panel_core.models import BotText, SystemSetting, Tariff, TelegramUser
+from panel_core.models import BotText, SystemSetting, Tariff, TariffItem, TelegramUser
 
 
 @pytest.fixture
@@ -133,7 +133,9 @@ def test_upsert_user_requires_token(app_with_service_api, db, client):
 
 def test_get_user_state_brand_new_user(app_with_service_api, db, client, service_headers):
 
-    db.session.add(Tariff(name="Trial", is_trial=True, enabled=True, price_rub=0, period_days=1))
+    trial = Tariff(name="Trial", is_trial=True, enabled=True, price_rub=0, period_days=1)
+    trial.items = [TariffItem(inbound_tag="vless-reality", traffic_gb=1, panel_id=7)]
+    db.session.add(trial)
     db.session.commit()
     resp = client.get("/api/bot-service/users/9999/state", headers=service_headers)
     assert resp.status_code == 200

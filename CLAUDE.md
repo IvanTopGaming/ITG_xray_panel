@@ -153,7 +153,7 @@ That data-tier Redis ACLs two users: `node` (`-@all +publish +select &bot:events
 | `panel-worker` | `xray/{local,engine,grpc_client}.py`, `services/stats.py`, `roles/worker.py` | `panel-core`, `panel-adminapi`, `panel-sub` + **docker, filelock, grpcio, grpcio-tools, protobuf** |
 | `panel-master` | `api/{bot_admin,panels}.py`, `roles/master.py` | `panel-core`, `panel-adminapi`, `panel-sub` |
 | `panel-sub` | `api/subscription.py`, `roles/sub.py` | `panel-core`, `panel-links` |
-| `panel-botapi` | `api/{billing,bot_service}.py`, `services/billing.py`, `jobs/payments.py`, `roles/botapi.py` | `panel-core`, `panel-links` + **`yookassa>=3.0,<4.0`** |
+| `panel-botapi` | `api/{billing,bot_service}.py`, `services/{billing,tariff_delivery}.py`, `jobs/payments.py`, `roles/botapi.py` | `panel-core`, `panel-links` + **`yookassa>=3.0,<4.0`** |
 | `panel-cron` | `jobs/{billing,panels}.py`, `roles/cron.py` | `panel-core` |
 | `panel-links` | `services/share_links.py` — one share link (`vless://`, `vmess://`, `trojan://`, `ss://`) per (inbound, client), plus the stream-settings extractors | `panel-core` |
 
@@ -225,7 +225,7 @@ Each of the two admin apps bakes its role at build time (`vite.config.ts`'s `def
 - `bot_events_consumer.py` — subscribes to Redis `bot:events`, dispatches `payment_*` / `access_*` / `expiry_notification` / `traffic_notification` / `texts_changed` / `user_*` events
 - `i18n.py` — `BotText` cache, `t(key, lang, **kwargs)` formatter (missing key → `⟨key⟩`, falling back to the other language first)
 - `middleware.py` — `LangMiddleware`: per-user language lookup, cache, invalidation on `user_language_changed`
-- `handlers/user.py`, `handlers/catalog.py` — message + callback handlers. There is **no `handlers/admin.py`**: wave 4a removed the bot's whole admin surface (backup, restore, restart, server listing). Fleet management lives in the master panel only
+- `handlers/user.py`, `handlers/catalog.py` — message + callback handlers. There is **no `handlers/admin.py`**: wave 4a removed the bot's whole admin surface (backup, restore, restart, server listing). Fleet management lives in the master panel only. `catalog.start_checkout` **answers the Telegram callback before calling bot-api** and finishes in an `asyncio` task (wave 5a): `create_checkout` waits on YooKassa for up to ~16s (8s × 2 attempts), which used to be spent with the button spinning. It clears the catalogue keyboard on the way out and keeps a per-user in-flight set, so one press stays one `Payment` row and one YooKassa idempotence key; the same message later becomes the pay screen or an error. If the bot restarts inside that window the user is left on a keyboard-less catalogue — pressing Tariffs again is the recovery, and any orphan `pending` payment is cancelled by `cleanup_old_payments` after 24h
 - `keyboards.py`, `states.py`, `utils.py` — UI builders, FSM states, helpers
 - `config.py` — env validation: `BACKEND_API_URL`, `BOT_SERVICE_TOKEN`, `BOT_LOG_LEVEL`
 
@@ -298,8 +298,9 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
 
 ### Bot billing flow
 
-1. Bot → `POST /api/billing/checkout` with `{telegram_id, tariff_id, lang}` (bot service token)
-2. `services/billing.create_checkout` creates a `Payment` row (status='pending', placeholder yookassa_id), calls `yookassa.Payment.create` with a `gevent.with_timeout(8s)` + 1 retry on the same idempotence key, then persists `yookassa_id` + `confirmation_url`
+0. The bot's catalogue (`GET /bot-service/tariffs`) only lists tariffs this role can actually deliver — see the deliverability gate below
+1. Bot → `POST /api/billing/checkout` with `{telegram_id, tariff_id, lang}` (bot service token). The bot **answers the Telegram callback before this call**, takes the catalogue keyboard away and builds the invoice in a background task (`tg_bot/handlers/catalog.py`), because step 2 can take ~16 seconds; the same message then becomes the pay screen or an error
+2. `services/billing.create_checkout` validates the tariff, creates a `Payment` row (status='pending', placeholder yookassa_id), calls `yookassa.Payment.create` with a `gevent.with_timeout(8s)` + 1 retry on the same idempotence key, then persists `yookassa_id` + `confirmation_url`
 3. Bot opens the YooKassa URL in the user's Telegram chat
 4. User pays → YooKassa POSTs `/api/billing/yookassa/webhook`. The webhook is **unsigned**, so the body is only a trigger — the handler re-fetches the authoritative status via `billing.fetch_remote_status(payment)`; a forged notification re-validates to nothing. (There is no IP whitelist — re-validation replaced it.)
 5. On a confirmed `succeeded` status → `services/billing.apply_payment(payment)`:
@@ -311,6 +312,8 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
    - On provisioning exception, releases claim back to `pending` so the poll cron retries
 
 `poll_pending_payments` (30s) is the fallback when the webhook never arrived; it targets payments aged 30s–24h and runs the same `apply_payment`.
+
+**A tariff this role cannot deliver is refused before an invoice exists (wave 5a).** `services/tariff_delivery.is_deliverable(tariff)` — shipped by `panel-botapi`, so it costs one image — answers false for a tariff with **no items at all**, and for one with **any** item whose `panel_id` is `NULL` on a role with no local Xray (`has_local_xray()`, the same predicate `_require_local_xray` uses). It is wired into three places, and all three matter: `_ensure_tariff_available` (so `create_checkout` refuses with `tariff_not_available` **before** the `Payment` row is written, and `apply_payment`'s revalidation refuses before provisioning), the bot catalogue (such a tariff is not listed), and the trial (`_deliverable_trial_tariff`, so `trial_available` reports false and the trial is never *claimed* for a tariff that cannot be granted). The check is **per item, not per tariff**: a tariff with two node items and one orphan is refused whole, and `tests/test_undeliverable_tariff_stops_before_the_money.py` asserts exactly that mixed case, because a tariff-level check passes it. Reachability is installations from the monolith era — the master has refused to save such an item since phase 3b (`bot_admin.py:163`) and the start-up audit only warns (`app_base.audit_tariff_items_without_panel_id`), since no correct `panel_id` can be guessed. `apply_payment` keeps its `LocalXrayUnavailable` → `_fail_payment("provisioning_impossible")` branch as a backstop; it should now be unreachable, and it is cheap insurance rather than dead code.
 
 **That retry is why `operation_id` is `pay:<payment_id>` and not a fresh value per attempt.** A multi-node tariff whose second node is down raises after the first node has already been extended, and nothing rolls it back; the payment goes back to `pending` and the cron re-runs the *whole* grant every 30 seconds for up to 24 hours. Before this contract that was harmless — the node assigned an absolute date, so a repeat was idempotent by accident. Now the node adds, and the only thing standing between a stuck payment and a user with several years of access is that every retry carries the same key. Keep the key derived from the payment, never from the attempt.
 
@@ -965,15 +968,67 @@ federation token a second time, in the direction that leaves no trace**. Read al
    worker; `panel-master` (`roles/master.py`) to its own image; the `ui-core` edits (`Routing.tsx`,
    `Sidebar.tsx`) plus both `App.tsx` files to both frontends. `bot` and `caddy` are untouched.
 
+### Deploy note — an undeliverable tariff stops before the money, and three env comments stop lying (Phase 8 wave 5a)
+
+This wave changes **no schema, no federation contract and no authorisation**, and it rebuilds two
+images: `bot_api` and `bot`. It is safe to deploy on its own, in either order relative to anything
+else. Read all five points.
+
+1. **The visible change on an installation that still has monolith-era tariffs: they disappear from
+   the bot's catalogue.** A tariff is now "undeliverable" if it carries no items at all, or if **any**
+   item has no `panel_id` — bot-api runs no Xray, so such an item names no node. Those tariffs stop
+   being listed, `POST /api/billing/checkout` answers `400 tariff_not_available` for them, and no
+   `Payment` row is written. **This is a removal of something users could see and press.** Before the
+   wave they could press it, pay, and get `payment_failed` with nothing issued — the money was taken
+   first and the refusal came after. If you would rather sell them, the fix is the same one the
+   master has been asking for since phase 3b: open Bot → Tariffs and set a `panel_id` on every item.
+   The master already lists the offenders in a WARNING at start-up
+   (`audit_tariff_items_without_panel_id`), and bot-api now logs the same detail whenever one is
+   filtered out or refused.
+
+2. **Users who already hold such a tariff keep what they have.** Nothing is revoked, disabled or
+   expired by this wave — existing `Client` rows and their expiry dates are untouched. What those
+   users lose is the ability to *renew* it from the catalogue, which never actually worked: the
+   renewal purchase failed after payment. Free grants of such a tariff (`auto_renew_free_users` on
+   the cron host) are **not** covered by this wave — that path still logs an ERROR and moves on, as
+   it did before. Same for an admin grant on the master: it still answers HTTP 500. Both were left
+   alone deliberately (customer decision): they take no money, and widening the check to them would
+   rebuild all five backend images instead of one.
+
+3. **`PANEL_SECRET_PATH` is no longer required on the sub and bot hosts.** It was a mandatory
+   `${VAR:?}` in both compose files while nothing in either image could read it — the only module
+   that does, `api/federation.py`, ships from `panel-adminapi`, which neither `panel-sub` nor
+   `panel-botapi` depends on. **Nothing to do:** an existing `.env` that still sets it keeps working
+   (both services also take `env_file: - .env`, so the value still enters the container; it is simply
+   never looked up). Removing the line is optional tidying. The master and every node still require
+   it, and there it is genuinely load-bearing.
+
+4. **Four comments in the example files were wrong and have been rewritten; re-read them if you
+   configured a host from them.** `.env.bot.example` and `docker-compose.bot.yml` claimed an empty
+   `SUB_DOMAIN` falls back to `PANEL_DOMAIN` + the secret path and only breaks the browser page —
+   that fallback was deleted in wave 3b, and an unset `SUB_DOMAIN` now means **no subscription link
+   at all**, for a client app as much as for a browser. `.env.bot.example` also credited
+   `PANEL_DOMAIN` to `federation._build_panel_url`, which is not in that image. `.env.{master,node}.example`
+   described their local Redis as holding "the sub-cache this host reads"; neither host reads one,
+   since only the sub role serves subscriptions. `.env.cron.example` gave the right conclusion
+   (`sslmode=verify-full` is unconditional there) with the wrong mechanism.
+
+5. **Bump `bot_api` and `bot` only.** The edits are confined to `panel-botapi`
+   (`services/tariff_delivery.py`, `services/billing.py`, `api/bot_service.py`) and `tg_bot`
+   (`handlers/catalog.py`). `master`, `worker`, `sub`, `cron`, both frontends and `caddy` are
+   untouched. Deploy `bot-api` and `bot` together — they live in the same compose file. A new bot
+   against an old bot-api still works (the catalogue is simply unfiltered); an old bot against a new
+   bot-api also works, it just keeps the spinning button.
+
 ## Configuration
 
 **There is no shared `.env.example`.** Each host copies its own: `.env.master.example`, `.env.node.example`, `.env.sub.example`, `.env.bot.example`, `.env.data.example` → `.env` on that box and nowhere else. One file could not be correct for every host even in principle — `RATELIMIT_STORAGE_URI` must point at the box's *own* Redis on the master and on a node and at the *data tier* on the sub and bot hosts, two mutually exclusive values of one variable, which the old single file carried at once (one live, one commented out) and expected the deployer to reconcile by hand. Each file now holds only what its host reads, with no commented alternatives. `backend/tests/test_env_examples.py` enforces both directions: every `${VAR:?…}` a compose file demands is defined in that host's example, and no example defines a variable its own compose file never references. Key variables:
-- `PANEL_DOMAIN`, `PANEL_SECRET_PATH` — routing/TLS. `PANEL_DOMAIN` is **per-host by design**: on a node it must be *that node's* domain, because `services/notifications.py` also uses it as the node's identity in bot events.
+- `PANEL_DOMAIN`, `PANEL_SECRET_PATH` — routing/TLS. `PANEL_DOMAIN` is **per-host by design**: on a node it must be *that node's* domain, because `services/notifications.py` also uses it as the node's identity in bot events. On the **sub and bot hosts it routes nothing** — neither box serves it — and it is read there only as the "is this a real deployment" marker (`app_base` refuses a weak `SECRET_KEY`, `db_config` refuses a `DATABASE_URL` without `sslmode=verify-full`), plus, on sub, as `api/subscription.py`'s default server address for an inbound with no explicit host. `PANEL_SECRET_PATH` is read by exactly one module, `api/federation.py`, which ships from `panel-adminapi` — so it belongs on the **master and node only**. Wave 5a removed it from `docker-compose.{sub,bot}.yml` and from their examples, where it had been a mandatory `${VAR:?}` that no code in either image could read. `tests/test_env_reaches_code_that_reads_it.py` resolves each service to its image's dependency closure and fails on any variable handed to a container that nothing inside it mentions.
 - `PROXY_DOMAIN` — decoy SNI, raw-TCP passthrough to Xray (masquerade). **Node-only.** The master has had no `xray` service since phase 3b, so `docker-compose.master.yml` no longer names it at all.
 - `SUB_DOMAIN` *(required — subscriptions do not work without it)* — the dedicated subscription domain, and since phase 8 wave 3b the **only** host any subscription link can name: `https://<SUB_DOMAIN>/api/sub/u/<token>` for a Telegram user, `https://<SUB_DOMAIN>/api/sub/<uuid>` for a single key. Must be in the cert's SAN and in the backend container's env. The old `PANEL_DOMAIN` + secret-path fallback is gone: it named the master, which no longer serves the route at all, so it turned an empty variable into a link that 404s in a browser while client apps kept working — quiet enough to ship. `build_aggregate_sub_url` / `build_client_sub_url` now return `None` instead. **All four service hosts demand it via `:?`, and only one of them serves it:** the sub host answers the routes; the master and each node read it purely to build the links their own Dashboard hands out (`api/inbound.py` → `sub_url` per client); bot-api reads it to build every link the bot sends a user (`GET /bot-service/users/<id>/state`). A host knowing its own domain is not enough — nothing asks the sub host what it is called.
 - `SECRET_KEY`, `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`.
 - `XRAY_CORE_REF` — Xray-core version to compile into the **worker** image (`backend/Dockerfile.worker`'s build-arg) — the only one of the five per-role backend images that carries the Xray runtime (build-time only).
-- `RATELIMIT_STORAGE_URI` — **this box's own** Redis: rate limiting, plus this role's own subscription-response cache. On the master and on a node that is the stack's private `redis` container; on sub and bot-api, which run no Redis of their own, it points at the data tier. Read in exactly three places — the Flask-Limiter `storage_uri`, the start-up check in `app_base.py`, and `sub_cache` — and `tests/test_redis_split.py` fails on a fourth.
+- `RATELIMIT_STORAGE_URI` — **this box's own** Redis: rate limiting, plus this role's own subscription-response cache. On the master and on a node that is the stack's private `redis` container; on sub and bot-api, which run no Redis of their own, it points at the data tier. Read in exactly three places — the Flask-Limiter `storage_uri`, the start-up check in `app_base.py`, and `sub_cache` — and `tests/test_redis_split.py` fails on a fourth. **Only the sub role ever populates that cache**: `sub_cache.get`/`set` are called from `api/subscription.py` alone, which since wave 3b is registered nowhere else. The master and each node only ever `DELETE` from it after an edit, so describing their local Redis as holding "the sub-cache this host reads" — as `.env.{master,node}.example` did until wave 5a — is wrong in a way that invites a deployer to point it somewhere shared.
 - `SHARED_REDIS_URI` — the **data-tier** Redis (`redis://` or `rediss://`), carrying the `bot:events` bus, the node snapshots and the `panel:refresh` nudge. **Required via `:?` on all five service hosts** — master, every node, sub, bot and cron. It replaced `BOT_EVENTS_REDIS_URI`, which defaulted to `RATELIMIT_STORAGE_URI`; that default is gone deliberately, see the two-Redis paragraph under Docker Services. Use `redis://node:<REDIS_NODE_PASSWORD>@<data-vm>:6379/0` on a node (publish-only credential) and `redis://panel:<REDIS_PANEL_PASSWORD>@<data-vm>:6379/0` everywhere else. The bus crosses hosts and carries the ACL password plus `telegram_id`/`email` in cleartext — run it over a private network between hosts or over `rediss://`.
 - `BACKEND_LOG_LEVEL` *(default INFO)* — backend log verbosity. Every API request (`app.requests`), scheduler job run with duration (`app.jobs`), and federation HTTP call is logged at INFO/DEBUG; `DEBUG` additionally echoes every SQL statement (`sqlalchemy.engine` + per-statement timings in `app.sql`). Slow thresholds: `BACKEND_SLOW_SQL_MS` (default 200) and `BACKEND_SLOW_REQUEST_MS` (default 1000) promote slow statements/requests to WARNING. The backend container has json-file log rotation (50 MB × 5).
 - `POSTGRES_BIND` / `REDIS_BIND` *(data tier)* — which host interface each port is published on. Both **default to `127.0.0.1`**, i.e. closed, so an unset value cannot publish the data tier to the internet; set them to the data VM's private-network address. Postgres is reasonably covered even when exposed (`ssl=on`, `scram-sha-256`, clients required to use `sslmode=verify-full`); **the Redis is not — it runs with no TLS at all**, so its ACL password and every `bot:events` payload (`telegram_id`, client e-mails) would cross the wire in clear.

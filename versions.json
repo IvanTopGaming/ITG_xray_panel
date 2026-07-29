@@ -2,12 +2,12 @@
   "master": "2.4.9",
   "worker": "2.4.9",
   "sub": "2.4.9",
-  "bot_api": "2.4.8",
+  "bot_api": "2.4.9",
   "cron": "2.4.8",
   "frontend_admin": "2.4.8",
   "frontend_node": "2.4.8",
   "caddy": "1.1.2",
-  "bot": "2.2.3",
+  "bot": "2.2.4",
   "xray_egress": "1.0.1",
   "xray_core_ref": "v26.3.27"
 }

@@ -12,7 +12,7 @@ from yookassa import Configuration
 
 from panel_core.extensions import db
 from panel_core.models import Payment, SystemSetting, Tariff, UserTariffAccess
-from panel_core.services import bot_events, provisioning
+from panel_core.services import bot_events, provisioning, tariff_delivery
 from panel_core.xray.gateway import LocalXrayUnavailable
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ def _build_snapshot(tariff: Tariff) -> Dict[str, Any]:
     }
 
 
-def _ensure_tariff_available(tariff: Tariff | None, telegram_id: int) -> None:
+def _ensure_tariff_available(tariff: Tariff | None, telegram_id: int, *, where: str = "billing") -> None:
     if tariff is None:
         raise ValueError("tariff_not_available")
     if not tariff.enabled or tariff.visibility == "archived" or tariff.is_trial:
@@ -62,11 +62,14 @@ def _ensure_tariff_available(tariff: Tariff | None, telegram_id: int) -> None:
         grant = UserTariffAccess.query.filter_by(telegram_id=telegram_id, tariff_id=tariff.id).first()
         if grant is None:
             raise ValueError("tariff_not_available")
+    if not tariff_delivery.is_deliverable(tariff):
+        tariff_delivery.log_undeliverable(tariff, where)
+        raise ValueError("tariff_not_available")
 
 
 def create_checkout(*, telegram_id: int, tariff_id: int, lang: str) -> Dict[str, Any]:
     tariff = db.session.get(Tariff, tariff_id)
-    _ensure_tariff_available(tariff, telegram_id)
+    _ensure_tariff_available(tariff, telegram_id, where="billing.create_checkout")
 
     _configure_sdk()
     return_url = _get_setting("yookassa_return_url") or "https://t.me/"
@@ -246,7 +249,7 @@ def apply_payment(payment: Payment) -> None:
         rejected = True
     else:
         try:
-            _ensure_tariff_available(tariff, payment.telegram_id)
+            _ensure_tariff_available(tariff, payment.telegram_id, where="billing.apply_payment")
         except ValueError:
             rejected = True
 

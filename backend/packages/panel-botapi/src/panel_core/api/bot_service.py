@@ -17,7 +17,7 @@ from panel_core.models import (
     TelegramUser,
     UserTariffAccess,
 )
-from panel_core.services import bot_events
+from panel_core.services import bot_events, tariff_delivery
 from panel_core.services.bot_status import record_bot_version
 from panel_core.services.provisioning import apply_tariff_for_user
 from panel_core.utils import bot_service_token_required
@@ -144,6 +144,15 @@ def upsert_user():
     return jsonify(_serialize_telegram_user(user))
 
 
+def _deliverable_trial_tariff():
+
+    for candidate in Tariff.query.filter_by(is_trial=True, enabled=True).all():
+        if tariff_delivery.is_deliverable(candidate):
+            return candidate
+        tariff_delivery.log_undeliverable(candidate, "bot_service.trial")
+    return None
+
+
 @bp.route("/bot-service/trial/activate", methods=["POST"])
 @bot_service_token_required
 def activate_trial():
@@ -161,7 +170,7 @@ def activate_trial():
     if user.trial_used_at is not None:
         return jsonify({"error": "trial already used"}), 409
 
-    trial_tariff = Tariff.query.filter_by(is_trial=True, enabled=True).first()
+    trial_tariff = _deliverable_trial_tariff()
     if trial_tariff is None:
         return jsonify({"error": "no trial tariff configured"}), 404
 
@@ -205,9 +214,7 @@ def activate_trial():
 def get_user_state(tg_id):
 
     user = db.session.get(TelegramUser, tg_id)
-    trial_available = (user is None or user.trial_used_at is None) and Tariff.query.filter_by(
-        is_trial=True, enabled=True
-    ).first() is not None
+    trial_available = (user is None or user.trial_used_at is None) and _deliverable_trial_tariff() is not None
 
     clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
     clients_data = [{**c.to_dict(), "links": []} for c in clients]
@@ -330,6 +337,9 @@ def list_tariffs_for_bot():
         if t.id in seen:
             continue
         seen.add(t.id)
+        if not tariff_delivery.is_deliverable(t):
+            tariff_delivery.log_undeliverable(t, "bot_service.list_tariffs")
+            continue
         ordered.append(t)
     ordered.sort(key=lambda t: (t.sort_order or 0, t.id))
 
