@@ -169,6 +169,9 @@ notification.payment_refunded:
 notification.access_renewed:
   ru: "🔓 <b>Доступ продлён!</b>\nСпасибо, что остаёшься с нами."
   en: "🔓 <b>Access renewed!</b>\nThanks for staying with us."
+notification.sub_link_reset:
+  ru: "🔑 <b>Ссылка на подписку обновлена.</b>\nСтарая больше не работает — открой «Моя подписка» и добавь новую в приложение."
+  en: "🔑 <b>Your subscription link has been reset.</b>\nThe old one no longer works — open \"My subscription\" and add the new one to your app."
 notification.access_paused:
   ru: "ℹ️ Автоматическое продление тарифа <b>{tariff_name}</b> остановлено. Текущий доступ работает до его истечения. Свяжись с поддержкой для продления вручную."
   en: "ℹ️ Auto-renewal of <b>{tariff_name}</b> has been paused. Your current access stays active until expiry. Contact support to renew manually."

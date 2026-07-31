@@ -646,6 +646,44 @@ def create_grant(tg_id):
     return jsonify(_serialize_grant(grant)), 201
 
 
+@bp.route("/bot/users/<int:tg_id>/reset-sub-token", methods=["POST"])
+@token_required
+def reset_sub_token(tg_id):
+    """§10.3: the one long-lived secret a user holds, and until now the only one nobody could change.
+
+    `TelegramUser.sub_token` is the whole of a user's subscription — anyone with the URL gets every
+    config that account owns. Leaked, it could be replaced only by editing the row by hand.
+
+    The old token stops working immediately: every subscription route looks the account up by token
+    in the database before it consults any cache, so the previous value simply no longer resolves.
+    The cache entries keyed by it are dropped anyway, before the value changes rather than after —
+    afterwards there would be no way to name them.
+    """
+
+    from panel_core.services import sub_cache
+    from panel_core.services.sub_links import build_aggregate_sub_url
+
+    user = db.session.get(TelegramUser, tg_id)
+    if user is None:
+        return jsonify({"error": "user not found"}), 404
+
+    sub_cache.invalidate_user_aggregate(tg_id)
+    user.sub_token = str(uuid.uuid4())
+    db.session.commit()
+
+    sub_url = build_aggregate_sub_url(user.sub_token)
+    logger.warning(
+        "sub token reset for telegram_id=%s by admin — the previous subscription URL is now dead",
+        tg_id,
+    )
+    try:
+        bot_events.publish("sub_link_reset", tg_id, {"lang": user.language or "ru", "sub_url": sub_url})
+    except Exception as exc:
+        logger.warning("reset_sub_token: could not notify telegram_id=%s: %s", tg_id, exc)
+
+    return jsonify({"sub_url": sub_url})
+
+
 @bp.route("/bot/users/<int:tg_id>/block", methods=["POST"])
 @token_required
 def block_user(tg_id):

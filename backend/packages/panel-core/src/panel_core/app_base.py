@@ -216,6 +216,16 @@ def build_base_app(role, *, public_surface=True):
     def healthz():
         return {"status": "ok"}, 200
 
+    @app.before_request
+    def _stamp_role_version():
+        from .services.role_status import record_role_version
+        from .version import app_version_key, get_app_version
+
+        try:
+            record_role_version(app_version_key(), get_app_version())
+        except Exception:
+            pass
+
     register_readyz(app)
 
     return app

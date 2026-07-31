@@ -1,3 +1,4 @@
+import os
 import time
 
 import requests
@@ -83,6 +84,10 @@ def _coerce_ip(host):
         return None
 
 
+def _private_urls_allowed() -> bool:
+    return (os.getenv("FEDERATION_ALLOW_PRIVATE_URLS", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _validate_panel_url(url: str) -> str:
 
     from urllib.parse import urlparse
@@ -93,6 +98,8 @@ def _validate_panel_url(url: str) -> str:
     host = (parsed.hostname or "").strip()
     if not host:
         raise ValueError("Panel URL has no host")
+    if _private_urls_allowed():
+        return url
     ip = _coerce_ip(host)
     if ip is not None:
         if (
@@ -103,11 +110,17 @@ def _validate_panel_url(url: str) -> str:
             or ip.is_multicast
             or ip.is_unspecified
         ):
-            raise ValueError("Panel URL resolves to a non-routable address")
+            raise ValueError(
+                "Panel URL resolves to a non-routable address. If the master and this node share a private "
+                "network on purpose, set FEDERATION_ALLOW_PRIVATE_URLS=true on the master."
+            )
     else:
         low = host.lower()
         if low == "localhost" or "." not in low or low.endswith((".local", ".internal", ".localhost")):
-            raise ValueError("Panel URL host is not a public domain")
+            raise ValueError(
+                "Panel URL host is not a public domain. If the master and this node share a private network "
+                "on purpose, set FEDERATION_ALLOW_PRIVATE_URLS=true on the master."
+            )
     return url
 
 

@@ -32,6 +32,7 @@ import { Modal } from '@ui/components/ui/Modal';
 import { useLogStore } from '@ui/stores/logStore';
 import { useAuthStore } from '@ui/stores/authStore';
 import { useVersionStatus } from '@ui/hooks/useVersionStatus';
+import { getSystemHealth, type SystemHealth } from '@ui/lib/version';
 import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
 import { hasLocalXray, isWorker } from '@ui/lib/panelRole';
 import { FederationConfig } from '@ui/lib/types';
@@ -95,6 +96,13 @@ export default function System() {
   const xrayScopeResolved = hasLocalXray || panelId != null;
   const xrayScope = hasLocalXray ? '' : panelId != null ? `?panel_id=${panelId}` : '';
   const showNodePicker = !isWorker && NODE_SCOPED_TABS.includes(activeTab);
+
+  const healthQuery = useQuery({
+    queryKey: ['system', 'health'],
+    queryFn: getSystemHealth,
+    enabled: activeTab === 'about',
+    refetchInterval: 60_000,
+  });
   const noNodesToManage = !isWorker && !panelsLoading && selectablePanels.length === 0;
   const xrayTargetName = hasLocalXray
     ? 'this panel'
@@ -753,6 +761,8 @@ export default function System() {
                     ))}
                   </div>
 
+                  <HealthLines health={healthQuery.data} isLoading={healthQuery.isLoading} />
+
                   <div className="text-sm text-gray-400">
                     Developed by <span className="text-gray-200 font-semibold">ITG</span>
                   </div>
@@ -900,6 +910,107 @@ function SettingsCard({
       {children}
     </div>
   );
+}
+
+function HealthLine({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string;
+  value: string;
+  tone: 'ok' | 'warn' | 'bad' | 'muted';
+  hint?: string;
+}) {
+  const colour = {
+    ok: 'text-emerald-400',
+    warn: 'text-amber-400',
+    bad: 'text-error',
+    muted: 'text-gray-500',
+  }[tone];
+  return (
+    <div
+      className="flex items-center justify-between gap-3 px-3 py-2 bg-black/20 rounded-lg border border-white/5"
+      title={hint}
+    >
+      <span className="shrink-0 text-gray-500 uppercase tracking-wider">{label}</span>
+      <span className={`whitespace-nowrap ${colour}`}>{value}</span>
+    </div>
+  );
+}
+
+function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: boolean }) {
+  if (isLoading || !health) {
+    return (
+      <div className="w-full text-left text-[11px] font-mono text-gray-500 px-3 py-2">
+        Checking this host…
+      </div>
+    );
+  }
+
+  const lines = [];
+
+  const cert = health.certificate;
+  if (cert.available) {
+    const days = Math.floor((cert.not_after_ms - Date.now()) / 86_400_000);
+    lines.push(
+      <HealthLine
+        key="cert"
+        label="certificate"
+        value={days < 0 ? `expired ${-days}d ago` : `${days}d left`}
+        tone={days < 0 ? 'bad' : days < 14 ? 'warn' : 'ok'}
+        hint={`${cert.domains.join(', ') || 'no SAN entries'} — expires ${formatDateTime(cert.not_after_ms)}. Renewal is manual on every host.`}
+      />
+    );
+  } else {
+    lines.push(
+      <HealthLine
+        key="cert"
+        label="certificate"
+        value={cert.reason}
+        tone="muted"
+        hint="This backend cannot see ./certs. Nothing is broken by that on its own — but nothing is watching the expiry either."
+      />
+    );
+  }
+
+  const events = health.undelivered_events;
+  lines.push(
+    <HealthLine
+      key="events"
+      label="bus backlog"
+      value={events.available ? `${events.count} undelivered` : 'unknown'}
+      tone={!events.available ? 'muted' : (events.count ?? 0) > 0 ? 'warn' : 'ok'}
+      hint="bot_event rows never marked delivered. The replay cron retries them; a number that keeps climbing means the bus is not reaching the bot."
+    />
+  );
+
+  const payments = health.stuck_payments;
+  const stuck = (payments.processing ?? 0) + (payments.pending_over_a_day ?? 0);
+  lines.push(
+    <HealthLine
+      key="payments"
+      label="payments stuck"
+      value={payments.available ? `${stuck}` : 'unknown'}
+      tone={!payments.available ? 'muted' : stuck > 0 ? 'warn' : 'ok'}
+      hint={`${payments.processing ?? 0} claimed but never finished, ${payments.pending_over_a_day ?? 0} pending for over a day. Money taken, access not granted.`}
+    />
+  );
+
+  const tier = health.data_tier;
+  const tierOk = tier.database === 'ok' && tier.shared_redis === 'ok';
+  lines.push(
+    <HealthLine
+      key="tier"
+      label="data tier"
+      value={tierOk ? 'reachable' : `db ${tier.database} · redis ${tier.shared_redis}`}
+      tone={tierOk ? 'ok' : 'bad'}
+      hint="This host's database and the shared Redis. With the Redis down, subscriptions still serve but node entries do not."
+    />
+  );
+
+  return <div className="w-full grid grid-cols-2 gap-2 text-[11px] font-mono">{lines}</div>;
 }
 
 function VersionPill({

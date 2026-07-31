@@ -116,6 +116,8 @@ def restart():
 @bp.route("/system/version", methods=["GET"])
 @token_required
 def system_version():
+    from panel_core.services.role_status import get_role_versions
+
     bot = get_bot_status()
     latest = get_latest()
     return jsonify(
@@ -125,11 +127,26 @@ def system_version():
                 "backend_key": app_version_key(),
                 "bot": bot["version"],
                 "bot_reported_at": bot["reported_at"],
+                "roles": get_role_versions(),
             },
             "latest": latest["latest"],
             "latest_checked_at": latest["checked_at"],
         }
     )
+
+
+@bp.route("/system/health", methods=["GET"])
+@token_required
+def system_health():
+    """§10.8. Separate from `/system/version` because it costs database counts and a file read.
+
+    Never 500s: a card that cannot render because one of its four readings failed tells an admin
+    less than a card that says which reading failed.
+    """
+
+    from panel_core.services.health import collect
+
+    return jsonify(collect())
 
 
 @bp.route("/logs", methods=["GET"])

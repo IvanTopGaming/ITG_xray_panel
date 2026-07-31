@@ -46,6 +46,7 @@ const STRINGS: Record<Lang, Dict> = {
     scan_hint: 'Отсканируйте телефоном',
     apps_desktop:
       'Кнопки работают на телефоне. С компьютера отсканируйте QR или скопируйте ссылку.',
+    qr_alt: 'QR-код со ссылкой на подписку',
     not_installed: 'Похоже, {app} не установлен.',
     install: 'Установить',
     hint: 'Вставьте в Happ · v2RayTun · Streisand · Hiddify. Конфиги обновятся сами — при смене серверов переимпортировать ничего не надо.',
@@ -78,6 +79,7 @@ const STRINGS: Record<Lang, Dict> = {
     hide_qr: 'Hide QR',
     scan_hint: 'Scan with your phone',
     apps_desktop: 'The buttons work on a phone. On a computer, scan the QR or copy the link.',
+    qr_alt: 'QR code containing the subscription link',
     not_installed: 'Looks like {app} is not installed.',
     install: 'Install',
     hint: 'Paste into Happ · v2RayTun · Streisand · Hiddify. Configs refresh themselves — no re-import when servers change.',

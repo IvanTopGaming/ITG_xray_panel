@@ -73,6 +73,11 @@ export async function blockBotUser(tgId: number): Promise<{
   return data;
 }
 
+export async function resetSubToken(tgId: number): Promise<{ sub_url: string | null }> {
+  const { data } = await api.post(`/bot/users/${tgId}/reset-sub-token`);
+  return data;
+}
+
 export async function unblockBotUser(tgId: number): Promise<{
   ok: boolean;
   re_enabled: number;

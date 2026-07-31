@@ -168,12 +168,12 @@ class TestFederationTiming:
         assert any("federation" in m and "ms" in m for m in msgs)
 
     def test_failure_logged_as_warning(self, caplog):
-        from panel_core.services.panel_proxy import FederationClient
+        from panel_core.services.panel_proxy import FederationClient, RemotePanelError
 
         client = FederationClient("https://child.example.com", "tok")
         with caplog.at_level(logging.WARNING, logger="panel_core.services.panel_proxy"):
             with patch.object(client._session, "get", side_effect=requests.ConnectionError("boom")):
-                with pytest.raises(requests.ConnectionError):
+                with pytest.raises(RemotePanelError):
                     client.snapshot()
         msgs = [r.getMessage() for r in caplog.records if r.name == "panel_core.services.panel_proxy"]
-        assert any("failed" in m for m in msgs)
+        assert any("unreachable" in m for m in msgs)

@@ -278,7 +278,7 @@ The admin surface reads the same ledger: `GET /users/<telegram_id>/devices` and 
 | `cleanup_stats` | 24h | Runs on the **worker role only** — the master registers no scheduler at all (`no scheduled jobs on this role`), and its `DomainStat` has had no writer since phase 3b. Deletes `DomainStat` rows > 90d |
 | `poll_linked_panels` | 10s | Runs on the **cron service only**. Pings each enabled `LinkedPanel`; fresh `snapshot`/`status`/`last_poll` go to the **shared** Redis every poll, the Postgres row is written **only on status/error change** (the panels API overlays the Redis values). A `panel:refresh` message polls one panel out of band, without waiting for the next tick |
 | `auto_renew_free_users` | 15m | Runs on the **cron service only**. Re-provisions due `billing='free'` grants; pauses + emits `access_paused` on tariff archive/disable (does **not** force-disable clients — they lapse via their own `expiry_time`) |
-| `poll_pending_payments` | 30s | Runs on the **`bot` (bot-api) role only** — not the master; webhook fallback, reconciles pending YooKassa payments older than 30s, younger than 24h |
+| `poll_pending_payments` | 30s | Runs on the **`bot` (bot-api) role only** — not the master; webhook fallback, reconciles pending YooKassa payments older than 30s, younger than 24h. Since wave 6 it first calls `release_stranded_claims()`, which returns a payment left in `processing` by a dead process to `pending` — see Bot billing flow |
 | `reconcile_refunds` | 1h | Runs on the **`bot` role only**; refund-webhook fallback — re-checks the most recent succeeded payments (≤30d, capped 200) and revokes access on any YooKassa now reports refunded (via `billing.handle_refund`) |
 | `cleanup_old_payments` | 24h | Runs on the **`bot` role only**; cancels `pending > 24h` (and publishes `payment_cancelled` so users find out); deletes terminal records `> 90d` |
 | `replay_undelivered_bot_events` | 60s | Runs on the **cron service** (over Postgres) **and on every worker** (over that node's own SQLite, which nothing central can reach). Re-publishes any `bot_event` row with `delivered_at IS NULL` and `created_at < now - 30s` |
@@ -293,7 +293,7 @@ Four decorators in `app/utils.py`:
 - `token_required` — admin JWT only. Used on all `bot_admin` endpoints, `GET /api/inbounds`, every one of the ten `panels.py` handlers (wave 4b added `POST /panels/<id>/relink`), and the node-only `POST /api/federation/link-token` + `GET /api/federation/config`.
 - `bot_service_token_required` — fixed token from `SystemSetting('bot_service_token')`, compared in constant time. Used on all `bot_service.py` endpoints + `/billing/checkout`, **and on nothing else**.
 - `federation_token_required` — validates the `federation_token` from a linked panel's `FederationConfig`. Used on federation endpoints that remote panels call.
-- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. **Thirty-nine** handlers: thirteen in `inbound.py` (user/inbound CRUD, the `/users/bulk-*` + `/users/reset-traffic` batch endpoints, and — since wave 4c-2 — `/inbounds/<tag>/reset-traffic`, the last one that could not be routed by `panel_id`), **six** in `system.py` (`/api/restart` and `/api/stats/system`, plus — since wave 5c — `GET`/`PUT /api/system/settings`, `GET /api/config` and `POST /api/system/update-geo`), `POST /api/user/routing` in `auth.py` (wave 5c), `GET /api/backup` + `POST /api/restore` in the node-only `backup.py` (wave 4c-1), and — since wave 4c-2 — twelve more in `outbound.py`/`routing.py`: outbound CRUD, balancer CRUD and routing-profile CRUD, so the master can manage a node's whole egress and routing layer, and — since wave 4d — the five in `statistics.py`, so it can read a node's traffic figures. **Two handlers stay `token_required` on purpose**: `GET /outbounds/health`, because a reachability probe is only meaningful from the box the traffic leaves through, and `GET /api/logs`, because it is a stream and both `FederationClient` methods end in `.json()` — see Xray settings, config and per-user routing below.
+- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. **Thirty-nine** handlers: thirteen in `inbound.py` (user/inbound CRUD, the `/users/bulk-*` + `/users/reset-traffic` batch endpoints, and — since wave 4c-2 — `/inbounds/<tag>/reset-traffic`, the last one that could not be routed by `panel_id`), **six** in `system.py` (`/api/restart` and `/api/stats/system`, plus — since wave 5c — `GET`/`PUT /api/system/settings`, `GET /api/config` and `POST /api/system/update-geo`), `POST /api/user/routing` in `auth.py` (wave 5c), `GET /api/backup` + `POST /api/restore` in the node-only `backup.py` (wave 4c-1), and — since wave 4c-2 — twelve more in `outbound.py`/`routing.py`: outbound CRUD, balancer CRUD and routing-profile CRUD, so the master can manage a node's whole egress and routing layer, and — since wave 4d — the five in `statistics.py`, so it can read a node's traffic figures. **Two handlers stay `token_required` on purpose**: `GET /outbounds/health`, because a reachability probe is only meaningful from the box the traffic leaves through, and `GET /api/logs`, because it is a stream while `FederationClient._call_reporting` ends in `.json()` — see Xray settings, config and per-user routing below.
 
 All three decorators stamp `g.auth_via` (`"admin"` / `"federation"`) on the way through, which is how `backup.py` can log *which credential* took a node's database and not merely that someone did. A federated backup or restore leaves a WARNING on the node; the node's own admin leaves an INFO.
 
@@ -302,6 +302,18 @@ All three decorators stamp `g.auth_via` (`"admin"` / `"federation"`) on the way 
 **The bot service token opens `/bot-service/*` and `/billing/checkout` and nothing else — that is a wave-4a change, and it is bigger than it reads.** Two separate paths used to accept it on the admin API. The explicit one was `admin_or_bot_token_required` on seven endpoints (`GET /api/inbounds` plus all six in `panels.py`). The quiet one was a third branch **inside** `admin_or_federation_token_required` — `if _check_bot_service_token(token)` — which put another 14 endpoints behind the same token: inbound and user CRUD, all six batch operations, `/api/restart` and `/api/stats/system`. So a leaked bot token could create and delete any user and any inbound, on the master and through it on any node by `panel_id`. Both are gone, along with `_check_bot_service_token` itself. The branch was unreachable in practice only because `tg_bot/api_service.py` was broken — restoring the bot by handing it admin endpoints, the obvious-looking fix, would have reopened it. `tests/test_bot_token_scope.py` builds the master role's app and asserts 401 on all 21, plus both positive paths.
 
 JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.password_changed_at` — changing the admin password instantly invalidates all existing tokens. The axios interceptor in `lib/api.ts` auto-logs out on any 401.
+
+**Every long-lived credential can now be replaced, and each one breaks something different while you do it.** Wave 6 closed the last two:
+
+| Credential | Replace it from | What happens the moment you do |
+|---|---|---|
+| admin JWT | change the admin password | every existing token dies (`pwdv`) |
+| `federation_token` | the **node's** System → Link, *Revoke access & issue token*, then Panels → *Relink* on the master (wave 4b) | the node is unreachable to the master entirely until relinked; a purchase in that window stays `pending` |
+| `bot_service_token` | Bot → Settings → *Regenerate token* | **the bot stops working until `BOT_SERVICE_TOKEN` is updated in the bot host's `.env` and the bot is restarted.** Deliberately no grace period — that would leave a leaked token valid for the length of it, the trade-off wave 4b rejected for the federation token. Since wave 6 the bot logs this at **ERROR**, once per outage, naming the variable; before, both of its loops logged 401 at INFO beside ordinary network hiccups, so a permanently disconnected bot looked like a slow backend |
+| `sub_token` | Bot → Users → the user's card → *Reset link* (wave 6) | the old subscription URL dies immediately — every `/api/sub/*` route resolves the account by token in the database *before* any cache — and the bot messages the user the new one. Their keys, expiry and access are untouched: this rotates an address, not a subscription |
+| `EGRESS_INTERNAL_TOKEN` | env on both containers | restart of the stack |
+
+One ordering trap in the `sub_token` path worth knowing before touching it: `sub_cache.invalidate_user_aggregate` looks the token up in the row, so it must run **before** the value is replaced. Afterwards it would clear the keys of the *new* token and leave the old ones serving the leaked link until they expire.
 
 ### Bot billing flow
 
@@ -319,6 +331,8 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
    - On provisioning exception, releases claim back to `pending` so the poll cron retries
 
 `poll_pending_payments` (30s) is the fallback when the webhook never arrived; it targets payments aged 30s–24h and runs the same `apply_payment`.
+
+**A payment stranded in `processing` is recovered in minutes, and the claim above must never be widened to do it.** If the process dies between the claim and the end of provisioning, the row is left in a status nothing on the paid path looks for — the poll takes `pending`, and a re-entering webhook returns at `rowcount == 0`. Widening the claim to `IN ('pending','processing')` closes that in one line and reopens the double-grant it exists to prevent, so recovery is a separate branch: `release_stranded_claims()` (called first by `poll_pending_payments`) puts the row back to `pending` and lets the ordinary path have it. `cleanup_old_payments` keeps its own release as the backstop for when the poll itself is not running — its floor was a day and a half, which is what §23's "never recovered" had already decayed into by the time it was fixed. **How long a claim has been held is measured in the process, not in the row**: `Payment` has no `updated_at`, adding a column to an existing table is what the Postgres path cannot do (see Database migrations), and `created_at` is the wrong clock because the poll reaches back 24 hours and routinely claims payments long after they were created. So the job remembers which ids it has already seen in `processing`; losing that map *is* the event being recovered from, and it costs one extra cycle rather than a wrong release.
 
 **A tariff this role cannot deliver is refused before an invoice exists (wave 5a).** `services/tariff_delivery.is_deliverable(tariff)` — shipped by `panel-botapi`, so it costs one image — answers false for a tariff with **no items at all**, and for one with **any** item whose `panel_id` is `NULL` on a role with no local Xray (`has_local_xray()`, the same predicate `_require_local_xray` uses). It is wired into three places, and all three matter: `_ensure_tariff_available` (so `create_checkout` refuses with `tariff_not_available` **before** the `Payment` row is written, and `apply_payment`'s revalidation refuses before provisioning), the bot catalogue (such a tariff is not listed), and the trial (`_deliverable_trial_tariff`, so `trial_available` reports false and the trial is never *claimed* for a tariff that cannot be granted). The check is **per item, not per tariff**: a tariff with two node items and one orphan is refused whole, and `tests/test_undeliverable_tariff_stops_before_the_money.py` asserts exactly that mixed case, because a tariff-level check passes it. Reachability is installations from the monolith era — the master has refused to save such an item since phase 3b (`bot_admin.py:163`) and the start-up audit only warns (`app_base.audit_tariff_items_without_panel_id`), since no correct `panel_id` can be guessed. `apply_payment` keeps its `LocalXrayUnavailable` → `_fail_payment("provisioning_impossible")` branch as a backstop; it should now be unreachable, and it is cheap insurance rather than dead code.
 
@@ -1310,9 +1324,9 @@ read that leaves no trace anywhere else.** Read all eight points.
 
 3. **`GET /api/logs` is deliberately not in this wave — the live log panel stays node-only.** To
    watch a node's Xray log you still open that node's own panel. It is a stream, not a response:
-   both `FederationClient` methods end in `.json()`, so relaying it means a streaming proxy plus a
-   greenlet on the master that lives as long as the admin's browser tab, plus a policy for a stream
-   that legitimately says nothing for minutes. Customer decision: separate work. **§66 is therefore
+   `FederationClient` ends in `.json()`, so relaying it means a streaming proxy plus a greenlet on
+   the master that lives as long as the admin's browser tab, plus a policy for a stream that
+   legitimately says nothing for minutes. Customer decision: separate work. **§66 is therefore
    closed for five of six routes plus `/api/restart`, not for all six.**
 
 4. **Two behaviours to know before you press the buttons.** Saving a log level change on the master
@@ -1422,6 +1436,81 @@ one cost in exchange. Read all seven points.
    never read it. **Nothing to do** — keep the line in `.env.bot.example`, because `bot-api` on the same
    host does read it, and the stack still refuses to start without it for that reason.
 
+### Deploy note — the panel starts telling you things, and two secrets become replaceable (Phase 8 wave 6)
+
+This wave changes **no schema, no federation contract and no authorisation**. It adds one optional
+environment variable and — the only real deploy cost, and the reason this is not a plain
+pull-and-restart — **one volume line on the master and on every node**. Read all eight points.
+
+1. **The one thing you must do by hand: re-run `docker compose up -d`, not just `pull`.**
+   `docker-compose.master.yml` and `docker-compose.node.yml` now mount `./certs:/root/cert:ro` into
+   the **backend** service. The certificates were mounted into Caddy only, so the backend could not
+   see the file whose expiry it is now expected to report. If you pull the images without recreating
+   the containers, everything else in this wave works and the certificate line reads *"not mounted"*
+   — which is honest, and is also exactly what you will see if you forget.
+
+2. **System → About grows five health lines.** Certificate expiry (with the SAN list and the date in
+   the tooltip), the `bot_event` backlog, payments stuck in `processing` or pending over a day, the
+   versions of the neighbours, and whether the data tier answers. All five are **about the host you
+   are logged into**: a node's counts come from its own SQLite, not from the shared Postgres, and
+   that is deliberate — an approximation of a fleet-wide number would be a worse thing to show than a
+   true local one. The card never fails: any reading that cannot be taken says so in place rather
+   than taking About down with it.
+
+   **The certificate line is the half of §10.6 that this wave does do.** Issuing and renewing
+   certificates is still manual on every host, still has no cron, and is still the most likely real
+   outage in the deployment. Now at least the clock is visible: amber under 14 days, red past expiry.
+
+3. **sub, bot-api and cron become visible for the first time.** Each role stamps its own version into
+   the shared Redis once a minute (`panel:role:<name>:status`, 180s TTL), riding the healthcheck
+   traffic every stack already generates. A host that stops reporting **disappears from the list**
+   rather than showing its last known version — "reporting version X" is a claim with a timestamp,
+   and a stale one is worth less than silence. **Nothing to configure**: `SHARED_REDIS_URI` is
+   already mandatory everywhere. A neighbour still on an older image simply does not appear until it
+   is updated, which is itself the signal.
+
+4. **Rotating the bot service token now says so out loud.** The panel's confirmation already warned
+   that the bot stops until `BOT_SERVICE_TOKEN` is updated on the bot host; what was missing was any
+   sign of it **from the bot**, whose loops logged the resulting 401s at INFO next to ordinary
+   network hiccups. It now logs **ERROR**, once per outage, naming the variable and the restart.
+   Deliberately still no grace period: a window in which the old token keeps working is a window in
+   which a leaked token keeps working.
+
+5. **A user's subscription link can be replaced — new button, real consequences.** Bot → Users → the
+   user's card → **Reset link**, behind a confirmation. The old URL dies immediately, including in
+   the user's own app, which will fail its next update until the new link is imported. The bot sends
+   them the new one as soon as the reset lands. Their keys, expiry and access are untouched. Use it
+   when a link has leaked; there is no undo and no way back to the old value.
+
+   This adds one bot text (`notification.sub_link_reset`) and one event type. **`CURRENT_BOT_TEXTS_VERSION`
+   does not move** — a purely additive key arrives through the ordinary seed — so **no force-reseed
+   happens and no customised text is touched**.
+
+6. **A payment stranded in `processing` is recovered in minutes instead of a day and a half.** If a
+   process died between the atomic claim and the end of provisioning, the row sat in a status the
+   paid path did not look for. `poll_pending_payments` now releases such a row back to `pending`
+   after two minutes and lets the ordinary path have it. **The claim itself is unchanged**, which is
+   the point: widening it to accept `processing` would close the same gap and reopen the double-grant
+   it exists to prevent. Nothing to do; if you have such rows today they will drain on the first
+   poll after the update.
+
+7. **Federating over a private network is possible now, and still off by default.**
+   `FEDERATION_ALLOW_PRIVATE_URLS=true` on the master lets you add or relink a panel whose URL
+   resolves to a private, loopback or `.internal` address. **Leave it unset on a public deployment**
+   — the check is what stops that endpoint from fetching arbitrary internal URLs, and the flag
+   relaxes it for every panel at once. Only `1`/`true`/`yes`/`on` counts, so the empty placeholder in
+   `.env.master.example` changes nothing.
+
+8. **Bump `master`, `worker`, `sub`, `bot_api`, `cron`, `frontend_admin`, `frontend_node` and `bot`
+   — eight images. `caddy` and `xray_egress` are untouched.** The `panel-core` edits (`app_base.py`,
+   `services/{panel_proxy,role_status,health}.py`, `data/bot_texts_defaults.yaml`) fan out to all
+   five backends; `panel-adminapi` (`api/system.py`) to master and worker; `panel-master`
+   (`api/{panels,bot_admin}.py`) and `panel-botapi` (`jobs/payments.py`) to their own; `ui-core` to
+   both frontends; `sub-page` to the `sub` image; `tg_bot` to the bot. Deploy order does not matter
+   and a partial rollout degrades quietly: an old master shows no health card, a new master shows a
+   neighbour as absent until that neighbour is updated, and an old bot simply never renders the
+   reset-link notification.
+
 ## Configuration
 
 **There is no shared `.env.example`.** Each host copies its own: `.env.master.example`, `.env.node.example`, `.env.sub.example`, `.env.bot.example`, `.env.data.example` → `.env` on that box and nowhere else. One file could not be correct for every host even in principle — `RATELIMIT_STORAGE_URI` must point at the box's *own* Redis on the master and on a node and at the *data tier* on the sub and bot hosts, two mutually exclusive values of one variable, which the old single file carried at once (one live, one commented out) and expected the deployer to reconcile by hand. Each file now holds only what its host reads, with no commented alternatives. `backend/tests/test_env_examples.py` enforces both directions: every `${VAR:?…}` a compose file demands is defined in that host's example, and no example defines a variable its own compose file never references. Key variables:
@@ -1431,6 +1520,7 @@ one cost in exchange. Read all seven points.
 - `SECRET_KEY`, `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`.
 - `XRAY_CORE_REF` — Xray-core version to compile into the **worker** image (`backend/Dockerfile.worker`'s build-arg) — the only one of the five per-role backend images that carries the Xray runtime (build-time only).
 - `RATELIMIT_STORAGE_URI` — **this box's own** Redis: rate limiting, plus this role's own subscription-response cache. On the master and on a node that is the stack's private `redis` container; on sub and bot-api, which run no Redis of their own, it points at the data tier — which is why an unreachable value there used to 500 every subscription request and no longer does (see Docker Services). Read in exactly three places — `app_base` puts it into `app.config["RATELIMIT_STORAGE_URI"]` for Flask-Limiter, the start-up check beside it, and `sub_cache` — and `tests/test_redis_split.py` fails on a fourth, whether it names the variable or calls `extensions.local_redis_uri()`. It is **not** required by the `bot` container: that is an aiogram poller with no limiter, and until wave 5d `docker-compose.bot.yml` demanded it there through a `${VAR:?}` anyway (§87). It stays in `.env.bot.example`, because `bot-api` on the same host does read it. **Only the sub role ever populates that cache**: `sub_cache.get`/`set` are called from `api/subscription.py` alone, which since wave 3b is registered nowhere else. The master and each node only ever `DELETE` from it after an edit, so describing their local Redis as holding "the sub-cache this host reads" — as `.env.{master,node}.example` did until wave 5a — is wrong in a way that invites a deployer to point it somewhere shared.
+- `FEDERATION_ALLOW_PRIVATE_URLS` *(master only, default off)* — opens `_validate_panel_url` to private, loopback, link-local and `.internal` panel addresses. Off, the master refuses to add or relink such a panel, which is what stops `POST /api/panels` from being a request forwarder into the private network; on, "the master and its nodes share a private segment" — a legitimate topology this product could not express from the UI at all, and which blocked this repo's own live stands in waves 5c and 5d — becomes possible. It relaxes the check for **every** panel, not one, and only `1`/`true`/`yes`/`on` counts as consent, so a placeholder left empty in `.env` does not silently open it.
 - `SHARED_REDIS_URI` — the **data-tier** Redis (`redis://` or `rediss://`), carrying the `bot:events` bus, the node snapshots (live **and** last-known — five keys per panel since wave 5d) and the `panel:refresh` nudge. **Required via `:?` on all five service hosts** — master, every node, sub, bot and cron. It replaced `BOT_EVENTS_REDIS_URI`, which defaulted to `RATELIMIT_STORAGE_URI`; that default is gone deliberately, see the two-Redis paragraph under Docker Services. Use `redis://node:<REDIS_NODE_PASSWORD>@<data-vm>:6379/0` on a node (publish-only credential) and `redis://panel:<REDIS_PANEL_PASSWORD>@<data-vm>:6379/0` everywhere else. The bus crosses hosts and carries the ACL password plus `telegram_id`/`email` in cleartext — run it over a private network between hosts or over `rediss://`.
 - `BACKEND_LOG_LEVEL` *(default INFO)* — backend log verbosity. Every API request (`app.requests`), scheduler job run with duration (`app.jobs`), and federation HTTP call is logged at INFO/DEBUG; `DEBUG` additionally echoes every SQL statement (`sqlalchemy.engine` + per-statement timings in `app.sql`). Slow thresholds: `BACKEND_SLOW_SQL_MS` (default 200) and `BACKEND_SLOW_REQUEST_MS` (default 1000) promote slow statements/requests to WARNING. The backend container has json-file log rotation (50 MB × 5).
 - `POSTGRES_BIND` / `REDIS_BIND` *(data tier)* — which host interface each port is published on. Both **default to `127.0.0.1`**, i.e. closed, so an unset value cannot publish the data tier to the internet; set them to the data VM's private-network address. Postgres is reasonably covered even when exposed (`ssl=on`, `scram-sha-256`, clients required to use `sslmode=verify-full`); **the Redis is not — it runs with no TLS at all**, so its ACL password and every `bot:events` payload (`telegram_id`, client e-mails) would cross the wire in clear.

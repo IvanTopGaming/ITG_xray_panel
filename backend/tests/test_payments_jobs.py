@@ -524,7 +524,10 @@ def test_cleanup_leaves_a_fresh_processing_row_alone(app, tariff):
 def test_poll_never_touches_processing_rows(app, tariff):
     """`poll_pending_payments` must keep filtering on `pending` only.
 
-    Widening it would race a live `apply_payment`; recovery belongs to the 24h cleaner.
+    Widening its query would race a live `apply_payment`. Since §8.16 the job does have a recovery
+    branch for stranded claims, but it runs before this query, asks YooKassa nothing, and only puts
+    a row back to 'pending' once it has been seen in 'processing' twice — which is why a row claimed
+    moments ago is still untouched here and `find_one` is still never called for it.
     """
     pid = _insert_processing(app, tariff, age_seconds=600, yk_id="yk-poll-processing")
     from panel_core.jobs.payments import poll_pending_payments

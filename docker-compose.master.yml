@@ -19,6 +19,7 @@ services:
     restart: always
     volumes:
       - ./db_data:/app/db
+      - ./certs:/root/cert:ro
     environment:
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
       - GRPC_DNS_RESOLVER=native
@@ -33,6 +34,7 @@ services:
       - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
       - EGRESS_INTERNAL_TOKEN=${EGRESS_INTERNAL_TOKEN:-}
+      - FEDERATION_ALLOW_PRIVATE_URLS=${FEDERATION_ALLOW_PRIVATE_URLS:-}
       - PANEL_ROLE=master
       - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
     env_file:

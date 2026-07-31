@@ -38,29 +38,6 @@ class FederationClient:
         self._session.headers["X-Federation-Token"] = self.token
         self._session.max_redirects = 0
 
-    def _call(self, verb: str, path: str, **kwargs) -> dict:
-        t0 = time.monotonic()
-        try:
-            resp = getattr(self._session, verb)(f"{self.base_url}{path}", **kwargs)
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.warning(
-                "federation %s %s failed in %.0f ms: %s",
-                verb.upper(),
-                path,
-                (time.monotonic() - t0) * 1000,
-                exc,
-            )
-            raise
-        logger.debug(
-            "federation %s %s -> HTTP %s in %.0f ms",
-            verb.upper(),
-            path,
-            resp.status_code,
-            (time.monotonic() - t0) * 1000,
-        )
-        return resp.json()
-
     def _call_reporting(self, verb: str, path: str, **kwargs):
 
         t0 = time.monotonic()
@@ -107,7 +84,7 @@ class FederationClient:
             raise RemotePanelError(502, "Panel answered with something that is not JSON") from exc
 
     def snapshot(self) -> dict:
-        return self._call("get", "/api/federation/snapshot", timeout=(2, 5))
+        return self._call_reporting("get", "/api/federation/snapshot", timeout=(2, 5))
 
     def list_outbounds(self) -> list:
         return self._call_reporting("get", "/api/outbounds", timeout=8)
@@ -182,47 +159,49 @@ class FederationClient:
         return self._call_reporting("post", "/api/user/routing", json=payload, timeout=_XRAY_RESTART_TIMEOUT)
 
     def create_inbound(self, payload: dict) -> dict:
-        return self._call("post", "/api/inbounds", json=payload, timeout=8)
+        return self._call_reporting("post", "/api/inbounds", json=payload, timeout=8)
 
     def update_inbound(self, tag: str, payload: dict) -> dict:
-        return self._call("put", f"/api/inbounds/{tag}", json=payload, timeout=8)
+        return self._call_reporting("put", f"/api/inbounds/{tag}", json=payload, timeout=8)
 
     def delete_inbound(self, tag: str) -> dict:
-        return self._call("delete", f"/api/inbounds/{tag}", timeout=8)
+        return self._call_reporting("delete", f"/api/inbounds/{tag}", timeout=8)
 
     def create_user(self, tag: str, user_data: dict) -> dict:
-        return self._call("post", f"/api/inbounds/{tag}/users", json=user_data, timeout=8)
+        return self._call_reporting("post", f"/api/inbounds/{tag}/users", json=user_data, timeout=8)
 
     def update_user(self, tag: str, user_data: dict) -> dict:
-        return self._call("put", f"/api/inbounds/{tag}/users", json=user_data, timeout=8)
+        return self._call_reporting("put", f"/api/inbounds/{tag}/users", json=user_data, timeout=8)
 
     def delete_user(self, tag: str, email: str) -> dict:
-        return self._call("delete", f"/api/inbounds/{tag}/users", params={"email": email}, timeout=8)
+        return self._call_reporting("delete", f"/api/inbounds/{tag}/users", params={"email": email}, timeout=8)
 
     def bulk_delete_users(self, users: list) -> dict:
-        return self._call("post", "/api/users/bulk-delete", json={"users": users}, timeout=30)
+        return self._call_reporting("post", "/api/users/bulk-delete", json={"users": users}, timeout=30)
 
     def bulk_enable_users(self, users: list, enable: bool) -> dict:
-        return self._call("post", "/api/users/bulk-enable", json={"users": users, "enable": enable}, timeout=30)
+        return self._call_reporting(
+            "post", "/api/users/bulk-enable", json={"users": users, "enable": enable}, timeout=30
+        )
 
     def bulk_adjust_days(self, users: list, days: int, mode: str) -> dict:
-        return self._call(
+        return self._call_reporting(
             "post", "/api/users/bulk-adjust-days", json={"users": users, "days": days, "mode": mode}, timeout=30
         )
 
     def bulk_adjust_traffic(self, users: list, gb: int, mode: str) -> dict:
-        return self._call(
+        return self._call_reporting(
             "post", "/api/users/bulk-adjust-traffic", json={"users": users, "gb": gb, "mode": mode}, timeout=30
         )
 
     def reset_traffic(self, users: list) -> dict:
-        return self._call("post", "/api/users/reset-traffic", json={"users": users}, timeout=30)
+        return self._call_reporting("post", "/api/users/reset-traffic", json={"users": users}, timeout=30)
 
     def bulk_set_flow(self, users: list, flow: str) -> dict:
-        return self._call("post", "/api/users/bulk-set-flow", json={"users": users, "flow": flow}, timeout=30)
+        return self._call_reporting("post", "/api/users/bulk-set-flow", json={"users": users, "flow": flow}, timeout=30)
 
     def provision(self, telegram_id: int, inbound_tag: str, params: dict) -> dict:
-        return self._call(
+        return self._call_reporting(
             "post",
             "/api/federation/provision",
             json={"telegram_id": telegram_id, "inbound_tag": inbound_tag, **params},

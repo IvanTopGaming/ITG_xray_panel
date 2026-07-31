@@ -1,18 +1,37 @@
 import api from './api';
 
+export interface RoleReport {
+  version: string;
+  reported_at: number;
+}
+
 export interface VersionInfo {
   running: {
     backend: string | null;
     backend_key: string | null;
     bot: string | null;
     bot_reported_at: number | null;
+    roles?: Record<string, RoleReport>;
   };
   latest: Record<string, string> | null;
   latest_checked_at: number | null;
 }
 
+export interface SystemHealth {
+  certificate:
+    | { available: true; not_after_ms: number; domains: string[] }
+    | { available: false; reason: string };
+  undelivered_events: { available: boolean; count?: number };
+  stuck_payments: { available: boolean; processing?: number; pending_over_a_day?: number };
+  data_tier: { database: string; shared_redis: string };
+}
+
 export async function getVersionInfo(): Promise<VersionInfo> {
   return (await api.get<VersionInfo>('/system/version')).data;
+}
+
+export async function getSystemHealth(): Promise<SystemHealth> {
+  return (await api.get<SystemHealth>('/system/health')).data;
 }
 
 function parseVer(v: string): number[] {

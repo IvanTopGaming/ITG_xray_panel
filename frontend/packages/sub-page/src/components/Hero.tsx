@@ -48,7 +48,7 @@ export default function Hero({ data, lang }: { data: SubInfo; lang: Lang }) {
       </h2>
       <div className="md:flex md:gap-6">
         <div className="hidden shrink-0 text-center md:block">
-          <QrPanel value={data.sub_url} />
+          <QrPanel value={data.sub_url} lang={lang} />
           <p className="mt-2 text-[11px] text-muted">{t('scan_hint', lang)}</p>
         </div>
         <div className="min-w-0 flex-1">
@@ -75,7 +75,7 @@ export default function Hero({ data, lang }: { data: SubInfo; lang: Lang }) {
           </div>
           {qrOpen && (
             <div className="mt-3.5 text-center md:hidden">
-              <QrPanel value={data.sub_url} size={220} />
+              <QrPanel value={data.sub_url} size={220} lang={lang} />
               <p className="mt-2 text-[11px] text-muted">{t('scan_hint', lang)}</p>
             </div>
           )}

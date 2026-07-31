@@ -8,6 +8,7 @@ from panel_core.models import LinkedPanel
 from panel_core.services.panel_proxy import (
     REFRESH_CHANNEL,
     FederationClient,
+    RemotePanelError,
     _get_panel_or_raise,
     fetch_panel_snapshot_live,
     get_panel_snapshot,
@@ -64,12 +65,27 @@ class TestFederationClient:
         )
         assert result == {"inbounds": []}
 
-    def test_snapshot_raises_on_http_error(self):
-        bad_resp = MagicMock()
-        bad_resp.raise_for_status.side_effect = requests.HTTPError("503")
+    def test_snapshot_reports_the_nodes_own_words_on_an_http_error(self):
+        """§61: every FederationClient method reports through RemotePanelError now.
+
+        The old form raised a bare `requests.HTTPError`, whose string is the status line, so the
+        admin read "Remote panel error" while the node had said something specific. Fourteen methods
+        were still on that path -- inbound and user CRUD, the six batches, `provision` and `snapshot`.
+        """
+
+        bad_resp = _mock_response({"error": "Tag exists"}, status_code=409)
         with patch.object(self.client._session, "get", return_value=bad_resp):
-            with pytest.raises(requests.HTTPError):
+            with pytest.raises(RemotePanelError) as caught:
                 self.client.snapshot()
+        assert caught.value.status_code == 409
+        assert "Tag exists" in str(caught.value)
+
+    def test_snapshot_reports_an_unreachable_node_as_502(self):
+        with patch.object(self.client._session, "get", side_effect=requests.ConnectionError("boom")):
+            with pytest.raises(RemotePanelError) as caught:
+                self.client.snapshot()
+        assert caught.value.status_code == 502
+        assert "unreachable" in str(caught.value)
 
     def test_create_inbound_posts_json(self):
         payload = {"tag": "vless-in", "port": 443}

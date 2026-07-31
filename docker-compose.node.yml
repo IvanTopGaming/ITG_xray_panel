@@ -69,6 +69,7 @@ services:
       - shared_config:/etc/xray
       - ./db_data:/app/db
       - xray_logs:/var/log/xray
+      - ./certs:/root/cert:ro
     environment:
       - XRAY_API_HOST=xray:10085
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}

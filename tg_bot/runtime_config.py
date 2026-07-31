@@ -28,6 +28,7 @@ class RuntimeConfig:
         self._service_token = os.environ.get("BOT_SERVICE_TOKEN") or ""
         self._client: Optional[httpx.AsyncClient] = None
         self._session_change_listener: Optional[Callable[[], Awaitable[None]]] = None
+        self._token_rejected = False
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -52,7 +53,32 @@ class RuntimeConfig:
         client = self._ensure_client()
         resp = await client.get("/bot/runtime-config")
         resp.raise_for_status()
+        self._token_rejected = False
         return resp.json()
+
+    def _report(self, exc: Exception, what: str) -> None:
+        """§10.3: a rejected service token is an operator error, not a transient one.
+
+        Rotating BOT_SERVICE_TOKEN in the panel writes a new value into the database, while this
+        process read the old one from its environment once at import. Every call then fails, and
+        every failure used to be logged at INFO next to ordinary network hiccups — so the bot went
+        quiet with nothing above INFO anywhere and no way to tell the two apart.
+        """
+
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            if not self._token_rejected:
+                self._token_rejected = True
+                logger.error(
+                    "runtime_config: bot-api rejected BOT_SERVICE_TOKEN (HTTP %s) while %s. It was most "
+                    "likely regenerated in the panel under Bot -> Settings. Copy the new value into "
+                    "BOT_SERVICE_TOKEN in this host's .env and restart the bot — nothing this bot does "
+                    "will work until then.",
+                    status,
+                    what,
+                )
+            return
+        logger.info("runtime_config: %s failed: %s", what, exc)
 
     def admin_ids_set(self) -> set[int]:
         return self._admin_ids_set
@@ -89,11 +115,7 @@ class RuntimeConfig:
             try:
                 payload = await self._fetch()
             except Exception as exc:
-                logger.info(
-                    "runtime_config: bootstrap fetch failed: %s — retry in %ss",
-                    exc,
-                    self.BOOTSTRAP_RETRY_SECONDS,
-                )
+                self._report(exc, f"bootstrapping (retry in {self.BOOTSTRAP_RETRY_SECONDS}s)")
                 await asyncio.sleep(self.BOOTSTRAP_RETRY_SECONDS)
                 continue
             self._apply(payload)
@@ -117,7 +139,7 @@ class RuntimeConfig:
             try:
                 payload = await self._fetch()
             except Exception as exc:
-                logger.info("runtime_config: refresh failed: %s", exc)
+                self._report(exc, "refreshing the runtime config")
                 continue
             if int(payload.get("version") or 0) == self.version:
                 continue

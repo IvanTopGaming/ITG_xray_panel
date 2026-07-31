@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 
 import gevent
 import yookassa
 from yookassa import Configuration
+
+from sqlalchemy import update
 
 from panel_core.extensions import db
 from panel_core.models import Payment, SystemSetting
@@ -15,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 _MIN_AGE_S = 30
 _MAX_AGE_S = 24 * 3600
+
+_STRANDED_AFTER_S = 120
+_seen_processing: dict[int, float] = {}
 
 
 _YK_CALL_TIMEOUT_S = 8
@@ -42,9 +48,58 @@ def _configure_sdk() -> bool:
     return True
 
 
+def release_stranded_claims() -> None:
+    """§23/§8.16: a payment left in 'processing' by a crash gets back into the queue in minutes.
+
+    `apply_payment` claims a payment with `UPDATE … WHERE status='pending'` and that claim is the
+    only thing standing between two hosts and a double grant, so it must NOT be widened to include
+    'processing'. Recovery is this separate branch instead: put the row back to 'pending' and let
+    the ordinary poll take it on the next tick.
+
+    **How long it has been claimed is not written down anywhere.** There is no `updated_at` on
+    `Payment`, and adding a column to an existing table is the one thing the Postgres migration path
+    cannot do (§40). `created_at` is the wrong clock -- the poll reaches back 24 hours, so a payment
+    can be claimed long after it was created. So the age is measured here, in the process that runs
+    the job: a payment seen in 'processing' twice, `_STRANDED_AFTER_S` apart, is stranded. All three
+    claim holders (the webhook, this poll, the cleanup cron) live in the same bot-api process, and
+    the case being recovered from -- that process dying -- is also what clears this map, which costs
+    one extra cycle and never a wrong release.
+
+    Releasing a claim that is somehow still in flight is survivable rather than merely unlikely:
+    `operation_id` is `pay:<payment_id>`, so a node that already granted replays its stored receipt
+    and adds nothing (wave 3a). The visible cost would be a second "payment received" message.
+    """
+
+    now = time.monotonic()
+    stranded = Payment.query.filter(Payment.status == "processing").limit(200).all()
+    live = {payment.id for payment in stranded}
+    for gone in [pid for pid in _seen_processing if pid not in live]:
+        _seen_processing.pop(gone, None)
+
+    for payment in stranded:
+        first_seen = _seen_processing.setdefault(payment.id, now)
+        if now - first_seen < _STRANDED_AFTER_S:
+            continue
+        released = db.session.execute(
+            update(Payment).where(Payment.id == payment.id, Payment.status == "processing").values(status="pending")
+        )
+        db.session.commit()
+        if released.rowcount:
+            _seen_processing.pop(payment.id, None)
+            logger.warning(
+                "release_stranded_claims: payment=%s yk=%s sat in 'processing' for over %ss — the process "
+                "that claimed it did not finish. Released back to 'pending'; the poll will retry it.",
+                payment.id,
+                payment.yookassa_id,
+                _STRANDED_AFTER_S,
+            )
+
+
 def poll_pending_payments() -> None:
     if not _configure_sdk():
         return
+
+    release_stranded_claims()
 
     now = dt.datetime.utcnow()
     lo = now - dt.timedelta(seconds=_MAX_AGE_S)

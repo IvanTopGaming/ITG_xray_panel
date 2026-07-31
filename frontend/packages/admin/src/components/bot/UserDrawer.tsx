@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Plus, Trash2, Ban, ShieldCheck, XCircle } from 'lucide-react';
+import { X, Plus, Trash2, Ban, ShieldCheck, XCircle, KeyRound } from 'lucide-react';
 import { toast } from 'react-toastify';
 import {
   getBotUser,
@@ -10,6 +10,7 @@ import {
   listTariffs,
   blockBotUser,
   unblockBotUser,
+  resetSubToken,
 } from '@/lib/bot';
 import type { PanelFailure } from '@/lib/bot';
 import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
@@ -143,7 +144,18 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
     onError: () => toast.error('Unblock failed'),
   });
 
+  const resetSubTokenMutation = useMutation({
+    mutationFn: () => resetSubToken(telegramId!),
+    onSuccess: () => {
+      toast.success('Subscription link reset. The user has been sent the new one.');
+      setConfirmResetSubToken(false);
+      queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
+    },
+    onError: () => toast.error('Reset failed'),
+  });
+
   const [confirmBlock, setConfirmBlock] = useState(false);
+  const [confirmResetSubToken, setConfirmResetSubToken] = useState(false);
   const [confirmRevokeTariffId, setConfirmRevokeTariffId] = useState<number | null>(null);
 
   const revokeTariffMutation = useMutation({
@@ -283,16 +295,27 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                 >
                   <div className="mb-4 flex items-center justify-between">
                     <h3 className="text-base font-semibold text-white">Profile</h3>
-                    {!detail.blocked && (
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => setConfirmBlock(true)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-sm font-semibold text-rose-300 transition-colors hover:border-rose-500/50 hover:bg-rose-500/20 hover:text-rose-200"
+                        onClick={() => setConfirmResetSubToken(true)}
+                        disabled={resetSubTokenMutation.isPending}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-sm font-semibold text-amber-300 transition-colors hover:border-amber-500/50 hover:bg-amber-500/20 hover:text-amber-200 disabled:opacity-50"
                       >
-                        <Ban size={14} />
-                        Block user
+                        <KeyRound size={14} />
+                        {resetSubTokenMutation.isPending ? 'Resetting…' : 'Reset link'}
                       </button>
-                    )}
+                      {!detail.blocked && (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmBlock(true)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-sm font-semibold text-rose-300 transition-colors hover:border-rose-500/50 hover:bg-rose-500/20 hover:text-rose-200"
+                        >
+                          <Ban size={14} />
+                          Block user
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <dl className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-3 text-base">
                     <dt className="text-white/55">Language</dt>
@@ -643,6 +666,20 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
             confirmText="Block & cancel access"
             confirmVariant="danger"
             isLoading={blockMutation.isPending}
+          />
+          <ConfirmationModal
+            isOpen={confirmResetSubToken}
+            onClose={() => setConfirmResetSubToken(false)}
+            onConfirm={() => resetSubTokenMutation.mutate()}
+            title="Reset subscription link"
+            description={
+              detail
+                ? `Issue a new subscription link for ${detail.username ? `@${detail.username}` : `Telegram user ${detail.telegram_id}`}? The current one stops working immediately — anyone holding it, including the user's own app, gets nothing until the new link is imported. Their keys and access are untouched. The bot sends them the new link right away.`
+                : ''
+            }
+            confirmText="Reset link"
+            confirmVariant="danger"
+            isLoading={resetSubTokenMutation.isPending}
           />
           <ConfirmationModal
             isOpen={confirmRevokeTariffId !== null}

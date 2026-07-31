@@ -157,6 +157,11 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         tariffs_label = await i18n.t("menu.tariffs", lang)
         back_label = await i18n.t("common.back_to_main", lang)
         markup = kb.payment_retry_kb(tariffs_label=tariffs_label, back_label=back_label)
+    elif etype == "sub_link_reset":
+        text = await i18n.t("notification.sub_link_reset", lang)
+        subs_label = await i18n.t("menu.subscription", lang)
+        back_label = await i18n.t("common.back_to_main", lang)
+        markup = kb.trial_success_kb(subs_label=subs_label, back_label=back_label)
     elif etype == "access_renewed":
         text = await i18n.t("notification.access_renewed", lang)
     elif etype == "access_paused":
