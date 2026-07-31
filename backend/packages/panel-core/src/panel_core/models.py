@@ -103,7 +103,6 @@ class Client(db.Model):
             "source_ips": ips,
             "flow": self.flow or "",
             "preferred_outbound": self.preferred_outbound or "",
-            "device_limit": self.device_limit,
             "telegram_id": self.telegram_id,
             "tariff_id": self.tariff_id,
         }

@@ -74,13 +74,6 @@ def _parse_bool(value, default=False):
     return bool(value)
 
 
-def _parse_optional_int(value, field):
-
-    if value is None or value == "":
-        return None
-    return parse_int(value, field, min_value=0)
-
-
 def _normalize_client_id(value, protocol):
     client_id = str(value or "").strip()
     if not client_id:
@@ -184,7 +177,6 @@ def get_inbounds():
                 "up": ib.up,
                 "down": ib.down,
                 "fallback_address": ib.fallback_address,
-                "device_limit": ib.device_limit,
                 "label": ib.label,
                 "panel_id": None,
                 "panel_name": "Master",
@@ -211,6 +203,7 @@ def get_inbounds():
             for ib_data in snapshot.get("inbounds", []):
                 ib_data["panel_id"] = panel.id
                 ib_data["panel_name"] = panel.name
+                ib_data.pop("device_limit", None)
                 if "clients" in ib_data:
                     ib_data["settings"] = {"clients": ib_data.pop("clients")}
                 for c in ib_data.get("settings", {}).get("clients", []):
@@ -264,7 +257,6 @@ def create_inbound():
             routing_profile_id = None
         elif routing_profile_id is not None:
             routing_profile_id = parse_int(routing_profile_id, "routing_profile_id", min_value=1)
-        device_limit = parse_int(data.get("device_limit", 0), "device_limit", min_value=0)
         label = (data.get("label") or "").strip() or None
 
         new_ib = Inbound(
@@ -274,7 +266,6 @@ def create_inbound():
             stream_settings=json.dumps(stream),
             routing_profile_id=routing_profile_id,
             fallback_address=fallback_address,
-            device_limit=device_limit,
             label=label,
         )
         db.session.add(new_ib)
@@ -330,8 +321,6 @@ def update_inbound(tag):
                 ib.routing_profile_id = None
             else:
                 ib.routing_profile_id = parse_int(data["routing_profile_id"], "routing_profile_id", min_value=1)
-        if "device_limit" in data:
-            ib.device_limit = parse_int(data["device_limit"], "device_limit", min_value=0)
         if "label" in data:
             label_value = (data["label"] or "").strip() or None
             ib.label = label_value
@@ -636,7 +625,6 @@ def add_user(tag):
             enable=_parse_bool(data.get("enable"), default=True),
             reset_day=parse_int(data.get("reset_day"), "reset_day", min_value=0, max_value=31),
             flow=(str(data.get("flow", "xtls-rprx-vision") or "").strip() if inbound_supports_vless_flow(ib) else ""),
-            device_limit=_parse_optional_int(data.get("device_limit", None), "device_limit"),
         )
         db.session.add(new_client)
 
@@ -731,8 +719,6 @@ def update_user(tag):
         client.reset_day = reset_day
         client.enable = enable
         client.flow = flow
-        if "device_limit" in data:
-            client.device_limit = _parse_optional_int(data.get("device_limit"), "device_limit")
 
         generate_config_file()
         db.session.commit()

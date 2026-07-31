@@ -165,7 +165,6 @@ def snapshot():
                 "up": ib.up or 0,
                 "down": ib.down or 0,
                 "fallback_address": ib.fallback_address or "",
-                "device_limit": ib.device_limit or 0,
                 "routing_profile_id": ib.routing_profile_id,
                 "clients": clients_data,
             }

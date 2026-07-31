@@ -120,7 +120,7 @@ bash scripts/generate_local_cert.sh   # self-signed cert for local domains
 | Service | Role |
 |---|---|
 | `xray` | Xray-core proxy engine |
-| `backend` (`master`) | Admin API only (gunicorn + gevent, single worker) — runs the `panel-master` image; no local Xray, no billing surface, no scheduler, since wave 3b **no subscription surface**, and since wave 4c-1 **no backup surface** (`/api/backup` and `/api/restore` are node-only) |
+| `backend` (`master`) | Admin API only (gunicorn + gevent, single worker) — runs the `panel-master` image; no local Xray, no billing surface, no scheduler, since wave 3b **no subscription surface**, and since wave 4c-1 **no backup surface** (`/api/backup` and `/api/restore` are node-only). It registers the `statistics` blueprint but stores no traffic of its own: since wave 4d the five `/api/stats/*` handlers **refuse with 501 unless `?panel_id=` names a node**, and answer from that node over federation. Before 4d they answered from two permanently empty tables |
 | `backend` (`worker`/node) | Same Flask app plus the local Xray driver — runs the `panel-worker` image, the only one of the five per-role images carrying the Xray binary and the generated protobuf stubs. Serves no subscription route since wave 3b |
 | `backend` (`sub`) | Subscription links only, and the **only** role that serves them — runs the `panel-sub` image, which also serves the React subscription page baked in at `/app/ui`. It is a **writer** of the shared Postgres: the device ledger (`user_device`) is written here on every config request |
 | `backend` (`bot-api`) | `/bot-service/*` and the whole billing surface — runs the `panel-bot-api` image |
@@ -185,7 +185,7 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
   - `bot_service` — endpoints the bot itself calls (runtime-config, texts, users, trial, tariffs, payments) — bot service token only
 - `app/services/`
   - `xray.py` — generates Xray JSON config, gRPC user add/remove, traffic stats, log tailing. File lock `/etc/xray/config.lock` serializes concurrent writes
-  - `traffic_store.py` — pure SQL layer for traffic storage, usable by roles with **no local Xray**: snapshot upserts (`_ten_min_bucket`, `_upsert_snapshot`, `_upsert_node_snapshot`, `_upsert_domain_stat`), cleanup (`cleanup_old_domain_stats`, `cleanup_stats_job`), and the admin-surface counter resets (`reset_user_traffic`, `reset_inbound_traffic`, `bulk_delete_users`) that touch Xray only through `XrayGateway`
+  - `traffic_store.py` — pure SQL layer for traffic storage, usable by roles with **no local Xray**: snapshot upserts (`_ten_min_bucket`, `_upsert_snapshot`, `_upsert_domain_stat`), cleanup (`cleanup_old_domain_stats`, `cleanup_stats_job`), and the admin-surface counter resets (`reset_user_traffic`, `reset_inbound_traffic`, `bulk_delete_users`) that touch Xray only through `XrayGateway`
   - `stats.py` — worker-side traffic collector: gRPC polling (`sync_traffic_stats`), limit enforcement + monthly reset (`check_limits_and_reset`), access-log parsing; re-exports the names above from `traffic_store` for backward-compatible imports and test patches. `check_limits_and_reset` and `sync_traffic_stats` also emit `expiry_notification`/`traffic_notification` events inline (see `notifications.py` below and Bot event recovery buffer)
   - `panel_proxy.py` — Panel Federation HTTP client: `FederationClient` talks to linked panels, proxies user/inbound CRUD operations to remote panels based on `TariffItem.panel_id` routing. `get_panel_snapshot` (cached, 60s TTL) vs `fetch_panel_snapshot_live` (live, no cache)
   - `sub_cache.py` — Redis-backed subscription response cache
@@ -207,9 +207,9 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 
 `frontend` is an npm workspace (`frontend/package.json`: `workspaces: ["packages/*"]`) of four packages, each with its own `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `tailwind.config.js` and `postcss.config.js` — there is no root-level `index.html`/`vite.config.ts`/`tailwind.config.js`/`postcss.config.js` any more; only `entrypoint.sh` and `nginx.conf.template` stay shared at `frontend/`. Neither `@panel/admin`'s nor `@panel/node`'s nor `@panel/sub-page`'s `package.json` declares a dependency on `@panel/ui-core` — there is no workspace dependency edge at all, only an alias: each package's `tsconfig.json` and `vite.config.ts` map `@ui` → `../ui-core/src` and `@` → the app's own `src` (so a bare `@/pages/Panels` inside `admin` can never resolve inside `ui-core`, and vice versa). That alias is necessary but not sufficient — a relative specifier crosses the same boundary without ever touching it, which is why the import direction is also enforced by a dedicated guard (`backend/tests/test_frontend_import_direction.py`) rather than by the alias or the dependency graph.
 
-- `packages/ui-core/src/` — everything shared by the three apps (55 files, every file under the directory regardless of extension — 33 `.ts`/`.tsx`, `index.css`, plus `fonts.css` and the 20 self-hosted Roboto/Roboto Mono `.woff2` files added in Phase 6 when the Google Fonts CDN link was dropped): `pages/` (`Dashboard`, `Routing`, `System`, `Login` — the four pages every role has), `components/inbound/` (`InboundForm`, `UserForm`), `components/ui/` (`Select`, `Modal`, `ConfirmationModal`, `Button`, `Input`, `Switch`, `TagInput`), `components/layout/` (`Layout`, `Sidebar`, `AnimatedBackground`), `components/DisplayConfigLoader.tsx`, `hooks/` (`useLinkedPanels`, `useVersionStatus`), `lib/` (`api.ts` — axios client with auth interceptor; `types.ts` — TS interfaces for every API entity; `protocols.ts` — protocol + stream-settings definitions; `panelRole.ts`/`assertPanelRole.ts` — role gating, see the deploy note below; `panelBase.ts`, `datetime.ts`, `devices.ts`, `routing-validation.ts`, `utils.ts`, `version.ts`), `stores/` (Zustand stores for auth + log state), `index.css`.
-- `packages/admin/src/` — admin-only surface (19 files, same counting rule as ui-core above — this one happens to be all `.ts`/`.tsx`): `App.tsx`, `main.tsx` (the entry points), and the master-only pages/components `pages/Statistics.tsx`, `pages/Panels.tsx` (federation management), `pages/Bot.tsx` (billing UI) plus `components/bot/` (`TariffsTab`, `TariffDrawer`, `TariffsTable`, `TariffRowMenu`, `UsersTab`, `UserDrawer`, `GrantsTab`, `PaymentsTab`, `PaymentStatusBadge`, `TextsTab`, `SettingsTab`, `TrialCard`) and `lib/bot.ts`.
-- `packages/node/src/` — **has no page of its own**: just `App.tsx`, `main.tsx`, `vite-env.d.ts` (3 files, same counting rule as the two bullets above). `App.tsx` wires up only the shared `Dashboard`/`Routing`/`System`/`Login` pages from `ui-core` — every route with its own page component lives in `ui-core` or `admin`, never in `node`. **`Routing` is no longer gated by `hasLocalXray` in either app, and the sidebar's `LOCAL_XRAY_ONLY` filter is gone** (wave 4c-2): the page is now meaningful on a master too, where it edits a *node's* outbounds through a panel picker in its header. Three places hid it before, and missing any one of them leaves it unreachable while the other two look fixed — the sidebar filter plus the `hasLocalXray ? <Routing /> : <Navigate to="/">` in **both** `App.tsx` files. `backend/tests/test_routing_page_reaches_the_nodes.py` pins all three. **Node-only surface therefore arrives as a gated tab inside a shared page, not as a route:** wave 4b's federation card is a `System` tab that ships from `ui-core` and renders only when `isWorker` — three gates in the bundle (the tab entry, its body, and `enabled: isWorker` on the `GET /api/federation/config` query, without which a master would 404 on every visit to System) plus a fourth in the backend, since `roles/master.py` registers no `federation` blueprint. The node's route count stays four. `backend/tests/test_federation_card_is_node_only.py` pins all of it.
+- `packages/ui-core/src/` — everything shared by the three apps (56 files, every file under the directory regardless of extension — 34 `.ts`/`.tsx`, `index.css`, plus `fonts.css` and the 20 self-hosted Roboto/Roboto Mono `.woff2` files added in Phase 6 when the Google Fonts CDN link was dropped): `pages/` (`Dashboard`, `Routing`, `Statistics`, `System`, `Login` — the five pages every role has; `Statistics` joined them in wave 4d, `Routing` in 4c-2), `components/inbound/` (`InboundForm`, `UserForm`), `components/ui/` (`Select`, `Modal`, `ConfirmationModal`, `Button`, `Input`, `Switch`, `TagInput`), `components/layout/` (`Layout`, `Sidebar`, `AnimatedBackground`), `components/DisplayConfigLoader.tsx`, `hooks/` (`useLinkedPanels`, `useVersionStatus`), `lib/` (`api.ts` — axios client with auth interceptor; `types.ts` — TS interfaces for every API entity; `protocols.ts` — protocol + stream-settings definitions; `panelRole.ts`/`assertPanelRole.ts` — role gating, see the deploy note below; `panelBase.ts`, `datetime.ts`, `devices.ts`, `routing-validation.ts`, `utils.ts`, `version.ts`), `stores/` (Zustand stores for auth + log state), `index.css`.
+- `packages/admin/src/` — admin-only surface (18 files, same counting rule as ui-core above — this one happens to be all `.ts`/`.tsx`): `App.tsx`, `main.tsx` (the entry points), and the master-only pages/components `pages/Panels.tsx` (federation management), `pages/Bot.tsx` (billing UI) plus `components/bot/` (`TariffsTab`, `TariffDrawer`, `TariffsTable`, `TariffRowMenu`, `UsersTab`, `UserDrawer`, `GrantsTab`, `PaymentsTab`, `PaymentStatusBadge`, `TextsTab`, `SettingsTab`, `TrialCard`) and `lib/bot.ts`.
+- `packages/node/src/` — **has no page of its own**: just `App.tsx`, `main.tsx`, `vite-env.d.ts` (3 files, same counting rule as the two bullets above). `App.tsx` wires up only the shared `Dashboard`/`Routing`/`Statistics`/`System`/`Login` pages from `ui-core` — every route with its own page component lives in `ui-core` or `admin`, never in `node`. **`Routing` is no longer gated by `hasLocalXray` in either app, and the sidebar's `LOCAL_XRAY_ONLY` filter is gone** (wave 4c-2): the page is now meaningful on a master too, where it edits a *node's* outbounds through a panel picker in its header. Three places hid it before, and missing any one of them leaves it unreachable while the other two look fixed — the sidebar filter plus the `hasLocalXray ? <Routing /> : <Navigate to="/">` in **both** `App.tsx` files. `backend/tests/test_routing_page_reaches_the_nodes.py` pins all three. **Node-only surface therefore arrives as a gated tab inside a shared page, not as a route:** wave 4b's federation card is a `System` tab that ships from `ui-core` and renders only when `isWorker` — three gates in the bundle (the tab entry, its body, and `enabled: isWorker` on the `GET /api/federation/config` query, without which a master would 404 on every visit to System) plus a fourth in the backend, since `roles/master.py` registers no `federation` blueprint. The node's route count went from four to **five** in wave 4d, and for the mirror-image reason: `Statistics` was classified master-only by phase 3e and the classification was inverted — the master's `traffic_snapshot`/`domain_stat` have had no writer since phase 3b, while a node's are the only full ones in the deployment. The page moved `packages/admin` → `ui-core`, gained the same node picker `Routing` has, and `/statistics` left the sidebar's `WORKER_HIDDEN` set. The three gates are the same three: the sidebar filter, the route in `admin/App.tsx`, and the *absence* of a route in `node/App.tsx`. `backend/tests/test_statistics_page_reaches_the_nodes.py` pins all three, `backend/tests/test_federation_card_is_node_only.py` pins the federation card.
 - `packages/sub-page/src/` — the subscription page a user opens in a browser, and the only package that is **not** an admin surface (18 files, same counting rule as the bullets above): `App.tsx`, `main.tsx`, `vite-env.d.ts`, `components/` (`Header`, `Hero`, `Summary`, `QrPanel`, `AppButtons`, `Nodes`, `Footer`, `Loading`, `ErrorState`), `hooks/useSubInfo.ts`, `lib/` (`deeplinks.ts`, `format.ts`, `i18n.ts`, `types.ts`), `index.css`. It has no router, no axios client and no auth store — it reads one endpoint, `GET /api/sub/u/<token>/info`. Three things set it apart from the two admin apps: it ships **no** `assertPanelRole()` call and reads no `panel-role` meta tag (it is served by Flask out of `panel-sub`, not by Nginx, and there is no role to get wrong); it carries **its own `index.css`** rather than importing `ui-core`'s, because that one applies `overflow-hidden` to `body` for the fixed-chrome admin layout and would make a scrolling page unreadable on a phone; and it is built into the `panel-sub` backend image by `backend/Dockerfile.sub` rather than into an Nginx image of its own. It still looks like the same product, but only one of the two reasons is actual sharing: `ui-core/src/fonts.css` (self-hosted Roboto) is imported by all three packages and is sub-page's **only** edge into `ui-core`, while the Tailwind theme is a *duplicated copy* — `ui-core` has no `tailwind.config.js`, each package declares its own palette, and sub-page's config does not even scan `../ui-core/src`. That distinction decides the release fan-out — see point 3 of the Phase 3d deploy note.
 
 Each of the two admin apps bakes its role at build time (`vite.config.ts`'s `define: { __EXPECTED_PANEL_ROLE__ }`) and asserts it at runtime against the `<meta name="panel-role">` tag that `entrypoint.sh` rewrites in `index.html` at container start (read by `lib/panelRole.ts`'s `readInjectedPanelRole()`). A meta tag, not an inline script: the reverse proxy's CSP sets `script-src 'self'`, which blocks inline `<script>` outright — see the deploy note below.
@@ -257,7 +257,7 @@ Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted fro
 
 Two things about the grain are deliberate and easy to undo by accident:
 - **Nothing joins through `Client`.** The predecessor counted `ClientDevice → Client` on `Client.telegram_id`, so the budget was whatever the serving role's database happened to hold. On a node that meant its own clients only — a user with keys on three nodes had three independent budgets — and on sub it would have meant *zero*, since no `Client` row for a node-issued client exists in Postgres at all (`Client` has no `panel_id` and the master mirrors none). Both failures were silent. The ledger therefore stores `telegram_id` and nothing else identifying.
-- **A client with no `telegram_id` has no device tracking.** Per-client and per-inbound limits are no longer enforced anywhere: `Client.device_limit` / `Inbound.device_limit` still exist and the UI still edits them, but the only gate is the global one, and it needs a Telegram account to count against. Admin-created keys are outside it.
+- **A client with no `telegram_id` has no device tracking.** Per-client and per-inbound limits are no longer enforced anywhere, and since wave 4d they are no longer *offered* either: the `Client.device_limit` / `Inbound.device_limit` **columns** remain (dropping a column from an existing table is the one thing the Postgres migration path cannot do — see Database migrations), but nothing accepts them on input, `Client.to_dict()` and the federation snapshot no longer return them, both forms lost the field, and the Dashboard's device chip lost its denominator — it now shows the real global count and no cap. Editing them used to succeed and change nothing. The only gate is the global one, and it needs a Telegram account to count against. Admin-created keys are outside it. `backend/tests/test_device_limit_stops_offering_itself.py` holds both halves — that the columns survive and that nothing offers them.
 
 The admin surface reads the same ledger: `GET /users/<telegram_id>/devices` and `DELETE /users/<telegram_id>/devices/<id>` (admin JWT), and `device_count` per client in `GET /api/inbounds` is that account's count — the same number the gate sees and the same number the subscription page shows. Node snapshots carry no `device_count` any more; a node cannot know it, since the ledger lives in a Postgres it never reaches.
 
@@ -268,7 +268,7 @@ The admin surface reads the same ledger: `GET /users/<telegram_id>/devices` and 
 | `sync_traffic` | 10s | Per-user up/down from Xray gRPC; upserts `TrafficSnapshot` via raw SQL `ON CONFLICT DO UPDATE`; emits `traffic_notification` inline at 80%/95%/exhausted (dedup via `NotificationLog`) |
 | `check_limits` | 60s | Removes expired/over-limit users; emits `expiry_notification` inline at 3d/1d/1h/expired (dedup via `NotificationLog`) |
 | `parse_logs` | 15s | Tails Xray access logs into `DomainStat` (skips bare IPs) |
-| `cleanup_stats` | 24h | Runs on **master and worker** roles; deletes `DomainStat` rows > 90d |
+| `cleanup_stats` | 24h | Runs on the **worker role only** — the master registers no scheduler at all (`no scheduled jobs on this role`), and its `DomainStat` has had no writer since phase 3b. Deletes `DomainStat` rows > 90d |
 | `poll_linked_panels` | 10s | Runs on the **cron service only**. Pings each enabled `LinkedPanel`; fresh `snapshot`/`status`/`last_poll` go to the **shared** Redis every poll, the Postgres row is written **only on status/error change** (the panels API overlays the Redis values). A `panel:refresh` message polls one panel out of band, without waiting for the next tick |
 | `auto_renew_free_users` | 15m | Runs on the **cron service only**. Re-provisions due `billing='free'` grants; pauses + emits `access_paused` on tariff archive/disable (does **not** force-disable clients — they lapse via their own `expiry_time`) |
 | `poll_pending_payments` | 30s | Runs on the **`bot` (bot-api) role only** — not the master; webhook fallback, reconciles pending YooKassa payments older than 30s, younger than 24h |
@@ -286,7 +286,7 @@ Four decorators in `app/utils.py`:
 - `token_required` — admin JWT only. Used on all `bot_admin` endpoints, `GET /api/inbounds`, every one of the ten `panels.py` handlers (wave 4b added `POST /panels/<id>/relink`), and the node-only `POST /api/federation/link-token` + `GET /api/federation/config`.
 - `bot_service_token_required` — fixed token from `SystemSetting('bot_service_token')`, compared in constant time. Used on all `bot_service.py` endpoints + `/billing/checkout`, **and on nothing else**.
 - `federation_token_required` — validates the `federation_token` from a linked panel's `FederationConfig`. Used on federation endpoints that remote panels call.
-- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. Twenty-nine handlers: thirteen in `inbound.py` (user/inbound CRUD, the `/users/bulk-*` + `/users/reset-traffic` batch endpoints, and — since wave 4c-2 — `/inbounds/<tag>/reset-traffic`, the last one that could not be routed by `panel_id`), `/api/restart` and `/api/stats/system` in `system.py`, `GET /api/backup` + `POST /api/restore` in the node-only `backup.py` (wave 4c-1), and — since wave 4c-2 — twelve more in `outbound.py`/`routing.py`: outbound CRUD, balancer CRUD and routing-profile CRUD, so the master can manage a node's whole egress and routing layer. **`GET /outbounds/health` is the one handler in those two files that stays `token_required`**: a reachability probe is only meaningful from the box the traffic leaves through, so the master neither runs it nor proxies it.
+- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. Thirty-four handlers: thirteen in `inbound.py` (user/inbound CRUD, the `/users/bulk-*` + `/users/reset-traffic` batch endpoints, and — since wave 4c-2 — `/inbounds/<tag>/reset-traffic`, the last one that could not be routed by `panel_id`), `/api/restart` and `/api/stats/system` in `system.py`, `GET /api/backup` + `POST /api/restore` in the node-only `backup.py` (wave 4c-1), and — since wave 4c-2 — twelve more in `outbound.py`/`routing.py`: outbound CRUD, balancer CRUD and routing-profile CRUD, so the master can manage a node's whole egress and routing layer, and — since wave 4d — the five in `statistics.py`, so it can read a node's traffic figures. **`GET /outbounds/health` is the one handler in those two files that stays `token_required`**: a reachability probe is only meaningful from the box the traffic leaves through, so the master neither runs it nor proxies it.
 
 All three decorators stamp `g.auth_via` (`"admin"` / `"federation"`) on the way through, which is how `backup.py` can log *which credential* took a node's database and not merely that someone did. A federated backup or restore leaves a WARNING on the node; the node's own admin leaves an INFO.
 
@@ -425,6 +425,12 @@ CI installs uv via `astral-sh/setup-uv@v8.2.0` and runs `uvx ruff` for lint, `uv
 
 ### Statistics storage
 `TrafficSnapshot` stores hourly traffic deltas per entity (user or inbound) **forever** — space is ~100 bytes × entities × 8760 hours/year, negligible for typical deployments. `DomainStat` stores daily domain hit counts and is pruned to 90 days. Both use SQLite `ON CONFLICT DO UPDATE` upserts via `literal_column()` + raw `text()` SQL — do not replace with ORM insert, it breaks atomicity.
+
+**Both tables live on a node and only on a node, and everything about the statistics surface follows from that.** Their only writers are `_upsert_snapshot` and `_upsert_domain_stat`, called from `services/stats.py`, which ships from `panel-worker` and runs under `sync_traffic` (10s) and `parse_logs` (15s) — jobs `roles/worker.py` registers and no other role does. Nothing has ever written either table into the shared Postgres. So the master's copies are empty by construction, not by accident, and no amount of waiting fills them.
+
+Since wave 4d the five `/api/stats/*` handlers therefore behave like `outbound.py`'s: `?panel_id=` is dispatched to the named node over federation **before** the `has_local_xray()` gate is consulted, and a master with no node named answers **501** naming `panel_id` rather than 200 with zeroes. That distinction is the whole point — a zero and a real answer differ only in the response body, so a test asserting `200` would pass against the defect. `panel_proxy` gained five read-only `proxy_stats_*` functions (26 → 31); like wave 4c-2's three reads they deliberately do **not** publish on `panel:refresh`, because they change nothing on the node and run on every page load.
+
+**`_top_domains_sql` is dialect-aware, and the hint it emits is not decorative.** `domain_stat` carries two indexes, and without `INDEXED BY ix_ds_date_domain_cover` SQLite's planner picks the narrower `ix_ds_domain` and stops covering the query. But `INDEXED BY` is SQLite-only syntax: against Postgres it is a syntax error, which is why `/stats/overview` and `/stats/domains` — the two of the five that call this function — answered **500** there while the other three answered 200 with nothing (verified by running both directions against `postgres:16`). The hint is now emitted only when the bound dialect is `sqlite`, and an undeterminable dialect falls back to portable SQL — failing towards a slower plan rather than towards a syntax error. Do not "simplify" it back to one form; both halves are load-bearing and each is guarded in `tests/test_api_statistics.py`.
 
 ### Secret path injection
 The frontend is served under `PANEL_SECRET_PATH`. At container startup, `frontend/entrypoint.sh` rewrites two things in the built `index.html` with `sed` — the `<base href="/">` becomes `<base href="/<secret>/">`, and `<meta name="panel-role" content="__PANEL_ROLE__">` gets the container's validated `PANEL_ROLE` — then generates `nginx.conf` from `nginx.conf.template` (which proxies `/<secret>/api/` to `backend:5000`). All traffic outside the secret path returns 404. There is **no** `window.__PANEL_BASE_URL__` and no injected inline script anywhere in that path: the CSP the reverse proxy sets uses `script-src 'self'`, so an inline `<script>` would simply not execute, and both facts now travel as HTML attributes that survive it.
@@ -1019,6 +1025,105 @@ else. Read all five points.
    untouched. Deploy `bot-api` and `bot` together — they live in the same compose file. A new bot
    against an old bot-api still works (the catalogue is simply unfiltered); an old bot against a new
    bot-api also works, it just keeps the spinning button.
+
+### Deploy note — the Statistics page starts answering from the machine that counted the traffic (Phase 8 wave 4d)
+
+This wave changes **no schema, no federation contract and no environment variable**, so it needs no
+fleet-wide lock-step and no `.env` edit beyond the image pins. It gives a page back to the role that
+has the data, removes two fields that constrained nothing, and — the part to read before anything
+else — **widens the federation token a third time, in the direction that is most sensitive and least
+visible**. Read all seven points.
+
+1. **The federation token can now read every user's traffic figures and browsing history off a node.**
+   Five more handlers accept it: `GET /api/stats/{overview,traffic,domains,domain-users,users-ranking}`.
+   Concretely that is per-client upload/download over any period, the e-mail of every client, and the
+   **list of domains each of them visited** with hit counts — `domain_stat` is built from the node's
+   Xray access log.
+
+   The marginal increment is smaller than it sounds and worth stating exactly: wave 4c-1 already gave
+   this token `GET /api/backup`, which streams the node's whole SQLite file, and `traffic_snapshot` and
+   `domain_stat` are inside it. So the token could already read all of this — awkwardly, in one lump,
+   and with a WARNING written to the node's log. What is new is that it can read it **selectively,
+   cheaply, and silently**: these are reads, and following wave 4c-2's precedent for reads they are
+   **not** journalled on the node. Logging them was considered and rejected on volume — the page issues
+   seven requests per load and auto-refreshes every 30 seconds, so an audit line per request would
+   drown the node's log and the entries that matter with it. If you want a durable record that someone
+   pulled a node's browsing history, `/api/backup` is the path that leaves one.
+
+   The token sits in the master's Postgres **in clear text** — it has to, or the master could not
+   present it — so it travels in every `pg_dump` of the data tier, and it is not scoped per operation.
+
+   **How to kill one — the full wave-4b procedure, not a reference to it:**
+   1. On the **node**: System → Link → *Revoke access & issue token*. That nulls `federation_token`
+      and `linked_at` on the spot (no confirmation step, no undo) and hands you a fresh single-use
+      link token.
+   2. On the **master**: Panels → that panel's card → *Relink*, and paste the token.
+   3. **Never delete the panel and add it again instead.** `delete_panel` cascades
+      `purge_tariff_items`, which removes every `TariffItem` of that panel and disables any tariff
+      left with none — revoking a credential would cost live users their tariff layout.
+
+   Between step 1 and step 2 the node is unreachable to the master entirely — not polled, not
+   provisioned, no CRUD, and now no statistics either. Keep it to one sitting.
+
+2. **What an admin sees on the master's Statistics page after the update.** The page is where it was,
+   in the same menu slot, and it now carries a **node picker in its header**, exactly like Routing
+   since 4c-2. The first enabled node is selected automatically, so on a single-node deployment the
+   page simply starts showing numbers where it showed zeroes. Three other states are possible and all
+   three say what happened rather than charting nothing:
+   - **no linked nodes at all** → "No nodes to report on", pointing at the Panels page;
+   - **the selected node does not answer** → a red box with *the node's own message* and a Retry
+     button, on whichever tab was open. Never an empty chart: zeroes read as "nobody used this node",
+     which is the exact lie this wave removes;
+   - **a request that somehow reaches the master unscoped** → HTTP 501 naming `panel_id`.
+
+   **There is no fleet-wide aggregate and this wave does not add one.** It is a switcher: one node at
+   a time, its own numbers, unmixed. Summing two nodes' hourly buckets into one chart is a different
+   feature.
+
+3. **The page appears on every node's own panel, where it never existed.** A node's SPA went from four
+   routes to five. That half is the actual bug fix: the node is the only machine in the deployment
+   whose `traffic_snapshot` and `domain_stat` are full, and until now it had no screen to show them.
+   An admin who prefers logging into the node directly (its own `Admin` row, its own password — see
+   the node role) gets the same page with no picker.
+
+4. **`Client.device_limit` and `Inbound.device_limit` disappear from the API and from both forms. The
+   columns stay.** Nothing has enforced a per-key or per-inbound device cap since wave 3b — the gate
+   counts one global budget per Telegram account, from `device_limit_enabled` and
+   `device_limit_per_user` under Bot → Settings — but the panel kept accepting the values, storing
+   them, and rendering them. **The visible change: the Dashboard's device chip loses its denominator.**
+   Where it read `2 / 3` it now reads `2`; the count was always real, the cap never was. Two form
+   fields are gone ("Device limit override" on a user, "Device limit (HWID-based)" on an inbound), and
+   the API neither accepts nor returns the value.
+
+   **Nothing is lost that was working**, but if you set those numbers expecting them to hold, they
+   never did — check `device_limit_per_user` now, because that is the one that applies, and it applies
+   to every account at once. Existing column values are left untouched and unreadable; dropping a
+   column from an existing table is the one thing the Postgres migration path cannot do, so that is a
+   separate change.
+
+5. **Two SQL statements stop being SQLite-only.** `/api/stats/overview` and `/api/stats/domains`
+   answered **HTTP 500** against Postgres, because they emitted `INDEXED BY`, which Postgres does not
+   parse. In the shipped topology this is now unreachable from two directions at once — the master
+   refuses before touching its database, and a node has no `DATABASE_URL` — so **do not read this as
+   fixing a live outage**; it was live only for a Postgres-backed node, which `docker-compose.node.yml`
+   does not produce. It is fixed because the statement travels in shared code and the hint is emitted
+   only where it parses.
+
+6. **A partial rollout degrades in one direction and fails loudly in the other.** An old master against
+   a new node: the master's Statistics page has no picker and reads its own empty tables — unchanged
+   from today, zeroes and two 500s. A new master against an old node: every read answers 401 (the old
+   node still guards these with `token_required`, admin JWT only), and the master surfaces *"The node
+   rejected this master's federation token. Issue a fresh link token on the node and relink the
+   panel"* — misleading in this one case, because the node is simply old. Update the node. Nothing is
+   silently corrupted either way.
+
+7. **Bump `master`, `worker`, `sub`, `bot_api`, `cron`, `frontend_admin` and `frontend_node`
+   together — seven images.** The `panel-core` edits (`services/panel_proxy.py`, `models.py`,
+   `services/remote_clients.py`) fan out to all five backends; `panel-adminapi` (`api/statistics.py`,
+   `api/inbound.py`, `api/federation.py`) to master and worker; the `ui-core` edits (`Statistics.tsx`
+   moved in from `packages/admin`, `Sidebar.tsx`, `Dashboard.tsx`, `UserForm.tsx`, `InboundForm.tsx`,
+   `lib/types.ts`) plus both `App.tsx` files to both frontends. `bot`, `caddy` and `xray_egress` are
+   untouched.
 
 ## Configuration
 

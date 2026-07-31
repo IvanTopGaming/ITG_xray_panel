@@ -10,7 +10,7 @@ import Login from '@ui/pages/Login';
 import Dashboard from '@ui/pages/Dashboard';
 import Routing from '@ui/pages/Routing';
 import System from '@ui/pages/System';
-import Statistics from '@/pages/Statistics';
+import Statistics from '@ui/pages/Statistics';
 import Panels from '@/pages/Panels';
 import Bot from '@/pages/Bot';
 

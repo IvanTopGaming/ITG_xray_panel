@@ -6,9 +6,15 @@ from datetime import datetime
 
 from panel_core.extensions import db
 from panel_core.models import Client, Inbound, TrafficSnapshot, DomainStat
-from panel_core.utils import token_required
+from panel_core.utils import admin_or_federation_token_required, remote_panel_failure
+from panel_core.xray.facade import has_local_xray
 
 bp = Blueprint("statistics", __name__)
+
+XRAY_STATS_UNSUPPORTED = (
+    "Traffic statistics are collected by the node that runs Xray; this role has no local Xray instance "
+    "and stores none of its own. Supply panel_id to route the query to a node."
+)
 
 _PERIOD_SECONDS = {
     "1h": 3_600,
@@ -77,6 +83,36 @@ def _granularity_seconds(period: str) -> int:
     return _granularity_for_duration(secs)
 
 
+def _requested_panel_id():
+    return request.args.get("panel_id", type=int)
+
+
+def _forwarded_args():
+
+    return {key: value for key, value in request.args.items() if key != "panel_id"}
+
+
+def _dispatch(panel_id, proxy_name):
+
+    from panel_core.services import panel_proxy
+
+    try:
+        return jsonify(getattr(panel_proxy, proxy_name)(panel_id, _forwarded_args()))
+    except panel_proxy.RemotePanelError as exc:
+        return remote_panel_failure(exc)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+def _domain_stat_index_hint():
+
+    try:
+        dialect = db.session.get_bind().dialect.name
+    except Exception:
+        return ""
+    return " INDEXED BY ix_ds_date_domain_cover" if dialect == "sqlite" else ""
+
+
 def _top_domains_sql(since_date, until_date, email_filter="", tag_filter=""):
 
     where = []
@@ -96,7 +132,7 @@ def _top_domains_sql(since_date, until_date, email_filter="", tag_filter=""):
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     sql = (
         "SELECT domain, SUM(hit_count) AS hits "
-        "FROM domain_stat INDEXED BY ix_ds_date_domain_cover"
+        f"FROM domain_stat{_domain_stat_index_hint()}"
         f"{where_sql} "
         "GROUP BY domain ORDER BY hits DESC LIMIT :limit"
     )
@@ -111,8 +147,15 @@ def _top_domains(since_date, until_date, email_filter="", tag_filter="", limit=1
 
 
 @bp.get("/stats/overview")
-@token_required
+@admin_or_federation_token_required
 def get_overview():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_stats_overview")
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_STATS_UNSUPPORTED}), 501
+
     try:
         since_bucket, since_date, until_bucket, until_date = _resolve_range(request.args)
     except ValueError as e:
@@ -200,8 +243,15 @@ def get_overview():
 
 
 @bp.get("/stats/traffic")
-@token_required
+@admin_or_federation_token_required
 def get_traffic():
+
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_stats_traffic")
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_STATS_UNSUPPORTED}), 501
 
     period = request.args.get("period", "7d")
     entity_type = request.args.get("entity_type", "all")
@@ -255,8 +305,15 @@ def get_traffic():
 
 
 @bp.get("/stats/domains")
-@token_required
+@admin_or_federation_token_required
 def get_domains():
+
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_stats_domains")
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_STATS_UNSUPPORTED}), 501
 
     limit = min(int(request.args.get("limit", 50)), 200)
     email_filter = request.args.get("email", "")
@@ -284,8 +341,15 @@ def get_domains():
 
 
 @bp.get("/stats/domain-users")
-@token_required
+@admin_or_federation_token_required
 def get_domain_users():
+
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_stats_domain_users")
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_STATS_UNSUPPORTED}), 501
 
     domain = request.args.get("domain", "").strip()
     if not domain:
@@ -331,8 +395,15 @@ def get_domain_users():
 
 
 @bp.get("/stats/users-ranking")
-@token_required
+@admin_or_federation_token_required
 def get_users_ranking():
+
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_stats_users_ranking")
+
+    if not has_local_xray():
+        return jsonify({"error": XRAY_STATS_UNSUPPORTED}), 501
 
     try:
         since_bucket, _, until_bucket, _ = _resolve_range(request.args)

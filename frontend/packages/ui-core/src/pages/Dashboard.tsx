@@ -1415,7 +1415,6 @@ function UserRow({
   const [revokeTarget, setRevokeTarget] = useState<UserDevice | null>(null);
   const [revokeLoading, setRevokeLoading] = useState(false);
 
-  const effectiveDeviceLimit = client.device_limit ?? inbound.device_limit ?? 0;
   const actionCount = 4 + (hasLocalXray ? 1 : 0) + (localUnsupported ? 0 : 2);
 
   useEffect(() => {
@@ -1674,37 +1673,33 @@ function UserRow({
                 </span>
               )}
             </div>
-            {deviceOwner != null &&
-              (effectiveDeviceLimit > 0 || (client.device_count ?? 0) > 0) && (
-                <button
-                  type="button"
-                  onClick={toggleDevices}
-                  title={devicesExpanded ? 'Hide devices' : 'Show devices'}
-                  className={cn(
-                    'flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg border transition-colors',
-                    devicesExpanded
-                      ? 'bg-primary/15 text-primary border-primary/25'
-                      : 'bg-white/[0.06] text-white/70 border-white/[0.05] hover:bg-white/[0.09] hover:text-white'
-                  )}
-                >
-                  <Smartphone size={11} />
-                  <span className="font-mono">
-                    {client.device_count ?? 0}
-                    {effectiveDeviceLimit > 0 ? ` / ${effectiveDeviceLimit}` : ''}
-                  </span>
-                  {devicesLoading ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <ChevronDown
-                      size={12}
-                      className={cn(
-                        'transition-transform duration-200',
-                        devicesExpanded && 'rotate-180'
-                      )}
-                    />
-                  )}
-                </button>
-              )}
+            {deviceOwner != null && (client.device_count ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={toggleDevices}
+                title={devicesExpanded ? 'Hide devices' : 'Show devices'}
+                className={cn(
+                  'flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg border transition-colors',
+                  devicesExpanded
+                    ? 'bg-primary/15 text-primary border-primary/25'
+                    : 'bg-white/[0.06] text-white/70 border-white/[0.05] hover:bg-white/[0.09] hover:text-white'
+                )}
+              >
+                <Smartphone size={11} />
+                <span className="font-mono">{client.device_count ?? 0}</span>
+                {devicesLoading ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <ChevronDown
+                    size={12}
+                    className={cn(
+                      'transition-transform duration-200',
+                      devicesExpanded && 'rotate-180'
+                    )}
+                  />
+                )}
+              </button>
+            )}
           </div>
 
           <div className={cn('grid gap-1 sm:flex', USER_ACTION_GRID_COLS[actionCount])}>

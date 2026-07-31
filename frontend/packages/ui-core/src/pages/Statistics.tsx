@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@ui/lib/api';
+import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
+import { isWorker } from '@ui/lib/panelRole';
+import { Select } from '@ui/components/ui/Select';
+import { Button } from '@ui/components/ui/Button';
 import { formatBytes, cn } from '@ui/lib/utils';
 import {
   formatWith,
@@ -22,6 +26,8 @@ import {
   RefreshCw,
   ChevronUp,
   ChevronDown,
+  PlugZap,
+  Server,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -561,6 +567,67 @@ const TABS: { id: StatsTab; label: string; icon: React.ElementType }[] = [
   { id: 'sites', label: 'Sites', icon: Globe },
 ];
 
+export function statsScopedPath(path: string, panelId: number | null) {
+  if (!panelId) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}panel_id=${panelId}`;
+}
+
+export function statsErrorMessage(error: unknown): string {
+  const anyError = error as any;
+  return (
+    anyError?.response?.data?.error ||
+    anyError?.message ||
+    'The node did not answer. It may be down, or the master may no longer be linked to it.'
+  );
+}
+
+export function StatsNodeUnreachable({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 px-6 border border-red-500/20 rounded-3xl bg-red-500/[0.04] text-center">
+      <div className="p-4 rounded-full bg-red-500/10 mb-4">
+        <PlugZap size={32} className="text-red-400" />
+      </div>
+      <h3 className="text-lg font-bold text-red-200">This node did not answer</h3>
+      <p className="text-sm text-red-300/70 mt-1 max-w-lg break-words">
+        {statsErrorMessage(error)}
+      </p>
+      <p className="text-xs text-gray-500 mt-3 max-w-lg">
+        Nothing is charted rather than zeroes, so an unreachable node is not mistaken for a node
+        nobody is using.
+      </p>
+      <Button variant="secondary" className="mt-5" onClick={onRetry}>
+        <RefreshCw size={16} className="mr-2" /> Retry
+      </Button>
+    </div>
+  );
+}
+
+function StatsPanelPicker({
+  panels,
+  panelId,
+  onChange,
+}: {
+  panels: { id: number; name: string; enable?: boolean }[];
+  panelId: number | null;
+  onChange: (id: number | null) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Node</span>
+      <div className="w-64">
+        <Select
+          value={panelId != null ? String(panelId) : ''}
+          onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+          options={panels.map((p) => ({ value: String(p.id), label: p.name }))}
+        />
+      </div>
+      <span className="text-xs text-gray-500">
+        Traffic is counted by the node that carries it; these figures come from the node itself.
+      </span>
+    </div>
+  );
+}
+
 function SortHeader({
   label,
   sortKey,
@@ -625,85 +692,145 @@ export default function Statistics() {
   } | null>(null);
   const [selectedInboundForChart, setSelectedInboundForChart] = useState<string | null>(null);
 
+  const [panelId, setPanelId] = useState<number | null>(null);
+  const { data: panels, isLoading: panelsLoading } = useLinkedPanels(!isWorker);
+
+  const selectablePanels = useMemo(
+    () => (panels || []).filter((p) => p.enable !== false),
+    [panels]
+  );
+
+  useEffect(() => {
+    if (isWorker) return;
+    if (panelId != null && selectablePanels.some((p) => p.id === panelId)) return;
+    setPanelId(selectablePanels.length ? selectablePanels[0].id : null);
+  }, [selectablePanels, panelId]);
+
+  const scopeResolved = isWorker || panelId != null;
+  const scope = isWorker ? null : panelId;
+
   const {
     data: overview,
     isLoading: overviewLoading,
+    error: overviewError,
     refetch: refetchOverview,
   } = useQuery<OverviewData>({
-    queryKey: ['stats-overview', period, customRange],
+    queryKey: ['stats-overview', period, customRange, panelId],
     queryFn: async () =>
-      (await api.get(`/stats/overview?${periodQuery(period, customRange)}`)).data,
+      (await api.get(statsScopedPath(`/stats/overview?${periodQuery(period, customRange)}`, scope)))
+        .data,
+    enabled: scopeResolved,
+    retry: false,
     refetchInterval: 30_000,
   });
 
   const { data: trafficAll } = useQuery<TrafficData>({
-    queryKey: ['stats-traffic-all', period, customRange],
+    queryKey: ['stats-traffic-all', period, customRange, panelId],
     queryFn: async () =>
-      (await api.get(`/stats/traffic?${periodQuery(period, customRange)}&entity_type=all`)).data,
-    enabled: tab === 'overview',
+      (
+        await api.get(
+          statsScopedPath(
+            `/stats/traffic?${periodQuery(period, customRange)}&entity_type=all`,
+            scope
+          )
+        )
+      ).data,
+    enabled: scopeResolved && tab === 'overview',
+    retry: false,
     refetchInterval: 30_000,
   });
 
   const { data: trafficUser } = useQuery<TrafficData>({
-    queryKey: ['stats-traffic-user', period, customRange, selectedUserForChart],
+    queryKey: ['stats-traffic-user', period, customRange, selectedUserForChart, panelId],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/traffic?${periodQuery(period, customRange)}&entity_type=user` +
-            `&entity_id=${encodeURIComponent(selectedUserForChart!.email)}` +
-            `&inbound_tag=${encodeURIComponent(selectedUserForChart!.inbound_tag)}`
+          statsScopedPath(
+            `/stats/traffic?${periodQuery(period, customRange)}&entity_type=user` +
+              `&entity_id=${encodeURIComponent(selectedUserForChart!.email)}` +
+              `&inbound_tag=${encodeURIComponent(selectedUserForChart!.inbound_tag)}`,
+            scope
+          )
         )
       ).data,
-    enabled: !!selectedUserForChart && tab === 'users',
+    enabled: scopeResolved && !!selectedUserForChart && tab === 'users',
+    retry: false,
     refetchInterval: 30_000,
   });
 
   const { data: trafficInbound } = useQuery<TrafficData>({
-    queryKey: ['stats-traffic-inbound', period, customRange, selectedInboundForChart],
+    queryKey: ['stats-traffic-inbound', period, customRange, selectedInboundForChart, panelId],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/traffic?${periodQuery(period, customRange)}&entity_type=inbound&entity_id=${encodeURIComponent(selectedInboundForChart!)}`
+          statsScopedPath(
+            `/stats/traffic?${periodQuery(period, customRange)}&entity_type=inbound&entity_id=${encodeURIComponent(selectedInboundForChart!)}`,
+            scope
+          )
         )
       ).data,
-    enabled: !!selectedInboundForChart && tab === 'inbounds',
+    enabled: scopeResolved && !!selectedInboundForChart && tab === 'inbounds',
+    retry: false,
     refetchInterval: 30_000,
   });
 
-  const { data: domainsData, isLoading: domainsLoading } = useQuery({
-    queryKey: ['stats-domains', period, customRange, domainTagFilter],
+  const {
+    data: domainsData,
+    isLoading: domainsLoading,
+    error: domainsError,
+    refetch: refetchDomains,
+  } = useQuery({
+    queryKey: ['stats-domains', period, customRange, domainTagFilter, panelId],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/domains?${periodQuery(period, customRange)}&limit=100` +
-            (domainTagFilter ? `&inbound_tag=${encodeURIComponent(domainTagFilter)}` : '')
+          statsScopedPath(
+            `/stats/domains?${periodQuery(period, customRange)}&limit=100` +
+              (domainTagFilter ? `&inbound_tag=${encodeURIComponent(domainTagFilter)}` : ''),
+            scope
+          )
         )
       ).data as { domains: DomainEntry[] },
-    enabled: tab === 'sites',
+    enabled: scopeResolved && tab === 'sites',
+    retry: false,
     refetchInterval: 60_000,
   });
 
   const { data: domainUsersData, isLoading: domainUsersLoading } = useQuery({
-    queryKey: ['stats-domain-users', expandedDomain, period, customRange],
+    queryKey: ['stats-domain-users', expandedDomain, period, customRange, panelId],
     queryFn: async () =>
       (
         await api.get(
-          `/stats/domain-users?domain=${encodeURIComponent(expandedDomain!)}&${periodQuery(period, customRange)}`
+          statsScopedPath(
+            `/stats/domain-users?domain=${encodeURIComponent(expandedDomain!)}&${periodQuery(period, customRange)}`,
+            scope
+          )
         )
       ).data as {
         domain: string;
         users: Array<{ email: string; inbound_tag: string; hit_count: number; percent: number }>;
       },
-    enabled: !!expandedDomain && tab === 'sites',
+    enabled: scopeResolved && !!expandedDomain && tab === 'sites',
+    retry: false,
   });
 
-  const { data: usersData, isLoading: usersLoading } = useQuery({
-    queryKey: ['stats-users', period, customRange],
+  const {
+    data: usersData,
+    isLoading: usersLoading,
+    error: usersError,
+    refetch: refetchUsers,
+  } = useQuery({
+    queryKey: ['stats-users', period, customRange, panelId],
     queryFn: async () =>
-      (await api.get(`/stats/users-ranking?${periodQuery(period, customRange)}`)).data as {
+      (
+        await api.get(
+          statsScopedPath(`/stats/users-ranking?${periodQuery(period, customRange)}`, scope)
+        )
+      ).data as {
         users: UserRankEntry[];
       },
-    enabled: tab === 'users',
+    enabled: scopeResolved && tab === 'users',
+    retry: false,
     refetchInterval: 30_000,
   });
 
@@ -765,6 +892,21 @@ export default function Statistics() {
     });
   };
 
+  if (!isWorker && !panelsLoading && selectablePanels.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 mx-4 md:mx-6 my-6 border border-white/5 rounded-3xl bg-[#1a1625]/30 text-center">
+        <div className="p-4 rounded-full bg-white/5 mb-4">
+          <Server size={32} className="text-gray-500" />
+        </div>
+        <h3 className="text-lg font-bold text-gray-300">No nodes to report on</h3>
+        <p className="text-sm text-gray-500 mt-1 max-w-md">
+          Traffic is counted by the node that carries it, and this panel runs no Xray of its own.
+          Link a node on the Panels page and its statistics appear here.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6 px-4 md:px-6 py-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -805,6 +947,10 @@ export default function Statistics() {
         </div>
       </div>
 
+      {!isWorker && (
+        <StatsPanelPicker panels={selectablePanels} panelId={panelId} onChange={setPanelId} />
+      )}
+
       <div className="flex gap-1 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] w-fit overflow-x-auto">
         {TABS.map((t) => (
           <button
@@ -829,8 +975,21 @@ export default function Statistics() {
         ))}
       </div>
 
+      {tab === 'overview' && overviewError && (
+        <StatsNodeUnreachable error={overviewError} onRetry={() => refetchOverview()} />
+      )}
+      {tab === 'inbounds' && overviewError && (
+        <StatsNodeUnreachable error={overviewError} onRetry={() => refetchOverview()} />
+      )}
+      {tab === 'users' && usersError && (
+        <StatsNodeUnreachable error={usersError} onRetry={() => refetchUsers()} />
+      )}
+      {tab === 'sites' && domainsError && (
+        <StatsNodeUnreachable error={domainsError} onRetry={() => refetchDomains()} />
+      )}
+
       <AnimatePresence mode="wait">
-        {tab === 'overview' && (
+        {tab === 'overview' && !overviewError && (
           <motion.div
             key="overview"
             initial={{ opacity: 0, y: 8 }}
@@ -979,7 +1138,7 @@ export default function Statistics() {
           </motion.div>
         )}
 
-        {tab === 'users' && (
+        {tab === 'users' && !usersError && (
           <motion.div
             key="users"
             initial={{ opacity: 0, y: 8 }}
@@ -1210,7 +1369,7 @@ export default function Statistics() {
           </motion.div>
         )}
 
-        {tab === 'inbounds' && (
+        {tab === 'inbounds' && !overviewError && (
           <motion.div
             key="inbounds"
             initial={{ opacity: 0, y: 8 }}
@@ -1326,7 +1485,7 @@ export default function Statistics() {
           </motion.div>
         )}
 
-        {tab === 'sites' && (
+        {tab === 'sites' && !domainsError && (
           <motion.div
             key="sites"
             initial={{ opacity: 0, y: 8 }}

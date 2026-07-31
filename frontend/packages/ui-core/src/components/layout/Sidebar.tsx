@@ -21,7 +21,7 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
   const logout = useAuthStore((state: AuthState) => state.logout);
   const { hasUpdates } = useVersionStatus();
 
-  const WORKER_HIDDEN = new Set(['/statistics', '/panels', '/bot']);
+  const WORKER_HIDDEN = new Set(['/panels', '/bot']);
   const navItems = [
     { icon: LayoutDashboard, label: 'Panel', path: '/' },
     { icon: BarChart3, label: 'Stats', path: '/statistics' },

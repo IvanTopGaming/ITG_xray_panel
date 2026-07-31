@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 _SNAPSHOT_TTL = 60
 _STATUS_TTL = 120
 _LAST_POLL_TTL = 300
+_STATS_TIMEOUT = 15
 
 REFRESH_CHANNEL = "panel:refresh"
 
@@ -140,6 +141,21 @@ class FederationClient:
 
     def reset_inbound_traffic(self, tag: str) -> dict:
         return self._call_reporting("post", f"/api/inbounds/{tag}/reset-traffic", timeout=30)
+
+    def stats_overview(self, params: dict) -> dict:
+        return self._call_reporting("get", "/api/stats/overview", params=params, timeout=_STATS_TIMEOUT)
+
+    def stats_traffic(self, params: dict) -> dict:
+        return self._call_reporting("get", "/api/stats/traffic", params=params, timeout=_STATS_TIMEOUT)
+
+    def stats_domains(self, params: dict) -> dict:
+        return self._call_reporting("get", "/api/stats/domains", params=params, timeout=_STATS_TIMEOUT)
+
+    def stats_domain_users(self, params: dict) -> dict:
+        return self._call_reporting("get", "/api/stats/domain-users", params=params, timeout=_STATS_TIMEOUT)
+
+    def stats_users_ranking(self, params: dict) -> dict:
+        return self._call_reporting("get", "/api/stats/users-ranking", params=params, timeout=_STATS_TIMEOUT)
 
     def create_inbound(self, payload: dict) -> dict:
         return self._call("post", "/api/inbounds", json=payload, timeout=8)
@@ -521,6 +537,36 @@ def proxy_reset_inbound_traffic(panel_id: int, tag: str) -> dict:
     result = client.reset_inbound_traffic(tag)
     _nudge_panel_refresh(panel.id)
     return result
+
+
+def proxy_stats_overview(panel_id: int, params: dict) -> dict:
+
+    _, client = _client_for(panel_id)
+    return client.stats_overview(params)
+
+
+def proxy_stats_traffic(panel_id: int, params: dict) -> dict:
+
+    _, client = _client_for(panel_id)
+    return client.stats_traffic(params)
+
+
+def proxy_stats_domains(panel_id: int, params: dict) -> dict:
+
+    _, client = _client_for(panel_id)
+    return client.stats_domains(params)
+
+
+def proxy_stats_domain_users(panel_id: int, params: dict) -> dict:
+
+    _, client = _client_for(panel_id)
+    return client.stats_domain_users(params)
+
+
+def proxy_stats_users_ranking(panel_id: int, params: dict) -> dict:
+
+    _, client = _client_for(panel_id)
+    return client.stats_users_ranking(params)
 
 
 def fetch_panel_snapshot_live(panel_id: int) -> dict:

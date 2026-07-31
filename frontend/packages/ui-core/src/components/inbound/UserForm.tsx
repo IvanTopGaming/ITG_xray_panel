@@ -36,14 +36,8 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
       reset_day: client.reset_day,
       enable: client.enable,
       flow: client.flow || '',
-      device_limit:
-        client.device_limit === null || client.device_limit === undefined
-          ? ''
-          : String(client.device_limit),
     },
   });
-
-  const inboundDeviceLimit = inbound.device_limit ?? 0;
 
   const flowSupported = supportsVlessFlow(inbound);
   const flow = useWatch({ control, name: 'flow' });
@@ -98,10 +92,6 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
       reset_day: Number(data.reset_day),
       enable: data.enable,
       flow: flowSupported ? data.flow : '',
-      device_limit:
-        data.device_limit === '' || data.device_limit === null || data.device_limit === undefined
-          ? null
-          : Number(data.device_limit),
     });
   };
 
@@ -149,19 +139,6 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
         {...register('reset_day')}
         placeholder="0 to disable"
       />
-
-      <div>
-        <Input
-          label="Device limit override"
-          type="number"
-          min={0}
-          {...register('device_limit')}
-          placeholder={`from inbound (${inboundDeviceLimit})`}
-        />
-        <p className="mt-1 text-xs text-gray-500">
-          Leave empty to inherit from inbound · 0 = unlimited for this user · N = hard cap
-        </p>
-      </div>
 
       <div className="pt-2">
         <Switch label="Enable User" {...register('enable')} />

@@ -9,6 +9,7 @@ import { Layout } from '@ui/components/layout/Layout';
 import Login from '@ui/pages/Login';
 import Dashboard from '@ui/pages/Dashboard';
 import Routing from '@ui/pages/Routing';
+import Statistics from '@ui/pages/Statistics';
 import System from '@ui/pages/System';
 
 const queryClient = new QueryClient({
@@ -44,6 +45,7 @@ function App() {
             }
           >
             <Route index element={<Dashboard />} />
+            <Route path="statistics" element={<Statistics />} />
             <Route path="routing" element={<Routing />} />
             <Route path="system" element={<System />} />
           </Route>

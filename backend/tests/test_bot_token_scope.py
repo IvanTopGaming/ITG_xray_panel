@@ -59,6 +59,11 @@ READ_ENDPOINTS_ON_THE_FEDERATION_DECORATOR = (
     ("GET", "/api/outbounds"),
     ("GET", "/api/balancers"),
     ("GET", "/api/routing-profiles"),
+    ("GET", "/api/stats/overview"),
+    ("GET", "/api/stats/traffic"),
+    ("GET", "/api/stats/domains"),
+    ("GET", "/api/stats/domain-users?domain=example.com"),
+    ("GET", "/api/stats/users-ranking"),
 )
 
 

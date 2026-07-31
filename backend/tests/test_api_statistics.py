@@ -607,6 +607,42 @@ class TestTopDomainsCoveringIndex:
         assert "ix_ds_date_domain_cover" in plan
         assert "COVERING INDEX" in plan
 
+    def test_the_sqlite_only_hint_is_not_emitted_for_postgres(self):
+        """INFRA §20: `INDEXED BY` is SQLite syntax; Postgres answers 500, not zeroes.
+
+        The hint is not decorative -- `domain_stat` also carries `ix_ds_domain`, and without the
+        hint SQLite's planner picks that one and stops covering the query (the test above fails).
+        So it cannot simply be deleted; it has to be emitted only where it parses.
+        """
+
+        from unittest.mock import patch
+
+        from panel_core.api.statistics import _top_domains_sql
+
+        class _PgBind:
+            class dialect:
+                name = "postgresql"
+
+        with patch("panel_core.api.statistics.db.session.get_bind", return_value=_PgBind()):
+            sql, _ = _top_domains_sql("2026-05-01", None, "", "")
+
+        assert "INDEXED BY" not in sql, (
+            f"the SQLite-only optimizer hint reaches Postgres, where it is a syntax error: {sql}"
+        )
+        assert "FROM domain_stat WHERE" in sql
+
+    def test_an_unknown_dialect_falls_back_to_portable_sql(self):
+        """Failing towards a slower plan beats failing towards a syntax error."""
+
+        from unittest.mock import patch
+
+        from panel_core.api.statistics import _top_domains_sql
+
+        with patch("panel_core.api.statistics.db.session.get_bind", side_effect=RuntimeError("no bind")):
+            sql, _ = _top_domains_sql("2026-05-01", None, "", "")
+
+        assert "INDEXED BY" not in sql
+
     def test_overview_and_domains_endpoints_still_work(self, app, client, admin_token):
         _seed_domain_stat("alpha.com", "2026-06-01", 50)
         _seed_domain_stat("beta.com", "2026-06-01", 30)

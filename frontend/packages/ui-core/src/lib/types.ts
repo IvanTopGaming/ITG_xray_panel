@@ -24,7 +24,6 @@ export interface Client {
   source_ips?: string[];
   inbound_tag: string;
   preferred_outbound?: string;
-  device_limit?: number | null;
   device_count?: number;
   telegram_id?: number | null;
   tariff_id?: number | null;
@@ -96,7 +95,6 @@ export interface Inbound {
   down: number;
   routing_profile_id?: number;
   fallback_address?: string;
-  device_limit?: number;
   panel_id?: number | null;
   panel_name?: string;
 }

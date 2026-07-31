@@ -32,7 +32,6 @@ def _bucket_panel_clients(bucket: dict[int, list[dict]], snapshot: dict, panel) 
                     "source_ips": [],
                     "flow": c.get("flow", ""),
                     "preferred_outbound": "",
-                    "device_limit": None,
                     "telegram_id": tg_id,
                     "tariff_id": c.get("tariff_id"),
                     "panel_id": panel.id,

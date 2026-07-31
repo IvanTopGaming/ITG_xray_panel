@@ -273,7 +273,11 @@ class TestSnapshot:
         assert ib_data["label"] == "Main VLESS"
         assert ib_data["stream_settings"] == {"network": "tcp"}
         assert ib_data["fallback_address"] == "127.0.0.1:8080"
-        assert ib_data["device_limit"] == 3
+        assert "device_limit" not in ib_data, (
+            "the snapshot still carries device_limit. Nothing has enforced a per-inbound device "
+            "limit since wave 3b -- the gate counts one global budget per Telegram account -- so "
+            "sending it invites a master to render a cap that does not exist (wave 4d)"
+        )
 
         assert len(ib_data["clients"]) == 1
         cl = ib_data["clients"][0]

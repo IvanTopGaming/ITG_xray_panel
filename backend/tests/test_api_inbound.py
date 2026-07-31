@@ -316,7 +316,14 @@ class TestUpdateInbound:
         assert resp.status_code == 400
         assert "exists" in resp.get_json()["error"].lower()
 
-    def test_update_device_limit(self, app, client, auth_headers):
+    def test_device_limit_is_accepted_as_nothing(self, app, client, auth_headers):
+        """Wave 4d: the column stays, the field stops being an input.
+
+        Dropping the column is a schema change the Postgres migration cannot make (INFRA §40), so
+        the row keeps its old value forever -- but nothing reads it for enforcement and nothing may
+        write it any more, or the panel goes back to reporting a cap it does not apply.
+        """
+
         _make_inbound(tag="dl", port=6001)
         resp = client.put(
             "/api/inbounds/dl",
@@ -324,7 +331,11 @@ class TestUpdateInbound:
             json={"device_limit": 5},
         )
         assert resp.status_code == 200
-        assert Inbound.query.filter_by(tag="dl").first().device_limit == 5
+        assert Inbound.query.filter_by(tag="dl").first().device_limit == 0
+
+        listing = client.get("/api/inbounds", headers=auth_headers)
+        assert listing.status_code == 200
+        assert all("device_limit" not in ib for ib in listing.get_json())
 
     def test_switching_transport_to_xhttp_clears_client_flow(self, app, client, auth_headers):
 
