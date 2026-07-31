@@ -28,6 +28,11 @@ bp = Blueprint("system", __name__)
 XRAY_LOGS_UNSUPPORTED = "Xray logs are served by the node that runs Xray; this role has no local Xray instance."
 XRAY_RESTART_UNSUPPORTED = "Restarting Xray is done on the node that runs it; this role has no local Xray instance."
 XRAY_GEO_UNSUPPORTED = "Geo databases live on the node that runs Xray; this role has no local Xray instance."
+XRAY_SETTINGS_UNSUPPORTED = (
+    "Xray settings (log level, GeoIP/GeoSite URLs) are read by the node that generates the Xray "
+    "config; this role has no local Xray instance, so a value stored here would reach nothing."
+)
+XRAY_CONFIG_UNSUPPORTED = "The Xray config file lives on the node that runs Xray; this role has no local Xray instance."
 
 
 def _set_system_setting(key, value):
@@ -118,6 +123,8 @@ def get_logs():
 @token_required
 @limiter.limit("60 per minute")
 def system_settings_get():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_SETTINGS_UNSUPPORTED}), 501
     try:
         return jsonify(get_system_settings())
     except Exception:
@@ -128,6 +135,8 @@ def system_settings_get():
 @token_required
 @limiter.limit("20 per minute")
 def system_settings_update():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_SETTINGS_UNSUPPORTED}), 501
     try:
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict):
@@ -201,6 +210,8 @@ def keys():
 @token_required
 @limiter.limit("60 per minute")
 def get_config():
+    if not has_local_xray():
+        return jsonify({"error": XRAY_CONFIG_UNSUPPORTED}), 501
     try:
         config_path = "/etc/xray/config.json"
         if not os.path.exists(config_path):

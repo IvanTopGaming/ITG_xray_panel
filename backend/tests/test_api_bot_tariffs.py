@@ -106,14 +106,19 @@ def test_create_tariff_minimal(app_with_bot_api, db, client, auth_headers):
     resp = client.post(
         "/api/bot/tariffs",
         headers=auth_headers,
-        json={"name": "Basic", "price_rub": 100, "period_days": 30, "items": []},
+        json={
+            "name": "Basic",
+            "price_rub": 100,
+            "period_days": 30,
+            "items": [{"inbound_tag": "DE-vless", "traffic_gb": 0, "panel_id": 1}],
+        },
     )
     assert resp.status_code == 201, resp.get_data(as_text=True)
     body = resp.get_json()
     assert body["name"] == "Basic"
     assert body["visibility"] == "public"
     assert body["enabled"] is True
-    assert body["items"] == []
+    assert [i["inbound_tag"] for i in body["items"]] == ["DE-vless"]
     assert body["id"] > 0
 
 
@@ -204,7 +209,13 @@ def test_create_trial_when_none_exists(app_with_bot_api, db, client, auth_header
     resp = client.post(
         "/api/bot/tariffs",
         headers=auth_headers,
-        json={"name": "Trial", "price_rub": 0, "period_days": 1, "is_trial": True, "items": []},
+        json={
+            "name": "Trial",
+            "price_rub": 0,
+            "period_days": 1,
+            "is_trial": True,
+            "items": [{"inbound_tag": "DE-vless", "traffic_gb": 0, "panel_id": 1}],
+        },
     )
     assert resp.status_code == 201
 
@@ -218,7 +229,13 @@ def test_create_trial_rejected_when_one_exists(app_with_bot_api, db, client, aut
     resp = client.post(
         "/api/bot/tariffs",
         headers=auth_headers,
-        json={"name": "AnotherTrial", "price_rub": 0, "period_days": 1, "is_trial": True, "items": []},
+        json={
+            "name": "AnotherTrial",
+            "price_rub": 0,
+            "period_days": 1,
+            "is_trial": True,
+            "items": [{"inbound_tag": "DE-vless", "traffic_gb": 0, "panel_id": 1}],
+        },
     )
     assert resp.status_code == 400
     assert "trial" in resp.get_data(as_text=True).lower()
@@ -232,7 +249,13 @@ def test_update_tariff_changes_fields(app_with_bot_api, db, client, auth_headers
     resp = client.put(
         f"/api/bot/tariffs/{t.id}",
         headers=auth_headers,
-        json={"name": "New", "price_rub": 200, "period_days": 60, "visibility": "private", "items": []},
+        json={
+            "name": "New",
+            "price_rub": 200,
+            "period_days": 60,
+            "visibility": "private",
+            "items": [{"inbound_tag": "DE-vless", "traffic_gb": 0, "panel_id": 1}],
+        },
     )
     assert resp.status_code == 200, resp.get_data(as_text=True)
     body = resp.get_json()
@@ -289,7 +312,13 @@ def test_update_existing_trial_keeps_trial_flag(app_with_bot_api, db, client, au
     resp = client.put(
         f"/api/bot/tariffs/{t.id}",
         headers=auth_headers,
-        json={"name": "Trial v2", "price_rub": 0, "period_days": 1, "is_trial": True, "items": []},
+        json={
+            "name": "Trial v2",
+            "price_rub": 0,
+            "period_days": 1,
+            "is_trial": True,
+            "items": [{"inbound_tag": "DE-vless", "traffic_gb": 0, "panel_id": 1}],
+        },
     )
     assert resp.status_code == 200
 

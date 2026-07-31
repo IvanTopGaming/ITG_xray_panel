@@ -236,7 +236,12 @@ def test_aggregate_header_counts_remote_child_panel_key(client, app, user_with_t
     info = resp.headers["subscription-userinfo"]
     assert f"upload={95 * gb}" in info
     assert f"total={100 * gb}" in info
-    assert "expire=500" in info
+    assert "expire=0" in info, (
+        "wave 5b: this account's two local keys carry expiry_time=0, which means 'never expires', and "
+        "0 absorbs every dated key in the fold (§41, customer decision). The header used to filter the "
+        "zeroes out and report the remote key's 500 — the same account then read 'permanent' in Telegram "
+        "and a date in the client app. See tests/test_one_answer_for_when_access_ends.py."
+    )
 
 
 def test_invalidate_user_aggregate_clears_token_keys(app, user_with_two_keys, monkeypatch):

@@ -15,6 +15,24 @@ from panel_core.version import get_app_version
 BOT_TOKEN = "secret-bot-token"
 
 
+@pytest.fixture
+def shared_tier(monkeypatch):
+    """A stand-in for the data-tier Redis: the bot's version now travels through it, not through a
+    module-level dict, because the writer (bot-api) and the reader (master) are different containers."""
+
+    store = {}
+
+    class _FakeRedis:
+        def setex(self, key, ttl, value):
+            store[key] = value
+
+        def get(self, key):
+            return store.get(key)
+
+    monkeypatch.setattr(bot_status, "get_shared_redis", lambda: _FakeRedis())
+    return store
+
+
 def _make_token(admin):
     return jwt.encode(
         {
@@ -86,7 +104,7 @@ def test_fallback_candidates_resolve_to_repo_root_versions_json():
     assert os.path.exists(expected)
 
 
-def test_bot_status_records_and_reads_fresh(monkeypatch):
+def test_bot_status_records_and_reads_fresh(monkeypatch, shared_tier):
     monkeypatch.setattr(bot_status.time, "time", lambda: 1000.0)
     bot_status.record_bot_version("2.1.3")
     monkeypatch.setattr(bot_status.time, "time", lambda: 1010.0)
@@ -94,26 +112,28 @@ def test_bot_status_records_and_reads_fresh(monkeypatch):
     assert s == {"version": "2.1.3", "reported_at": 1000.0}
 
 
-def test_bot_status_stale_returns_none(monkeypatch):
+def test_bot_status_stale_returns_none(monkeypatch, shared_tier):
     monkeypatch.setattr(bot_status.time, "time", lambda: 1000.0)
     bot_status.record_bot_version("2.1.3")
     monkeypatch.setattr(bot_status.time, "time", lambda: 1300.0)
     assert bot_status.get_bot_status(freshness=180) == {"version": None, "reported_at": None}
 
 
-def test_bot_status_ignores_blank(monkeypatch):
+def test_bot_status_ignores_blank(monkeypatch, shared_tier):
     monkeypatch.setattr(bot_status.time, "time", lambda: 1000.0)
-    bot_status._STATE["version"] = None
-    bot_status._STATE["reported_at"] = None
     bot_status.record_bot_version("")
     assert bot_status.get_bot_status() == {"version": None, "reported_at": None}
 
 
-def test_runtime_config_records_bot_version(client, bot_headers):
+def test_bot_status_without_a_shared_tier_reports_nothing(monkeypatch):
+    monkeypatch.setattr(bot_status, "get_shared_redis", lambda: None)
+    bot_status.record_bot_version("2.1.3")
+    assert bot_status.get_bot_status() == {"version": None, "reported_at": None}
+
+
+def test_runtime_config_records_bot_version(client, bot_headers, shared_tier):
     from panel_core.services import bot_status
 
-    bot_status._STATE["version"] = None
-    bot_status._STATE["reported_at"] = None
     resp = client.get(
         "/api/bot/runtime-config",
         headers={**bot_headers, "X-Bot-Version": "2.1.3"},
@@ -226,8 +246,7 @@ def test_version_endpoint_shape(client, auth_headers, monkeypatch):
     monkeypatch.setattr("panel_core.api.system.get_app_version", lambda: "2.1.10")
     version_check._CACHE["latest"] = {"backend": "2.1.11", "bot": "2.1.3"}
     version_check._CACHE["checked_at"] = 4242.0
-    bot_status._STATE["version"] = None
-    bot_status._STATE["reported_at"] = None
+    monkeypatch.setattr(bot_status, "get_shared_redis", lambda: None)
 
     resp = client.get("/api/system/version", headers=auth_headers)
     assert resp.status_code == 200

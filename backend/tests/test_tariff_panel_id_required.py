@@ -119,13 +119,37 @@ def test_create_tariff_accepts_item_with_panel_id(app_with_bot_api, db, client, 
     assert body["items"][0]["panel_id"] == 7
 
 
-def test_create_tariff_without_items_is_still_allowed(app_with_bot_api, db, client, auth_headers):
+def test_a_tariff_with_no_items_at_all_is_refused(app_with_bot_api, db, client, auth_headers):
+    """§73, admin half. Phase 3b made `panel_id` mandatory *per item*, which left an empty list
+    passing: the loop simply did not run. Wave 5a closed the money half — such a tariff is hidden
+    from the catalogue and refused at checkout — but the master still let an admin save one, and the
+    only signal was that it never appeared for any user."""
+
     resp = client.post(
         "/api/bot/tariffs",
         headers=auth_headers,
         json={"name": "Empty", "price_rub": 100, "period_days": 30, "items": []},
     )
-    assert resp.status_code == 201, resp.get_data(as_text=True)
+    assert resp.status_code == 400, resp.get_data(as_text=True)
+    assert "at least one inbound" in resp.get_json()["error"]
+
+
+def test_updating_a_tariff_down_to_no_items_is_refused(app_with_bot_api, db, client, auth_headers):
+    """The PUT replaces the whole item list, so emptying it is the same defect by another route."""
+
+    t = Tariff(name="Keeps", price_rub=100, period_days=30)
+    db.session.add(t)
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="DE", traffic_gb=0, panel_id=3))
+    db.session.commit()
+
+    resp = client.put(
+        f"/api/bot/tariffs/{t.id}",
+        headers=auth_headers,
+        json={"name": "Keeps", "price_rub": 100, "period_days": 30, "items": []},
+    )
+    assert resp.status_code == 400, resp.get_data(as_text=True)
+    assert "at least one inbound" in resp.get_json()["error"]
 
 
 def test_update_tariff_rejects_item_without_panel_id(app_with_bot_api, db, client, auth_headers):

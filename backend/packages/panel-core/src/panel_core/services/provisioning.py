@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from panel_core.extensions import db
 from panel_core.models import Client, Inbound, LinkedPanel, NotificationLog
 from panel_core.services import sub_cache
+from panel_core.services.expiry import nearest_expiry
 from panel_core.services.panel_proxy import fetch_panel_snapshot_live
 from panel_core.xray.facade import (
     _api_add_user_grpc,
@@ -312,15 +313,6 @@ def provision_single_item(
     return result
 
 
-def collapse_expiries(expiries: list[int], *, fallback: int) -> int:
-
-    if not expiries:
-        return fallback
-    if 0 in expiries:
-        return 0
-    return max(expiries)
-
-
 def clear_notification_claims(*, telegram_id: int, tariff_id: int | None) -> None:
 
     from panel_core.models import NotificationClaim
@@ -446,7 +438,7 @@ def apply_tariff_for_user(
         reported.append(new_expiry_ms)
     return {
         "clients": [c.to_dict() for c in all_provisioned],
-        "expires_at_ms": collapse_expiries(reported, fallback=new_expiry_ms),
+        "expires_at_ms": nearest_expiry(reported, fallback=new_expiry_ms),
         "source": source,
     }
 

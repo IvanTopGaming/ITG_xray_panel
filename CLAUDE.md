@@ -178,7 +178,7 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 - `app/utils.py` — JWT helpers + auth decorators: `token_required` (admin JWT only), `bot_service_token_required` (bot service token only), `federation_token_required` (validates federation token from linked panels), `admin_or_federation_token_required` (admin JWT **or** federation token — exactly two, since wave 4a). The latter two support the Panel Federation system. There is no dual admin/bot decorator any more: `admin_or_bot_token_required` and the bot-token branch inside `admin_or_federation_token_required` were both removed once the bot stopped calling the admin API — see Auth below.
 - `app/api/`
   - `auth` — login / logout
-  - `inbound`, `outbound`, `routing`, `panels`, `federation`, `subscription`, `statistics`, `system` — core panel
+  - `inbound`, `outbound`, `routing`, `panels`, `federation`, `subscription`, `statistics`, `system` — core panel. Every Xray-facing handler in `system.py` is now behind `has_local_xray()`: `/api/restart`, `/api/logs`, `/api/system/update-geo`, and — since wave 5b — `GET`/`PUT /api/system/settings` and `GET /api/config` (see Xray settings and config are node-only)
   - `backup` — `GET /api/backup` + `POST /api/restore`, **registered only by `roles/worker.py`**; both copy a SQLite file, which the master (Postgres) does not have. See Auth below
   - `billing` — YooKassa checkout + webhook. The webhook is **unsigned**, so the body is treated only as a trigger: the handler re-fetches the authoritative status from YooKassa (`fetch_remote_status`) before provisioning, so a forged notification does nothing
   - `bot_admin` — admin UI endpoints (tariffs, texts, users, grants, payments, settings) — JWT-protected
@@ -196,7 +196,8 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
   - `bot_events.py` — `publish(event_type, telegram_id, payload)`: dual-write to `bot_event` table and Redis pubsub channel `bot:events`. Marks `delivered_at` on successful Redis publish.
   - `notifications.py` — `evaluate_expiry`/`evaluate_traffic` classify a client into a warning bucket (3d/1d/1h/expired; 80%/95%/exhausted); `emit_if_new` dedups via `NotificationLog` and publishes the bare fact only (no `lang`/`renewable` — a node can't resolve those) with `node` (the node's own `PANEL_DOMAIN`) and `inbound_tag` in the payload; `claim_notification` is the Postgres-backed atomic cross-node claim behind `NotificationClaim` (see Bot event recovery buffer)
   - `version_check.py` — `fetch_latest` (6h cron on the **cron service**): pulls the published `versions.json` from GitHub, keeps it in a process-local `_CACHE` **and** persists it into the `latest_versions` `SystemSetting`. The persistence is what makes the indicator work at all since wave 2: the process that fetches (cron) and the process that renders System → About (master) are different containers, so an in-memory-only cache would leave the row permanently green. `get_latest()` prefers the stored row and falls back to `_CACHE`, so a role with no schema or no app context degrades instead of raising
-  - `bot_status.py` — small cache for the bot's reported version/health surfaced in the UI
+  - `bot_status.py` — the bot's reported version, carried through the **shared** Redis (`SETEX panel:bot:status`, 180s TTL). The writer is `record_bot_version` on **bot-api** (the bot stamps `X-Bot-Version` on its 60s `GET /bot/runtime-config`); the only reader is `GET /api/system/version` on the **master**. It holds **no module-level state** deliberately — a dict here was filled in one container and read as empty in another, which is why System → About showed no bot row at all until wave 5b (§67, same class as `version_check` above). With no shared tier reachable it reports `None`, and the UI hides the row
+  - `expiry.py` — `nearest_expiry(values, *, fallback)`: the single fold behind every "when does my access end" a user sees. `None` (a damaged row, §10.5) is ignored, `0` means never and absorbs, otherwise the **nearest** date wins. Three call sites — `provisioning.apply_tariff_for_user`'s reply (which becomes the bot's "access until X"), `bot_service`'s `/users/<id>/state`, and both of `subscription.py`'s (`expiry_at` on the page, `expire=` in the `subscription-userinfo` header a client app reads). `backfill_tariff` deliberately does **not** use it — see Provisioning
 - `app/jobs/`
   - `billing.py` — `auto_renew_free_users` (free-tier renewal, pause+notify on archive/disable) — ships from `panel-cron`
   - `payments.py` — `poll_pending_payments` (30s webhook fallback), `reconcile_refunds` (1h refund-webhook fallback → `billing.handle_refund` revokes access), `cleanup_old_payments` (24h, cancels stuck pending + publishes notification)
@@ -315,6 +316,8 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
 
 **A tariff this role cannot deliver is refused before an invoice exists (wave 5a).** `services/tariff_delivery.is_deliverable(tariff)` — shipped by `panel-botapi`, so it costs one image — answers false for a tariff with **no items at all**, and for one with **any** item whose `panel_id` is `NULL` on a role with no local Xray (`has_local_xray()`, the same predicate `_require_local_xray` uses). It is wired into three places, and all three matter: `_ensure_tariff_available` (so `create_checkout` refuses with `tariff_not_available` **before** the `Payment` row is written, and `apply_payment`'s revalidation refuses before provisioning), the bot catalogue (such a tariff is not listed), and the trial (`_deliverable_trial_tariff`, so `trial_available` reports false and the trial is never *claimed* for a tariff that cannot be granted). The check is **per item, not per tariff**: a tariff with two node items and one orphan is refused whole, and `tests/test_undeliverable_tariff_stops_before_the_money.py` asserts exactly that mixed case, because a tariff-level check passes it. Reachability is installations from the monolith era — the master has refused to save such an item since phase 3b (`bot_admin.py:163`) and the start-up audit only warns (`app_base.audit_tariff_items_without_panel_id`), since no correct `panel_id` can be guessed. `apply_payment` keeps its `LocalXrayUnavailable` → `_fail_payment("provisioning_impossible")` branch as a backstop; it should now be unreachable, and it is cheap insurance rather than dead code.
 
+**Two admin-side halves of the same defect closed in wave 5b, both in `panel-master`.** `_validate_tariff_payload` now demands **at least one item**: `items: []` used to pass, because phase 3b made `panel_id` mandatory *per item* and the loop simply did not run — such a tariff saved fine and the admin's only signal was that it never reached a user (the drawer already refused it client-side, so the backend was catching up, not changing the UI). And `create_grant` wraps `apply_tariff_for_user` in a `LocalXrayUnavailable` handler that rolls back and answers **400 naming the tariff and the orphaned inbound tags**; it used to let the `RuntimeError` reach the generic handler and hand the one person who could fix it an "Internal server error". The rollback is load-bearing — the `UserTariffAccess` row is added to the session before provisioning runs, so a refusal without it would record a grant nobody issued. `auto_renew_free_users` on the cron host is still outside this: it logs an ERROR and moves on, as before.
+
 **That retry is why `operation_id` is `pay:<payment_id>` and not a fresh value per attempt.** A multi-node tariff whose second node is down raises after the first node has already been extended, and nothing rolls it back; the payment goes back to `pending` and the cron re-runs the *whole* grant every 30 seconds for up to 24 hours. Before this contract that was harmless — the node assigned an absolute date, so a repeat was idempotent by accident. Now the node adds, and the only thing standing between a stuck payment and a user with several years of access is that every retry carries the same key. Keep the key derived from the payment, never from the attempt.
 
 ### Provisioning (`services/provisioning.py`)
@@ -326,7 +329,9 @@ JWT tokens (2h expiry) carry a `pwdv` (password version) field tied to `Admin.pa
 
 **`expiry_time == 0` means "never expires" and is preserved on both branches.** Buying a period on top of unlimited access refreshes the traffic limit and `enable` but leaves the expiry at `0`; adding a period would silently demote the user to a 30-day plan. `NULL` is *not* the same value — it means a damaged row (see the reply check in Panel Federation) and is counted from `now`, so a corrupted client does not become permanent.
 
-**The returned `expires_at_ms` comes back from the nodes**, not from this role's own arithmetic: `apply_payment` puts it into the `payment_succeeded` event and the bot shows it to the user, so computing it locally would report 30 days while the node wrote 40. Several nodes yield several dates; `_collapse_expiries` picks one by the same rule `_collect_tariff_holders` already uses for backfill — **`0` absorbs everything, otherwise take the max** (a plain `max()` is wrong precisely because unlimited sorts below every date).
+**The returned `expires_at_ms` comes back from the nodes**, not from this role's own arithmetic: `apply_payment` puts it into the `payment_succeeded` event and the bot shows it to the user, so computing it locally would report 30 days while the node wrote 40. Several nodes yield several dates; `services/expiry.nearest_expiry` picks one — **`0` absorbs everything, `None` is ignored, otherwise the nearest date wins** (a plain `max()`/`min()` is wrong precisely because unlimited sorts below every date, and NULL is a damaged row rather than "never").
+
+**That function is the *display* fold, and `_collect_tariff_holders` deliberately keeps its own.** Since wave 5b every surface that shows a user one date goes through `nearest_expiry`: this reply, `/bot-service/users/<id>/state`, and both of the subscription role's numbers. Before it the bot took the latest and the subscription page and the `subscription-userinfo` header took the earliest, so one account read "30 days" in Telegram and "3 days" in the client app (§62). `backfill_tariff` is not a display path — it decides what expiry to *write* on a node the user has no key on yet, and there the generous fold (0 absorbs, else `max`) is the right one; unifying the two would silently shorten a backfilled grant.
 
 Every call also clears that user's `NotificationClaim` rows for the tariff (`clear_notification_claims`), so the next expiry/traffic cycle can warn again after a renewal instead of staying suppressed by a stale cross-node claim.
 
@@ -368,6 +373,8 @@ XTLS Vision (`xtls-rprx-vision`) is only valid on raw-TCP with TLS or REALITY �
 
 ### Bot event recovery buffer
 
+**Nothing is published that the consumer has no branch for.** `config_changed` (admin saves Bot → Settings) and `trial_activated` (user claims the trial) were published and both fell into the dispatcher's `else: return`, each leaving a `bot_event` row until the cleanup cron pruned it. Both are gone (wave 5b, §69): the bot re-reads its runtime config on its own 60-second poll, and it shows the trial's outcome from the HTTP response it is already waiting on. `backend/tests/test_events_without_a_consumer.py` holds both ends — the admin action leaves the table empty, the consumer has no branch — plus a positive control (blocking a user still writes exactly one `user_blocked` row), because "no rows" is also what a broken publisher looks like.
+
 `services/bot_events.publish` writes a `BotEvent` row to SQLite *first*, then attempts `redis.publish('bot:events', …)`. On successful publish it sets `delivered_at = now`. The `replay_undelivered_bot_events` cron (60s, runs on the cron service over Postgres and on every worker over its own SQLite) re-publishes any row older than 30 seconds with `delivered_at IS NULL`. Caveat: Redis `PUBLISH` succeeding with `subscriber_count=0` (e.g. bot is down) still marks `delivered_at` because we don't check the return code — the recovery buffer protects against Redis outages but **not** consumer outages. This is intentional (a temporary bot stop is the supported way to suppress a wave of grant notifications during bulk operations).
 
 **Two-tier dedup for node-emitted notifications.** `expiry_notification`/`traffic_notification` (emitted inline from `check_limits_and_reset`/`sync_traffic_stats`, see Traffic enforcement) get a second, content-level dedup layer on top of delivery, because the same tariff can have items on several nodes racing to warn about the same threshold. The node-local `NotificationLog` suppresses repeats from that node's own crons (per `telegram_id`/`client_id`/`kind`). `NotificationClaim` in Postgres suppresses the cross-node duplicate: its unique key is `(telegram_id, tariff_id, scope, kind)`, with `tariff_id=0` meaning "no tariff" (Postgres treats `NULL != NULL`, so a nullable column would defeat the uniqueness constraint). `scope` is empty for expiry (one grant → one warning) and `"<node>/<inbound_tag>/<email>"` for traffic, because an inbound tag like `vless-reality` can exist on every node at once. The bot claims via `POST /api/bot-service/notifications/claim` (bot service token, `claim_notification` in `services/notifications.py`) before sending either warning — an unclaimed (already-sent) notification is dropped, and a successful claim also resolves `lang`/`renewable` server-side, since the node's bare-fact payload has neither. If bot-api is unreachable the message still sends, in Russian and without a renew button (`tg_bot/bot_events_consumer.py`'s `_resolve_claim` fails open). Claims are reset on renewal by `apply_tariff_for_user` (see Provisioning) and pruned after 90 days by `cleanup_bot_events`.
@@ -401,6 +408,10 @@ That same `/api/sub/u/<token>` URL serves two audiences off one route: a client 
 On startup **of a node**, `direct` (freedom) and `block` (blackhole) outbounds are auto-created if missing, and re-enabled if an admin disabled them — do not delete them there; every Xray config needs both.
 
 **The master does the opposite, and has since wave 4c-2.** `roles/master.py` calls `bootstrap_defaults(app, system_outbounds=False)`, which not only skips the seed but *deletes* any `direct`/`block` row it finds — those two rows are sitting in the Postgres of every panel that ran an earlier release, and skipping the seed alone would leave `GET /outbounds` on the master answering `[direct, block]` forever. The flag lives at the **call site**, not inside `bootstrap_defaults`: both roles call the same function, so switching the seed off in the shared body would silently disarm every node. The removal is narrow on purpose — only those two tags, so a boot-time `DELETE` against a live database cannot reach anything else. A master has no Xray to route with; its outbounds and routing profiles live on the nodes and are edited through `?panel_id=` (see Panel Federation).
+
+### Xray settings and config are node-only
+
+`xray_log_level`, `geoip_url` and `geosite_url` are `SystemSetting` rows, but their only reader is `generate_config_file()`, which runs on a node against that node's own SQLite. Until wave 5b `GET`/`PUT /api/system/settings` and `GET /api/config` were the only handlers in `system.py` with no `has_local_xray()` gate, and on the master each of them lied in its own way: the `PUT` wrote the keys into the shared Postgres, called a `generate_config_file()`/`restart_xray_container()` pair that `RemoteXrayGateway` answers with `None`, and returned **200 with the updated form**; the `GET` handed back the master's own copy of the same dead keys; and `/api/config` opened `/etc/xray/config.json`, which the `panel-master` image does not contain, and answered `404 "Config file not found"` — loud, but misleading exactly as `"DB not found"` was in the pre-4c-1 backup path. All three now answer **501** naming the node. **This is a refusal, not a capability:** an admin still cannot set a node's log level from the master, and no bundle ever offered to — the whole Core tab and the View Configuration button are already gated by `hasLocalXray` in `System.tsx`, so the master's SPA never called any of the three. Wave 5c is where `?panel_id=` dispatch turns the refusal into a capability, and it goes **above** this gate, the shape waves 4c-2 and 4d established. `backend/tests/test_xray_settings_are_node_only.py` pins each handler individually (§80: a decorator-or-gate property is reverted one handler at a time, so a sampled assertion does not hold it).
 
 ### Database migrations
 
@@ -1124,6 +1135,83 @@ visible**. Read all seven points.
    moved in from `packages/admin`, `Sidebar.tsx`, `Dashboard.tsx`, `UserForm.tsx`, `InboundForm.tsx`,
    `lib/types.ts`) plus both `App.tsx` files to both frontends. `bot`, `caddy` and `xray_egress` are
    untouched.
+
+### Deploy note — one answer to "when does my access end", and three handlers that stop claiming success (Phase 8 wave 5b)
+
+This wave changes **no schema, no federation contract, no authorisation and no environment
+variable**, so it needs no fleet-wide lock-step and no `.env` edit beyond the image pins. It carries
+the wave's only user-visible change — a date some users will see move — plus four admin-side
+refusals where the panel used to answer success. Read all seven points.
+
+1. **The date a user is shown can move *earlier*, and that is the fix.** A user with keys on several
+   nodes was given two different answers to one question: the bot took the **latest** expiry among
+   them, the subscription page and the `subscription-userinfo` header a client app reads took the
+   **earliest**. Someone with a 3-day key on one node and a 30-day key on another read "30 days" in
+   Telegram and "3 days" in Hiddify. All three now answer with the **nearest** date (customer
+   decision), because that is the one every key is still valid until, and the client app — the only
+   surface with no per-node breakdown — is where an overstated date leaves a user staring at a dead
+   server while the app says three weeks remain.
+
+   **Concretely, what changes on an existing installation:** the bot's "payment received / access
+   granted / gift / renewed" messages, and the trial's confirmation, may now name a nearer date than
+   before for accounts whose keys expire on different days. Nobody loses access and no expiry
+   changes — only the summary does. Accounts whose keys all expire together (the normal case for a
+   single multi-node tariff) see no difference at all. The subscription page still lists every node
+   with its own date, and the bot's Statistics screen still shows each key's own; only the one-number
+   summary moved.
+
+2. **An account with an unlimited key now reads "unlimited" everywhere.** `expiry_time = 0` means
+   "never expires" and absorbs every dated key in the fold (§41). The subscription page and the
+   header used to filter the zeroes out first, so an account holding one unlimited key and one dated
+   key was shown the dated one while the bot said permanent. A related bot-side fix ships with it: a
+   purchase on top of unlimited access used to produce **"access until ?"** — a literal question mark
+   — and now says "♾️ Бессрочно" / "♾️ Permanent", reusing an existing text key, so
+   `CURRENT_BOT_TEXTS_VERSION` does **not** move and no reseed happens.
+
+3. **Three handlers on the master stop answering success: `GET`/`PUT /api/system/settings` and
+   `GET /api/config` now answer 501.** Saving an Xray log level or a GeoIP URL on the master wrote
+   the value into the shared Postgres, restarted nothing (the master's Xray gateway is remote and the
+   call returns `None`) and answered 200 with the updated form; the only reader of those keys is a
+   node, out of its own SQLite. `/api/config` answered `404 "Config file not found"`, which reads as
+   *your config is gone* when the config is alive on the node.
+
+   **Be clear about what this is: the ability to set a node's log level from the master did not
+   appear — it became loudly impossible.** No button is lost, because the master's SPA never offered
+   one (the whole Core tab and the View Configuration button are gated by `hasLocalXray`). What
+   breaks is anything home-grown that called these three on the master; it was already doing nothing.
+   To change a node's Xray settings today, open that node's own panel. Wave 5c is where `?panel_id=`
+   dispatch makes it possible from the master.
+
+4. **Two publications onto `bot:events` are gone: `config_changed` and `trial_activated`.** The bot
+   had no branch for either; each one only filled a row in `bot_event` until the cleanup cron pruned
+   it. Nothing changes for a user — the bot re-reads its runtime config on its own 60-second poll,
+   and it shows the trial's outcome from the HTTP response it is already waiting on. If you have
+   anything of your own subscribed to that channel and keyed on those two types, it stops receiving
+   them.
+
+5. **The master refuses two things it used to accept.** Saving a tariff with **no items at all** now
+   answers 400 (the admin drawer already refused it client-side; the API was catching up). And an
+   admin grant of a tariff whose item names no node — a monolith-era row with `panel_id IS NULL` —
+   answers **400 naming the tariff and the inbound** instead of "Internal server error", and leaves
+   no half-written grant behind. The remedy is the one the master has been logging at start-up since
+   phase 3b: open Bot → Tariffs and pick a node for every item.
+
+6. **System → About grows a bot row that was never there.** The bot's version travels through the
+   shared Redis now (`panel:bot:status`, 180-second TTL) instead of a variable in bot-api's process
+   that the master could never see. **Nothing to configure** — `SHARED_REDIS_URI` is already
+   mandatory on both hosts. The row appears within a minute of the bot's next poll and disappears
+   again if the bot goes quiet for three minutes; a bot that has never reported still shows no row,
+   which is unchanged behaviour and deliberately not a red indicator (that belongs with the rest of
+   System → About's health lines, wave 6).
+
+7. **Bump `master`, `worker`, `sub`, `bot_api`, `cron` and `bot` — six images. Both frontends and
+   `caddy` are untouched.** The `panel-core` edits (`services/expiry.py`, `services/bot_status.py`,
+   `services/provisioning.py`) fan out to all five backends; `panel-adminapi` (`api/system.py`) to
+   master and worker; `panel-master` (`api/bot_admin.py`) and `panel-botapi` (`api/bot_service.py`)
+   and `panel-sub` (`api/subscription.py`) to their own images; `tg_bot` to `bot`. Deploy order does
+   not matter and a partial rollout degrades quietly: an old bot against a new bot-api simply keeps
+   printing "?" for an unlimited grant, and an old master against a new sub just goes on disagreeing
+   about the date, which is today's behaviour.
 
 ## Configuration
 

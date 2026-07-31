@@ -983,12 +983,15 @@ async def cb_trial_activate(
         await callback.answer("Error, try again later", show_alert=True)
         return
 
-    expires_ms = result.get("expires_at_ms", 0)
-    try:
-        _tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
-    except Exception:
-        _tz = ZoneInfo("UTC")
-    expires_str = datetime.datetime.fromtimestamp(expires_ms / 1000, tz=_tz).strftime("%d.%m.%Y %H:%M")
+    expires_ms = int(result.get("expires_at_ms") or 0)
+    if expires_ms <= 0:
+        expires_str = await i18n.t("stats.expiry.permanent", lang)
+    else:
+        try:
+            _tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
+        except Exception:
+            _tz = ZoneInfo("UTC")
+        expires_str = datetime.datetime.fromtimestamp(expires_ms / 1000, tz=_tz).strftime("%d.%m.%Y %H:%M")
     success = await i18n.t("trial.success", lang, expires_at=expires_str)
     subs_label = await i18n.t("menu.subscription", lang)
     back_label = await i18n.t("common.back_to_main", lang)

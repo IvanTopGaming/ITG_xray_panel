@@ -86,14 +86,20 @@ async def _resolve_claim(etype, tg_id, payload, backend) -> tuple[bool, str, boo
     return bool(verdict.get("claimed")), verdict.get("lang", "ru"), bool(verdict.get("renewable"))
 
 
-def _format_expires_at(expires_at_ms: Optional[int]) -> str:
-    if not expires_at_ms:
+async def _format_expires_at(expires_at_ms: Optional[int], *, i18n: I18n, lang: str) -> str:
+    if expires_at_ms is None:
         return "?"
+    try:
+        value = int(expires_at_ms)
+    except (TypeError, ValueError):
+        return "?"
+    if value <= 0:
+        return await i18n.t("stats.expiry.permanent", lang)
     try:
         tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
     except Exception:
         tz = ZoneInfo("UTC")
-    d = dt.datetime.fromtimestamp(expires_at_ms / 1000, tz=tz)
+    d = dt.datetime.fromtimestamp(value / 1000, tz=tz)
     return d.strftime("%d.%m.%Y %H:%M")
 
 
@@ -131,7 +137,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         text = await i18n.t(
             "notification.payment_succeeded",
             lang,
-            expires=_format_expires_at(payload.get("expires_at_ms")),
+            expires=await _format_expires_at(payload.get("expires_at_ms"), i18n=i18n, lang=lang),
         )
         subs_label = await i18n.t("menu.subscription", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -167,7 +173,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             "notification.access_granted",
             lang,
             tariff_name=h(payload.get("tariff_name", "")),
-            expires=_format_expires_at(payload.get("expires_at_ms")),
+            expires=await _format_expires_at(payload.get("expires_at_ms"), i18n=i18n, lang=lang),
         )
         subs_label = await i18n.t("menu.subscription", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -177,7 +183,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             "notification.access_granted_once",
             lang,
             tariff_name=h(payload.get("tariff_name", "")),
-            expires=_format_expires_at(payload.get("expires_at_ms")),
+            expires=await _format_expires_at(payload.get("expires_at_ms"), i18n=i18n, lang=lang),
         )
         subs_label = await i18n.t("menu.subscription", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -205,7 +211,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             key,
             lang,
             email=payload.get("email", ""),
-            expires=_format_expires_at(payload.get("expiry_time_ms")),
+            expires=await _format_expires_at(payload.get("expiry_time_ms"), i18n=i18n, lang=lang),
         )
 
         rows = []

@@ -35,6 +35,7 @@ from panel_core.xray.facade import (
     _api_add_user_grpc,
     _api_remove_user_grpc,
 )
+from panel_core.xray.gateway import LocalXrayUnavailable
 from panel_core.resources import BOT_TEXTS_DEFAULTS, BOT_TEXTS_META, read_data_text
 from panel_core.utils import token_required
 
@@ -144,6 +145,11 @@ def _validate_tariff_payload(payload):
     items = payload.get("items", [])
     if not isinstance(items, list):
         raise ValueError("items must be a list")
+    if not items:
+        raise ValueError(
+            "a tariff needs at least one inbound: with no items there is nothing to issue, so the "
+            "tariff is hidden from the catalogue and refused at checkout rather than sold"
+        )
     seen_inbounds = set()
     for i, item in enumerate(items):
         if not isinstance(item, dict):
@@ -572,15 +578,37 @@ def create_grant(tg_id):
         grant.billing = billing
         grant.note = note
 
-    if billing == "free":
-        result = apply_tariff_for_user(tg_id, tariff, source="admin_grant", operation_id=f"grant:{uuid.uuid4().hex}")
-        grant.next_renewal_at = datetime.utcnow() + timedelta(days=tariff.period_days)
-    elif billing == "gift":
-        result = apply_tariff_for_user(tg_id, tariff, source="admin_gift", operation_id=f"gift:{uuid.uuid4().hex}")
-        grant.next_renewal_at = None
-    else:
-        result = None
-        grant.next_renewal_at = None
+    try:
+        if billing == "free":
+            result = apply_tariff_for_user(
+                tg_id, tariff, source="admin_grant", operation_id=f"grant:{uuid.uuid4().hex}"
+            )
+            grant.next_renewal_at = datetime.utcnow() + timedelta(days=tariff.period_days)
+        elif billing == "gift":
+            result = apply_tariff_for_user(tg_id, tariff, source="admin_gift", operation_id=f"gift:{uuid.uuid4().hex}")
+            grant.next_renewal_at = None
+        else:
+            result = None
+            grant.next_renewal_at = None
+    except LocalXrayUnavailable as exc:
+        db.session.rollback()
+        orphans = sorted(repr(item.inbound_tag) for item in tariff.items if item.panel_id is None)
+        logger.warning(
+            "grant of tariff %r to tg=%s refused: item(s) %s name no node",
+            tariff.name,
+            tg_id,
+            ", ".join(orphans) or "(none)",
+        )
+        return jsonify(
+            {
+                "error": (
+                    f"Tariff {tariff.name!r} cannot be granted: its item(s) for inbound "
+                    f"{', '.join(orphans) or '(none)'} name no node, and this panel runs no Xray of its "
+                    f"own. Open Bot -> Tariffs and pick a linked panel for every item."
+                ),
+                "detail": str(exc),
+            }
+        ), 400
 
     db.session.commit()
 
@@ -1097,9 +1125,4 @@ def update_bot_settings():
     else:
         new_version = int(_read_setting("bot_config_version") or "0")
     db.session.commit()
-    if changed:
-        try:
-            bot_events.publish("config_changed", None, {"version": new_version})
-        except Exception:
-            pass
     return jsonify({"ok": True, "bot_config_version": new_version})

@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request, Response, send_from_directory
 from panel_core.extensions import limiter, db
 from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
+from panel_core.services.expiry import nearest_expiry
 from panel_core.services.sub_links import build_aggregate_sub_url  # noqa: F401 — re-exported under the original name
 from panel_core.xray.protocol import stream_supports_vless_flow
 from panel_core.services.share_links import (
@@ -310,8 +311,7 @@ def _aggregate_user_headers(clients) -> dict:
         download = sum(int(c.down or 0) for c in clients)
         total = 0
 
-    expiries = [int(c.expiry_time or 0) for c in clients if int(c.expiry_time or 0) > 0]
-    expire_s = (min(expiries) // 1000) if expiries else 0
+    expire_s = nearest_expiry([c.expiry_time for c in clients], fallback=0) // 1000
 
     headers["subscription-userinfo"] = f"upload={upload}; download={download}; total={total}; expire={expire_s}"
     return headers
@@ -1119,6 +1119,7 @@ def _user_page_nodes(telegram_id):
                 "used": used,
                 "limit": limit,
                 "expiry": int(c.expiry_time or 0),
+                "expiry_raw": c.expiry_time,
                 "online": online,
                 "enabled": bool(c.enable),
                 "unlimited": limit <= 0,
@@ -1148,6 +1149,7 @@ def _user_page_nodes(telegram_id):
                             "used": used,
                             "limit": limit,
                             "expiry": int(c.get("expiry_time", 0) or 0),
+                            "expiry_raw": c.get("expiry_time"),
                             "online": panel_online and enabled,
                             "enabled": enabled,
                             "unlimited": limit <= 0,
@@ -1184,16 +1186,16 @@ def _subscription_info_payload(user, token) -> dict:
     except (ValueError, TypeError):
         interval = 24
 
-    expiries = [n["expiry"] for n in nodes if n["enabled"] and n["expiry"] > 0] or [
-        n["expiry"] for n in nodes if n["expiry"] > 0
-    ]
+    enabled_expiries = [n["expiry_raw"] for n in nodes if n["enabled"]]
+    known_enabled = [e for e in enabled_expiries if e is not None]
+    expiries = enabled_expiries if known_enabled else [n["expiry_raw"] for n in nodes]
     active = not user.blocked and any(n["enabled"] for n in nodes)
 
     return {
         "brand": brand,
         "sub_url": _absolute_sub_url(token),
         "status": "active" if active else "disabled",
-        "expiry_at": min(expiries) if expiries else 0,
+        "expiry_at": nearest_expiry(expiries, fallback=0),
         "devices": None if dev is None else {"count": dev["count"], "limit": dev["limit"]},
         "nodes": [
             {

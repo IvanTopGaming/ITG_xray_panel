@@ -38,6 +38,10 @@ SHARED_TIER_MODULES = {
         {"get_panel_liveness", "forget_panel"},
     ),
     "services/bot_events.py": ("the bot:events bus", {"get_shared_redis"}),
+    "services/bot_status.py": (
+        "the bot's reported version, written on bot-api and read on the master (§67)",
+        {"get_shared_redis"},
+    ),
 }
 
 

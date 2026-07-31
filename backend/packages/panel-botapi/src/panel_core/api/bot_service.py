@@ -196,16 +196,6 @@ def activate_trial():
         db.session.commit()
         raise
 
-    bot_events.publish(
-        "trial_activated",
-        telegram_id=tg_id,
-        payload={
-            "tariff_id": trial_tariff.id,
-            "tariff_name": trial_tariff.name,
-            "expires_at_ms": result["expires_at_ms"],
-        },
-    )
-
     return jsonify(result)
 
 
@@ -249,10 +239,10 @@ def get_user_state(tg_id):
                 )
 
     if clients_data:
-        from panel_core.services.provisioning import collapse_expiries
+        from panel_core.services.expiry import nearest_expiry
 
-        expires_at_ms = collapse_expiries(
-            [int(c.get("expiry_time", 0) or 0) for c in clients_data],
+        expires_at_ms = nearest_expiry(
+            [c.get("expiry_time") for c in clients_data],
             fallback=0,
         )
     else:
