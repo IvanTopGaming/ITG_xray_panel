@@ -360,7 +360,11 @@ def test_delete_panel_cleans_redis(mock_get_redis, client, admin_token, db):
     resp = client.delete(f"/api/panels/{panel_id}", headers=_auth(admin_token))
     assert resp.status_code == 200
     mock_redis.delete.assert_called_once_with(
-        f"panel:{panel_id}:snapshot", f"panel:{panel_id}:status", f"panel:{panel_id}:last_poll"
+        f"panel:{panel_id}:snapshot",
+        f"panel:{panel_id}:status",
+        f"panel:{panel_id}:last_poll",
+        f"panel:{panel_id}:snapshot:last",
+        f"panel:{panel_id}:last_poll:last",
     )
 
 

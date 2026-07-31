@@ -11,7 +11,7 @@ from panel_core.db_migration import migrate_sqlite_db
 from panel_core.pg_migrate import migrate_postgres_db
 from panel_core.db_config import is_postgres
 
-from .extensions import db, migrate, scheduler, limiter
+from .extensions import db, migrate, scheduler, limiter, local_redis_uri
 from .observability import setup_logging, init_request_logging, run_job_logged
 from .panel_role import bind_role
 from .models import Admin, Outbound
@@ -183,10 +183,12 @@ def build_base_app(role, *, public_surface=True):
         "coalesce": True,
         "misfire_grace_time": 30,
     }
+    app.config["RATELIMIT_IN_MEMORY_FALLBACK_ENABLED"] = True
+    app.config["RATELIMIT_STORAGE_URI"] = local_redis_uri()
 
     panel_host = _panel_domain_host()
     if public_surface:
-        rate_limit_storage = os.getenv("RATELIMIT_STORAGE_URI", "memory://").strip() or "memory://"
+        rate_limit_storage = app.config["RATELIMIT_STORAGE_URI"]
         if not _is_local_domain(panel_host) and rate_limit_storage.startswith("memory://"):
             raise RuntimeError(
                 "RATELIMIT_STORAGE_URI must use a persistent backend in production (e.g. redis://redis:6379/0)."

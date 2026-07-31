@@ -133,7 +133,7 @@ export interface LinkedPanel {
   name: string;
   url: string;
   federation_token: string;
-  status: 'online' | 'offline' | 'unknown';
+  status: 'online' | 'offline' | 'stale' | 'unknown';
   last_poll: number | null;
   last_error: string | null;
   enable: boolean;

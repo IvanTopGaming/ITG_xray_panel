@@ -18,6 +18,10 @@ _GEO_TIMEOUT = 110
 
 REFRESH_CHANNEL = "panel:refresh"
 
+STALE_STATUS = "stale"
+
+_stale_warned: set[int] = set()
+
 
 class RemotePanelError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
@@ -238,6 +242,35 @@ def _last_poll_key(panel_id: int) -> str:
     return f"panel:{panel_id}:last_poll"
 
 
+def _last_snapshot_key(panel_id: int) -> str:
+    return f"panel:{panel_id}:snapshot:last"
+
+
+def _last_seen_key(panel_id: int) -> str:
+    return f"panel:{panel_id}:last_poll:last"
+
+
+def _decode_int(raw) -> int | None:
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _warn_stale(panel_id: int, last_seen_ms: int | None) -> None:
+    if panel_id in _stale_warned:
+        return
+    _stale_warned.add(panel_id)
+    logger.warning(
+        "panel_proxy: panel %d has no fresh snapshot — nothing has refreshed it within %d s, so the cron "
+        "poller is not reaching it. Serving the last known copy (taken %s). Users are being handed node "
+        "entries that may be out of date, and a client disabled since then is still being served.",
+        panel_id,
+        _SNAPSHOT_TTL,
+        f"at {last_seen_ms} ms" if last_seen_ms else "at an unrecorded time",
+    )
+
+
 def get_panel_snapshot(panel_id: int) -> dict | None:
 
     r = get_shared_redis()
@@ -245,9 +278,15 @@ def get_panel_snapshot(panel_id: int) -> dict | None:
         return None
     try:
         raw = r.get(_snapshot_key(panel_id))
+        if raw is not None:
+            _stale_warned.discard(panel_id)
+            return json.loads(raw)
+        raw = r.get(_last_snapshot_key(panel_id))
         if raw is None:
             return None
-        return json.loads(raw)
+        data = json.loads(raw)
+        _warn_stale(panel_id, _decode_int(r.get(_last_seen_key(panel_id))))
+        return data
     except Exception as exc:
         logger.debug("panel_proxy: snapshot cache read failed for panel %d: %s", panel_id, exc)
         return None
@@ -260,12 +299,12 @@ def get_panel_liveness(panel_id: int) -> tuple[str | None, int | None]:
         return None, None
     try:
         raw_status = r.get(_status_key(panel_id))
-        status = None
         if raw_status is not None:
             status = raw_status.decode() if isinstance(raw_status, bytes) else str(raw_status)
-        raw_poll = r.get(_last_poll_key(panel_id))
-        last_poll = int(raw_poll) if raw_poll else None
-        return status, last_poll
+            return status, _decode_int(r.get(_last_poll_key(panel_id)))
+        if r.get(_last_snapshot_key(panel_id)) is None:
+            return None, None
+        return STALE_STATUS, _decode_int(r.get(_last_seen_key(panel_id)))
     except Exception as exc:
         logger.debug("panel_proxy: liveness read failed for panel %d: %s", panel_id, exc)
         return None, None
@@ -277,9 +316,12 @@ def store_panel_snapshot(panel_id: int, data: dict, last_poll_ms: int) -> None:
     if r is None:
         return
     try:
-        r.setex(_snapshot_key(panel_id), _SNAPSHOT_TTL, json.dumps(data).encode())
+        payload = json.dumps(data).encode()
+        r.setex(_snapshot_key(panel_id), _SNAPSHOT_TTL, payload)
         r.setex(_status_key(panel_id), _STATUS_TTL, "online")
         r.setex(_last_poll_key(panel_id), _LAST_POLL_TTL, str(last_poll_ms))
+        r.set(_last_snapshot_key(panel_id), payload)
+        r.set(_last_seen_key(panel_id), str(last_poll_ms))
     except Exception as exc:
         logger.debug("panel_proxy: snapshot write failed for panel %d: %s", panel_id, exc)
 
@@ -300,8 +342,15 @@ def forget_panel(panel_id: int) -> None:
     r = get_shared_redis()
     if r is None:
         return
+    _stale_warned.discard(panel_id)
     try:
-        r.delete(_snapshot_key(panel_id), _status_key(panel_id), _last_poll_key(panel_id))
+        r.delete(
+            _snapshot_key(panel_id),
+            _status_key(panel_id),
+            _last_poll_key(panel_id),
+            _last_snapshot_key(panel_id),
+            _last_seen_key(panel_id),
+        )
     except Exception as exc:
         logger.debug("panel_proxy: key removal failed for panel %d: %s", panel_id, exc)
 

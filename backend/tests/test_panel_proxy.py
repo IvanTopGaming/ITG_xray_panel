@@ -183,11 +183,16 @@ class TestGetPanelSnapshot:
             assert get_panel_snapshot(1) is None
 
     def test_returns_none_on_cache_miss(self, app):
+        """Both keys missing — the panel has never been polled, so there is nothing to fall back to."""
+
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
         with patch("panel_core.services.panel_proxy.get_shared_redis", return_value=mock_redis):
             assert get_panel_snapshot(42) is None
-        mock_redis.get.assert_called_once_with("panel:42:snapshot")
+        assert [call.args[0] for call in mock_redis.get.call_args_list] == [
+            "panel:42:snapshot",
+            "panel:42:snapshot:last",
+        ]
 
     def test_returns_parsed_json_on_hit(self, app):
         import json as _json

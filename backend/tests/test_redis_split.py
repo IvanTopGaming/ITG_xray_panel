@@ -83,7 +83,11 @@ def test_only_the_limiter_and_the_startup_check_read_the_rate_limit_uri():
         for path in root.rglob("*.py"):
             if path.name in allowed:
                 continue
-            if "RATELIMIT_STORAGE_URI" in path.read_text():
+            text = path.read_text()
+            # `local_redis_uri()` is the same read wearing a different name — wave 5d moved the
+            # limiter's storage from import time to app-build time and introduced that helper, so a
+            # scan for the literal alone would stop seeing new readers.
+            if "RATELIMIT_STORAGE_URI" in text or "local_redis_uri" in text:
                 offenders.append(str(path.relative_to(root)))
     assert offenders == [], (
         f"{sorted(offenders)} read RATELIMIT_STORAGE_URI directly. After the split that variable names one "
@@ -119,7 +123,10 @@ def test_the_node_snapshot_is_read_from_the_shared_tier(monkeypatch):
     built = _redis_calls(monkeypatch, lambda: get_panel_snapshot(7))
 
     assert LOCAL_URI not in built, f"the snapshot was read from the local Redis\n\n{WHY}"
-    assert built[SHARED_URI].get.call_args.args[0] == "panel:7:snapshot"
+    assert [call.args[0] for call in built[SHARED_URI].get.call_args_list] == [
+        "panel:7:snapshot",
+        "panel:7:snapshot:last",
+    ], "the live key and the last-known copy must both come from the shared tier, in that order"
 
 
 def test_the_node_snapshot_is_written_to_the_shared_tier(monkeypatch):
@@ -130,6 +137,11 @@ def test_the_node_snapshot_is_written_to_the_shared_tier(monkeypatch):
     assert LOCAL_URI not in built, f"the snapshot was written to the local Redis\n\n{WHY}"
     keys = [call.args[0] for call in built[SHARED_URI].setex.call_args_list]
     assert keys == ["panel:7:snapshot", "panel:7:status", "panel:7:last_poll"]
+    untimed = [call.args[0] for call in built[SHARED_URI].set.call_args_list]
+    assert untimed == ["panel:7:snapshot:last", "panel:7:last_poll:last"], (
+        "the two TTL-less keys that let a subscription outlive the poller must live in the shared tier "
+        f"like everything else the sub host reads.\n\n{WHY}"
+    )
 
 
 def test_the_refresh_nudge_goes_to_the_shared_tier(monkeypatch):

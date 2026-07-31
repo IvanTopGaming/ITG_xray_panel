@@ -15,6 +15,7 @@ import {
   Pencil,
   Wifi,
   WifiOff,
+  History,
   HelpCircle,
   Zap,
   Shield,
@@ -30,6 +31,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 const STATUS_ICON: Record<string, { icon: typeof Wifi; color: string; label: string }> = {
   online: { icon: Wifi, color: 'text-emerald-400', label: 'Online' },
   offline: { icon: WifiOff, color: 'text-red-400', label: 'Offline' },
+  stale: { icon: History, color: 'text-amber-400', label: 'Stale' },
   unknown: { icon: HelpCircle, color: 'text-gray-500', label: 'Unknown' },
 };
 
@@ -337,6 +339,13 @@ export default function Panels() {
                       </div>
                     </div>
                   </div>
+
+                  {panel.status === 'stale' && (
+                    <div className="text-xs text-amber-400/90 bg-amber-500/10 rounded-lg px-3 py-1.5">
+                      Nothing is polling this panel. Subscriptions and the bot are being served from
+                      the copy taken {formatLastPoll(panel.last_poll)} — check the cron host.
+                    </div>
+                  )}
 
                   {!panel.enable && (
                     <div className="text-xs text-yellow-500/80 bg-yellow-500/10 rounded-lg px-3 py-1.5">

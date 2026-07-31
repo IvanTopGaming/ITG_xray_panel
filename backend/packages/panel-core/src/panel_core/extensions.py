@@ -50,12 +50,16 @@ def _sql_timer_stop(conn, cursor, statement, parameters, context, executemany):
 
 migrate = Migrate()
 scheduler = APScheduler()
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=(os.getenv("RATELIMIT_STORAGE_URI", "memory://").strip() or "memory://"),
-)
+limiter = Limiter(key_func=get_remote_address)
 
 LOCAL_REDIS_URI_ENV = "RATELIMIT_STORAGE_URI"
+
+
+def local_redis_uri():
+
+    return (os.getenv(LOCAL_REDIS_URI_ENV, "") or "").strip() or "memory://"
+
+
 SHARED_REDIS_URI_ENV = "SHARED_REDIS_URI"
 
 _REDIS_SCHEMES = ("redis://", "rediss://")
