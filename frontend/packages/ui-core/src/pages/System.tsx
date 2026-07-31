@@ -22,6 +22,7 @@ import {
   Github,
   Radar,
   Link2,
+  RefreshCw,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -31,6 +32,7 @@ import { Modal } from '@ui/components/ui/Modal';
 import { useLogStore } from '@ui/stores/logStore';
 import { useAuthStore } from '@ui/stores/authStore';
 import { useVersionStatus } from '@ui/hooks/useVersionStatus';
+import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
 import { hasLocalXray, isWorker } from '@ui/lib/panelRole';
 import { FederationConfig } from '@ui/lib/types';
 
@@ -40,11 +42,15 @@ type SettingsTab = 'security' | 'core' | 'federation' | 'maintenance' | 'about';
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'security', label: 'Security' },
-  ...(hasLocalXray ? [{ id: 'core' as SettingsTab, label: 'Core' }] : []),
+  { id: 'core', label: 'Core' },
   ...(isWorker ? [{ id: 'federation' as SettingsTab, label: 'Link' }] : []),
   { id: 'maintenance', label: 'Maintenance' },
   { id: 'about', label: 'About' },
 ];
+
+// The two tabs the node picker scopes. Security is the master's own password, Maintenance's backup
+// card and About are about this panel, and none of them changes when another node is selected.
+const NODE_SCOPED_TABS: SettingsTab[] = ['core', 'maintenance'];
 
 const GITHUB_URL = 'https://github.com/IvanTopGaming/ITG_xray_panel';
 
@@ -70,6 +76,29 @@ export default function System() {
   const [activeTab, setActiveTab] = useState<SettingsTab>(hasLocalXray ? 'core' : 'security');
   const [confirmRevoke, setConfirmRevoke] = useState(false);
   const [isTokenCopied, setIsTokenCopied] = useState(false);
+  const [panelId, setPanelId] = useState<number | null>(null);
+
+  const { data: panels, isLoading: panelsLoading } = useLinkedPanels(!isWorker);
+  const selectablePanels = useMemo(
+    () => (panels || []).filter((p) => p.enable !== false),
+    [panels]
+  );
+
+  useEffect(() => {
+    if (isWorker) return;
+    if (panelId != null && selectablePanels.some((p) => p.id === panelId)) return;
+    setPanelId(selectablePanels.length ? selectablePanels[0].id : null);
+  }, [selectablePanels, panelId]);
+
+  // A node always means itself; a master always means the node it picked. There is no third case:
+  // the master runs no Xray, so an unscoped request has nothing to answer from.
+  const xrayScopeResolved = hasLocalXray || panelId != null;
+  const xrayScope = hasLocalXray ? '' : panelId != null ? `?panel_id=${panelId}` : '';
+  const showNodePicker = !isWorker && NODE_SCOPED_TABS.includes(activeTab);
+  const noNodesToManage = !isWorker && !panelsLoading && selectablePanels.length === 0;
+  const xrayTargetName = hasLocalXray
+    ? 'this panel'
+    : selectablePanels.find((p) => p.id === panelId)?.name || 'the selected node';
 
   const { data: federation } = useQuery<FederationConfig>({
     queryKey: ['federation-config'],
@@ -103,10 +132,16 @@ export default function System() {
     }
   };
 
-  const { data: systemSettings, isFetching: isSettingsFetching } = useQuery({
-    queryKey: ['system-settings'],
-    queryFn: async () => (await api.get('/system/settings')).data,
-    enabled: hasLocalXray,
+  const {
+    data: systemSettings,
+    isFetching: isSettingsFetching,
+    error: settingsError,
+    refetch: refetchSettings,
+  } = useQuery({
+    queryKey: ['system-settings', panelId],
+    queryFn: async () => (await api.get(`/system/settings${xrayScope}`)).data,
+    enabled: xrayScopeResolved,
+    retry: false,
   });
 
   useEffect(() => {
@@ -123,21 +158,28 @@ export default function System() {
   }, [systemSettings]);
 
   const restartMutation = useMutation({
-    mutationFn: () => api.post('/restart'),
+    mutationFn: () => api.post(`/restart${xrayScope}`),
     onSuccess: () => {
       toast.success('System Restarting...');
+      setConfirmRestart(false);
+    },
+    onError: (err: any) => {
+      toast.error(err.response?.data?.error || 'Failed to restart Xray');
       setConfirmRestart(false);
     },
   });
 
   const updateGeoMutation = useMutation({
-    mutationFn: () => api.post('/system/update-geo'),
+    mutationFn: () => api.post(`/system/update-geo${xrayScope}`),
     onSuccess: () => toast.success('Databases updated'),
+    onError: (err: any) => {
+      toast.error(err.response?.data?.error || 'Failed to update geo databases');
+    },
   });
 
   const saveSystemSettingsMutation = useMutation({
     mutationFn: () =>
-      api.put('/system/settings', {
+      api.put(`/system/settings${xrayScope}`, {
         xrayLogLevel,
         geoipUrl: geoipUrl.trim(),
         geositeUrl: geositeUrl.trim(),
@@ -165,7 +207,7 @@ export default function System() {
 
   const fetchConfig = async () => {
     try {
-      const res = await api.get('/config');
+      const res = await api.get(`/config${xrayScope}`);
       setConfigContent(JSON.stringify(res.data, null, 2));
       setConfigModal(true);
     } catch (e: any) {
@@ -403,6 +445,26 @@ export default function System() {
           ))}
         </div>
 
+        {showNodePicker && (
+          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5">
+            <div className="flex items-center gap-2 mb-2 text-xs font-bold uppercase tracking-wider text-gray-500">
+              <Server size={13} /> Node
+            </div>
+            {noNodesToManage ? (
+              <p className="text-sm text-gray-400">
+                No nodes are linked. Xray runs on nodes, not here — link one on the Panels page.
+              </p>
+            ) : (
+              <Select
+                value={panelId != null ? String(panelId) : ''}
+                onChange={(e) => setPanelId(e.target.value ? Number(e.target.value) : null)}
+                options={selectablePanels.map((p) => ({ value: String(p.id), label: p.name }))}
+                disabled={panelsLoading && selectablePanels.length === 0}
+              />
+            )}
+          </div>
+        )}
+
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
@@ -434,50 +496,59 @@ export default function System() {
               </SettingsCard>
             )}
 
-            {hasLocalXray && activeTab === 'core' && (
+            {activeTab === 'core' && (
               <SettingsCard
                 title="Core Settings"
                 icon={<Database size={18} className="text-secondary" />}
               >
-                <div className="space-y-4">
-                  <Select
-                    label="Xray Log Level"
-                    value={xrayLogLevel}
-                    onChange={(e) => setXrayLogLevel(e.target.value)}
-                    options={[
-                      { value: 'debug', label: 'debug' },
-                      { value: 'info', label: 'info' },
-                      { value: 'warning', label: 'warning' },
-                      { value: 'error', label: 'error' },
-                      { value: 'none', label: 'none' },
-                    ]}
-                    disabled={isSettingsFetching}
-                  />
-                  <Input
-                    label="GeoIP URL"
-                    value={geoipUrl}
-                    onChange={(e) => setGeoipUrl(e.target.value)}
-                    placeholder="https://.../geoip.dat"
-                    disabled={isSettingsFetching}
-                    autoComplete="off"
-                  />
-                  <Input
-                    label="GeoSite URL"
-                    value={geositeUrl}
-                    onChange={(e) => setGeositeUrl(e.target.value)}
-                    placeholder="https://.../geosite.dat"
-                    disabled={isSettingsFetching}
-                    autoComplete="off"
-                  />
-                  <Button
-                    className="w-full h-11"
-                    onClick={handleSaveSystemSettings}
-                    isLoading={saveSystemSettingsMutation.isPending}
-                    disabled={isSettingsFetching}
-                  >
-                    Save Core Settings
-                  </Button>
-                </div>
+                {noNodesToManage ? (
+                  <p className="text-sm text-gray-400">
+                    These are one node&apos;s Xray settings. Link a node on the Panels page and it
+                    will appear in the picker above.
+                  </p>
+                ) : settingsError ? (
+                  <XrayNodeUnreachable error={settingsError} onRetry={() => refetchSettings()} />
+                ) : (
+                  <div className="space-y-4">
+                    <Select
+                      label="Xray Log Level"
+                      value={xrayLogLevel}
+                      onChange={(e) => setXrayLogLevel(e.target.value)}
+                      options={[
+                        { value: 'debug', label: 'debug' },
+                        { value: 'info', label: 'info' },
+                        { value: 'warning', label: 'warning' },
+                        { value: 'error', label: 'error' },
+                        { value: 'none', label: 'none' },
+                      ]}
+                      disabled={isSettingsFetching}
+                    />
+                    <Input
+                      label="GeoIP URL"
+                      value={geoipUrl}
+                      onChange={(e) => setGeoipUrl(e.target.value)}
+                      placeholder="https://.../geoip.dat"
+                      disabled={isSettingsFetching}
+                      autoComplete="off"
+                    />
+                    <Input
+                      label="GeoSite URL"
+                      value={geositeUrl}
+                      onChange={(e) => setGeositeUrl(e.target.value)}
+                      placeholder="https://.../geosite.dat"
+                      disabled={isSettingsFetching}
+                      autoComplete="off"
+                    />
+                    <Button
+                      className="w-full h-11"
+                      onClick={handleSaveSystemSettings}
+                      isLoading={saveSystemSettingsMutation.isPending}
+                      disabled={isSettingsFetching}
+                    >
+                      Save Core Settings
+                    </Button>
+                  </div>
+                )}
               </SettingsCard>
             )}
 
@@ -604,7 +675,7 @@ export default function System() {
                       </p>
                     </div>
                   )}
-                  {hasLocalXray && (
+                  {xrayScopeResolved && (
                     <>
                       <Button
                         variant="secondary"
@@ -713,15 +784,16 @@ export default function System() {
           </motion.div>
         </AnimatePresence>
 
-        {hasLocalXray && (
+        {xrayScopeResolved && (
           <>
             <ConfirmationModal
               isOpen={confirmRestart}
               onClose={() => setConfirmRestart(false)}
               onConfirm={() => restartMutation.mutate()}
               title="Restart Xray Core"
-              description="Are you sure you want to restart the Xray Core service? All current connections will be dropped."
+              description={`Restart the Xray Core service on ${xrayTargetName}? All current connections will be dropped.`}
               confirmText="Restart"
+              isLoading={restartMutation.isPending}
             />
 
             <ConfirmationModal
@@ -732,7 +804,7 @@ export default function System() {
                 setConfirmGeoUpdate(false);
               }}
               title="Update GeoIP / GeoSite"
-              description="Downloading updated geo databases will restart the Xray core. All active connections will be briefly interrupted."
+              description={`Downloading updated geo databases onto ${xrayTargetName} will restart its Xray core. All active connections will be briefly interrupted.`}
               confirmText="Update"
               isLoading={updateGeoMutation.isPending}
             />
@@ -760,11 +832,11 @@ export default function System() {
           confirmVariant="primary"
         />
 
-        {hasLocalXray && (
+        {xrayScopeResolved && (
           <Modal
             isOpen={configModal}
             onClose={() => setConfigModal(false)}
-            title="Current Xray Config"
+            title={hasLocalXray ? 'Current Xray Config' : `Xray Config — ${xrayTargetName}`}
             maxWidth="max-w-4xl"
           >
             <div className="relative">
@@ -792,6 +864,20 @@ export default function System() {
           </Modal>
         )}
       </div>
+    </div>
+  );
+}
+
+function XrayNodeUnreachable({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const message =
+    (error as any)?.response?.data?.error || (error as any)?.message || 'The node did not answer.';
+  return (
+    <div className="rounded-xl border border-error/25 bg-error/[0.06] p-4 text-sm">
+      <p className="font-semibold text-error mb-1">This node did not answer</p>
+      <p className="text-gray-300 break-words">{message}</p>
+      <Button variant="secondary" className="mt-4" onClick={onRetry}>
+        <RefreshCw size={15} className="mr-2" /> Retry
+      </Button>
     </div>
   );
 }

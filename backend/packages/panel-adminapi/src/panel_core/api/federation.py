@@ -149,6 +149,7 @@ def snapshot():
                     "expiry_time": c.expiry_time or 0,
                     "reset_day": c.reset_day or 0,
                     "flow": c.flow or "",
+                    "preferred_outbound": c.preferred_outbound or "",
                     "last_seen": c.last_seen if c.last_seen else None,
                     "tariff_id": c.tariff_id,
                     "telegram_id": c.telegram_id,

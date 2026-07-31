@@ -178,7 +178,7 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 - `app/utils.py` — JWT helpers + auth decorators: `token_required` (admin JWT only), `bot_service_token_required` (bot service token only), `federation_token_required` (validates federation token from linked panels), `admin_or_federation_token_required` (admin JWT **or** federation token — exactly two, since wave 4a). The latter two support the Panel Federation system. There is no dual admin/bot decorator any more: `admin_or_bot_token_required` and the bot-token branch inside `admin_or_federation_token_required` were both removed once the bot stopped calling the admin API — see Auth below.
 - `app/api/`
   - `auth` — login / logout
-  - `inbound`, `outbound`, `routing`, `panels`, `federation`, `subscription`, `statistics`, `system` — core panel. Every Xray-facing handler in `system.py` is now behind `has_local_xray()`: `/api/restart`, `/api/logs`, `/api/system/update-geo`, and — since wave 5b — `GET`/`PUT /api/system/settings` and `GET /api/config` (see Xray settings and config are node-only)
+  - `inbound`, `outbound`, `routing`, `panels`, `federation`, `subscription`, `statistics`, `system` — core panel. Every Xray-facing handler in `system.py` is behind `has_local_xray()`, and since wave 5c all of them except `/api/logs` also take `?panel_id=` **above** that gate (see Xray settings, config and per-user routing are answered by the node that runs Xray)
   - `backup` — `GET /api/backup` + `POST /api/restore`, **registered only by `roles/worker.py`**; both copy a SQLite file, which the master (Postgres) does not have. See Auth below
   - `billing` — YooKassa checkout + webhook. The webhook is **unsigned**, so the body is treated only as a trigger: the handler re-fetches the authoritative status from YooKassa (`fetch_remote_status`) before provisioning, so a forged notification does nothing
   - `bot_admin` — admin UI endpoints (tariffs, texts, users, grants, payments, settings) — JWT-protected
@@ -211,6 +211,8 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 - `packages/ui-core/src/` — everything shared by the three apps (56 files, every file under the directory regardless of extension — 34 `.ts`/`.tsx`, `index.css`, plus `fonts.css` and the 20 self-hosted Roboto/Roboto Mono `.woff2` files added in Phase 6 when the Google Fonts CDN link was dropped): `pages/` (`Dashboard`, `Routing`, `Statistics`, `System`, `Login` — the five pages every role has; `Statistics` joined them in wave 4d, `Routing` in 4c-2), `components/inbound/` (`InboundForm`, `UserForm`), `components/ui/` (`Select`, `Modal`, `ConfirmationModal`, `Button`, `Input`, `Switch`, `TagInput`), `components/layout/` (`Layout`, `Sidebar`, `AnimatedBackground`), `components/DisplayConfigLoader.tsx`, `hooks/` (`useLinkedPanels`, `useVersionStatus`), `lib/` (`api.ts` — axios client with auth interceptor; `types.ts` — TS interfaces for every API entity; `protocols.ts` — protocol + stream-settings definitions; `panelRole.ts`/`assertPanelRole.ts` — role gating, see the deploy note below; `panelBase.ts`, `datetime.ts`, `devices.ts`, `routing-validation.ts`, `utils.ts`, `version.ts`), `stores/` (Zustand stores for auth + log state), `index.css`.
 - `packages/admin/src/` — admin-only surface (18 files, same counting rule as ui-core above — this one happens to be all `.ts`/`.tsx`): `App.tsx`, `main.tsx` (the entry points), and the master-only pages/components `pages/Panels.tsx` (federation management), `pages/Bot.tsx` (billing UI) plus `components/bot/` (`TariffsTab`, `TariffDrawer`, `TariffsTable`, `TariffRowMenu`, `UsersTab`, `UserDrawer`, `GrantsTab`, `PaymentsTab`, `PaymentStatusBadge`, `TextsTab`, `SettingsTab`, `TrialCard`) and `lib/bot.ts`.
 - `packages/node/src/` — **has no page of its own**: just `App.tsx`, `main.tsx`, `vite-env.d.ts` (3 files, same counting rule as the two bullets above). `App.tsx` wires up only the shared `Dashboard`/`Routing`/`Statistics`/`System`/`Login` pages from `ui-core` — every route with its own page component lives in `ui-core` or `admin`, never in `node`. **`Routing` is no longer gated by `hasLocalXray` in either app, and the sidebar's `LOCAL_XRAY_ONLY` filter is gone** (wave 4c-2): the page is now meaningful on a master too, where it edits a *node's* outbounds through a panel picker in its header. Three places hid it before, and missing any one of them leaves it unreachable while the other two look fixed — the sidebar filter plus the `hasLocalXray ? <Routing /> : <Navigate to="/">` in **both** `App.tsx` files. `backend/tests/test_routing_page_reaches_the_nodes.py` pins all three. **Node-only surface therefore arrives as a gated tab inside a shared page, not as a route:** wave 4b's federation card is a `System` tab that ships from `ui-core` and renders only when `isWorker` — three gates in the bundle (the tab entry, its body, and `enabled: isWorker` on the `GET /api/federation/config` query, without which a master would 404 on every visit to System) plus a fourth in the backend, since `roles/master.py` registers no `federation` blueprint. The node's route count went from four to **five** in wave 4d, and for the mirror-image reason: `Statistics` was classified master-only by phase 3e and the classification was inverted — the master's `traffic_snapshot`/`domain_stat` have had no writer since phase 3b, while a node's are the only full ones in the deployment. The page moved `packages/admin` → `ui-core`, gained the same node picker `Routing` has, and `/statistics` left the sidebar's `WORKER_HIDDEN` set. The three gates are the same three: the sidebar filter, the route in `admin/App.tsx`, and the *absence* of a route in `node/App.tsx`. `backend/tests/test_statistics_page_reaches_the_nodes.py` pins all three, `backend/tests/test_federation_card_is_node_only.py` pins the federation card.
+
+  **Wave 5c added no route at all — it un-gated an existing page, and that is a different failure mode.** `System.tsx` decided the whole Xray surface with `hasLocalXray`, which is **false on the master**, repeated in seven places; the capability appears only when every one of them comes off, and any one left behind leaves a screen that looks fixed. Six came off (the Core tab entry, the `enabled:` of the settings query, the Core tab body, the three maintenance buttons, the two confirmation modals, the config modal) and **one stays** — the log panel, because `/api/logs` was left out of the wave. The page grew a node picker that scopes **the Core and Maintenance tabs only** (customer decision): Security is this panel's own admin password and About is its own versions, and a picker over those would put a new lie where the wave removed one. `Dashboard.tsx` had two more of the same shape — the Route button and its modal — and one worse: `routeOptions` was built from a page-level `GET /outbounds` with `enabled: hasLocalXray`, so even un-gated the dropdown would have offered nothing on a master. The lists are now fetched per inbound's `panel_id`, lazily, when the modal opens. `backend/tests/test_system_page_reaches_the_nodes.py` pins every gate individually.
 - `packages/sub-page/src/` — the subscription page a user opens in a browser, and the only package that is **not** an admin surface (18 files, same counting rule as the bullets above): `App.tsx`, `main.tsx`, `vite-env.d.ts`, `components/` (`Header`, `Hero`, `Summary`, `QrPanel`, `AppButtons`, `Nodes`, `Footer`, `Loading`, `ErrorState`), `hooks/useSubInfo.ts`, `lib/` (`deeplinks.ts`, `format.ts`, `i18n.ts`, `types.ts`), `index.css`. It has no router, no axios client and no auth store — it reads one endpoint, `GET /api/sub/u/<token>/info`. Three things set it apart from the two admin apps: it ships **no** `assertPanelRole()` call and reads no `panel-role` meta tag (it is served by Flask out of `panel-sub`, not by Nginx, and there is no role to get wrong); it carries **its own `index.css`** rather than importing `ui-core`'s, because that one applies `overflow-hidden` to `body` for the fixed-chrome admin layout and would make a scrolling page unreadable on a phone; and it is built into the `panel-sub` backend image by `backend/Dockerfile.sub` rather than into an Nginx image of its own. It still looks like the same product, but only one of the two reasons is actual sharing: `ui-core/src/fonts.css` (self-hosted Roboto) is imported by all three packages and is sub-page's **only** edge into `ui-core`, while the Tailwind theme is a *duplicated copy* — `ui-core` has no `tailwind.config.js`, each package declares its own palette, and sub-page's config does not even scan `../ui-core/src`. That distinction decides the release fan-out — see point 3 of the Phase 3d deploy note.
 
 Each of the two admin apps bakes its role at build time (`vite.config.ts`'s `define: { __EXPECTED_PANEL_ROLE__ }`) and asserts it at runtime against the `<meta name="panel-role">` tag that `entrypoint.sh` rewrites in `index.html` at container start (read by `lib/panelRole.ts`'s `readInjectedPanelRole()`). A meta tag, not an inline script: the reverse proxy's CSP sets `script-src 'self'`, which blocks inline `<script>` outright — see the deploy note below.
@@ -287,7 +289,7 @@ Four decorators in `app/utils.py`:
 - `token_required` — admin JWT only. Used on all `bot_admin` endpoints, `GET /api/inbounds`, every one of the ten `panels.py` handlers (wave 4b added `POST /panels/<id>/relink`), and the node-only `POST /api/federation/link-token` + `GET /api/federation/config`.
 - `bot_service_token_required` — fixed token from `SystemSetting('bot_service_token')`, compared in constant time. Used on all `bot_service.py` endpoints + `/billing/checkout`, **and on nothing else**.
 - `federation_token_required` — validates the `federation_token` from a linked panel's `FederationConfig`. Used on federation endpoints that remote panels call.
-- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. Thirty-four handlers: thirteen in `inbound.py` (user/inbound CRUD, the `/users/bulk-*` + `/users/reset-traffic` batch endpoints, and — since wave 4c-2 — `/inbounds/<tag>/reset-traffic`, the last one that could not be routed by `panel_id`), `/api/restart` and `/api/stats/system` in `system.py`, `GET /api/backup` + `POST /api/restore` in the node-only `backup.py` (wave 4c-1), and — since wave 4c-2 — twelve more in `outbound.py`/`routing.py`: outbound CRUD, balancer CRUD and routing-profile CRUD, so the master can manage a node's whole egress and routing layer, and — since wave 4d — the five in `statistics.py`, so it can read a node's traffic figures. **`GET /outbounds/health` is the one handler in those two files that stays `token_required`**: a reachability probe is only meaningful from the box the traffic leaves through, so the master neither runs it nor proxies it.
+- `admin_or_federation_token_required` — accepts admin JWT **or** federation token, and only those two. **Thirty-nine** handlers: thirteen in `inbound.py` (user/inbound CRUD, the `/users/bulk-*` + `/users/reset-traffic` batch endpoints, and — since wave 4c-2 — `/inbounds/<tag>/reset-traffic`, the last one that could not be routed by `panel_id`), **six** in `system.py` (`/api/restart` and `/api/stats/system`, plus — since wave 5c — `GET`/`PUT /api/system/settings`, `GET /api/config` and `POST /api/system/update-geo`), `POST /api/user/routing` in `auth.py` (wave 5c), `GET /api/backup` + `POST /api/restore` in the node-only `backup.py` (wave 4c-1), and — since wave 4c-2 — twelve more in `outbound.py`/`routing.py`: outbound CRUD, balancer CRUD and routing-profile CRUD, so the master can manage a node's whole egress and routing layer, and — since wave 4d — the five in `statistics.py`, so it can read a node's traffic figures. **Two handlers stay `token_required` on purpose**: `GET /outbounds/health`, because a reachability probe is only meaningful from the box the traffic leaves through, and `GET /api/logs`, because it is a stream and both `FederationClient` methods end in `.json()` — see Xray settings, config and per-user routing below.
 
 All three decorators stamp `g.auth_via` (`"admin"` / `"federation"`) on the way through, which is how `backup.py` can log *which credential* took a node's database and not merely that someone did. A federated backup or restore leaves a WARNING on the node; the node's own admin leaves an INFO.
 
@@ -339,7 +341,7 @@ Single `_sync_after_provision` call after the loop: regenerates Xray config (or 
 
 ### Panel Federation
 
-A master panel manages remote *linked panels*. `LinkedPanel` rows store URL + a `federation_token`; `FederationConfig` is a singleton on the child storing the master's credentials. The master proxies user/inbound CRUD **and, since wave 4c-2, the node's whole network layer** — outbounds, balancers and routing profiles — to linked panels via `services/panel_proxy.py` (`FederationClient`). `TariffItem.panel_id` optionally routes a tariff item to a specific linked panel — provisioning then creates the user there instead of locally. `poll_linked_panels` (10s) health-polls each panel — from the **cron service**, which since wave 2 is the single writer of both `LinkedPanel.status` in Postgres and the `panel:<id>:*` keys in the shared Redis. The **twenty-six** `proxy_*` operations no longer fetch a snapshot themselves; the twenty-three **mutating** ones publish the panel id on `panel:refresh` and return, and the cron service polls that panel out of band (`_nudge_panel_refresh`). The three **reads** added by wave 4c-2 (`proxy_list_outbounds`, `proxy_list_balancers`, `proxy_list_routing_profiles`) deliberately do **not** nudge: they change nothing on the node, and they run on every load of the Routing page, so nudging would have the cron poll that node out of band each time an admin looks at a list. **Never `DEL` the snapshot key instead:** for the sub host a missing key does not mean "stale", it means "this panel has no remote clients", so it skips the panel entirely and a user who has just paid opens the link to a subscription with no node servers in it. Subscription links (`api/subscription.py`) can merge entries from linked panels visible to the requesting client (Redis-cached). Inbound CRUD endpoints accept admin JWT **and** federation tokens (`admin_or_federation_token_required`) so children can proxy operations back through the master.
+A master panel manages remote *linked panels*. `LinkedPanel` rows store URL + a `federation_token`; `FederationConfig` is a singleton on the child storing the master's credentials. The master proxies user/inbound CRUD **and, since wave 4c-2, the node's whole network layer** — outbounds, balancers and routing profiles — to linked panels via `services/panel_proxy.py` (`FederationClient`). `TariffItem.panel_id` optionally routes a tariff item to a specific linked panel — provisioning then creates the user there instead of locally. `poll_linked_panels` (10s) health-polls each panel — from the **cron service**, which since wave 2 is the single writer of both `LinkedPanel.status` in Postgres and the `panel:<id>:*` keys in the shared Redis. The **thirty-seven** `proxy_*` operations no longer fetch a snapshot themselves; the **twenty-seven mutating** ones publish the panel id on `panel:refresh` and return, and the cron service polls that panel out of band (`_nudge_panel_refresh`). The **ten reads** deliberately do **not** nudge — three from wave 4c-2 (`proxy_list_outbounds`, `proxy_list_balancers`, `proxy_list_routing_profiles`), five from 4d (`proxy_stats_*`) and two from 5c (`proxy_get_system_settings`, `proxy_get_xray_config`): they change nothing on the node, and they run on every load of a page, so nudging would have the cron poll that node out of band each time an admin looks at a list. The rule is exactly that — *mutating nudges, reading does not* — and it is worth keeping in one sentence: wave 5c's `proxy_update_geo` and `proxy_restart_xray` change nothing the master **caches** either, and they still nudge, because a rule with a second clause is a rule nobody applies correctly at 2 a.m. **Never `DEL` the snapshot key instead:** for the sub host a missing key does not mean "stale", it means "this panel has no remote clients", so it skips the panel entirely and a user who has just paid opens the link to a subscription with no node servers in it. Subscription links (`api/subscription.py`) can merge entries from linked panels visible to the requesting client (Redis-cached). Inbound CRUD endpoints accept admin JWT **and** federation tokens (`admin_or_federation_token_required`) so children can proxy operations back through the master.
 
 **Linking a node and revoking its token are the same endpoint, and the master never issues either.** `POST /api/federation/link-token` (admin JWT, node only) mints a fresh single-use link token **and revokes whatever access the panel currently grants** — it nulls `federation_token` and `linked_at` unconditionally and reports `revoked` in its reply. There is no separate rotation route and no 409: before wave 4b the endpoint refused once `federation_token` and `linked_at` were both set, which made a linked node's token unrevocable except by editing `federation_config` over SSH. The token handed to the admin is `base64url("<panel_url>|<raw_token>")`, where `panel_url` comes from the node's own `PANEL_DOMAIN` + `PANEL_SECRET_PATH` (`_build_panel_url`, falling back to `request.host`) — so a wrong `PANEL_DOMAIN` on a node sends the master to the wrong address, and the failure only surfaces as a handshake timeout. The node's System → Link card shows that URL, which is the only place an admin can catch it.
 
@@ -409,9 +411,17 @@ On startup **of a node**, `direct` (freedom) and `block` (blackhole) outbounds a
 
 **The master does the opposite, and has since wave 4c-2.** `roles/master.py` calls `bootstrap_defaults(app, system_outbounds=False)`, which not only skips the seed but *deletes* any `direct`/`block` row it finds — those two rows are sitting in the Postgres of every panel that ran an earlier release, and skipping the seed alone would leave `GET /outbounds` on the master answering `[direct, block]` forever. The flag lives at the **call site**, not inside `bootstrap_defaults`: both roles call the same function, so switching the seed off in the shared body would silently disarm every node. The removal is narrow on purpose — only those two tags, so a boot-time `DELETE` against a live database cannot reach anything else. A master has no Xray to route with; its outbounds and routing profiles live on the nodes and are edited through `?panel_id=` (see Panel Federation).
 
-### Xray settings and config are node-only
+### Xray settings, config and per-user routing are answered by the node that runs Xray
 
-`xray_log_level`, `geoip_url` and `geosite_url` are `SystemSetting` rows, but their only reader is `generate_config_file()`, which runs on a node against that node's own SQLite. Until wave 5b `GET`/`PUT /api/system/settings` and `GET /api/config` were the only handlers in `system.py` with no `has_local_xray()` gate, and on the master each of them lied in its own way: the `PUT` wrote the keys into the shared Postgres, called a `generate_config_file()`/`restart_xray_container()` pair that `RemoteXrayGateway` answers with `None`, and returned **200 with the updated form**; the `GET` handed back the master's own copy of the same dead keys; and `/api/config` opened `/etc/xray/config.json`, which the `panel-master` image does not contain, and answered `404 "Config file not found"` — loud, but misleading exactly as `"DB not found"` was in the pre-4c-1 backup path. All three now answer **501** naming the node. **This is a refusal, not a capability:** an admin still cannot set a node's log level from the master, and no bundle ever offered to — the whole Core tab and the View Configuration button are already gated by `hasLocalXray` in `System.tsx`, so the master's SPA never called any of the three. Wave 5c is where `?panel_id=` dispatch turns the refusal into a capability, and it goes **above** this gate, the shape waves 4c-2 and 4d established. `backend/tests/test_xray_settings_are_node_only.py` pins each handler individually (§80: a decorator-or-gate property is reverted one handler at a time, so a sampled assertion does not hold it).
+`xray_log_level`, `geoip_url` and `geosite_url` are `SystemSetting` rows, but their only reader is `generate_config_file()`, which runs on a node against that node's own SQLite. Wave 5b gave `GET`/`PUT /api/system/settings` and `GET /api/config` the `has_local_xray()` gate every neighbour in `system.py` already had, because on the master each of them lied in its own way: the `PUT` wrote the keys into the shared Postgres, called a `generate_config_file()`/`restart_xray_container()` pair that `RemoteXrayGateway` answers with `None`, and returned **200 with the updated form**; the `GET` handed back the master's own copy of the same dead keys; and `/api/config` opened `/etc/xray/config.json`, which the `panel-master` image does not contain, and answered `404 "Config file not found"` — loud, but misleading exactly as `"DB not found"` was in the pre-4c-1 backup path.
+
+**Wave 5c added the half above that gate, and the gate was not rewritten (§82).** Six handlers now dispatch on `?panel_id=` *before* consulting `has_local_xray()`, the shape 4c-2 and 4d established: `GET`/`PUT /api/system/settings`, `GET /api/config`, `POST /api/system/update-geo` and `POST /api/restart` in `system.py`, plus `POST /api/user/routing` in `auth.py`. The master with no node named still answers **501**, and the message names `panel_id`. The order is load-bearing: hoisting the gate above the dispatch turns the whole master side back into 501 and is invisible on a node, where both orders behave identically — which is why every dispatch assertion in `backend/tests/test_xray_control_over_federation.py` is built against the **master** role app, and why every route is asserted individually rather than by sample (§80).
+
+**`GET /api/logs` is deliberately not in that list.** It is a stream — the node yields SSE lines and sleeps when the log is quiet — while both `FederationClient` methods end in `.json()`. Proxying it means a `requests.get(stream=True)` relay like `panels.py`'s `panel_backup`, plus a greenlet on the master living as long as the admin's tab, plus a decision about read timeouts against a stream that legitimately says nothing for minutes. Customer decision: out of wave 5c. The log panel in `System.tsx` therefore stays the one `hasLocalXray` block left on that page.
+
+**The read half of `/user/routing` needed the federation snapshot to carry `preferred_outbound`.** The master shows a node client's current route from the cached snapshot, and `api/federation.py` did not put the field in while `services/remote_clients.py` hardcoded `""`. Without both, an admin sets a route, saves, reopens the modal and reads "Default (No preference)" — the write works and the screen lies. Both now carry it.
+
+`backend/tests/test_xray_settings_are_node_only.py` (5b) pins the refusals; `test_xray_control_over_federation.py` (5c) pins the dispatch, the node-side credential, the journal and the snapshot field; `test_system_page_reaches_the_nodes.py` pins the bundle.
 
 ### Database migrations
 
@@ -1212,6 +1222,119 @@ refusals where the panel used to answer success. Read all seven points.
    not matter and a partial rollout degrades quietly: an old bot against a new bot-api simply keeps
    printing "?" for an unlimited grant, and an old master against a new sub just goes on disagreeing
    about the date, which is today's behaviour.
+
+### Deploy note — a node's Xray is configured from the master, and the federation token gets its fourth widening (Phase 8 wave 5c)
+
+This wave changes **no schema, no environment variable and no federation contract shape** — it adds
+one field to the snapshot, which is additive. It needs no fleet-wide lock-step beyond the image
+pins. It hands the master a capability it never had, and — the part to read before anything else —
+**widens the federation token a fourth time, and this time the most sensitive thing it gains is a
+read that leaves no trace anywhere else.** Read all eight points.
+
+1. **What the federation token can now do on a node.** Six more handlers accept it:
+   `GET`/`PUT /api/system/settings`, `GET /api/config`, `POST /api/system/update-geo`,
+   `POST /api/restart` (whose decorator was already this, since wave 0 — only the master-side
+   dispatch is new) and `POST /api/user/routing`. In descending order of how much it matters:
+
+   - **`GET /api/config` hands over the node's secrets in one request.** The generated
+     `/etc/xray/config.json` carries `realitySettings.privateKey`, every WireGuard key and every
+     client UUID. **The honest size of the increment is small** — `GET /api/backup` (wave 4c-1)
+     already streamed the whole SQLite file, `stream_settings` and all. What is new is *selective,
+     cheap and one button press*. Because of that, and against the wave-4d rule that reads are not
+     journalled, **this read is journalled** (customer decision): the node writes
+     `WARNING Xray config read (REALITY private key, WireGuard keys, client UUIDs) over the
+     federation token from <address>`. The 4d rule stands for everything else; its reason was
+     volume, and volume does not apply to a button pressed once a month.
+   - **`PUT /api/system/settings` changes two things with non-obvious reach.** Setting the log level
+     to `none` stops the node's access log, which is what `parse_logs` reads to fill `domain_stat` —
+     so it silently switches off that node's visited-domain statistics without touching the
+     Statistics page. And the GeoIP/GeoSite URLs decide what `geoip:ru`-style routing rules *expand
+     to* — that is, they rewrite the meaning of the routing rules without editing a single rule.
+     Paired with `POST /api/system/update-geo` (fetch from those URLs right now) it is a complete
+     mechanism.
+   - **`POST /api/user/routing`** pins one user's traffic to one outbound. After wave 4c-2 (create
+     any outbound you like) this completes the picture: pick the destination, then pick the victim.
+   - **`POST /api/restart`** adds nothing — the token already opened it.
+
+   Every write above leaves a WARNING on the node naming the credential and the source address; the
+   node's own admin leaves an INFO. That log line is the only durable record.
+
+   The token sits in the master's Postgres **in clear text** — it has to, or the master could not
+   present it — so it travels in every `pg_dump` of the data tier, and it is not scoped per
+   operation.
+
+   **How to kill one — the full wave-4b procedure, not a reference to it:**
+   1. On the **node**: System → Link → *Revoke access & issue token*. That nulls `federation_token`
+      and `linked_at` on the spot (no confirmation step, no undo) and hands you a fresh single-use
+      link token.
+   2. On the **master**: Panels → that panel's card → *Relink*, and paste the token.
+   3. **Never delete the panel and add it again instead.** `delete_panel` cascades
+      `purge_tariff_items`, which removes every `TariffItem` of that panel and disables any tariff
+      left with none — revoking a credential would cost live users their tariff layout.
+
+   Between step 1 and step 2 the node is unreachable to the master entirely: not polled, not
+   provisioned, no CRUD, no statistics and now no Xray settings either. A purchase landing in that
+   window stays `pending` and `poll_pending_payments` (30s, on the bot host) re-applies it after the
+   relink. Keep it to one sitting.
+
+2. **What an admin sees on the master after the update.** The System page grows a **Core** tab that
+   was never there, and a **node picker** appears above the card whenever the Core or Maintenance
+   tab is open. Under it: the node's Xray log level and its GeoIP/GeoSite URLs, and on Maintenance
+   the *Update GeoIP*, *View Configuration* and *Restart Core* buttons, all acting on the selected
+   node. The confirmation dialogs name it — "Restart the Xray Core service on **Amsterdam**?" —
+   because one button with several possible targets has to say which one.
+
+   Three other states are possible and each says what happened rather than showing an empty form:
+   **no nodes linked** → a line pointing at the Panels page; **the node does not answer** → a red
+   box carrying *the node's own message* and a Retry button; **a request that somehow reaches the
+   master unscoped** → HTTP 501 naming `panel_id`.
+
+   Security, About and the Maintenance backup card are **not** scoped by the picker: they are about
+   the panel you are logged into, and always were.
+
+   On the Dashboard, the **Route** button on a node client's row starts appearing. It was in the
+   code all along and gated by `hasLocalXray`, so on a master it never rendered; the request it
+   sends already carried `?panel_id=`. Its dropdown now lists the *selected node's* outbounds and
+   balancers rather than the master's (which since wave 4c-2 are none at all), and the current route
+   is read back correctly, because the federation snapshot now carries `preferred_outbound`.
+
+3. **`GET /api/logs` is deliberately not in this wave — the live log panel stays node-only.** To
+   watch a node's Xray log you still open that node's own panel. It is a stream, not a response:
+   both `FederationClient` methods end in `.json()`, so relaying it means a streaming proxy plus a
+   greenlet on the master that lives as long as the admin's browser tab, plus a policy for a stream
+   that legitimately says nothing for minutes. Customer decision: separate work. **§66 is therefore
+   closed for five of six routes plus `/api/restart`, not for all six.**
+
+4. **Two behaviours to know before you press the buttons.** Saving a log level change on the master
+   makes the node regenerate its config and **restart Xray** — every connection on that node drops,
+   exactly as it does from the node's own panel. And *Update GeoIP* downloads two files (30s timeout
+   each) and then restarts Xray as well; the master waits up to 110 seconds for it, comfortably
+   inside its own 120-second gunicorn timeout, so a slow node produces a slow button and not a
+   truncated request.
+
+5. **One extra field on the wire: `preferred_outbound` in `/api/federation/snapshot`.** Additive, so
+   a master left on an older image simply ignores it, and a node left on an older image omits it and
+   the master shows "Default (No preference)" — the behaviour of every release up to now. Nothing
+   breaks in either direction.
+
+6. **§71 still blocks a private-address topology, and it is still not this wave's business.**
+   `_validate_panel_url` refuses to add a panel whose URL resolves to a private address, so a master
+   and a node on one private segment cannot be linked through the UI. Unchanged, recorded, and
+   scheduled for the operational wave.
+
+7. **A partial rollout degrades in one direction and fails loudly in the other.** An old master
+   against a new node: the master has no Core tab and no Route button, so nothing changes. A new
+   master against an old node: every one of the six answers **401** (the old node still guards five
+   of them with `token_required`, admin JWT only), and the master surfaces *"The node rejected this
+   master's federation token. Issue a fresh link token on the node and relink the panel"* — which is
+   misleading in this one case, because the node is simply old. Update the node. Nothing is silently
+   corrupted either way.
+
+8. **Bump `master`, `worker`, `sub`, `bot_api`, `cron`, `frontend_admin` and `frontend_node`
+   together — seven images. `bot`, `caddy` and `xray_egress` are untouched.** The `panel-core` edits
+   (`services/panel_proxy.py`, `services/remote_clients.py`) fan out to all five backends;
+   `panel-adminapi` (`api/system.py`, `api/auth.py`, `api/federation.py`) to master and worker; the
+   `ui-core` edits (`pages/System.tsx`, `pages/Dashboard.tsx`) to both frontends.
 
 ## Configuration
 

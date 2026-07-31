@@ -1,12 +1,16 @@
 import json
 import jwt
 import datetime
+import logging
 from flask import Blueprint, request, jsonify
 from werkzeug.security import check_password_hash, generate_password_hash
 from panel_core.extensions import db, limiter
 from panel_core.models import Admin, Client, Outbound, Balancer
 from panel_core.utils import (
     SECRET_KEY,
+    admin_or_federation_token_required,
+    audit_privileged_change,
+    remote_panel_failure,
     token_required,
     validate_password,
     normalize_email,
@@ -14,10 +18,13 @@ from panel_core.utils import (
 )
 from panel_core.xray.facade import generate_config_file, has_local_xray, restart_xray_container
 
+logger = logging.getLogger(__name__)
+
 bp = Blueprint("auth", __name__)
 
 XRAY_PREFERRED_OUTBOUND_UNSUPPORTED = (
-    "Per-user outbound routing is applied on the node that runs Xray; this role has no local Xray instance."
+    "Per-user outbound routing is applied on the node that runs Xray; this role has no local Xray "
+    "instance. Supply panel_id to route the operation to a node."
 )
 
 
@@ -54,9 +61,20 @@ def login():
 
 
 @bp.route("/user/routing", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("30 per minute")
 def set_user_routing():
+    panel_id = request.args.get("panel_id", type=int)
+    if panel_id:
+        from panel_core.services.panel_proxy import RemotePanelError, proxy_set_user_routing
+
+        try:
+            return jsonify(proxy_set_user_routing(panel_id, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
     if not has_local_xray():
         return jsonify({"error": XRAY_PREFERRED_OUTBOUND_UNSUPPORTED}), 501
     data = request.get_json(silent=True) or {}
@@ -123,6 +141,7 @@ def set_user_routing():
     if (client.preferred_outbound or "") == (tag or ""):
         return jsonify({"status": "unchanged", "preferred": client.preferred_outbound}), 200
 
+    audit_privileged_change(logger, f"Preferred outbound for '{client.email}' set to '{tag or 'default'}'")
     client.preferred_outbound = tag if tag else None
     db.session.commit()
     generate_config_file()

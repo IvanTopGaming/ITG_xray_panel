@@ -1,9 +1,15 @@
 import psutil
 import hmac
+import logging
 import os
 import json
 from flask import Blueprint, jsonify, request, Response, stream_with_context
-from panel_core.utils import token_required, admin_or_federation_token_required
+from panel_core.utils import (
+    admin_or_federation_token_required,
+    audit_privileged_change,
+    remote_panel_failure,
+    token_required,
+)
 from panel_core.extensions import limiter, db
 from panel_core.models import SystemSetting
 from panel_core.services.egress import build_bind_ips
@@ -24,15 +30,43 @@ from panel_core.version import get_app_version, app_version_key
 from panel_core.services.bot_status import get_bot_status
 from panel_core.services.version_check import get_latest
 
+logger = logging.getLogger(__name__)
+
 bp = Blueprint("system", __name__)
 XRAY_LOGS_UNSUPPORTED = "Xray logs are served by the node that runs Xray; this role has no local Xray instance."
-XRAY_RESTART_UNSUPPORTED = "Restarting Xray is done on the node that runs it; this role has no local Xray instance."
-XRAY_GEO_UNSUPPORTED = "Geo databases live on the node that runs Xray; this role has no local Xray instance."
+XRAY_RESTART_UNSUPPORTED = (
+    "Restarting Xray is done on the node that runs it; this role has no local Xray instance. "
+    "Supply panel_id to route the operation to a node."
+)
+XRAY_GEO_UNSUPPORTED = (
+    "Geo databases live on the node that runs Xray; this role has no local Xray instance. "
+    "Supply panel_id to route the operation to a node."
+)
 XRAY_SETTINGS_UNSUPPORTED = (
     "Xray settings (log level, GeoIP/GeoSite URLs) are read by the node that generates the Xray "
-    "config; this role has no local Xray instance, so a value stored here would reach nothing."
+    "config; this role has no local Xray instance, so a value stored here would reach nothing. "
+    "Supply panel_id to route the operation to a node."
 )
-XRAY_CONFIG_UNSUPPORTED = "The Xray config file lives on the node that runs Xray; this role has no local Xray instance."
+XRAY_CONFIG_UNSUPPORTED = (
+    "The Xray config file lives on the node that runs Xray; this role has no local Xray instance. "
+    "Supply panel_id to route the operation to a node."
+)
+
+
+def _requested_panel_id():
+    return request.args.get("panel_id", type=int)
+
+
+def _dispatch(panel_id, proxy_name, *args):
+
+    from panel_core.services import panel_proxy
+
+    try:
+        return jsonify(getattr(panel_proxy, proxy_name)(panel_id, *args))
+    except panel_proxy.RemotePanelError as exc:
+        return remote_panel_failure(exc)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
 
 def _set_system_setting(key, value):
@@ -65,9 +99,14 @@ def get_system_stats():
 @admin_or_federation_token_required
 @limiter.limit("5 per minute")
 def restart():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_restart_xray")
+
     if not has_local_xray():
         return jsonify({"error": XRAY_RESTART_UNSUPPORTED}), 501
     try:
+        audit_privileged_change(logger, "Xray restarted")
         restart_xray_container()
         return jsonify({"status": "restarted"}), 200
     except Exception:
@@ -120,9 +159,13 @@ def get_logs():
 
 
 @bp.route("/system/settings", methods=["GET"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("60 per minute")
 def system_settings_get():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_get_system_settings")
+
     if not has_local_xray():
         return jsonify({"error": XRAY_SETTINGS_UNSUPPORTED}), 501
     try:
@@ -132,9 +175,13 @@ def system_settings_get():
 
 
 @bp.route("/system/settings", methods=["PUT"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("20 per minute")
 def system_settings_update():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_update_system_settings", request.get_json(silent=True) or {})
+
     if not has_local_xray():
         return jsonify({"error": XRAY_SETTINGS_UNSUPPORTED}), 501
     try:
@@ -156,6 +203,7 @@ def system_settings_update():
         current_settings = get_system_settings()
         should_restart = "xray_log_level" in updates and updates["xray_log_level"] != current_settings["xrayLogLevel"]
 
+        audit_privileged_change(logger, f"Xray settings changed ({', '.join(sorted(updates))})")
         for key, value in updates.items():
             _set_system_setting(key, value)
         db.session.commit()
@@ -207,9 +255,13 @@ def keys():
 
 
 @bp.route("/config", methods=["GET"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("60 per minute")
 def get_config():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_get_xray_config")
+
     if not has_local_xray():
         return jsonify({"error": XRAY_CONFIG_UNSUPPORTED}), 501
     try:
@@ -219,18 +271,24 @@ def get_config():
 
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        audit_privileged_change(logger, "Xray config read (REALITY private key, WireGuard keys, client UUIDs)")
         return jsonify(data)
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
 
 
 @bp.route("/system/update-geo", methods=["POST"])
-@token_required
+@admin_or_federation_token_required
 @limiter.limit("10 per hour")
 def geo_update():
+    panel_id = _requested_panel_id()
+    if panel_id:
+        return _dispatch(panel_id, "proxy_update_geo")
+
     if not has_local_xray():
         return jsonify({"error": XRAY_GEO_UNSUPPORTED}), 501
     try:
+        audit_privileged_change(logger, "Geo databases updated")
         update_geo_db()
         return jsonify({"status": "updated"}), 200
     except Exception:

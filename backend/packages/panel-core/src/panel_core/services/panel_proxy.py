@@ -13,6 +13,8 @@ _SNAPSHOT_TTL = 60
 _STATUS_TTL = 120
 _LAST_POLL_TTL = 300
 _STATS_TIMEOUT = 15
+_XRAY_RESTART_TIMEOUT = 30
+_GEO_TIMEOUT = 110
 
 REFRESH_CHANNEL = "panel:refresh"
 
@@ -156,6 +158,24 @@ class FederationClient:
 
     def stats_users_ranking(self, params: dict) -> dict:
         return self._call_reporting("get", "/api/stats/users-ranking", params=params, timeout=_STATS_TIMEOUT)
+
+    def get_system_settings(self) -> dict:
+        return self._call_reporting("get", "/api/system/settings", timeout=8)
+
+    def update_system_settings(self, payload: dict) -> dict:
+        return self._call_reporting("put", "/api/system/settings", json=payload, timeout=_XRAY_RESTART_TIMEOUT)
+
+    def get_xray_config(self) -> dict:
+        return self._call_reporting("get", "/api/config", timeout=15)
+
+    def update_geo(self) -> dict:
+        return self._call_reporting("post", "/api/system/update-geo", timeout=_GEO_TIMEOUT)
+
+    def restart_xray(self) -> dict:
+        return self._call_reporting("post", "/api/restart", timeout=_XRAY_RESTART_TIMEOUT)
+
+    def set_user_routing(self, payload: dict) -> dict:
+        return self._call_reporting("post", "/api/user/routing", json=payload, timeout=_XRAY_RESTART_TIMEOUT)
 
     def create_inbound(self, payload: dict) -> dict:
         return self._call("post", "/api/inbounds", json=payload, timeout=8)
@@ -567,6 +587,50 @@ def proxy_stats_users_ranking(panel_id: int, params: dict) -> dict:
 
     _, client = _client_for(panel_id)
     return client.stats_users_ranking(params)
+
+
+def proxy_get_system_settings(panel_id: int) -> dict:
+
+    _, client = _client_for(panel_id)
+    return client.get_system_settings()
+
+
+def proxy_update_system_settings(panel_id: int, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.update_system_settings(payload)
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_get_xray_config(panel_id: int) -> dict:
+
+    _, client = _client_for(panel_id)
+    return client.get_xray_config()
+
+
+def proxy_update_geo(panel_id: int) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.update_geo()
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_restart_xray(panel_id: int) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.restart_xray()
+    _nudge_panel_refresh(panel.id)
+    return result
+
+
+def proxy_set_user_routing(panel_id: int, payload: dict) -> dict:
+
+    panel, client = _client_for(panel_id)
+    result = client.set_user_routing(payload)
+    _nudge_panel_refresh(panel.id)
+    return result
 
 
 def fetch_panel_snapshot_live(panel_id: int) -> dict:

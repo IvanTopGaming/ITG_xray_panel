@@ -287,17 +287,6 @@ export default function Dashboard() {
     refetchInterval: 3000,
   });
 
-  const { data: outbounds } = useQuery({
-    queryKey: ['outbounds'],
-    queryFn: async () => (await api.get<Outbound[]>('/outbounds')).data,
-    enabled: hasLocalXray,
-  });
-  const { data: balancers } = useQuery({
-    queryKey: ['balancers'],
-    queryFn: async () => (await api.get<Balancer[]>('/balancers')).data,
-    enabled: hasLocalXray,
-  });
-
   const { data: panels } = useLinkedPanels();
 
   useEffect(() => {
@@ -369,23 +358,6 @@ export default function Dashboard() {
   }, [inbounds, now]);
 
   const canCreateInbound = hasLocalXray || (panels?.length ?? 0) > 0;
-
-  const routeOptions = useMemo(() => {
-    const enabledOutboundTags = new Set(
-      (outbounds || []).filter((o) => o.enable !== false).map((o) => o.tag)
-    );
-    return [
-      { value: '', label: 'Default (No preference)' },
-      ...(balancers
-        ?.filter(
-          (b) => b.enable !== false && b.selector.some((tag) => enabledOutboundTags.has(tag))
-        )
-        .map((b) => ({ value: b.tag, label: `Balancer: ${b.tag}` })) || []),
-      ...(outbounds
-        ?.filter((o) => o.enable !== false && !['direct', 'block'].includes(o.tag))
-        .map((o) => ({ value: o.tag, label: `Server: ${o.tag}` })) || []),
-    ];
-  }, [outbounds, balancers]);
 
   return (
     <div className="space-y-6 pb-24 md:pb-10">
@@ -590,7 +562,6 @@ export default function Dashboard() {
               <InboundCard
                 inbound={ib}
                 now={now}
-                routeOptions={routeOptions}
                 selectedUsers={selectedUsers}
                 onToggleUser={toggleUser}
                 onSelectAll={selectAllInInbound}
@@ -1108,7 +1079,6 @@ function BulkToolbar({
 function InboundCard({
   inbound,
   now,
-  routeOptions,
   selectedUsers,
   onToggleUser,
   onSelectAll,
@@ -1117,7 +1087,6 @@ function InboundCard({
 }: {
   inbound: Inbound;
   now: number;
-  routeOptions: any[];
   selectedUsers: Set<string>;
   onToggleUser: (panelId: number | null | undefined, tag: string, email: string) => void;
   onSelectAll: (panelId: number | null | undefined, tag: string, emails: string[]) => void;
@@ -1290,7 +1259,6 @@ function InboundCard({
                       client={c}
                       inbound={inbound}
                       now={now}
-                      routeOptions={routeOptions}
                       isSelected={selectedUsers.has(
                         makeUserKey(inbound.panel_id, inbound.tag, c.email)
                       )}
@@ -1386,7 +1354,6 @@ function UserRow({
   client,
   inbound,
   now,
-  routeOptions,
   isSelected,
   onToggleSelect,
   panelQs,
@@ -1397,7 +1364,6 @@ function UserRow({
   client: Client;
   inbound: Inbound;
   now: number;
-  routeOptions: any[];
   isSelected: boolean;
   onToggleSelect: () => void;
   panelQs: string;
@@ -1415,7 +1381,38 @@ function UserRow({
   const [revokeTarget, setRevokeTarget] = useState<UserDevice | null>(null);
   const [revokeLoading, setRevokeLoading] = useState(false);
 
-  const actionCount = 4 + (hasLocalXray ? 1 : 0) + (localUnsupported ? 0 : 2);
+  // The route list has to come from the machine that will do the routing: the master runs no Xray
+  // and holds no outbounds of its own, so an unscoped fetch would offer an empty dropdown.
+  const routeScope = inbound.panel_id ?? 'local';
+  const { data: outbounds } = useQuery({
+    queryKey: ['outbounds', routeScope],
+    queryFn: async () => (await api.get<Outbound[]>(`/outbounds${panelQs}`)).data,
+    enabled: routingModal,
+  });
+  const { data: balancers } = useQuery({
+    queryKey: ['balancers', routeScope],
+    queryFn: async () => (await api.get<Balancer[]>(`/balancers${panelQs}`)).data,
+    enabled: routingModal,
+  });
+
+  const routeOptions = useMemo(() => {
+    const enabledOutboundTags = new Set(
+      (outbounds || []).filter((o) => o.enable !== false).map((o) => o.tag)
+    );
+    return [
+      { value: '', label: 'Default (No preference)' },
+      ...(balancers
+        ?.filter(
+          (b) => b.enable !== false && b.selector.some((tag) => enabledOutboundTags.has(tag))
+        )
+        .map((b) => ({ value: b.tag, label: `Balancer: ${b.tag}` })) || []),
+      ...(outbounds
+        ?.filter((o) => o.enable !== false && !['direct', 'block'].includes(o.tag))
+        .map((o) => ({ value: o.tag, label: `Server: ${o.tag}` })) || []),
+    ];
+  }, [outbounds, balancers]);
+
+  const actionCount = 4 + (localUnsupported ? 0 : 3);
 
   useEffect(() => {
     setSelectedRoute(client.preferred_outbound || '');
@@ -1737,7 +1734,7 @@ function UserRow({
             >
               <Link2 size={13} />
             </Button>
-            {hasLocalXray && (
+            {!localUnsupported && (
               <Button
                 variant="secondary"
                 size="icon"
@@ -1866,7 +1863,7 @@ function UserRow({
         />
       </Modal>
 
-      {hasLocalXray && (
+      {!localUnsupported && (
         <Modal
           isOpen={routingModal}
           onClose={() => setRoutingModal(false)}
