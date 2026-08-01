@@ -31,6 +31,8 @@ services:
     networks:
       - cron-net
 
+    volumes:
+      - ./ca.crt:/etc/ssl/panel-ca.crt:ro
 networks:
   cron-net:
     driver: bridge

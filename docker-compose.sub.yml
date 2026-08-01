@@ -38,6 +38,8 @@ services:
         aliases:
           - backend
 
+    volumes:
+      - ./ca.crt:/etc/ssl/panel-ca.crt:ro
   caddy:
     image: ${CADDY_IMAGE:?CADDY_IMAGE is required}
     container_name: panel-sub-caddy

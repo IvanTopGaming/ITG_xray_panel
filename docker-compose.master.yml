@@ -18,6 +18,7 @@ services:
     container_name: panel-backend
     restart: always
     volumes:
+      - ./ca.crt:/etc/ssl/panel-ca.crt:ro
       - ./db_data:/app/db
     environment:
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}

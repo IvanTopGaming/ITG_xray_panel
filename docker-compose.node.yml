@@ -66,6 +66,7 @@ services:
     container_name: panel-backend
     restart: always
     volumes:
+      - ./ca.crt:/etc/ssl/panel-ca.crt:ro
       - shared_config:/etc/xray
       - ./db_data:/app/db
       - xray_logs:/var/log/xray

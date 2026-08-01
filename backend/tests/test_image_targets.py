@@ -87,6 +87,9 @@ THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY = {
     "XRAY_IMAGE": "upstream Xray-core image; its tag tracks xray_core_ref, not a semver in versions.json",
     "SOCKET_PROXY_IMAGE": "third-party image (tecnativa/docker-socket-proxy), never built or versioned by this repo",
     "REDIS_IMAGE": "third-party image (redis), never built or versioned by this repo",
+    "POSTGRES_IMAGE": "third-party image (postgres), never built or versioned by this repo. It pins "
+    "both the server and the pg-backup sidecar from one variable on purpose: pg_dump refuses to dump "
+    "from a server newer than itself, so letting the two drift turns the backup into a silent no-op",
 }
 
 VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN = {

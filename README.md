@@ -111,9 +111,25 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 
 ## 🚀 Quick Start
 
-> ⚠️ **There is no installer yet.** The deployment is a set of per-host Docker Compose stacks, brought
-> up by hand; a from-scratch install/management script is the next piece of work. What follows is the
-> manual path, and it is the one the maintainers use.
+On every machine, one command:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/IvanTopGaming/ITG_xray_panel/main/scripts/install.sh)
+```
+
+It asks which role the box runs, generates the secrets and the `.env`, fetches that role's compose
+file, and starts it. **Install the data tier first** — it prints one bundle line carrying every
+shared secret and its CA; paste that line into the installer on each of the other hosts and they
+derive the rest themselves. Nothing is typed twice and no host needs ssh access to another.
+
+Everything it creates lives in one directory (`./itg-panel` by default). It installs no packages,
+writes nothing outside that directory, and leaves no copy of itself behind.
+
+<details>
+<summary><b>Doing it by hand instead</b></summary>
+
+The installer is a convenience over a deployment you can assemble yourself; the sections below
+describe exactly what it does, and they are worth reading before running it in production.
 
 ### 1 · Decide the hosts
 
@@ -212,6 +228,8 @@ New settings are picked up within ~60 s — no restart needed.
 > ⚠️ If you take payments, point the YooKassa merchant dashboard's webhook at
 > `https://<BOT_DOMAIN>/api/billing/yookassa/webhook`. That endpoint lives on the bot host and
 > nowhere else; while that host is down, **no payment is confirmed at all**.
+
+</details>
 
 ---
 
