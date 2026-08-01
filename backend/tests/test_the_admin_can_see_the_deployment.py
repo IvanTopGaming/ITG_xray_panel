@@ -1,22 +1,26 @@
-"""§10.8: five things an admin used to learn from a user complaint.
+"""§10.8: the things an admin used to learn from a user complaint.
 
 Metrics went in phase 6, logs are json-file rotations on five machines collected nowhere, and
 `/healthz` / `/readyz` answer "the process is up" and "its database replies". Between those and a
-real outage there was nothing: the certificate that has to be renewed by hand on four-plus hosts and
-is dated nowhere, the `bot_event` backlog that is the only sign the bus is broken, the payment
-stranded in `processing` with money taken and access not granted, the neighbour left behind in a
-lock-step release, and the data tier itself.
+real outage there was nothing: the `bot_event` backlog that is the only sign the bus is broken, the
+payment stranded in `processing` with money taken and access not granted, the neighbour left behind
+in a lock-step release, and the data tier itself.
 
-Two mechanisms, and the split is deliberate. Four readings are things *this* host can look at
-directly, so they are a request. The fifth cannot be looked at at all -- sub, bot-api and cron have
-no UI, and a node's card shows online/offline and no version -- so each role stamps its own version
-into the shared Redis, the same shape wave 5b built for the bot (§67) and for the same reason: the
-writer and the reader are different containers, so nothing held in a process can carry it.
+The certificate was the fifth, and the strongest reason this card existed at all -- four-plus hosts,
+one hand-issued pair each, nothing renewing them, no date anywhere. Caddy issues and renews them
+itself since wave 11 and keeps them in its own storage, so the panel has nothing true left to say
+about them and the reading was removed rather than left answering "not mounted" forever.
 
-**Nothing here may raise.** A health card that 500s because it could not read a certificate tells an
-admin less than one that says the certificate could not be read, and it would take About down with
-it. Every reading therefore has an unavailable form, and this file asserts the unavailable forms as
-hard as the happy ones -- they are what actually ships on a host with no certs mounted.
+Two mechanisms, and the split is deliberate. The direct readings are things *this* host can look at,
+so they are a request. Versions cannot be looked at at all -- sub, bot-api and cron have no UI, and
+a node's card shows online/offline and no version -- so each role stamps its own version into the
+shared Redis, the same shape wave 5b built for the bot (§67) and for the same reason: the writer and
+the reader are different containers, so nothing held in a process can carry it.
+
+**Nothing here may raise.** A health card that 500s because one reading could not be taken tells an
+admin less than one that says that reading is unavailable, and it would take About down with it.
+Every reading therefore has an unavailable form, and this file asserts the unavailable forms as hard
+as the happy ones.
 """
 
 from __future__ import annotations
@@ -317,43 +321,22 @@ def test_serving_a_request_stamps_this_role(master, headers, shared):
 def test_health_answers_with_every_reading(master, headers, shared):
     body = master.test_client().get("/api/system/health", headers=headers).get_json()
 
-    assert set(body) == {"certificate", "undelivered_events", "stuck_payments", "data_tier"}
+    assert set(body) == {"undelivered_events", "stuck_payments", "data_tier"}
 
 
-def test_an_absent_certificate_is_reported_not_raised(master, headers, shared, monkeypatch):
-    from panel_core.services import health as health_module
+def test_health_no_longer_reports_a_certificate(master, headers, shared):
+    """Caddy owns the certificate now, so the panel has nothing true to say about it.
 
-    monkeypatch.setattr(health_module, "CERT_PATH", "/nonexistent/fullchain.pem")
-    response = master.test_client().get("/api/system/health", headers=headers)
+    The card was added when four-plus hosts each carried a hand-issued pair that nothing renewed,
+    and a date on screen was the only warning an admin ever got. Caddy issues and renews on its
+    own since this wave, and it keeps the result in its own storage rather than in the ./certs
+    directory the backend used to read -- so the reading could only ever be "not mounted", which
+    reads as a broken deployment on a host that is perfectly healthy. Reporting nothing is honest;
+    reporting "not mounted" forever is not.
+    """
+    body = master.test_client().get("/api/system/health", headers=headers).get_json()
 
-    assert response.status_code == 200, "an unreadable certificate took the whole About card down"
-    assert response.get_json()["certificate"] == {"available": False, "reason": "not mounted"}
-
-
-def test_a_real_certificate_is_dated(master, headers, shared, monkeypatch, tmp_path):
-    cert_path = tmp_path / "fullchain.pem"
-    cert_path.write_bytes(_self_signed(b"panel.example.com"))
-    from panel_core.services import health as health_module
-
-    monkeypatch.setattr(health_module, "CERT_PATH", str(cert_path))
-
-    cert = master.test_client().get("/api/system/health", headers=headers).get_json()["certificate"]
-
-    assert cert["available"] is True
-    assert cert["not_after_ms"] > int(time.time() * 1000)
-    assert cert["domains"] == ["panel.example.com"]
-
-
-def test_a_damaged_certificate_is_reported_not_raised(master, headers, shared, monkeypatch, tmp_path):
-    broken = tmp_path / "broken.pem"
-    broken.write_bytes(b"-----BEGIN CERTIFICATE-----\nnot base64 at all\n-----END CERTIFICATE-----\n")
-    from panel_core.services import health as health_module
-
-    monkeypatch.setattr(health_module, "CERT_PATH", str(broken))
-
-    response = master.test_client().get("/api/system/health", headers=headers)
-    assert response.status_code == 200
-    assert response.get_json()["certificate"] == {"available": False, "reason": "unreadable"}
+    assert "certificate" not in body
 
 
 def test_the_bus_backlog_is_counted(master, headers, shared):
@@ -425,25 +408,3 @@ def test_an_unreachable_shared_redis_is_reported_not_raised(master, headers, mon
 
 def test_health_needs_an_admin(master):
     assert master.test_client().get("/api/system/health").status_code == 401
-
-
-def _self_signed(common_name: bytes) -> bytes:
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name.decode())])
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1))
-        .not_valid_after(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=42))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(common_name.decode())]), critical=False)
-        .sign(key, hashes.SHA256())
-    )
-    return cert.public_bytes(serialization.Encoding.PEM)

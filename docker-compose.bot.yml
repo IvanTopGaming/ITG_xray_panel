@@ -65,11 +65,12 @@ services:
       - "443:443"
     volumes:
       - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
-      - ./certs:/root/cert:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
       - BOT_DOMAIN=${BOT_DOMAIN:?BOT_DOMAIN is required}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+      - ACME_CA=${ACME_CA:-}
     depends_on:
       bot-api:
         condition: service_healthy

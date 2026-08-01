@@ -69,7 +69,6 @@ services:
       - shared_config:/etc/xray
       - ./db_data:/app/db
       - xray_logs:/var/log/xray
-      - ./certs:/root/cert:ro
     environment:
       - XRAY_API_HOST=xray:10085
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
@@ -150,13 +149,14 @@ services:
       - "443:443"
     volumes:
       - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
-      - ./certs:/root/cert:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
       - PROXY_DOMAIN=${PROXY_DOMAIN:?PROXY_DOMAIN is required}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+      - ACME_CA=${ACME_CA:-}
     depends_on:
       frontend:
         condition: service_healthy

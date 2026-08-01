@@ -3,8 +3,64 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 )
+
+func isLocalHostname(host string) bool {
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if strings.HasSuffix(host, ".local") {
+		return true
+	}
+	return !strings.Contains(host, ".")
+}
+
+func acmeIssuer(cfg *Config) map[string]any {
+	issuer := map[string]any{"module": "acme"}
+	if cfg.ACMEEmail != "" {
+		issuer["email"] = cfg.ACMEEmail
+	}
+	if cfg.ACMECA != "" {
+		issuer["ca"] = cfg.ACMECA
+	}
+	return issuer
+}
+
+func tlsAutomation(cfg *Config) map[string]any {
+	var public, internal []any
+	for _, r := range cfg.SNIRoutes {
+		if !r.TLS {
+			continue
+		}
+		if isLocalHostname(r.Match) {
+			internal = append(internal, r.Match)
+		} else {
+			public = append(public, r.Match)
+		}
+	}
+	policies := []any{}
+	if len(public) > 0 {
+		policies = append(policies, map[string]any{
+			"subjects": public,
+			"issuers":  []any{acmeIssuer(cfg)},
+		})
+	}
+	if len(internal) > 0 {
+		policies = append(policies, map[string]any{
+			"subjects": internal,
+			"issuers":  []any{map[string]any{"module": "internal"}},
+		})
+	}
+	return map[string]any{"policies": policies}
+}
 
 func securityHeaders() map[string]any {
 	return map[string]any{
@@ -159,14 +215,7 @@ func Generate(cfg *Config) ([]byte, error) {
 	root := map[string]any{
 		"apps": map[string]any{
 			"tls": map[string]any{
-				"certificates": map[string]any{
-					"load_files": []any{
-						map[string]any{
-							"certificate": "/root/cert/fullchain.pem",
-							"key":         "/root/cert/key.pem",
-						},
-					},
-				},
+				"automation": tlsAutomation(cfg),
 			},
 			"http": map[string]any{
 				"servers": httpServers,

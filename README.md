@@ -148,24 +148,28 @@ PANEL_SECRET_PATH=my-secret-path   # the panel is only reachable at /<this>/
 Each example file lists every variable its own host reads, with a comment explaining what breaks
 without it. A missing mandatory one fails the `up` rather than starting a half-working stack.
 
-### 3 · Issue a certificate on every TLS-terminating host
+### 3 · Certificates — nothing to do
 
-Master, node, sub and bot each terminate TLS for their own names, and **Caddy will not start without
-`./certs/fullchain.pem`** — issue the cert before the first `up`. There is no cron and no ACME: run
-this again before the 90-day expiry (the panel's System → About shows the clock).
+Master, node, sub and bot each terminate TLS for their own names, and **Caddy obtains and renews
+those certificates itself** over ACME, on first boot and every 60 days after. No certbot, no cron,
+no files to copy, no step before the first `up`.
 
-```bash
-set -a; . ./.env; set +a
-certbot certonly --standalone --non-interactive --agree-tos \
-    --register-unsafely-without-email --cert-name "$PANEL_DOMAIN" -d "$PANEL_DOMAIN"
-mkdir -p ./certs
-cp -L "/etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem" ./certs/fullchain.pem
-cp -L "/etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem"   ./certs/key.pem
-```
+Two things must be true, and they are the deployer's half:
 
-Substitute `SUB_DOMAIN` / `BOT_DOMAIN` on those hosts. A host serving two names (master + sub on one
-box) needs a single **SAN** cert covering both — add a second `-d` and `--expand`. On an already-running
-host, stop Caddy first (`docker compose -f docker-compose.<host>.yml stop caddy`) so certbot can bind `:80`.
+- the host's domain resolves to that box, and
+- **`:80` is reachable from the internet** — it carries the HTTP-01 challenge. Layer4 owns `:443` for
+  SNI routing, so TLS-ALPN is unavailable and there is no second path. A cloud firewall closing 80
+  breaks issuance.
+
+Optionally set `ACME_EMAIL` (Let's Encrypt mails expiry warnings there) and, while rehearsing a
+deploy, `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory` — the production CA allows
+only 5 identical certificates per week, which a debugging session eats easily.
+
+Certificates live in the `caddy_data` volume. **Don't delete it on upgrade** — that forces a re-issue
+against the same weekly limit.
+
+> A local deployment (`panel.local`, an IP, anything without a public name) gets Caddy's internal CA
+> automatically, so it works offline without a public certificate.
 
 ### 4 · Bring the stacks up, in this order
 
@@ -347,20 +351,28 @@ is applied within ~60 s without a restart.
 
 ## 🔐 TLS & certificates
 
-Caddy serves a certificate from `./certs/{fullchain,key}.pem` — it does **not** use ACME automatically (it owns `:443` for SNI routing, and `:80` is just a redirect), and it will not start without one.
+**Caddy issues and renews every certificate itself over ACME.** No certbot, no cron, no manual step —
+see [Quick Start step 3](#3--certificates--nothing-to-do) for the two conditions the deployer owns.
 
-**Every TLS-terminating host issues its own**, by hand, with the `certbot --standalone` recipe in
-[Quick Start step 3](#3--issue-a-certificate-on-every-tls-terminating-host). Caddy holds the published
-`:80`, so certbot can only bind it while Caddy is stopped — which also means certbot's own renewal
-timer cannot do this, and would not copy the result into `./certs` anyway.
+The interesting part is which names get requested. Caddy asks only for the routes it actually
+terminates, so a node's decoy domain — a raw passthrough where Xray answers the handshake with
+REALITY, and whose SNI is somebody else's domain — is **never** requested. That matters beyond
+tidiness: Let's Encrypt counts failed validations against the account, so a node asking for
+`www.google.com` on every restart would eventually fail to get the certificate it does need, for a
+reason nothing in the logs ties back to the decoy.
 
-**Renewal is the same command, run manually.** There is no cron. What there *is*, since wave 6, is a
-clock: **System → About** shows each host's certificate expiry with its SAN list, amber under 14 days
-and red past it. That is the one place this deployment tells you before a certificate lapses.
+Names that no public CA can validate (`panel.local`, a bare IP, anything without a dot) transparently
+get Caddy's **internal** CA instead, which is what makes a local or offline deployment work.
 
-A host serving two names off one box (master + sub, say) needs a single **SAN** cert covering both:
-add a second `-d` and `--expand` to the same command. Automating all of this is folded into the
-from-scratch install/management script that is the next piece of work.
+The mechanism is HTTP-01 on `:80`, and it is the only one available: layer4 owns `:443` for SNI
+routing, so TLS-ALPN is off the table. Caddy answers the challenge before its own routes run, so the
+catch-all 308 redirect on `:80` does not shadow it.
+
+Certificates and the ACME account live in the `caddy_data` volume — **keep it across upgrades**, or
+each rebuild re-issues against Let's Encrypt's limit of 5 identical certificates per week.
+
+**The data tier is the exception**: Postgres and Redis share one pair from `./pg_certs`, on a machine
+with no Caddy and no public `:80`. It runs on its own long-lived CA rather than ACME.
 
 ---
 

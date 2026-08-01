@@ -19,6 +19,8 @@ type Route struct {
 
 type Config struct {
 	SNIRoutes []Route `yaml:"sni_routes"`
+	ACMEEmail string  `yaml:"-"`
+	ACMECA    string  `yaml:"-"`
 }
 
 var envPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -50,6 +52,8 @@ func LoadConfig(data []byte, lookup func(string) string) (*Config, error) {
 		kept = append(kept, r)
 	}
 	cfg.SNIRoutes = kept
+	cfg.ACMEEmail = lookup("ACME_EMAIL")
+	cfg.ACMECA = lookup("ACME_CA")
 	return &cfg, nil
 }
 

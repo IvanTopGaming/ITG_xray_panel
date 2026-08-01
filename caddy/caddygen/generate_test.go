@@ -410,3 +410,185 @@ func TestSecurityHeadersAllowNoExternalFontHosts(t *testing.T) {
 		}
 	}
 }
+
+func tlsAutomationPolicies(t *testing.T, root map[string]any) []map[string]any {
+	t.Helper()
+	apps := root["apps"].(map[string]any)
+	tlsApp, ok := apps["tls"].(map[string]any)
+	if !ok {
+		t.Fatal("the generated config carries no tls app at all")
+	}
+	automation, ok := tlsApp["automation"].(map[string]any)
+	if !ok {
+		t.Fatalf("tls app carries no automation block, so nothing issues certificates: %v", tlsApp)
+	}
+	raw, ok := automation["policies"].([]any)
+	if !ok {
+		t.Fatalf("automation carries no policies: %v", automation)
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, p := range raw {
+		out = append(out, p.(map[string]any))
+	}
+	return out
+}
+
+func policySubjects(policies []map[string]any) []string {
+	var subjects []string
+	for _, p := range policies {
+		raw, _ := p["subjects"].([]any)
+		for _, s := range raw {
+			subjects = append(subjects, s.(string))
+		}
+	}
+	return subjects
+}
+
+func policyIssuers(policies []map[string]any) []map[string]any {
+	var issuers []map[string]any
+	for _, p := range policies {
+		raw, _ := p["issuers"].([]any)
+		for _, i := range raw {
+			issuers = append(issuers, i.(map[string]any))
+		}
+	}
+	return issuers
+}
+
+// The decoy route terminates nothing -- it is a raw TCP passthrough to Xray, which answers the
+// handshake itself with REALITY. Its SNI is somebody else's domain (www.google.com in every
+// example we ship), so asking an ACME CA for it cannot succeed: the authority will refuse the
+// authorization, and Let's Encrypt counts failed validations against the account (5 per hour per
+// hostname). A node would burn that budget every time Caddy restarted, and the real certificate
+// for its panel domain would start failing to issue for a reason nothing in the logs connects to
+// the decoy. Only routes that Caddy actually terminates may appear as ACME subjects.
+func TestGenerate_OnlyTerminatedRoutesGetACertificate(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PROXY_DOMAIN": "www.google.com",
+		"PANEL_DOMAIN": "panel.example.com",
+		"SUB_DOMAIN":   "sub.example.com",
+	}))
+	b, err := Generate(cfg)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	subjects := policySubjects(tlsAutomationPolicies(t, jsonValid(t, b)))
+
+	for _, want := range []string{"panel.example.com", "sub.example.com"} {
+		found := false
+		for _, got := range subjects {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q terminates TLS but is not an ACME subject; subjects=%v", want, subjects)
+		}
+	}
+	for _, got := range subjects {
+		if got == "www.google.com" {
+			t.Fatalf("the decoy domain became an ACME subject; subjects=%v", subjects)
+		}
+	}
+}
+
+// Certificates come from the ACME account in caddy_data now. A load_files entry would keep the
+// old failure mode alive: Caddy refuses to start when the file is missing, which is exactly the
+// crash-loop a fresh host hits before anyone has issued anything.
+func TestGenerate_NoCertificateFilesAreLoaded(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PROXY_DOMAIN": "www.google.com",
+		"PANEL_DOMAIN": "panel.example.com",
+	}))
+	b, _ := Generate(cfg)
+	for _, forbidden := range []string{"load_files", "/root/cert"} {
+		if containsString(string(b), forbidden) {
+			t.Fatalf("generated config still references %q", forbidden)
+		}
+	}
+}
+
+// The HTTP-01 challenge arrives on :80, and something in this process has to be listening there
+// to answer it. Caddy solves it in Server.ServeHTTP, which calls tlsApp.HandleHTTPChallenge before
+// any user-defined route runs -- unconditionally, with no dependence on the port or on
+// automatic_https (verified against caddyserver/caddy modules/caddyhttp/server.go and
+// modules/caddytls/tls.go). So our catch-all 308 does not shadow the challenge, and
+// automatic_https stays disabled on this server: it has no host matchers, nothing here should
+// issue certificates, and the automation policies do that instead. What must not happen is the
+// :80 server disappearing -- then nothing in the process holds the port, and every issuance
+// fails on a config that still looks right.
+func TestGenerate_KeepsAServerOnPort80ForTheChallenge(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PROXY_DOMAIN": "www.google.com",
+		"PANEL_DOMAIN": "panel.example.com",
+	}))
+	b, _ := Generate(cfg)
+	root := jsonValid(t, b)
+	servers := root["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
+	redirect, ok := servers["http_redirect"].(map[string]any)
+	if !ok {
+		t.Fatal("no http_redirect server: nothing holds :80, so no HTTP-01 challenge can be answered")
+	}
+	listen := redirect["listen"].([]any)
+	if len(listen) != 1 || listen[0] != ":80" {
+		t.Fatalf("the redirect server no longer listens on :80: %v", listen)
+	}
+}
+
+// A local deployment (panel.local, localhost, a bare IP) has no publicly resolvable name, so a
+// public CA cannot validate it and the whole stack would fail to start behind a wall of ACME
+// errors. Caddy's internal CA covers exactly this case, and it is also what replaced the deleted
+// generate_local_cert.sh.
+func TestGenerate_LocalHostnamesUseTheInternalIssuer(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PROXY_DOMAIN": "www.google.com",
+		"PANEL_DOMAIN": "panel.local",
+	}))
+	b, _ := Generate(cfg)
+	issuers := policyIssuers(tlsAutomationPolicies(t, jsonValid(t, b)))
+	if len(issuers) == 0 {
+		t.Fatal("no issuers at all")
+	}
+	for _, issuer := range issuers {
+		if issuer["module"] != "internal" {
+			t.Fatalf("panel.local must use the internal issuer, got %v", issuer)
+		}
+	}
+}
+
+// Let's Encrypt mails the account address before a certificate expires. It is the only warning
+// that reaches a human if renewal has been failing, which matters here because the health card
+// that used to show the expiry was removed once Caddy took the renewal over.
+func TestGenerate_ACMEEmailReachesTheIssuer(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PROXY_DOMAIN": "www.google.com",
+		"PANEL_DOMAIN": "panel.example.com",
+		"ACME_EMAIL":   "ops@example.com",
+	}))
+	b, _ := Generate(cfg)
+	issuers := policyIssuers(tlsAutomationPolicies(t, jsonValid(t, b)))
+	for _, issuer := range issuers {
+		if issuer["email"] != "ops@example.com" {
+			t.Fatalf("ACME_EMAIL did not reach the issuer: %v", issuer)
+		}
+	}
+}
+
+// Let's Encrypt allows 5 identical certificates per week, and a deployment being debugged blows
+// through that in an afternoon -- after which the host cannot get a certificate at all until the
+// window rolls. Pointing ACME_CA at the staging directory is the supported way to rehearse.
+func TestGenerate_ACMECAOverrideReachesTheIssuer(t *testing.T) {
+	staging := "https://acme-staging-v02.api.letsencrypt.org/directory"
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PROXY_DOMAIN": "www.google.com",
+		"PANEL_DOMAIN": "panel.example.com",
+		"ACME_CA":      staging,
+	}))
+	b, _ := Generate(cfg)
+	issuers := policyIssuers(tlsAutomationPolicies(t, jsonValid(t, b)))
+	for _, issuer := range issuers {
+		if issuer["ca"] != staging {
+			t.Fatalf("ACME_CA did not reach the issuer: %v", issuer)
+		}
+	}
+}

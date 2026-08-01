@@ -20,9 +20,6 @@ export interface VersionInfo {
 }
 
 export interface SystemHealth {
-  certificate:
-    | { available: true; not_after_ms: number; domains: string[] }
-    | { available: false; reason: string };
   undelivered_events: { available: boolean; count?: number };
   stuck_payments: { available: boolean; processing?: number; pending_over_a_day?: number };
   data_tier: { database: string; shared_redis: string };

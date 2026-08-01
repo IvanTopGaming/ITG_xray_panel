@@ -948,30 +948,6 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
 
   const lines = [];
 
-  const cert = health.certificate;
-  if (cert.available) {
-    const days = Math.floor((cert.not_after_ms - Date.now()) / 86_400_000);
-    lines.push(
-      <HealthLine
-        key="cert"
-        label="certificate"
-        value={days < 0 ? `expired ${-days}d ago` : `${days}d left`}
-        tone={days < 0 ? 'bad' : days < 14 ? 'warn' : 'ok'}
-        hint={`${cert.domains.join(', ') || 'no SAN entries'} — expires ${formatDateTime(cert.not_after_ms)}. Renewal is manual on every host.`}
-      />
-    );
-  } else {
-    lines.push(
-      <HealthLine
-        key="cert"
-        label="certificate"
-        value={cert.reason}
-        tone="muted"
-        hint="This backend cannot see ./certs. Nothing is broken by that on its own — but nothing is watching the expiry either."
-      />
-    );
-  }
-
   const events = health.undelivered_events;
   lines.push(
     <HealthLine

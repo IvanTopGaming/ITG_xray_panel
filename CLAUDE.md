@@ -119,13 +119,12 @@ cd caddy/caddygen && go test -count=1 ./...   # tests for the routes.yaml → Ca
 ```
 
 ### Certificates
-**There is no cert helper script any more.** `scripts/generate_certs.sh` and
-`scripts/generate_local_cert.sh` were deleted in wave 10 with the monolithic stacks: both ran
-`docker compose stop/up caddy` with no `-f`, so they resolved the `docker-compose.yml` that no longer
-exists, and the Let's Encrypt one was written for a single box serving `PANEL_DOMAIN` + `SUB_DOMAIN`
-when the deployment has four TLS-terminating hosts, each with its own name. Every host issues its own
-by hand — the recipe is under **TLS, Caddy & certificates** below, and automating it is part of the
-from-scratch install/management script that is the next piece of work.
+**Nothing to run: Caddy issues and renews them itself over ACME (wave 11).** There is no script, no
+cron and no manual step on any of the four TLS-terminating hosts. `scripts/generate_certs.sh` and
+`scripts/generate_local_cert.sh` were deleted in wave 10 and nothing replaced them — see **TLS, Caddy
+& certificates** below for what the deployer must still get right (`:80` reachable, the domain
+resolving to that box) and for the two optional variables, `ACME_EMAIL` and `ACME_CA`. The data
+tier is the one exception and does not go through Caddy at all.
 **There is no demo-data seeder any more.** `scripts/seed_demo.py` and `scripts/seed_bot_demo.py` were deleted in wave 10: both began with `from app import create_app`, and the package `app` stopped existing in phase 3c when the backend became the namespace package `panel_core` — so they had raised `ModuleNotFoundError` on their first import line for months while this file described them as a working tool. Writing a replacement is not a repair: after the split, demo data has to be seeded into **two** databases (the master's Postgres and a node's own SQLite), which is a different script.
 
 ## Architecture
@@ -146,7 +145,7 @@ from-scratch install/management script that is the next piece of work.
 | `bot` | Telegram bot (Aiogram, asyncio) — runs on the bot host |
 | `cron` | Background jobs (`docker-compose.cron.yml`) — runs the `panel-cron` image on its own host next to the data tier: polls every node, renews free tariffs, replays undelivered bot events, prunes old rows, checks for releases. Publishes no ports and registers no blueprint; it is also the **only** service that migrates the shared Postgres schema |
 
-Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only one with internet egress) plus two `internal: true` segments: `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy). The split (formerly a single `control-net`) keeps the Docker-socket proxy reachable only by `backend` and denies internet to both `socket-proxy` and `redis`. Key volumes: `shared_config:/etc/xray`, `xray_logs:/var/log/xray`, `./db_data:/app/db`, `./certs:/root/cert:ro`. Published ports on `caddy`: `80:80`, `443:443` (TCP only — there is no `443/udp` / HTTP-3).
+Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only one with internet egress) plus two `internal: true` segments: `redis-net` (backend ↔ redis ↔ bot) and `dockersock-net` (backend ↔ socket-proxy). The split (formerly a single `control-net`) keeps the Docker-socket proxy reachable only by `backend` and denies internet to both `socket-proxy` and `redis`. Key volumes: `shared_config:/etc/xray`, `xray_logs:/var/log/xray`, `./db_data:/app/db`, and `caddy_data:/data` — which since wave 11 holds the ACME account and every issued certificate, so deleting it costs a re-issue against Let's Encrypt's weekly limit. Published ports on `caddy`: `80:80`, `443:443` (TCP only — there is no `443/udp` / HTTP-3; `:80` is not merely a redirect any more, it is the only path the HTTP-01 challenge can take).
 
 In the split Postgres deployment there are **five** Flask app factories (`panel_core.roles.{master,worker,sub,botapi,cron}`). Which one runs is decided by the gunicorn command, not by `PANEL_ROLE`: the variable is a declared expectation that `bind_role()` compares against the factory that actually started, refusing to boot on a mismatch (it was worth having when the master image still shipped `panel-sub`, so that pointing its command at `roles.sub` would boot the wrong role under the right image name; wave 3b removed that dependency, and the check stays as cheap insurance against the same class of mistake). Left unset, `bind_role()` fills it in itself. The five: `master` (default — admin API, no local Xray, and **no billing surface**: it registers neither the `billing` nor the `bot_service` blueprint) runs against Postgres via `DATABASE_URL`; `worker` — called a **node** below — has its own Xray, but (per `docker-compose.node.yml` / `.env.node.example`) has no `DATABASE_URL` at all, so it runs against its own local SQLite (`./db_data`) as a cache/fallback rather than sharing the master's Postgres; `sub` serves subscription links and is the only role that does — it is also the only role that enforces the device limit, and therefore a **writer** of the shared Postgres, not a reader; `bot` (bot-api) serves `/bot-service/*` **and the whole billing surface** — `/api/billing/checkout`, the YooKassa webhook, and the three payment crons; `cron` runs every background job that used to sit on the master and **owns the shared Postgres schema** — it is the only role that migrates it. A node and a Panel Federation `LinkedPanel` (see Panel Federation below) are two views of the same thing, not separate systems: the node is the process role (`PANEL_ROLE=worker`), while `LinkedPanel` is the row the master's Postgres uses to address it (url + `federation_token`). The master routes provisioning to a node through exactly that federation path — `TariffItem.panel_id` → `LinkedPanel` → `FederationClient.provision()` → `POST /api/federation/provision` on the node (`services/panel_proxy.py`, `api/federation.py`) — which is also *why* a node can't resolve `lang`/`renewable` itself: it has no Postgres access to `TelegramUser`/`Tariff`, only its own local SQLite.
 
@@ -264,27 +263,25 @@ The bot is **backend-client** (not standalone) — it has no local SQLite. All s
 `xray.py` both writes the full JSON config to `/etc/xray/config.json` and manages live users via the Xray Handler/Stats gRPC API. Config regeneration and Xray restart happen together when inbounds/outbounds change. The file lock `/etc/xray/config.lock` serializes concurrent writers (request handlers + the scheduler). gRPC requires gevent-compatible setup: `grpc_gevent.init_gevent()` runs at app startup before any gRPC import; current pin `grpcio==1.66.2` on Python 3.12.
 
 ### TLS, Caddy & certificates
-Caddy does **not** use automatic ACME. `caddy/caddygen/` generates Caddy's native JSON from `caddy/routes.yaml` at container start (`caddy validate` runs before `caddy run`, so a bad config fails fast). The generated config uses the **caddy-l4** layer4 app listening on `:443`, routing by **TLS SNI**:
+`caddy/caddygen/` generates Caddy's native JSON from `caddy/routes.yaml` at container start (`caddy validate` runs before `caddy run`, so a bad config fails fast). The generated config uses the **caddy-l4** layer4 app listening on `:443`, routing by **TLS SNI**:
 - `PROXY_DOMAIN` (decoy) → raw-TCP passthrough with PROXY-protocol to `xray:443`, so Xray sees the real TLS/REALITY handshake (masquerade).
 - `PANEL_DOMAIN` / `SUB_DOMAIN` → TLS terminated at Caddy, PROXY-protocol'd to a per-route loopback HTTP server (security headers + CSP, optional path filter) → `frontend:80` / `backend:5000`.
 - caddygen also emits a plain `:80` server that 308-redirects everything to https.
 
-Caddy loads **one** cert pair from `/root/cert/{fullchain,key}.pem` (mounted from `./certs`) for **all** terminated SNIs — a host serving two names therefore needs a single **SAN** cert covering both.
+**Caddy issues and renews every certificate itself over ACME (wave 11).** `tls.automation.policies` carries the subjects and the issuer; there is no `load_files` entry and no `./certs` mount anywhere any more. Certificates live in the `caddy_data` volume, which every host already had — **do not delete it on upgrade**, or Caddy re-issues from scratch and Let's Encrypt allows only 5 identical certificates per week.
 
-**Every certificate in this deployment is issued by hand, on the host that serves the name, and renewed the same way.** There is no cron, no ACME and — since wave 10 — no helper script: `scripts/generate_certs.sh` and `scripts/generate_local_cert.sh` were deleted with the monolithic stacks. The LE one had two defects that were structural rather than fixable in place: `-d "$PANEL_DOMAIN"` was unconditional while certbot is all-or-nothing, so a `PANEL_DOMAIN` resolving to some *other* box failed the entire run (which is what a sub or bot host is), and its `docker compose stop/up caddy` calls carried no `-f`, so they resolved the `docker-compose.yml` that no longer exists — on a bot box they would have replaced `panel-bot-caddy`. The recipe, run on each of the four TLS-terminating hosts with that host's own name substituted:
+Four things about how the subjects are chosen, each load-bearing:
 
-```bash
-set -a; . ./.env; set +a
-docker compose -f docker-compose.<host>.yml stop caddy   # frees :80, which Caddy holds via the published port
-certbot certonly --standalone --non-interactive --agree-tos \
-    --register-unsafely-without-email --cert-name "$PANEL_DOMAIN" -d "$PANEL_DOMAIN"
-mkdir -p ./certs
-cp -L "/etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem" ./certs/fullchain.pem
-cp -L "/etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem"   ./certs/key.pem
-docker compose -f docker-compose.<host>.yml up -d caddy
-```
+- **Only routes with `tls: true` become ACME subjects.** The decoy is a raw passthrough whose SNI is somebody else's domain (`www.google.com` in every example), so requesting it cannot succeed, and LE counts *failed* validations against the account — a node would spend that budget on every restart and then fail to get the certificate it actually needs, for a reason nothing connects to the decoy. `tests/…/generate_test.go` pins the exclusion.
+- **A local hostname gets Caddy's `internal` issuer instead** (`localhost`, `*.localhost`, `*.local`, a bare IP, any name without a dot). A public CA cannot validate those, so a local deployment would otherwise fail to start behind a wall of ACME errors. This is also what replaced the deleted `generate_local_cert.sh`.
+- **The `:80` server keeps `automatic_https: {disable: true}`, and that does not block the challenge.** Caddy solves HTTP-01 in `Server.ServeHTTP`, which calls `tlsApp.HandleHTTPChallenge` **before** any user-defined route and with no dependence on the port or on `automatic_https` (verified against `modules/caddyhttp/server.go` and `modules/caddytls/tls.go`). So the catch-all 308 does not shadow it. What matters is only that a server still listens on `:80` — delete that and nothing in the process can answer the challenge.
+- **TLS-ALPN-01 is unavailable by construction**: layer4 owns `:443`. HTTP-01 over `:80` is the only mechanism, so **`:80` must be reachable from the internet** on all four hosts, and the domain must resolve to that box. A cloud firewall closing 80 breaks issuance with no other path.
 
-Substitute `SUB_DOMAIN` / `BOT_DOMAIN` on those hosts; add a second `-d` plus `--expand` for a SAN cert. certbot's own renewal timer cannot do any of this — it can't bind `:80` while Caddy runs, and wouldn't propagate the result into `./certs` anyway. Issue the cert **before** the first `up`: Caddy will not start without `./certs/fullchain.pem` and crash-loops until it exists. Since wave 6 the expiry is at least visible — System → About reads the mounted file and shows the date with its SAN list, amber under 14 days and red past it.
+`ACME_EMAIL` (LE's expiry warnings) and `ACME_CA` (point at the LE **staging** directory while rehearsing a deploy, so a debugging session does not burn the weekly limit) are optional and passed to the `caddy` service on all four hosts.
+
+**The data tier is outside all of this** — no Caddy, ports bound to a private address, and Postgres/Redis sharing one pair from `./pg_certs`. It is covered by its own long-lived CA, not by ACME.
+
+System → About no longer shows a certificate line: Caddy owns the expiry now and keeps the file where the backend cannot read it, so the only reading left would be "not mounted" forever on a healthy host (wave 11 removed the card added in wave 6).
 
 ### Traffic enforcement
 `stats.py` polls per-user up/down via Xray gRPC every 10s, writes to `Client.up`/`down` and upserts hourly `TrafficSnapshot` rows. `check_limits` (60s) removes users that exceed limit or expiry. Monthly resets (per-client `reset_day`) zero the counters **and** delete that client's `traffic_*` `NotificationLog` rows so the next cycle's warnings can fire.
@@ -596,6 +593,8 @@ This wave moves the entire billing surface off the master. Read all six points b
 2. **The webhook is reachable again (Phase 3c-2a closed the gap).** The bot host runs its own Caddy, same pattern as the sub host: `docker-compose.bot.yml`'s `caddy` service publishes `80:80`/`443:443` and requires `BOT_DOMAIN` (`:?BOT_DOMAIN is required` — **the bot stack refuses to come up without it, by design**); `caddy/routes.yaml` carries a `bot` SNI route matching `${BOT_DOMAIN}` → `backend:5000` (the `bot-api` container aliases itself as `backend` on `bot-net`), terminates TLS, and allowlists only `/api/billing/yookassa/webhook` via `only_paths`.
 
    **Narrowing the route is not enough — the *host* has to be narrow too, and that is a property of the compose file, not of `routes.yaml`.** caddygen drops an SNI route only when its `${VAR}` interpolates to the **empty string** (`caddy/caddygen/config.go`); it has no notion of a host role, so every domain variable the Caddy container can see turns another route on. `${PANEL_DOMAIN:-}` does **not** pass an empty string — compose's `:-` substitutes the value from `.env` whenever the variable is *present* and defaults only when it is *absent*, and `PANEL_DOMAIN` is mandatory on a bot host (bot-api needs it for `sub_links.build_aggregate_sub_url` and `federation._build_panel_url`). `env_file: - .env` re-injects them all regardless of the `environment:` block. So `docker-compose.bot.yml`'s `caddy` service carries **`BOT_DOMAIN` and nothing else, and no `env_file`** — the rendered container holds exactly one variable. Because SNI is client-chosen and the box serves its cert for whatever name is asked, a stray `PANEL_DOMAIN` there would make `https://<PANEL_DOMAIN>/<PANEL_SECRET_PATH>/api/…` aimed at the **bot** box's IP land on bot-api, reaching `/api/billing/checkout` and all of `/bot-service/*` — the exact surface `only_paths` exists to withhold (both are token-protected, so this is defence in depth, not an open door). Two guards hold the line, and both now cover **all four** hosts rather than the bot alone (see "Deploy note — every host serves only its own domains" below): `backend/tests/test_compose_host_ingress.py` (runs in CI) asserts each host's Caddy selects exactly its own routes, and `caddy/caddygen/compose_test.go` renders each compose file's Caddy environment through caddygen — against a deliberately fat `.env` holding every domain — and asserts the rendered layer4 routes and HTTP servers.
+
+   **⚠️ NO LONGER TRUE — wave 11 gave Caddy ACME, so nothing below about issuing certificates by hand applies.** The bot host still needs a certificate for `BOT_DOMAIN` and still needs `:80` reachable, but Caddy obtains and renews it. Kept for the reasoning about why a shared script could not serve four hosts.
 
    **The bot host needs its own certificate covering `BOT_DOMAIN`, issued manually on the box** — it is not distributed from the master. There was a `scripts/generate_certs.sh` when this note was written and it could not do it either: it passed `-d "$PANEL_DOMAIN"` unconditionally, whose DNS points at the master, so the `certbot --standalone` HTTP-01 challenge for it was answered by the master's Caddy and certbot — being all-or-nothing — failed the whole run; and its `docker compose stop caddy` / `up -d caddy` carried no `-f`, so on a bot box they resolved the legacy monolithic `docker-compose.yml` and replaced `panel-bot-caddy`. Wave 10 deleted the script and the file it resolved; every host does this by hand now, and the bot box is no longer the exception:
 
@@ -1484,7 +1483,7 @@ pull-and-restart — **one volume line on the master and on every node**. Read a
    the containers, everything else in this wave works and the certificate line reads *"not mounted"*
    — which is honest, and is also exactly what you will see if you forget.
 
-2. **System → About grows five health lines.** Certificate expiry (with the SAN list and the date in
+2. **⚠️ The certificate line is gone again — wave 11 removed it** when Caddy took over issuance and renewal, along with the `./certs` mount into the backend that point 1 above asks for. The other four lines stand. **System → About grows five health lines.** Certificate expiry (with the SAN list and the date in
    the tooltip), the `bot_event` backlog, payments stuck in `processing` or pending over a day, the
    versions of the neighbours, and whether the data tier answers. All five are **about the host you
    are logged into**: a node's counts come from its own SQLite, not from the shared Postgres, and
@@ -1745,6 +1744,53 @@ pull-and-restart, with one ordering rule that already exists. Read all seven poi
    (`api/federation.py`) and `panel-cron` (`roles/cron.py`) to their own; `ui-core` (`lib/types.ts`)
    and `admin` (`components/bot/SettingsTab.tsx`) to both frontends. No bot text is added or
    removed, so `CURRENT_BOT_TEXTS_VERSION` does not move.
+
+### Deploy note — Caddy issues its own certificates, and the manual renewal goes away (Phase 8 wave 11)
+
+This wave changes **no schema, no federation contract and no authorisation**. It removes the only
+recurring manual operation left in the deployment, and with it a card in the panel. Read all six
+points — two of them are things you must not do afterwards.
+
+1. **`./certs` stops being used, and the mount is gone from six places.** Caddy obtains and renews
+   every certificate itself over ACME; `tls.automation.policies` replaced `load_files`. **Existing
+   pairs in `./certs` are simply ignored** — nothing reads them, nothing deletes them, and you can
+   remove the directory once the new stack is up. On the first `up` after the update each host asks
+   Let's Encrypt for its own name, which takes a few seconds; until then it serves nothing on `:443`.
+
+2. **`:80` must be reachable from the internet on master, node, sub and bot.** It was a redirect
+   before and could be firewalled without anyone noticing; it now carries the HTTP-01 challenge, and
+   it is the *only* path — layer4 owns `:443` for SNI routing, so TLS-ALPN is unavailable. A cloud
+   firewall closing 80 means no certificate at all. The domain must also resolve to that box, which
+   was already true for the panel to work.
+
+3. **Do not delete `caddy_data` on upgrade.** It holds the ACME account and every issued
+   certificate. It existed on all four hosts already, and was nearly empty; from now on losing it
+   forces a re-issue, and Let's Encrypt allows **5 identical certificates per week**. A rebuild loop
+   that recreates volumes will exhaust that in an afternoon and leave the host without TLS until the
+   window rolls.
+
+4. **A node asks only for its `PANEL_DOMAIN`, never for `PROXY_DOMAIN`.** The decoy is a raw
+   passthrough whose SNI is somebody else's domain, so requesting it could only fail — and LE counts
+   *failed* validations against the account, which would eventually block the certificate the node
+   actually needs. Guarded in `caddy/caddygen/generate_test.go`.
+
+5. **System → About loses its certificate line.** Caddy owns the expiry and stores the file where
+   the backend cannot read it, so the only reading left would be "not mounted" forever on a healthy
+   host. **The warning it provided is not replaced by nothing:** set `ACME_EMAIL` and Let's Encrypt
+   mails you before a certificate lapses. `ACME_CA` points at a different directory — use the LE
+   **staging** URL while rehearsing a deploy so a debugging session does not spend the weekly limit.
+   Both are optional and new on the four TLS hosts.
+
+6. **A local deployment works without a public name.** `panel.local`, `localhost`, a bare IP or any
+   name without a dot transparently gets Caddy's internal CA instead of ACME — which is also what
+   replaced `scripts/generate_local_cert.sh`, deleted in wave 10.
+
+   Bump `caddy`, plus `master`, `worker`, `sub`, `bot_api`, `cron`, `frontend_admin` and
+   `frontend_node` — eight images. `bot` and `xray_egress` are untouched. The `caddy` edit is
+   `caddygen/{generate,config}.go`; the `panel-core` edit (`services/health.py`) fans out to all five
+   backends; `ui-core` (`lib/version.ts`, `pages/System.tsx`) to both frontends. A partial rollout is
+   safe in one direction only: an old Caddy image with the new compose file finds no `./certs` mount
+   and crash-loops, so update the image and the compose file together on each host.
 
 ## Configuration
 

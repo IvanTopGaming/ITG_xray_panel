@@ -47,11 +47,12 @@ services:
       - "443:443"
     volumes:
       - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
-      - ./certs:/root/cert:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
       - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+      - ACME_CA=${ACME_CA:-}
     depends_on:
       sub-backend:
         condition: service_healthy

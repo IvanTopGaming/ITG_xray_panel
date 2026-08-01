@@ -19,7 +19,6 @@ services:
     restart: always
     volumes:
       - ./db_data:/app/db
-      - ./certs:/root/cert:ro
     environment:
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
       - GRPC_DNS_RESOLVER=native
@@ -95,12 +94,13 @@ services:
       - "443:443"
     volumes:
       - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
-      - ./certs:/root/cert:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+      - ACME_CA=${ACME_CA:-}
     depends_on:
       frontend:
         condition: service_healthy
