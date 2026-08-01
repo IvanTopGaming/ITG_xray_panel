@@ -36,6 +36,7 @@ services:
     environment:
       REDIS_PANEL_PASSWORD: ${REDIS_PANEL_PASSWORD:?REDIS_PANEL_PASSWORD is required}
       REDIS_NODE_PASSWORD: ${REDIS_NODE_PASSWORD:?REDIS_NODE_PASSWORD is required}
+      REDIS_BOT_PASSWORD: ${REDIS_BOT_PASSWORD:?REDIS_BOT_PASSWORD is required}
     # REDIS_BIND defaults to loopback on purpose. This Redis runs WITHOUT TLS, so the ACL
     # password and the bot:events payload (telegram_id, e-mail) cross the wire in clear —
     # it must never be reachable from the public internet. Set it to this VM's
@@ -46,8 +47,8 @@ services:
       - "sh"
       - "-c"
       - >
-        printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +select &bot:events\n'
-        "$$REDIS_PANEL_PASSWORD" "$$REDIS_NODE_PASSWORD" > /tmp/users.acl &&
+        printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +select &bot:events\nuser bot on >%s -@all +subscribe +psubscribe +unsubscribe +ping +select &bot:events\n'
+        "$$REDIS_PANEL_PASSWORD" "$$REDIS_NODE_PASSWORD" "$$REDIS_BOT_PASSWORD" > /tmp/users.acl &&
         exec redis-server --aclfile /tmp/users.acl --save "" --appendonly no
     healthcheck:
       test:

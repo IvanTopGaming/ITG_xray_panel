@@ -56,7 +56,7 @@ services:
       - BACKEND_API_URL=http://bot-api:5000/api
       - BOT_SERVICE_TOKEN=${BOT_SERVICE_TOKEN:-}
       - BOT_LOG_LEVEL=${BOT_LOG_LEVEL:-INFO}
-      - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
+      - SHARED_REDIS_URI=${BOT_SHARED_REDIS_URI:?BOT_SHARED_REDIS_URI is required}
       - PYTHONUNBUFFERED=1
     env_file:
       - .env

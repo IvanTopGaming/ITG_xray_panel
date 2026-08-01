@@ -82,7 +82,7 @@ class TestTheApiNeitherAcceptsNorReturnsIt:
         )
 
     def test_the_federation_snapshot_does_not_carry_it(self):
-        body = (BACKEND / "panel-adminapi/src/panel_core/api/federation.py").read_text(encoding="utf-8")
+        body = (BACKEND / "panel-worker/src/panel_core/api/federation.py").read_text(encoding="utf-8")
 
         assert "device_limit" not in body
 

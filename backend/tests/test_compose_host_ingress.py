@@ -212,15 +212,35 @@ def test_bot_api_receives_sub_domain_explicitly():
     )
 
 
-@pytest.mark.parametrize("name", ["master", "node"])
-def test_the_panel_backends_declare_the_secret_path_explicitly(name):
-    definition = _service(HOSTS[name]["compose"], "backend")
-    assert "PANEL_SECRET_PATH" in _environment_keys(definition), (
-        f"{HOSTS[name]['compose']}'s backend does not list PANEL_SECRET_PATH in `environment:`. It reads "
-        f"it -- services/sub_links.build_aggregate_sub_url uses it for the fallback subscription URL, "
-        f"and on the node api/federation.py builds the panel URL from it -- so leaving it to arrive "
-        f"through `env_file` alone is the same trap SUB_DOMAIN was on bot-api: the variable is "
-        f"load-bearing while being invisible in the compose file."
+def test_the_node_backend_declares_the_secret_path_explicitly():
+    """Only the node reads it, and the reason this guard used to cover the master was already stale.
+
+    It cited `services/sub_links.build_aggregate_sub_url` using the variable for a fallback
+    subscription URL — a fallback wave 3b deleted, and which wave 5a corrected in the `.env` comments
+    without anyone noticing it also underpinned this assertion. The one backend reader left is
+    `api/federation.py`, building the URL a node hands the master in its link token; wave 7 moved
+    that module into `panel-worker`, so it is not even installed on a master any more.
+
+    Node-only, then. Leaving it to arrive through `env_file` alone would still be the trap
+    `SUB_DOMAIN` was on bot-api: load-bearing while invisible in the compose file.
+    """
+
+    definition = _service(HOSTS["node"]["compose"], "backend")
+    assert "PANEL_SECRET_PATH" in _environment_keys(definition)
+
+
+def test_the_master_backend_is_not_handed_the_secret_path():
+    """The mirror assertion, because the master's frontend and Caddy still need the variable.
+
+    So it stays in `.env.master.example` and in two other services on that host; what must not come
+    back is handing it to an image with no reader, which is the §87 class exactly.
+    """
+
+    definition = _service(HOSTS["master"]["compose"], "backend")
+    assert "PANEL_SECRET_PATH" not in _environment_keys(definition), (
+        "the master's backend is handed PANEL_SECRET_PATH again. Nothing in the panel-master image "
+        "reads it since api/federation.py became node-only; a mandatory ${VAR:?} nothing reads "
+        "refuses the `up` while promising it does something."
     )
 
 

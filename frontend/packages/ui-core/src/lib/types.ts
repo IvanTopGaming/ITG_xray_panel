@@ -134,6 +134,7 @@ export interface LinkedPanel {
   url: string;
   federation_token: string;
   status: 'online' | 'offline' | 'stale' | 'unknown';
+  app_version?: string | null;
   last_poll: number | null;
   last_error: string | null;
   enable: boolean;

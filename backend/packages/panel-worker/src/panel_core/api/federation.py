@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import FederationConfig, Inbound, SystemSetting
 from panel_core.utils import federation_token_required, token_required
+from panel_core.version import get_app_version
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ def snapshot():
     return jsonify(
         {
             "panel_name": panel_name,
+            "app_version": get_app_version(),
             "status": "ok",
             "timestamp": int(time.time() * 1000),
             "inbounds": result_inbounds,
@@ -233,10 +235,7 @@ def provision():
     if telegram_id is None or inbound_tag is None:
         return jsonify({"error": "telegram_id and inbound_tag are required"}), 400
 
-    try:
-        from panel_core.services.provisioning import provision_single_item
-    except ImportError:
-        return jsonify({"error": "provision_single_item not implemented yet"}), 501
+    from panel_core.services.provisioning import provision_single_item
 
     try:
         result = provision_single_item(

@@ -320,6 +320,14 @@ export default function Panels() {
                     <div className="flex items-center gap-1.5 shrink-0">
                       <StatusIcon size={16} className={st.color} />
                       <span className={`text-xs font-medium ${st.color}`}>{st.label}</span>
+                      {panel.app_version && (
+                        <span
+                          className="ml-2 font-mono text-[10px] text-gray-500"
+                          title="Release this node reports running. A node left behind in a wave is the one thing this shows that nothing else does."
+                        >
+                          v{panel.app_version}
+                        </span>
+                      )}
                     </div>
                   </div>
 

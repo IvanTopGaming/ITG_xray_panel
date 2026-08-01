@@ -13,8 +13,26 @@ KNOWN_ROLES = NAMED_ROLES + (ROLE_MASTER,)
 
 
 def normalize_role(raw):
+    """Unset means master. A value that is set but unrecognised is an error, not a master.
+
+    The two cases used to collapse into one: anything the tuple did not contain became `master`,
+    the most privileged role there is. Unset genuinely does mean master and is documented that way,
+    but `PANEL_ROLE=worke` meant the same thing — silently, with the admin bootstrap that comes
+    with a master. In a container the gunicorn command decides the role and `bind_role` would catch
+    the contradiction, so this bites exactly where nothing else is watching: the dev entry point,
+    where the env variable really does choose.
+    """
+
     value = (raw or "").strip().lower()
-    return value if value in NAMED_ROLES else ROLE_MASTER
+    if not value:
+        return ROLE_MASTER
+    if value not in KNOWN_ROLES:
+        raise ValueError(
+            f"{ROLE_ENV}={raw!r} is not a role. Expected one of {KNOWN_ROLES}, or leave it unset for "
+            f"{ROLE_MASTER!r}. It used to fall through to {ROLE_MASTER!r}, which is the one role you "
+            f"least want a typo to select."
+        )
+    return value
 
 
 def declared_role():

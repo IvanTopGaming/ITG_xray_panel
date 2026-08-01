@@ -129,11 +129,15 @@ def _client_sub_url(telegram_id, client_id, token_map):
 @bp.route("/inbounds", methods=["GET"])
 @token_required
 def get_inbounds():
+    from panel_core.panel_role import is_worker
     from panel_core.services.device_tracking import device_counts_by_user
 
     inbounds = Inbound.query.all()
 
-    counts = device_counts_by_user()
+    # The ledger lives in the shared Postgres and is written by the sub role alone (wave 3b), so on
+    # a node this table has no writer and every count would be a confident 0. `None` means "not
+    # known here"; the master fills the real number in when it overlays a node's snapshot.
+    counts = None if is_worker() else device_counts_by_user()
 
     _tok_map = dict(
         db.session.query(TelegramUser.telegram_id, TelegramUser.sub_token)
@@ -161,7 +165,8 @@ def get_inbounds():
             clients_data = []
             for c in ib.clients:
                 d = c.to_dict()
-                d["device_count"] = int(counts.get(c.telegram_id, 0))
+                if counts is not None:
+                    d["device_count"] = int(counts.get(c.telegram_id, 0))
                 d["sub_url"] = _client_sub_url(c.telegram_id, c.id, _tok_map)
                 clients_data.append(d)
         else:
@@ -208,7 +213,8 @@ def get_inbounds():
                     ib_data["settings"] = {"clients": ib_data.pop("clients")}
                 for c in ib_data.get("settings", {}).get("clients", []):
                     telegram_id = c.get("telegram_id")
-                    c["device_count"] = int(counts.get(telegram_id, 0))
+                    if counts is not None:
+                        c["device_count"] = int(counts.get(telegram_id, 0))
                     c["sub_url"] = _client_sub_url(telegram_id, c.get("id"), _tok_map)
                 if "stream_settings" in ib_data and "streamSettings" not in ib_data:
                     ib_data["streamSettings"] = ib_data.pop("stream_settings")

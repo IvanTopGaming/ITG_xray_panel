@@ -6,7 +6,14 @@ from flask import Blueprint, request, jsonify
 
 from panel_core.extensions import db
 from panel_core.models import LinkedPanel, SystemSetting, TariffItem
-from panel_core.services.panel_proxy import _nudge_panel_refresh, forget_panel, get_panel_liveness
+from panel_core.services.panel_proxy import (
+    FederationClient,
+    RemotePanelError,
+    _nudge_panel_refresh,
+    forget_panel,
+    get_panel_liveness,
+    get_panel_snapshot,
+)
 from panel_core.services.tariffs import purge_tariff_items
 from panel_core.utils import token_required
 
@@ -135,6 +142,8 @@ def list_panels():
             item["status"] = status
         if last_poll:
             item["last_poll"] = last_poll
+        snapshot = get_panel_snapshot(item["id"]) or {}
+        item["app_version"] = snapshot.get("app_version")
     return jsonify(items), 200
 
 
@@ -285,42 +294,6 @@ def delete_panel(panel_id):
         return jsonify({"error": "Internal server error"}), 500
 
 
-@bp.route("/panels/<int:panel_id>/system-stats", methods=["GET"])
-@token_required
-def panel_system_stats(panel_id):
-    panel = db.session.get(LinkedPanel, panel_id)
-    if not panel:
-        return jsonify({"error": "Panel not found"}), 404
-    try:
-        resp = requests.get(
-            f"{panel.url}/api/stats/system",
-            headers={"X-Federation-Token": panel.federation_token},
-            timeout=5,
-            allow_redirects=False,
-        )
-        return jsonify(resp.json()), resp.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-
-@bp.route("/panels/<int:panel_id>/restart", methods=["POST"])
-@token_required
-def panel_restart(panel_id):
-    panel = db.session.get(LinkedPanel, panel_id)
-    if not panel:
-        return jsonify({"error": "Panel not found"}), 404
-    try:
-        resp = requests.post(
-            f"{panel.url}/api/restart",
-            headers={"X-Federation-Token": panel.federation_token},
-            timeout=10,
-            allow_redirects=False,
-        )
-        return jsonify(resp.json()), resp.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-
 @bp.route("/panels/<int:panel_id>/backup", methods=["GET"])
 @token_required
 def panel_backup(panel_id):
@@ -386,51 +359,36 @@ def panel_restore(panel_id):
 @bp.route("/panels/<int:panel_id>/test", methods=["POST"])
 @token_required
 def test_panel(panel_id):
+    """Probe the node now and report what came back — without writing down what it found.
+
+    This used to persist `status`/`last_poll`/`last_error` straight into Postgres, which made it the
+    second writer of a fact wave 2 gave to the cron host precisely so there would be one. It also had
+    a value of its own, `"error"`, produced nowhere else — so the two writers did not even share a
+    vocabulary, and whichever ran last decided what the fleet looked like.
+
+    It now measures, answers, and publishes on `panel:refresh` so the owner re-polls out of band —
+    the shape `relink` already uses, for the same reason: an admin action may ask for the record to
+    be refreshed, it may not author the record. It also goes through `FederationClient` rather than a
+    second raw `requests` stack, which is what makes the node's own words reach the admin (§61).
+    """
+
+    panel = db.session.get(LinkedPanel, panel_id)
+    if not panel:
+        return jsonify({"error": "Panel not found"}), 404
+
+    result = panel.to_dict()
+    client = FederationClient(panel.url, panel.federation_token)
+    started = time.time()
     try:
-        panel = db.session.get(LinkedPanel, panel_id)
-        if not panel:
-            return jsonify({"error": "Panel not found"}), 404
-
-        start = time.time()
-        try:
-            resp = requests.get(
-                f"{panel.url}/api/federation/snapshot",
-                headers={"X-Federation-Token": panel.federation_token},
-                timeout=10,
-                allow_redirects=False,
-            )
-        except requests.ConnectionError:
-            panel.status = "offline"
-            panel.last_poll = int(time.time() * 1000)
-            panel.last_error = "Connection refused"
-            db.session.commit()
-            result = panel.to_dict()
-            result["latency_ms"] = None
-            return jsonify(result), 200
-        except requests.Timeout:
-            panel.status = "offline"
-            panel.last_poll = int(time.time() * 1000)
-            panel.last_error = "Connection timed out"
-            db.session.commit()
-            result = panel.to_dict()
-            result["latency_ms"] = None
-            return jsonify(result), 200
-
-        latency_ms = round((time.time() - start) * 1000)
-
-        if resp.status_code == 200:
-            panel.status = "online"
-            panel.last_error = None
-        else:
-            panel.status = "error"
-            panel.last_error = f"HTTP {resp.status_code}"
-
-        panel.last_poll = int(time.time() * 1000)
-        db.session.commit()
-
-        result = panel.to_dict()
-        result["latency_ms"] = latency_ms
+        client.snapshot()
+    except RemotePanelError as exc:
+        result["status"] = "offline" if exc.status_code == 502 else "error"
+        result["last_error"] = exc.message
+        result["latency_ms"] = None
         return jsonify(result), 200
-    except Exception:
-        db.session.rollback()
-        return jsonify({"error": "Internal server error"}), 500
+
+    result["status"] = "online"
+    result["last_error"] = None
+    result["latency_ms"] = round((time.time() - started) * 1000)
+    _nudge_panel_refresh(panel.id)
+    return jsonify(result), 200

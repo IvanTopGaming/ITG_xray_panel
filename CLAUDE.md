@@ -144,7 +144,7 @@ In the split Postgres deployment there are **five** Flask app factories (`panel_
 
 `extensions.py` exposes the two clients separately — `get_redis()` (local) and `get_shared_redis()` (shared, plus `new_shared_redis_subscriber()` for a blocking pubsub connection) — and `tests/test_redis_split.py` holds the line both textually and behaviourally. **There is no fallback between the two variables any more.** The old `BOT_EVENTS_REDIS_URI` defaulted to `RATELIMIT_STORAGE_URI`, which on the master and on every node meant publishing into a Redis with no subscriber: `PUBLISH` still returns success, so `delivered_at` was stamped and the replay cron never retried — the event was lost silently and permanently. `SHARED_REDIS_URI` is now demanded via `:?` by master, node, sub, bot and cron alike, so an unset value fails the `up` instead.
 
-That data-tier Redis ACLs two users: `node` (`-@all +publish +select &bot:events` — publish-only into one channel, plus `select` so a non-zero DB index in the URI still connects) and `panel` (everything except `@dangerous` — no `FLUSHALL`/`CONFIG`/`KEYS`/`SHUTDOWN`/`DEBUG`). One consequence of that deliberate narrowness: a node cannot invalidate the sub host's cached subscription, so its `sub_cache.invalidate_*` calls log one line and give up. Harmless — those entries expire within `SUB_CACHE_TTL_SECONDS` (60) — and preferable to widening the one credential that makes a node safe to place in an untrusted segment. See Bot event recovery buffer and Configuration below.
+That data-tier Redis ACLs **three** users: `node` (`-@all +publish +select &bot:events` — publish-only into one channel, plus `select` so a non-zero DB index in the URI still connects), `bot` (`-@all +subscribe +psubscribe +unsubscribe +ping +select &bot:events`, wave 7 — the Telegram poller is the one process here that feeds untrusted internet input to something other than a web framework, and it needs to listen to one channel and nothing else; it used to hold `panel`, which reads every node snapshot and so every user's UUID, telegram_id, e-mail, traffic and expiry) and `panel` (everything except `@dangerous` — no `FLUSHALL`/`CONFIG`/`KEYS`/`SHUTDOWN`/`DEBUG`). bot-api keeps `panel`: it publishes and reads snapshots. One consequence of that deliberate narrowness: a node cannot invalidate the sub host's cached subscription, so its `sub_cache.invalidate_*` calls log one line and give up. Harmless — those entries expire within `SUB_CACHE_TTL_SECONDS` (60) — and preferable to widening the one credential that makes a node safe to place in an untrusted segment. See Bot event recovery buffer and Configuration below.
 
 ### Backend (`backend/`)
 
@@ -153,8 +153,8 @@ That data-tier Redis ACLs two users: `node` (`-@all +publish +select &bot:events
 | Distribution | Ships | Deps |
 |---|---|---|
 | `panel-core` | the shared foundation — everything not listed in the other seven rows | flask (+sqlalchemy/migrate/cors/limiter/apscheduler), gunicorn, gevent, psycopg2-binary, psycogreen, redis, pyjwt, requests, pyyaml, cryptography |
-| `panel-adminapi` | `api/{auth,inbound,outbound,routing,statistics,system,federation,backup}.py` | `panel-core` + **psutil** |
-| `panel-worker` | `xray/{local,engine,grpc_client}.py`, `services/stats.py`, `roles/worker.py` | `panel-core`, `panel-adminapi`, `panel-sub` + **docker, filelock, grpcio, grpcio-tools, protobuf** |
+| `panel-adminapi` | `api/{auth,inbound,outbound,routing,statistics,system}.py` | `panel-core` + **psutil** |
+| `panel-worker` | `xray/{local,engine,grpc_client}.py`, `services/stats.py`, `roles/worker.py`, and — since wave 7 — the node-only `api/{federation,backup}.py` | `panel-core`, `panel-adminapi`, `panel-sub` + **docker, filelock, grpcio, grpcio-tools, protobuf** |
 | `panel-master` | `api/{bot_admin,panels}.py`, `roles/master.py` | `panel-core`, `panel-adminapi`, `panel-sub` |
 | `panel-sub` | `api/subscription.py`, `roles/sub.py` | `panel-core`, `panel-links` |
 | `panel-botapi` | `api/{billing,bot_service}.py`, `services/{billing,tariff_delivery}.py`, `jobs/payments.py`, `roles/botapi.py` | `panel-core`, `panel-links` + **`yookassa>=3.0,<4.0`** |
@@ -183,7 +183,7 @@ Every `app/…` path in the list below is shorthand for `backend/packages/<dist>
 - `app/api/`
   - `auth` — login / logout
   - `inbound`, `outbound`, `routing`, `panels`, `federation`, `subscription`, `statistics`, `system` — core panel. Every Xray-facing handler in `system.py` is behind `has_local_xray()`, and since wave 5c all of them except `/api/logs` also take `?panel_id=` **above** that gate (see Xray settings, config and per-user routing are answered by the node that runs Xray)
-  - `backup` — `GET /api/backup` + `POST /api/restore`, **registered only by `roles/worker.py`**; both copy a SQLite file, which the master (Postgres) does not have. See Auth below
+  - `backup` — `GET /api/backup` + `POST /api/restore`, **registered only by `roles/worker.py`, and since wave 7 shipped only by `panel-worker`**; both copy a SQLite file, which the master (Postgres) does not have. Being unregistered was never the whole story: while the module shipped from `panel-adminapi` it travelled in the master image too, so one `register_blueprint` line stood between the master and handing out its own database (verified: adding it answered 200). `api/federation.py` was the same, and worse — it would have made the master linkable as somebody's node. Both moved. See Auth below
   - `billing` — YooKassa checkout + webhook. The webhook is **unsigned**, so the body is treated only as a trigger: the handler re-fetches the authoritative status from YooKassa (`fetch_remote_status`) before provisioning, so a forged notification does nothing
   - `bot_admin` — admin UI endpoints (tariffs, texts, users, grants, payments, settings) — JWT-protected
   - `bot_service` — endpoints the bot itself calls (runtime-config, texts, users, trial, tariffs, payments) — bot service token only
@@ -1511,6 +1511,67 @@ pull-and-restart — **one volume line on the master and on every node**. Read a
    neighbour as absent until that neighbour is updated, and an old bot simply never renders the
    reset-link notification.
 
+### Deploy note — the data tier gains a third credential, and two things that were reporting nothing start reporting (Phase 8 wave 7)
+
+This wave changes **no schema and no authorisation**. It adds one field to the federation snapshot
+(additive), and — the part that makes this more than a pull — **a new Redis ACL user on the data
+tier and a new variable on the bot host**. Read all eight points.
+
+1. **Do the data tier first, and set `REDIS_BOT_PASSWORD` before you touch it.** `docker-compose.postgres.yml`
+   now creates a third ACL user, `bot`, alongside `panel` and `node`, and demands the password
+   through `${REDIS_BOT_PASSWORD:?}` — the stack will not come up without it. Then on the bot host
+   set `BOT_SHARED_REDIS_URI=redis://bot:<that password>@<data-vm>:6379/0`. **If you update the bot
+   host before the data tier, the poller cannot authenticate and receives no events at all** — no
+   payment confirmations, no expiry warnings, nothing, and it says so only at INFO. Order: data
+   tier, then bot host.
+
+2. **Why the bot gets its own credential.** It held `panel`, which reads every node snapshot — that
+   is every user's UUID, telegram_id, e-mail, traffic and expiry — and can write anything into
+   `bot:events`. The aiogram poller is the one process in the deployment that feeds untrusted
+   internet input to something other than a web framework, and all it needs from the bus is
+   `SUBSCRIBE` to one channel. bot-api keeps `panel`; it publishes and reads snapshots. Verified on
+   a live Redis with the new ACL: subscribe to `bot:events` works, reading a snapshot, publishing,
+   `SETEX` and subscribing to `panel:refresh` all answer NOPERM.
+
+3. **`PANEL_SECRET_PATH` is no longer handed to the master's backend.** `api/federation.py` — the
+   only backend module that reads it — is node-only now (point 5), so on the master the variable is
+   read by the frontend entrypoint and by Caddy and by nothing in the backend image. **Nothing to
+   do:** keep it in `.env.master.example`, those two still need it. It is unchanged and still
+   mandatory on the node.
+
+4. **System → About and the Panels page start showing what they could not.** Each node's release now
+   travels in its federation snapshot and appears on its card in Panels. This replaces a wave-6
+   mechanism that could never have worked for nodes: their data-tier credential forbids `SETEX`, so
+   the stamp failed silently on every installation, and the key was shared by every node anyway, so
+   three nodes would have overwritten each other once a minute. **If you rolled out wave 6 and
+   wondered why no node ever showed a version — that is why, and this fixes it.** A node still on an
+   older image shows no version until it is updated, which is itself the signal.
+
+5. **`GET /api/backup` and the federation server are no longer in the master image at all.** They
+   were unregistered but installed, so one `register_blueprint` line stood between the master and
+   (a) being linkable as somebody's node and (b) handing out its own database over an admin JWT —
+   verified by adding the line, which answered 200 to both. Packaging refuses now instead of the
+   factory remembering to. **No behaviour changes**: the master answered 404 on both before and
+   answers 404 on both after.
+
+6. **The subscription page and the admin panel stop disagreeing about whether a node is up.** They
+   read the same marker now. With the cron host down, the admin sees an amber `Stale` card (wave 5d)
+   and the user's page keeps showing their nodes as up, which is the honest split: "we stopped
+   polling" is something an admin can act on and a user cannot. Before, the page read a Postgres
+   column that is written only on a change, so it said `online` forever.
+
+7. **Two admin routes are gone: `GET /api/panels/<id>/system-stats` and `POST /api/panels/<id>/restart`.**
+   Neither had a caller in any bundle; restarting a node's Xray from the master goes through
+   `POST /api/restart?panel_id=` and has since wave 5c. **If you have a home-grown script calling
+   either, it gets a 404** — that is the only outward-facing removal in this wave. The *Test
+   connection* button on a panel card still works and now reports the node's own words, but it no
+   longer writes the stored status: it asks the cron host to re-poll, the same way *Relink* does.
+
+8. **Bump `master`, `worker`, `sub`, `bot_api`, `cron`, `frontend_admin` and `frontend_node` — seven
+   images. `bot` and `caddy` are untouched** (the bot's change is a compose mapping, not code). A
+   partial rollout degrades quietly in both directions: an old master shows no node versions, a new
+   master shows none until the nodes are updated, and nothing is corrupted either way.
+
 ## Configuration
 
 **There is no shared `.env.example`.** Each host copies its own: `.env.master.example`, `.env.node.example`, `.env.sub.example`, `.env.bot.example`, `.env.data.example` → `.env` on that box and nowhere else. One file could not be correct for every host even in principle — `RATELIMIT_STORAGE_URI` must point at the box's *own* Redis on the master and on a node and at the *data tier* on the sub and bot hosts, two mutually exclusive values of one variable, which the old single file carried at once (one live, one commented out) and expected the deployer to reconcile by hand. Each file now holds only what its host reads, with no commented alternatives. `backend/tests/test_env_examples.py` enforces both directions: every `${VAR:?…}` a compose file demands is defined in that host's example, and no example defines a variable its own compose file never references. Key variables:
@@ -1520,7 +1581,10 @@ pull-and-restart — **one volume line on the master and on every node**. Read a
 - `SECRET_KEY`, `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`.
 - `XRAY_CORE_REF` — Xray-core version to compile into the **worker** image (`backend/Dockerfile.worker`'s build-arg) — the only one of the five per-role backend images that carries the Xray runtime (build-time only).
 - `RATELIMIT_STORAGE_URI` — **this box's own** Redis: rate limiting, plus this role's own subscription-response cache. On the master and on a node that is the stack's private `redis` container; on sub and bot-api, which run no Redis of their own, it points at the data tier — which is why an unreachable value there used to 500 every subscription request and no longer does (see Docker Services). Read in exactly three places — `app_base` puts it into `app.config["RATELIMIT_STORAGE_URI"]` for Flask-Limiter, the start-up check beside it, and `sub_cache` — and `tests/test_redis_split.py` fails on a fourth, whether it names the variable or calls `extensions.local_redis_uri()`. It is **not** required by the `bot` container: that is an aiogram poller with no limiter, and until wave 5d `docker-compose.bot.yml` demanded it there through a `${VAR:?}` anyway (§87). It stays in `.env.bot.example`, because `bot-api` on the same host does read it. **Only the sub role ever populates that cache**: `sub_cache.get`/`set` are called from `api/subscription.py` alone, which since wave 3b is registered nowhere else. The master and each node only ever `DELETE` from it after an edit, so describing their local Redis as holding "the sub-cache this host reads" — as `.env.{master,node}.example` did until wave 5a — is wrong in a way that invites a deployer to point it somewhere shared.
+- `PANEL_SECRET_PATH` — routing. **Not handed to the master's backend since wave 7**: the one backend module that reads it, `api/federation.py`, became node-only, so on the master it is read by the frontend entrypoint and by Caddy's route and by nothing in `panel-master`. It stays in `.env.master.example` for those two, and is still a mandatory `${VAR:?}` on the node's backend.
 - `FEDERATION_ALLOW_PRIVATE_URLS` *(master only, default off)* — opens `_validate_panel_url` to private, loopback, link-local and `.internal` panel addresses. Off, the master refuses to add or relink such a panel, which is what stops `POST /api/panels` from being a request forwarder into the private network; on, "the master and its nodes share a private segment" — a legitimate topology this product could not express from the UI at all, and which blocked this repo's own live stands in waves 5c and 5d — becomes possible. It relaxes the check for **every** panel, not one, and only `1`/`true`/`yes`/`on` counts as consent, so a placeholder left empty in `.env` does not silently open it.
+- `BOT_SHARED_REDIS_URI` *(bot host only)* — the same bus as `SHARED_REDIS_URI`, through the subscribe-only `bot` credential. `docker-compose.bot.yml` maps it into the poller's `SHARED_REDIS_URI`, so no code in `tg_bot` changed; bot-api keeps the `panel` one on the same host, because it publishes and reads node snapshots while the bot only listens. Two containers, two credentials, because they need two different things.
+- `REDIS_BOT_PASSWORD` *(data tier)* — the password behind it; the ACL user is created by `docker-compose.postgres.yml`'s entrypoint alongside `panel` and `node`.
 - `SHARED_REDIS_URI` — the **data-tier** Redis (`redis://` or `rediss://`), carrying the `bot:events` bus, the node snapshots (live **and** last-known — five keys per panel since wave 5d) and the `panel:refresh` nudge. **Required via `:?` on all five service hosts** — master, every node, sub, bot and cron. It replaced `BOT_EVENTS_REDIS_URI`, which defaulted to `RATELIMIT_STORAGE_URI`; that default is gone deliberately, see the two-Redis paragraph under Docker Services. Use `redis://node:<REDIS_NODE_PASSWORD>@<data-vm>:6379/0` on a node (publish-only credential) and `redis://panel:<REDIS_PANEL_PASSWORD>@<data-vm>:6379/0` everywhere else. The bus crosses hosts and carries the ACL password plus `telegram_id`/`email` in cleartext — run it over a private network between hosts or over `rediss://`.
 - `BACKEND_LOG_LEVEL` *(default INFO)* — backend log verbosity. Every API request (`app.requests`), scheduler job run with duration (`app.jobs`), and federation HTTP call is logged at INFO/DEBUG; `DEBUG` additionally echoes every SQL statement (`sqlalchemy.engine` + per-statement timings in `app.sql`). Slow thresholds: `BACKEND_SLOW_SQL_MS` (default 200) and `BACKEND_SLOW_REQUEST_MS` (default 1000) promote slow statements/requests to WARNING. The backend container has json-file log rotation (50 MB × 5).
 - `POSTGRES_BIND` / `REDIS_BIND` *(data tier)* — which host interface each port is published on. Both **default to `127.0.0.1`**, i.e. closed, so an unset value cannot publish the data tier to the internet; set them to the data VM's private-network address. Postgres is reasonably covered even when exposed (`ssl=on`, `scram-sha-256`, clients required to use `sslmode=verify-full`); **the Redis is not — it runs with no TLS at all**, so its ACL password and every `bot:events` payload (`telegram_id`, client e-mails) would cross the wire in clear.

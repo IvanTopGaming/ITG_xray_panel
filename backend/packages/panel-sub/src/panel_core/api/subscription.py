@@ -34,7 +34,7 @@ def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> l
     from panel_core.services.panel_proxy import get_panel_snapshot
 
     remote_links = []
-    panels = LinkedPanel.query.filter_by(enable=True).all()
+    panels = LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all()
     if not panels:
         return remote_links
 
@@ -69,7 +69,7 @@ def _remote_clients_for_headers(telegram_id):
     if not telegram_id:
         return out
     try:
-        for panel in LinkedPanel.query.filter_by(enable=True).all():
+        for panel in LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all():
             snapshot = get_panel_snapshot(panel.id)
             if not snapshot:
                 continue
@@ -240,7 +240,7 @@ def _gate_request_headers() -> dict:
         "x-ver-os": request.headers.get("x-ver-os", ""),
         "x-device-model": request.headers.get("x-device-model", ""),
         "user-agent": request.headers.get("User-Agent", ""),
-        "_request_ip": (request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()),
+        "_request_ip": request.remote_addr or "",
     }
 
 
@@ -640,7 +640,7 @@ def _iter_remote_pairs():
     from panel_core.models import LinkedPanel
     from panel_core.services.panel_proxy import get_panel_snapshot
 
-    for panel in LinkedPanel.query.filter_by(enable=True).all():
+    for panel in LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all():
         snapshot = get_panel_snapshot(panel.id)
         if not snapshot:
             continue
@@ -1128,13 +1128,20 @@ def _user_page_nodes(telegram_id):
 
     try:
         from panel_core.models import LinkedPanel
-        from panel_core.services.panel_proxy import get_panel_snapshot
+        from panel_core.services.panel_proxy import get_panel_liveness, get_panel_snapshot
 
-        for panel in LinkedPanel.query.filter_by(enable=True).all():
+        for panel in LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all():
             snapshot = get_panel_snapshot(panel.id)
             if not snapshot:
                 continue
-            panel_online = (panel.status or "").lower() == "online"
+            # The same source the master's Panels page reads. This used to consult
+            # `LinkedPanel.status` in Postgres, which the cron host writes only when the status
+            # *changes* -- so with the poller dead the admin saw an amber "Stale" card while this
+            # page went on telling the user the node was online, forever. One fact, two stores,
+            # different staleness, diverging in the direction that lies to the user.
+            live_status, _ = get_panel_liveness(panel.id)
+            status = (live_status or panel.status or "").lower()
+            panel_online = status != "offline"
             for ib_data in snapshot.get("inbounds", []):
                 for c in ib_data.get("clients", []):
                     if c.get("telegram_id") != telegram_id:

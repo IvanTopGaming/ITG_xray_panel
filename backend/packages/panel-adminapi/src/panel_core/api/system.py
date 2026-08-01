@@ -116,8 +116,13 @@ def restart():
 @bp.route("/system/version", methods=["GET"])
 @token_required
 def system_version():
+    from panel_core.panel_role import is_worker
     from panel_core.services.role_status import get_role_versions
 
+    # A node's data-tier credential is publish-only, so every read here would answer `{}` — and an
+    # empty map reads as "the neighbours are silent" rather than "this host cannot see them". The
+    # fleet view belongs to the panel that can actually see the fleet.
+    roles = {} if is_worker() else get_role_versions()
     bot = get_bot_status()
     latest = get_latest()
     return jsonify(
@@ -127,7 +132,8 @@ def system_version():
                 "backend_key": app_version_key(),
                 "bot": bot["version"],
                 "bot_reported_at": bot["reported_at"],
-                "roles": get_role_versions(),
+                "roles": roles,
+                "roles_visible": not is_worker(),
             },
             "latest": latest["latest"],
             "latest_checked_at": latest["checked_at"],

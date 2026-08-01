@@ -46,20 +46,52 @@ def _reset_scheduler():
         pass
 
 
+class NoPermission(Exception):
+    """What a real Redis raises when the ACL forbids a command."""
+
+
 class FakeRedis:
-    def __init__(self):
+    """Models the data tier's ACL, because that is what the original fake did not.
+
+    Wave 6 shipped `record_role_version` claiming every role stamps its version, and the fake here
+    accepted `setex` from anyone. On a real deployment a node's credential is
+    `-@all +publish +select &bot:events` (wave 2), so the call answers NOPERM, the exception is
+    swallowed at DEBUG, and the key never appears — the mechanism was blind to the one role it was
+    built for, on every installation, and this file said it worked. That is the §86 class exactly:
+    the stub sat above the layer the property lives in.
+
+    `allow` is therefore the command set of the credential under test, and a test that wants to know
+    what a node can do must ask for a node's credential.
+    """
+
+    PANEL = frozenset({"setex", "get", "ping", "publish", "delete"})
+    NODE = frozenset({"publish", "select"})
+
+    def __init__(self, allow=PANEL):
         self.values = {}
         self.pings = 0
+        self.allow = allow
+
+    def _check(self, command):
+        if command not in self.allow:
+            raise NoPermission(f"NOPERM this user has no permissions to run the '{command}' command")
 
     def setex(self, key, ttl, value):
+        self._check("setex")
         self.values[key] = value
 
     def get(self, key):
+        self._check("get")
         return self.values.get(key)
 
     def ping(self):
+        self._check("ping")
         self.pings += 1
         return True
+
+    def publish(self, channel, message):
+        self._check("publish")
+        return 0
 
 
 @pytest.fixture
@@ -72,6 +104,31 @@ def shared(monkeypatch):
     role_status.reset_stamp_throttle()
     yield fake
     role_status.reset_stamp_throttle()
+
+
+NODE_FEDERATION_TOKEN = "wave7-node-federation-token"
+
+
+@pytest.fixture
+def node_app(monkeypatch, tmp_path):
+    """A node, built the way `docker-compose.node.yml` builds one: no DATABASE_URL (§48)."""
+
+    from panel_core.models import FederationConfig
+    from panel_core.xray import gateway as gw
+
+    monkeypatch.setenv("PANEL_ROLE", "worker")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.chdir(tmp_path)
+    _reset_scheduler()
+    gw.set_xray_gateway(None)
+    app = importlib.import_module("panel_core.roles.worker").create_app()
+    with app.app_context():
+        cfg = db.session.get(FederationConfig, 1) or FederationConfig(id=1)
+        cfg.federation_token = NODE_FEDERATION_TOKEN
+        db.session.add(cfg)
+        db.session.commit()
+    yield app
+    _reset_scheduler()
 
 
 @pytest.fixture
@@ -131,6 +188,79 @@ def test_a_role_that_stops_reporting_disappears_rather_than_going_stale(shared):
     shared.values[role_status.status_key("cron")] = stale.encode()
 
     assert "cron" not in role_status.get_role_versions()
+
+
+def test_a_node_cannot_stamp_itself_and_is_not_expected_to(monkeypatch):
+    """The defect wave 6 shipped, and the reason the shape had to change rather than the ACL.
+
+    Two things are wrong with asking a node to SETEX its version, and either alone is fatal:
+
+    1. Its data-tier credential is `-@all +publish +select &bot:events`. That narrowness is a wave-2
+       decision and the whole reason a node is safe to place in an untrusted segment, so the answer
+       is to stop asking, not to widen it.
+    2. The key would be `panel:role:worker:status` for *every* node. Three nodes would overwrite each
+       other once a minute and the master would show one arbitrary version labelled "worker" — the
+       mechanism would look like it worked while reporting a fleet-wide lie.
+
+    So `ROLE_KEYS` covers the singleton roles only, and a node's version rides its snapshot.
+    """
+
+    node_redis = FakeRedis(allow=FakeRedis.NODE)
+    monkeypatch.setattr(role_status, "get_shared_redis", lambda: node_redis)
+    role_status.reset_stamp_throttle()
+
+    assert role_status.record_role_version("worker", "2.4.14") is False, (
+        "the stamp reported success against a credential that cannot run SETEX"
+    )
+    assert node_redis.values == {}
+
+    assert "worker" not in role_status.ROLE_KEYS, (
+        "the master is looking for a key no node can write. Before this was noticed the About page "
+        "silently showed nothing for every node in the fleet — the one role the feature existed for."
+    )
+
+
+def test_a_nodes_version_travels_in_its_snapshot(node_app):
+    """Where it does come from: per panel, already polled every 10s, already read by the master."""
+
+    body = (
+        node_app.test_client()
+        .get("/api/federation/snapshot", headers={"X-Federation-Token": NODE_FEDERATION_TOKEN})
+        .get_json()
+    )
+
+    assert body["app_version"], (
+        "the node's snapshot carries no version, so the master has no way at all to see which release "
+        "a node is on — and a node left behind in a wave corrupts expiry data rather than announcing "
+        "itself (wave 3a)."
+    )
+    assert "panel_version" not in body, (
+        "wave 3a removed the contract version deliberately: compatibility comes from deploying the "
+        "fleet together, not from negotiation. This field is for display and must not be named as if "
+        "it were a contract."
+    )
+
+
+def test_the_master_shows_each_nodes_version_from_its_snapshot(master, headers, shared, monkeypatch):
+    from panel_core.models import LinkedPanel
+
+    with master.app_context():
+        panel = LinkedPanel(
+            name="de", url="https://node1.example.com", federation_token="tok", enable=True, created_at=0
+        )
+        db.session.add(panel)
+        db.session.commit()
+        panel_id = panel.id
+
+    monkeypatch.setattr(
+        "panel_core.api.panels.get_panel_snapshot",
+        lambda pid: {"app_version": "2.4.14", "inbounds": []} if pid == panel_id else None,
+    )
+    body = master.test_client().get("/api/panels", headers=headers).get_json()
+
+    assert [item["app_version"] for item in body] == ["2.4.14"], (
+        "the Panels card does not surface the node's version, so the snapshot carries it for nobody"
+    )
 
 
 def test_an_unreachable_shared_tier_reports_nothing_rather_than_raising(monkeypatch):

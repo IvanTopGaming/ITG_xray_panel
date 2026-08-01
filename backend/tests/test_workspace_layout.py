@@ -275,7 +275,16 @@ ADMINAPI_MODULES = (
     "api/routing.py",
     "api/statistics.py",
     "api/system.py",
+)
+
+# Node-only surface: registered by `roles/worker.py` and by nothing else. It used to ship from
+# panel-adminapi, which the master installs whole -- so 454 lines of "let this box be linked as a
+# node" and "hand over this box's database" rode in the master image with nothing but the absence of
+# two `register_blueprint` lines keeping them off. Adding either line back was verified to answer
+# 200: a fresh link-token, and the database. Packaging says no now, so the factory does not have to.
+WORKER_ONLY_MODULES = (
     "api/federation.py",
+    "api/backup.py",
 )
 
 
@@ -289,6 +298,50 @@ def test_panel_adminapi_ships_the_shared_admin_surface():
         assert "panel-adminapi" in path.parts, (
             f"{relative} resolved to {path}, expected it under packages/panel-adminapi"
         )
+
+
+def test_the_node_only_surface_does_not_ship_where_it_cannot_be_registered():
+    from tests.import_graph import source_path
+
+    for relative in WORKER_ONLY_MODULES:
+        path = source_path(relative)
+        assert "panel-worker" in path.parts, (
+            f"{relative} resolved to {path}. Back in panel-adminapi it travels in the master image "
+            f"again, and the only thing then standing between the master and being linkable as a node "
+            f"is a line that is not there yet."
+        )
+
+
+def test_the_master_image_cannot_reach_the_node_only_surface():
+    """The point of the move: packaging refuses, so the factory does not have to remember to.
+
+    `panel-master` declares `panel-core` and `panel-adminapi` and not `panel-worker`, so on a master
+    these modules are not merely unregistered — they are not installed. Asserted through the declared
+    closure rather than by importing, because in a dev checkout every distribution is on sys.path and
+    an import would succeed there while failing to say anything about the image.
+    """
+
+    from tests.import_graph import distributions_with_dependencies
+
+    declared = distributions_with_dependencies()
+
+    def closure(name):
+        seen, queue = set(), [name]
+        while queue:
+            current = queue.pop()
+            if current in seen or current not in declared:
+                continue
+            seen.add(current)
+            queue.extend(declared[current])
+        return seen
+
+    master = closure("panel-master")
+    assert "panel-adminapi" in master, "the closure walker stopped following dependencies"
+    assert "panel-worker" not in master, (
+        "panel-master now installs panel-worker, which puts the federation server, the backup "
+        "surface and the whole local-Xray stack back into the master image."
+    )
+    assert "panel-worker" in closure("panel-worker")
 
 
 def test_psutil_is_declared_only_by_panel_adminapi():
