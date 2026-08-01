@@ -323,6 +323,9 @@ export interface BotSettings {
   bot_config_version: number;
   device_limit_enabled: boolean;
   device_limit_per_user: number;
+  brand_name: string;
+  panel_name: string;
+  subscription_update_interval_hours: number;
 }
 
 export interface BotSettingsUpdate {
@@ -335,4 +338,7 @@ export interface BotSettingsUpdate {
   display_timezone?: string;
   device_limit_enabled?: boolean;
   device_limit_per_user?: number;
+  brand_name?: string;
+  panel_name?: string;
+  subscription_update_interval_hours?: number;
 }

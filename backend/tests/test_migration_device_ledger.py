@@ -1,11 +1,16 @@
 """Schema 25: one device ledger keyed by the Telegram account, two retired tables gone.
 
-The shape of this change was dictated by §40 — `migrate_postgres_db` is `create_all()` plus a
-few statements and owns no `ALTER TABLE`, so a **new column** on an existing table reaches a
-live Postgres never, while a **new table** arrives on its own. The ledger is therefore a table
+The shape of this change was dictated by §40 — `migrate_postgres_db` was `create_all()` plus a
+few statements and owned no `ALTER TABLE`, so a **new column** on an existing table reached a
+live Postgres never, while a **new table** arrived on its own. The ledger is therefore a table
 (`user_device`), exactly as wave 3a's idempotency key was, and not a column on `client_device`
 — which would additionally have needed `client_id` to lose its NOT NULL and a new unique key,
-neither of which any migration here can deliver.
+neither of which any migration here could deliver.
+
+**Wave 9 lifted the column half of that constraint** (`_add_missing_columns`), so the reasoning
+above is history rather than a live limit. The shape stays: a ledger keyed by the account is the
+right one on its own merits, and `client_id` must not come back — the sub role holds no `Client`
+row for a node-issued client, so a ledger joined through one counts zero.
 
 The Postgres tests below are the ones that matter for that reasoning: they migrate a database
 where the retired tables **already exist**, which is the case SQLite cannot reproduce (there
@@ -20,11 +25,11 @@ import pytest
 from panel_core.db_migration import CURRENT_DB_VERSION, RETIRED_TABLES, migrate_sqlite_db
 
 
-def test_current_db_version_is_25():
-    assert CURRENT_DB_VERSION == 25
+def test_current_db_version_is_26():
+    assert CURRENT_DB_VERSION == 26
 
 
-def test_the_ledger_is_a_table_because_a_column_could_not_travel():
+def test_the_ledger_does_not_depend_on_a_client_row():
     from panel_core.extensions import db
 
     import panel_core.models  # noqa: F401

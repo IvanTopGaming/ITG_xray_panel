@@ -156,11 +156,16 @@ def _validate_provision_semantics(
             )
 
 
-def _find_receipt(idempotency_key: str, inbound_tag: str) -> dict | None:
+def _find_receipt_row(idempotency_key: str, inbound_tag: str):
 
     from panel_core.models import ProvisionReceipt
 
-    prior = ProvisionReceipt.query.filter_by(idempotency_key=idempotency_key, inbound_tag=inbound_tag).first()
+    return ProvisionReceipt.query.filter_by(idempotency_key=idempotency_key, inbound_tag=inbound_tag).first()
+
+
+def _find_receipt(idempotency_key: str, inbound_tag: str) -> dict | None:
+
+    prior = _find_receipt_row(idempotency_key, inbound_tag)
     if prior is None:
         return None
     try:
@@ -206,14 +211,28 @@ def provision_single_item(
     _require_local_xray(f"provisioning local inbound {inbound_tag!r} for telegram_id {telegram_id}")
 
     if idempotency_key:
-        replay = _find_receipt(idempotency_key, inbound_tag)
+        prior = _find_receipt_row(idempotency_key, inbound_tag)
+        replay = _find_receipt(idempotency_key, inbound_tag) if prior is not None else None
         if replay is not None:
-            logger.info(
-                "provision replay tg=%s tag=%s key=%s — returning the stored result untouched",
+            if prior.materialized:
+                logger.info(
+                    "provision replay tg=%s tag=%s key=%s — returning the stored result untouched",
+                    telegram_id,
+                    inbound_tag,
+                    idempotency_key,
+                )
+                return replay
+            logger.warning(
+                "provision replay tg=%s tag=%s key=%s — the stored grant never reached Xray; syncing now",
                 telegram_id,
                 inbound_tag,
                 idempotency_key,
             )
+            stored_client = Client.query.filter_by(telegram_id=telegram_id, inbound_tag=inbound_tag).first()
+            if stored_client is not None:
+                _sync_after_provision([stored_client], [])
+            prior.materialized = True
+            db.session.commit()
             return replay
 
     now_ms = int(time.time() * 1000)
@@ -309,6 +328,12 @@ def provision_single_item(
         return replay
 
     _sync_after_provision(new_clients, extended_clients_with_state)
+
+    if idempotency_key:
+        receipt = _find_receipt_row(idempotency_key, inbound_tag)
+        if receipt is not None:
+            receipt.materialized = True
+            db.session.commit()
 
     return result
 

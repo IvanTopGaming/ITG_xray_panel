@@ -21,6 +21,12 @@ export function SettingsTab() {
     display_timezone: '',
   });
   const [deviceDraft, setDeviceDraft] = useState({ enabled: false, perUser: 0 });
+  const [panelDraft, setPanelDraft] = useState({
+    brand_name: '',
+    panel_name: '',
+    subscription_update_interval_hours: 24,
+  });
+  const [panelSavedAt, setPanelSavedAt] = useState<number | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [botSavedAt, setBotSavedAt] = useState<number | null>(null);
   const [deviceSavedAt, setDeviceSavedAt] = useState<number | null>(null);
@@ -45,6 +51,11 @@ export function SettingsTab() {
     setDeviceDraft({
       enabled: !!data.device_limit_enabled,
       perUser: Number(data.device_limit_per_user ?? 0),
+    });
+    setPanelDraft({
+      brand_name: data.brand_name || '',
+      panel_name: data.panel_name || '',
+      subscription_update_interval_hours: Number(data.subscription_update_interval_hours ?? 24),
     });
   }, [data?.bot_config_version, data]);
 
@@ -89,6 +100,20 @@ export function SettingsTab() {
       }),
     onSuccess: () => {
       setDeviceSavedAt(Date.now());
+      qc.invalidateQueries({ queryKey: ['bot-settings'] });
+    },
+  });
+
+  const savePanel = useMutation({
+    mutationFn: () =>
+      updateBotSettings({
+        brand_name: panelDraft.brand_name,
+        panel_name: panelDraft.panel_name,
+        subscription_update_interval_hours:
+          Number(panelDraft.subscription_update_interval_hours) || 24,
+      }),
+    onSuccess: () => {
+      setPanelSavedAt(Date.now());
       qc.invalidateQueries({ queryKey: ['bot-settings'] });
     },
   });
@@ -201,6 +226,50 @@ export function SettingsTab() {
                 {saveDevices.isPending ? 'Saving…' : 'Save'}
               </button>
               {deviceSavedAt && Date.now() - deviceSavedAt < 3000 && (
+                <span className="text-emerald-300 text-sm">Saved.</span>
+              )}
+            </div>
+          </section>
+
+          <section className="relative overflow-hidden rounded-2xl border border-white/[0.05] bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-6 shadow-sm space-y-4">
+            <h3 className="text-white font-semibold">Branding · this panel</h3>
+            <p className="text-white/60 text-xs">
+              The brand name titles the subscription inside the user's client app and on the
+              subscription page. The update interval tells that app how often to re-fetch its
+              configuration. The panel name is how this master introduces itself to a node — the
+              node shows it on its own System → Link card.
+            </p>
+            <div className="space-y-3">
+              <Field
+                label="Brand name (shown to users)"
+                value={panelDraft.brand_name}
+                onChange={(v) => setPanelDraft((d) => ({ ...d, brand_name: v }))}
+              />
+              <Field
+                label="Config update interval, hours"
+                value={String(panelDraft.subscription_update_interval_hours)}
+                onChange={(v) =>
+                  setPanelDraft((d) => ({
+                    ...d,
+                    subscription_update_interval_hours: Number(v.replace(/\D/g, '')) || 0,
+                  }))
+                }
+              />
+              <Field
+                label="Panel name (shown to linked nodes)"
+                value={panelDraft.panel_name}
+                onChange={(v) => setPanelDraft((d) => ({ ...d, panel_name: v }))}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => savePanel.mutate()}
+                disabled={savePanel.isPending}
+                className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+              >
+                {savePanel.isPending ? 'Saving…' : 'Save'}
+              </button>
+              {panelSavedAt && Date.now() - panelSavedAt < 3000 && (
                 <span className="text-emerald-300 text-sm">Saved.</span>
               )}
             </div>

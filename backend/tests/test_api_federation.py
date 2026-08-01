@@ -135,7 +135,10 @@ class TestHandshake:
         body = resp.get_json()
         assert "federation_token" in body
         assert len(body["federation_token"]) > 20
-        assert body["name"] == "Panel"
+        assert "name" not in body, (
+            "a node does not name itself on the wire: the master discards the reply's name and shows "
+            "LinkedPanel.name, typed by the admin who added the panel"
+        )
         assert isinstance(body["inbound_count"], int)
         assert "panel_version" not in body, (
             "the handshake must not advertise a contract version: compatibility between hosts is guaranteed "
@@ -150,7 +153,7 @@ class TestHandshake:
         assert cfg.link_token_used is True
         assert cfg.linked_at is not None
 
-    def test_handshake_with_custom_panel_name(self, client, admin_headers, db):
+    def test_handshake_does_not_report_a_name_of_its_own(self, client, admin_headers, db):
         db.session.add(SystemSetting(key="panel_name", value="DE-1"))
         db.session.commit()
 
@@ -166,7 +169,7 @@ class TestHandshake:
             },
         )
         assert resp.status_code == 200
-        assert resp.get_json()["name"] == "DE-1"
+        assert "name" not in resp.get_json()
 
     def test_handshake_wrong_token(self, client, admin_headers, db):
         client.post("/api/federation/link-token", headers=admin_headers)
@@ -230,7 +233,7 @@ class TestSnapshot:
         assert body["status"] == "ok"
         assert body["inbounds"] == []
         assert "timestamp" in body
-        assert "panel_name" in body
+        assert "panel_name" not in body
 
     def test_snapshot_with_inbounds_and_clients(self, client, federation_headers, db):
         ib = Inbound(

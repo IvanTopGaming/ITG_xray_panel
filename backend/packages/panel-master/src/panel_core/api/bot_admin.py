@@ -1028,8 +1028,12 @@ _SETTINGS_KEYS = (
     "admin_ids",
     "telegram_proxy_url",
     "display_timezone",
+    "brand_name",
+    "panel_name",
 )
 _SECRET_SETTINGS_KEYS = {"yookassa_secret_key", "bot_token"}
+_NAME_SETTINGS_KEYS = {"brand_name", "panel_name"}
+_NAME_SETTINGS_MAX_LEN = 64
 
 
 def _read_setting(key: str) -> str:
@@ -1103,6 +1107,9 @@ def get_bot_settings():
             "display_timezone": _read_setting("display_timezone") or "Europe/Moscow",
             "device_limit_enabled": _read_setting("device_limit_enabled") == "true",
             "device_limit_per_user": int(_read_setting("device_limit_per_user") or "0"),
+            "brand_name": _read_setting("brand_name"),
+            "panel_name": _read_setting("panel_name"),
+            "subscription_update_interval_hours": int(_read_setting("subscription_update_interval_hours") or "24"),
             "bot_config_version": int(_read_setting("bot_config_version") or "0"),
         }
     )
@@ -1119,6 +1126,8 @@ def update_bot_settings():
         value = payload[key]
         if key in _SECRET_SETTINGS_KEYS and not value:
             continue
+        if key in _NAME_SETTINGS_KEYS and len(str(value or "")) > _NAME_SETTINGS_MAX_LEN:
+            return jsonify({"error": f"{key} must be {_NAME_SETTINGS_MAX_LEN} characters or fewer"}), 400
         if key == "admin_ids":
             value = _normalize_admin_ids_for_storage(value)
         if key == "display_timezone":
@@ -1161,6 +1170,15 @@ def update_bot_settings():
         except (ValueError, TypeError):
             return jsonify({"error": "device_limit_per_user must be a non-negative integer"}), 400
         _upsert("device_limit_per_user", str(n))
+
+    if "subscription_update_interval_hours" in payload:
+        try:
+            hours = int(payload["subscription_update_interval_hours"])
+            if hours < 1 or hours > 8760:
+                raise ValueError
+        except (ValueError, TypeError):
+            return jsonify({"error": "subscription_update_interval_hours must be between 1 and 8760"}), 400
+        _upsert("subscription_update_interval_hours", str(hours))
 
     if changed:
         new_version = _bump_bot_config_version()

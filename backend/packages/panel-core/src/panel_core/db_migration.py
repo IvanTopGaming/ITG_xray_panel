@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 25
+CURRENT_DB_VERSION = 26
 CURRENT_BOT_TEXTS_VERSION = 18
 
 
@@ -216,6 +216,7 @@ def _ensure_provision_receipt_table(cursor: sqlite3.Cursor) -> int:
             inbound_tag     TEXT   NOT NULL,
             telegram_id     BIGINT NOT NULL,
             response_json   TEXT   NOT NULL,
+            materialized    BOOLEAN NOT NULL DEFAULT 0,
             created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT uq_provision_receipt UNIQUE (idempotency_key, inbound_tag)
         )
@@ -637,6 +638,7 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
 
     schema_patches = [
         ("admin", "password_changed_at", "BIGINT NOT NULL DEFAULT 0"),
+        ("provision_receipt", "materialized", "BOOLEAN NOT NULL DEFAULT 0"),
         ("routing_profile", "enable", "BOOLEAN NOT NULL DEFAULT 1"),
         ("outbound", "enable", "BOOLEAN NOT NULL DEFAULT 1"),
         ("outbound", "settings", "TEXT NOT NULL DEFAULT '{}'"),

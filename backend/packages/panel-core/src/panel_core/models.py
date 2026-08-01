@@ -409,6 +409,7 @@ class ProvisionReceipt(db.Model):
     inbound_tag = db.Column(db.String(50), nullable=False)
     telegram_id = db.Column(db.BigInteger, nullable=False)
     response_json = db.Column(db.Text, nullable=False)
+    materialized = db.Column(db.Boolean, nullable=False, server_default=db.text("false"))
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     __table_args__ = (db.UniqueConstraint("idempotency_key", "inbound_tag", name="uq_provision_receipt"),)

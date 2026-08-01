@@ -154,9 +154,9 @@ def _resolve_admin_bootstrap_credentials(panel_host):
     return username, password
 
 
-def run_startup_migration(app, db_path, *, seed_bot_texts=True):
+def run_startup_migration(app, db_path, *, seed_bot_texts=True, drop_dead_tables=False):
     if is_postgres(app.config["SQLALCHEMY_DATABASE_URI"]):
-        return migrate_postgres_db(logger=app.logger)
+        return migrate_postgres_db(logger=app.logger, drop_dead_tables=drop_dead_tables)
     db.create_all()
     return migrate_sqlite_db(db_path, logger=app.logger, seed_bot_texts=seed_bot_texts)
 
@@ -280,10 +280,15 @@ SCHEMA_MISSING_HINT = (
 )
 
 
-def migrate_schema(app, db_path, *, seed_bot_texts=True):
+def migrate_schema(app, db_path, *, seed_bot_texts=True, drop_dead_tables=False):
     with app.app_context():
         try:
-            report = run_startup_migration(app, db_path, seed_bot_texts=seed_bot_texts)
+            report = run_startup_migration(
+                app,
+                db_path,
+                seed_bot_texts=seed_bot_texts,
+                drop_dead_tables=drop_dead_tables,
+            )
             if report.get("bot_texts_force_reseeded"):
                 try:
                     from panel_core.services import bot_events

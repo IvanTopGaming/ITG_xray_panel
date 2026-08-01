@@ -7,7 +7,7 @@ import time
 from flask import Blueprint, request, jsonify
 
 from panel_core.extensions import db, limiter
-from panel_core.models import FederationConfig, Inbound, SystemSetting
+from panel_core.models import FederationConfig, Inbound
 from panel_core.utils import federation_token_required, token_required
 from panel_core.services.reality_health import read_failures
 from panel_core.version import get_app_version
@@ -103,15 +103,11 @@ def handshake():
     cfg.linked_at = int(time.time() * 1000)
     db.session.commit()
 
-    name_setting = SystemSetting.query.filter_by(key="panel_name").first()
-    panel_name = name_setting.value if name_setting and name_setting.value else "Panel"
-
     inbound_count = Inbound.query.count()
 
     return jsonify(
         {
             "federation_token": federation_token,
-            "name": panel_name,
             "inbound_count": inbound_count,
         }
     ), 200
@@ -121,9 +117,6 @@ def handshake():
 @limiter.exempt
 @federation_token_required
 def snapshot():
-
-    name_setting = SystemSetting.query.filter_by(key="panel_name").first()
-    panel_name = name_setting.value if name_setting and name_setting.value else "Panel"
 
     inbounds = Inbound.query.all()
     result_inbounds = []
@@ -175,7 +168,6 @@ def snapshot():
 
     return jsonify(
         {
-            "panel_name": panel_name,
             "app_version": get_app_version(),
             "status": "ok",
             "timestamp": int(time.time() * 1000),

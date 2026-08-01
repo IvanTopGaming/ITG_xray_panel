@@ -20,7 +20,7 @@ def create_app():
     if not xray_gateway_configured():
         set_xray_gateway(NullXrayGateway())
 
-    migrate_schema(app, sqlite_path)
+    migrate_schema(app, sqlite_path, drop_dead_tables=True)
 
     ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
     ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
