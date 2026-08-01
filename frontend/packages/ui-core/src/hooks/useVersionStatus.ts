@@ -9,6 +9,7 @@ export interface ServiceStatus {
   latest: string | null;
   updateAvailable: boolean;
   isLocal?: boolean;
+  silentSince?: number | null;
 }
 
 const BACKEND_ROLE_ORDER = ['master', 'worker', 'sub', 'bot_api', 'cron'] as const;
@@ -46,14 +47,17 @@ export function useVersionStatus() {
     // §10.8: sub, bot-api and cron have no UI of their own, so until they started stamping their
     // version into the shared Redis the only thing this row could show was what the release said
     // they ought to be running.
-    const reported = data?.running.roles?.[roleKey]?.version ?? null;
-    if (publishedVersion || reported) {
+    const report = data?.running.roles?.[roleKey] ?? null;
+    const silent = report?.state === 'silent';
+    const reported = silent ? null : (report?.version ?? null);
+    if (publishedVersion || report) {
       services.push({
         key: `backend-${roleKey}`,
         label: roleKey,
         current: reported,
         latest: publishedVersion,
         updateAvailable: isNewer(publishedVersion, reported),
+        silentSince: silent ? (report?.reported_at ?? null) : null,
       });
     }
   }
@@ -69,13 +73,15 @@ export function useVersionStatus() {
     ),
   });
 
-  if (data?.running.bot) {
+  const botSilent = data?.running.bot_state === 'silent';
+  if (data?.running.bot || botSilent) {
     services.push({
       key: 'bot',
       label: 'bot',
-      current: data.running.bot,
+      current: data?.running.bot ?? null,
       latest: latest?.bot ?? null,
-      updateAvailable: isNewer(latest?.bot, data.running.bot),
+      updateAvailable: isNewer(latest?.bot, data?.running.bot),
+      silentSince: botSilent ? (data?.running.bot_reported_at ?? null) : null,
     });
   }
 

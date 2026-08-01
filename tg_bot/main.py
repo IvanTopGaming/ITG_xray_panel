@@ -31,6 +31,15 @@ def _build_bot() -> Bot:
     )
 
 
+async def _report_identity(bot) -> None:
+    try:
+        me = await bot.get_me()
+    except Exception as exc:
+        logger.warning("could not ask Telegram for this bot's username: %s", exc)
+        return
+    runtime_config.set_bot_username(me.username or "")
+
+
 async def main() -> None:
     logging.basicConfig(
         level=getattr(logging, config.BOT_LOG_LEVEL, logging.INFO),
@@ -81,6 +90,7 @@ async def main() -> None:
 
         new_bot = _build_bot()
         state["bot"] = new_bot
+        await _report_identity(new_bot)
         try:
             await new_bot.delete_webhook(drop_pending_updates=True)
         except Exception as exc:
@@ -90,6 +100,8 @@ async def main() -> None:
     runtime_config.set_change_listener(on_runtime_change)
     refresh_task = asyncio.create_task(runtime_config.refresh_loop())
     consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware, backend=backend))
+
+    await _report_identity(bot)
 
     logger.info("bot started, polling Telegram")
     try:

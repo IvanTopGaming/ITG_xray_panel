@@ -89,6 +89,8 @@ def user_sub_page_kb(
     back_label: str,
     sub_url: str | None = None,
     qr_label: str | None = None,
+    renew_label: str | None = None,
+    renew_tariff_id: int | None = None,
 ) -> InlineKeyboardMarkup:
 
     buttons = []
@@ -96,6 +98,8 @@ def user_sub_page_kb(
         buttons.append([InlineKeyboardButton(text=open_label, url=sub_url)])
         if qr_label:
             buttons.append([InlineKeyboardButton(text=qr_label, callback_data="sub_qr")])
+    if renew_label and renew_tariff_id:
+        buttons.append([InlineKeyboardButton(text=renew_label, callback_data=f"buy:{renew_tariff_id}")])
     buttons.append([InlineKeyboardButton(text=keys_label, callback_data="show_keys")])
     buttons.append([InlineKeyboardButton(text=help_label, callback_data="user_help")])
     buttons.append([InlineKeyboardButton(text=back_label, callback_data="user_home")])

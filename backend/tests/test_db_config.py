@@ -41,6 +41,24 @@ def test_engine_options_for_postgres():
     assert opts["max_overflow"] == 10
 
 
+def test_postgres_connections_fail_fast_when_the_tier_is_unreachable():
+    """§114: without this the request hangs instead of erroring.
+
+    libpq waits indefinitely by default, so a data tier that disappears at the network level — the
+    VM off, a partition, a firewall, which is exactly the failure a separate VM exists to survive —
+    turned every request into a wait with no answer. Measured on a live stand: a subscription
+    request with Postgres unreachable produced nothing at all in 25 seconds, no status and no error,
+    which a client app shows as a spinner rather than a failure. `pool_pre_ping` makes it worse
+    rather than better, because it round-trips on every checkout.
+    """
+
+    opts = engine_options("postgresql+psycopg2://u:p@data-vm/db?sslmode=verify-full")
+    assert opts["connect_args"]["connect_timeout"] > 0, (
+        "no connect timeout reaches libpq, so an unreachable data tier hangs every request until the "
+        "OS gives up on the TCP connection"
+    )
+
+
 def test_validate_rejects_insecure_pg_in_production():
     with pytest.raises(RuntimeError):
         validate_database_uri("postgresql://u:p@h/db", is_local=False)

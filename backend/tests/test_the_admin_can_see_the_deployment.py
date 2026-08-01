@@ -64,7 +64,7 @@ class FakeRedis:
     what a node can do must ask for a node's credential.
     """
 
-    PANEL = frozenset({"setex", "get", "ping", "publish", "delete"})
+    PANEL = frozenset({"setex", "set", "get", "ping", "publish", "delete"})
     NODE = frozenset({"publish", "select"})
 
     def __init__(self, allow=PANEL):
@@ -78,6 +78,10 @@ class FakeRedis:
 
     def setex(self, key, ttl, value):
         self._check("setex")
+        self.values[key] = value
+
+    def set(self, key, value):
+        self._check("set")
         self.values[key] = value
 
     def get(self, key):
@@ -180,14 +184,33 @@ def test_the_stamp_is_throttled(shared):
     assert role_status.record_role_version("sub", "2.4.13", now=1000.0 + role_status.STAMP_EVERY_S + 1) is True
 
 
-def test_a_role_that_stops_reporting_disappears_rather_than_going_stale(shared):
-    """ "Reporting version X" is a claim with a timestamp; "was on X once" is not worth showing."""
+def test_a_role_that_stops_reporting_is_marked_silent_rather_than_current(shared):
+    """§116: it must not claim a version it cannot confirm — and it must not vanish either.
+
+    "Reporting version X" is a claim with a timestamp behind it and "was on X once" is not, which is
+    why the fresh key expires. But absence then meant two opposite things at once — "this host was
+    never deployed" and "this host died" — and for the bot host those are different emergencies:
+    while it is down, no payment is confirmed at all. The TTL-less copy separates them without
+    bringing the stale claim back.
+    """
 
     role_status.record_role_version("cron", "2.4.12")
     stale = json.dumps({"version": "2.4.12", "reported_at": time.time() - role_status.DEFAULT_FRESHNESS_S - 10})
     shared.values[role_status.status_key("cron")] = stale.encode()
 
-    assert "cron" not in role_status.get_role_versions()
+    entry = role_status.get_role_versions().get("cron")
+    assert entry is not None, (
+        "a host that stopped reporting vanished from the card, so an operator cannot tell it from a "
+        "host that was never deployed"
+    )
+    assert entry["state"] == "silent", f"the stale version is being presented as current: {entry!r}"
+    assert entry["reported_at"], "nothing says when the host was last heard from"
+
+
+def test_a_role_that_never_reported_is_absent(shared):
+    assert "cron" not in role_status.get_role_versions(), (
+        "a role with no record at all was reported as silent, which invents a host that may not exist"
+    )
 
 
 def test_a_node_cannot_stamp_itself_and_is_not_expected_to(monkeypatch):

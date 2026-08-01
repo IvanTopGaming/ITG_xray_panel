@@ -136,6 +136,8 @@ Three networks: `panel-net` (frontend/backend/caddy + xray + bot — the only on
 
 In the split Postgres deployment there are **five** Flask app factories (`panel_core.roles.{master,worker,sub,botapi,cron}`). Which one runs is decided by the gunicorn command, not by `PANEL_ROLE`: the variable is a declared expectation that `bind_role()` compares against the factory that actually started, refusing to boot on a mismatch (it was worth having when the master image still shipped `panel-sub`, so that pointing its command at `roles.sub` would boot the wrong role under the right image name; wave 3b removed that dependency, and the check stays as cheap insurance against the same class of mistake). Left unset, `bind_role()` fills it in itself. The five: `master` (default — admin API, no local Xray, and **no billing surface**: it registers neither the `billing` nor the `bot_service` blueprint) runs against Postgres via `DATABASE_URL`; `worker` — called a **node** below — has its own Xray, but (per `docker-compose.node.yml` / `.env.node.example`) has no `DATABASE_URL` at all, so it runs against its own local SQLite (`./db_data`) as a cache/fallback rather than sharing the master's Postgres; `sub` serves subscription links and is the only role that does — it is also the only role that enforces the device limit, and therefore a **writer** of the shared Postgres, not a reader; `bot` (bot-api) serves `/bot-service/*` **and the whole billing surface** — `/api/billing/checkout`, the YooKassa webhook, and the three payment crons; `cron` runs every background job that used to sit on the master and **owns the shared Postgres schema** — it is the only role that migrates it. A node and a Panel Federation `LinkedPanel` (see Panel Federation below) are two views of the same thing, not separate systems: the node is the process role (`PANEL_ROLE=worker`), while `LinkedPanel` is the row the master's Postgres uses to address it (url + `federation_token`). The master routes provisioning to a node through exactly that federation path — `TariffItem.panel_id` → `LinkedPanel` → `FederationClient.provision()` → `POST /api/federation/provision` on the node (`services/panel_proxy.py`, `api/federation.py`) — which is also *why* a node can't resolve `lang`/`renewable` itself: it has no Postgres access to `TelegramUser`/`Tariff`, only its own local SQLite.
 
+**The shared Redis speaks TLS only, and a plain `redis://` across a network is refused at start-up (wave 8).** `docker-compose.postgres.yml` starts it with `--port 0 --tls-port 6379` off `./pg_certs/server.{crt,key}` — the same pair Postgres uses — so every client URI is `rediss://`. Before this the bus was authenticated (three ACL users, `default off`) and never encrypted, which is a weaker property than it sounds: one `panel:<id>:snapshot` carries each client's UUID, e-mail, telegram_id, traffic and expiry **and** the inbound's `realitySettings.privateKey`, so reading the wire yields both a usable `vless://` for somebody else's account and the node's server key. The deploy note had offered "a private network or `rediss://`" while the second did not exist in the image. `extensions.validate_shared_redis_uri` now refuses to boot on a cleartext URI whose host is not on this machine — a bare service name (`redis`) or loopback stays plain, because it never crosses a wire and that is how the master's own rate-limit store and an all-in-one deployment reach it. The cost is a real one and belongs with §10.6: **the data tier now needs a certificate for the hostname its clients use**, publicly-trusted for the zero-configuration path, or self-signed with the CA copied to every host.
+
 **Two Redis instances, split by who needs the data — not by who asked for it first.** `RATELIMIT_STORAGE_URI` names the box's own Redis; `SHARED_REDIS_URI` names the data tier. The rule is a single sentence: **anything more than one role has to see lives in the shared one.** That is the `bot:events` bus, the node snapshots (`panel:<id>:{snapshot,status,last_poll}` plus the TTL-less `panel:<id>:{snapshot:last,last_poll:last}` — see Panel Federation), the `panel:refresh` nudge — and, of the subscription cache, its *invalidation* only. What stays local is rate limiting plus each role's own cached subscription responses, which are genuinely per-role: a node builds that response from its own SQLite and sub builds it from Postgres, so the same key would hold two different answers.
 
 **Neither instance being reachable is allowed to refuse a request any more (wave 5d).** `build_base_app` sets `RATELIMIT_IN_MEMORY_FALLBACK_ENABLED`, so an unreachable storage moves the counters into the process — it does **not** switch the limits off. That distinction is the whole point and is guarded: `swallow_errors` would have removed the same 500 by removing `10 per minute` from the admin login and `30 per minute` from a node's handshake as well. Because every gunicorn command runs `-w 1`, one process is one host, so a degraded counter covers exactly the population the Redis-backed one did. flask-limiter logs `Rate limit storage unreachable - falling back to in-memory storage` once and `Rate limit storage recovered` when it returns, on its own. Before this, `RATELIMIT_STORAGE_URI` pointing at another machine — which it does on sub and bot-api, neither of which runs a Redis — meant a dead data tier answered **500 on every subscription request**, while everything else on that path (`sub_cache`) had been failing open all along.
@@ -1572,11 +1574,85 @@ tier and a new variable on the bot host**. Read all eight points.
    partial rollout degrades quietly in both directions: an old master shows no node versions, a new
    master shows none until the nodes are updated, and nothing is corrupted either way.
 
+### Deploy note — what the first full run of the stand found, and what it cost to fix (Phase 8 wave 8)
+
+This wave changes **no schema, no federation contract and no authorisation**. It comes out of the
+first end-to-end run of the whole deployment on four machines, so every item below was observed
+happening rather than reasoned about. Two things need a deployer's attention — one new variable on
+the node and one behaviour every user will see. Read all seven points.
+
+1. **`PROXY_DOMAIN` is now handed to the node's *backend*, not only to its Caddy.** It is already
+   mandatory on that host, so `.env` needs no edit — but `docker compose up -d` must recreate the
+   container, a `pull` alone will not. The backend reads it to refuse a REALITY inbound whose SNI
+   the reverse proxy will not route to Xray: on `:443` Caddy decides by SNI, learns the decoy name
+   from `PROXY_DOMAIN`, and the inbound's `serverNames` is what the client presents. When the two
+   drifted apart every client was quietly handed to the panel instead of Xray and simply never
+   connected, with nothing anywhere reporting a fault. Saving such an inbound now fails with a
+   message naming both values.
+
+2. **An expired subscription answers `200` with an explanation instead of `404`.** A client app
+   renders a 404 as a failed update, so the one screen a user looks at when the VPN stops working
+   could not distinguish "your subscription ran out" from "this link was reset" (a button since
+   wave 6) or "you mistyped the URL". The reply is now a config the app accepts, carrying a single
+   entry named `⛔ Подписка закончилась — продлите в @<bot>` and pointing at `127.0.0.1:1` so a tap
+   fails instantly rather than hanging, with a random UUID so a leaked link hands out no credential.
+   `Subscription-Userinfo: expire=` carries the real past date, which several clients render as
+   "expired" natively. The same applies to a blocked account and to a per-key link.
+   **An unknown token still answers 404, deliberately** — otherwise revoking a leaked link would look
+   exactly like an expiry, and probing random tokens would get a meaningful reply. The handle in that
+   message comes from the bot itself: it reports its username on the 60-second runtime-config poll
+   (`X-Bot-Username`), so a fresh deployment shows "продлите в боте" until the bot has polled once.
+
+3. **`panel:refresh` was losing about half its messages on every installation, and the fix is one
+   argument.** `redis-py 8` changed the default `socket_timeout` from "block forever" to 5 seconds;
+   `new_shared_redis_subscriber` relied on the old default, so a quiet channel raised `TimeoutError`,
+   the listener treated that as a dropped connection and slept 5 seconds before resubscribing.
+   Measured on the stand: 5 of 12 nudges produced an out-of-band poll, 7 were lost, and the cron host
+   logged two lines every ten seconds forever. Nothing looked broken because the ordinary 10-second
+   poll is the safety net — an admin action simply took up to 10 s to appear instead of half a second.
+
+4. **A data tier that is unreachable now fails fast instead of slowly.** Two independent causes were
+   measured: no `connect_timeout` reached libpq, so a *network-level* outage (VM off, partition,
+   firewall — the failure a separate VM exists to survive) made requests hang with no answer at all
+   rather than erroring; and the Redis clients remembered nothing, so every request re-tried every
+   lookup, turning a 0.5 s subscription answer into 4-10 s and the master's own pages into 2.7-3.5 s.
+   Postgres now gets `connect_timeout=5` via `engine_options`, and both Redis clients skip a tier
+   known to be down for 10 seconds. **Nothing to configure.** Note the shape of the failure that is
+   *not* affected: a Postgres process that dies while its host stays up was always refused instantly.
+
+5. **System → About distinguishes "this host died" from "this host was never deployed".** Wave 6 made
+   a role disappear from the card when it stopped reporting, which is right for the *version* — a
+   stale number is a claim with no timestamp — but absence then meant two opposite things at once.
+   For the bot host those are different emergencies: while it is down **no payment is confirmed at
+   all**. Each role now also writes a TTL-less copy, and a host that has gone quiet shows an amber
+   *not answering · last seen N ago* instead of vanishing. Observed by accident when the stand's bot
+   host rebooted itself mid-session.
+
+6. **Three smaller things a deployer will notice.** Every `.env.*.example` now carries
+   `&sslrootcert=/etc/ssl/certs/ca-certificates.crt` on `DATABASE_URL` — without it **no role can
+   connect at all** (libpq looks for `~/.postgresql/root.crt`, which no container has, and
+   `sslrootcert=system` does not help because `psycopg2-binary` bundles its own OpenSSL), which means
+   the shipped instructions had been unusable. `XRAY_IMAGE` is `:latest`, because that registry
+   publishes no version tags and `xray_core_ref` is a *source* ref for the worker's protobuf stubs.
+   And the node's `xray-core` restarting a few times on the very first `up` is expected and now
+   documented: the panel writes the config at boot, and gating Xray behind the backend's healthcheck
+   would add real downtime to every later restart to silence a message that appears once.
+
+7. **Bump `master`, `worker`, `sub`, `bot_api`, `cron`, `frontend_admin`, `frontend_node` and `bot`
+   — eight images. `caddy` and `xray_egress` are untouched.** The `panel-core` edits
+   (`extensions.py`, `db_config.py`, `services/{reality_health,bot_status,role_status,panel_proxy}.py`,
+   `data/bot_texts_defaults.yaml`) fan out to all five backends; `panel-adminapi`
+   (`api/{inbound,system}.py`) to master and worker; `panel-master`, `panel-sub`, `panel-botapi` and
+   `panel-worker` to their own; `ui-core` and `admin` to both frontends; `tg_bot` to the bot. One new
+   bot text (`checkout.creating`) arrives through the ordinary additive seed, so
+   `CURRENT_BOT_TEXTS_VERSION` does **not** move and no customised text is touched. A partial rollout
+   degrades quietly in both directions.
+
 ## Configuration
 
 **There is no shared `.env.example`.** Each host copies its own: `.env.master.example`, `.env.node.example`, `.env.sub.example`, `.env.bot.example`, `.env.data.example` → `.env` on that box and nowhere else. One file could not be correct for every host even in principle — `RATELIMIT_STORAGE_URI` must point at the box's *own* Redis on the master and on a node and at the *data tier* on the sub and bot hosts, two mutually exclusive values of one variable, which the old single file carried at once (one live, one commented out) and expected the deployer to reconcile by hand. Each file now holds only what its host reads, with no commented alternatives. `backend/tests/test_env_examples.py` enforces both directions: every `${VAR:?…}` a compose file demands is defined in that host's example, and no example defines a variable its own compose file never references. Key variables:
 - `PANEL_DOMAIN`, `PANEL_SECRET_PATH` — routing/TLS. `PANEL_DOMAIN` is **per-host by design**: on a node it must be *that node's* domain, because `services/notifications.py` also uses it as the node's identity in bot events. On the **sub and bot hosts it routes nothing** — neither box serves it — and it is read there only as the "is this a real deployment" marker (`app_base` refuses a weak `SECRET_KEY`, `db_config` refuses a `DATABASE_URL` without `sslmode=verify-full`), plus, on sub, as `api/subscription.py`'s default server address for an inbound with no explicit host. `PANEL_SECRET_PATH` is read by exactly one module, `api/federation.py`, which ships from `panel-adminapi` — so it belongs on the **master and node only**. Wave 5a removed it from `docker-compose.{sub,bot}.yml` and from their examples, where it had been a mandatory `${VAR:?}` that no code in either image could read. `tests/test_env_reaches_code_that_reads_it.py` resolves each service to its image's dependency closure and fails on any variable handed to a container that nothing inside it mentions.
-- `PROXY_DOMAIN` — decoy SNI, raw-TCP passthrough to Xray (masquerade). **Node-only.** The master has had no `xray` service since phase 3b, so `docker-compose.master.yml` no longer names it at all.
+- `PROXY_DOMAIN` — decoy SNI, raw-TCP passthrough to Xray (masquerade). **Node-only.** The master has had no `xray` service since phase 3b, so `docker-compose.master.yml` no longer names it at all. Since wave 8 it is handed to the node's **backend** as well as its Caddy: `api/inbound.py` refuses a REALITY inbound on `:443` whose `realitySNI` differs from it, because the two are one value stored in two places and a mismatch routes every client into the panel instead of Xray without reporting anything.
 - `SUB_DOMAIN` *(required — subscriptions do not work without it)* — the dedicated subscription domain, and since phase 8 wave 3b the **only** host any subscription link can name: `https://<SUB_DOMAIN>/api/sub/u/<token>` for a Telegram user, `https://<SUB_DOMAIN>/api/sub/<uuid>` for a single key. Must be in the cert's SAN and in the backend container's env. The old `PANEL_DOMAIN` + secret-path fallback is gone: it named the master, which no longer serves the route at all, so it turned an empty variable into a link that 404s in a browser while client apps kept working — quiet enough to ship. `build_aggregate_sub_url` / `build_client_sub_url` now return `None` instead. **All four service hosts demand it via `:?`, and only one of them serves it:** the sub host answers the routes; the master and each node read it purely to build the links their own Dashboard hands out (`api/inbound.py` → `sub_url` per client); bot-api reads it to build every link the bot sends a user (`GET /bot-service/users/<id>/state`). A host knowing its own domain is not enough — nothing asks the sub host what it is called.
 - `SECRET_KEY`, `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`.
 - `XRAY_CORE_REF` — Xray-core version to compile into the **worker** image (`backend/Dockerfile.worker`'s build-arg) — the only one of the five per-role backend images that carries the Xray runtime (build-time only).

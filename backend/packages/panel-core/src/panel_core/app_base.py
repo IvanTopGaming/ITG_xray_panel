@@ -11,7 +11,15 @@ from panel_core.db_migration import migrate_sqlite_db
 from panel_core.pg_migrate import migrate_postgres_db
 from panel_core.db_config import is_postgres
 
-from .extensions import db, migrate, scheduler, limiter, local_redis_uri
+from .extensions import (
+    db,
+    migrate,
+    scheduler,
+    limiter,
+    local_redis_uri,
+    shared_redis_uri,
+    validate_shared_redis_uri,
+)
 from .observability import setup_logging, init_request_logging, run_job_logged
 from .panel_role import bind_role
 from .models import Admin, Outbound
@@ -202,7 +210,10 @@ def build_base_app(role, *, public_surface=True):
 
     from panel_core.db_config import validate_database_uri
 
-    validate_database_uri(app.config["SQLALCHEMY_DATABASE_URI"], public_surface and _is_local_domain(panel_host))
+    is_local_deployment = public_surface and _is_local_domain(panel_host)
+    validate_database_uri(app.config["SQLALCHEMY_DATABASE_URI"], is_local_deployment)
+    validate_shared_redis_uri(shared_redis_uri(), is_local_deployment)
+    validate_shared_redis_uri(local_redis_uri(), is_local_deployment)
 
     CORS(app, resources={r"/api/*": {"origins": _cors_origins()}})
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)

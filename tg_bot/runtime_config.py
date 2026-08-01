@@ -29,6 +29,16 @@ class RuntimeConfig:
         self._client: Optional[httpx.AsyncClient] = None
         self._session_change_listener: Optional[Callable[[], Awaitable[None]]] = None
         self._token_rejected = False
+        self._bot_username: str = ""
+
+    def set_bot_username(self, username: str) -> None:
+        """The panel has a token, not a session, so it cannot ask Telegram who this bot is.
+
+        §109 needs the handle to tell an expired user where to renew. It rides the existing
+        60-second poll rather than a call of its own.
+        """
+
+        self._bot_username = (username or "").strip().lstrip("@")
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -51,7 +61,8 @@ class RuntimeConfig:
 
     async def _fetch(self) -> dict:
         client = self._ensure_client()
-        resp = await client.get("/bot/runtime-config")
+        headers = {"X-Bot-Username": self._bot_username} if self._bot_username else None
+        resp = await client.get("/bot/runtime-config", headers=headers)
         resp.raise_for_status()
         self._token_rejected = False
         return resp.json()

@@ -355,6 +355,16 @@ export default function Panels() {
                     </div>
                   )}
 
+                  {(panel.reality_failures?.count ?? 0) > 0 && (
+                    <div className="text-xs text-amber-400/90 bg-amber-500/10 rounded-lg px-3 py-1.5">
+                      {panel.reality_failures?.count} REALITY handshakes were refused on this node
+                      in the last hour. A few mean scanners or a stale client; a steady stream with
+                      no one connecting means the inbound&apos;s decoy address cannot serve as a
+                      REALITY target — try www.google.com and check that the SNI matches
+                      PROXY_DOMAIN.
+                    </div>
+                  )}
+
                   {!panel.enable && (
                     <div className="text-xs text-yellow-500/80 bg-yellow-500/10 rounded-lg px-3 py-1.5">
                       Disabled

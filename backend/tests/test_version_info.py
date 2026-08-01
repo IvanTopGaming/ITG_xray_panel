@@ -109,26 +109,26 @@ def test_bot_status_records_and_reads_fresh(monkeypatch, shared_tier):
     bot_status.record_bot_version("2.1.3")
     monkeypatch.setattr(bot_status.time, "time", lambda: 1010.0)
     s = bot_status.get_bot_status(freshness=180)
-    assert s == {"version": "2.1.3", "reported_at": 1000.0}
+    assert s == {"version": "2.1.3", "reported_at": 1000.0, "state": "reporting"}
 
 
 def test_bot_status_stale_returns_none(monkeypatch, shared_tier):
     monkeypatch.setattr(bot_status.time, "time", lambda: 1000.0)
     bot_status.record_bot_version("2.1.3")
     monkeypatch.setattr(bot_status.time, "time", lambda: 1300.0)
-    assert bot_status.get_bot_status(freshness=180) == {"version": None, "reported_at": None}
+    assert bot_status.get_bot_status(freshness=180) == {"version": None, "reported_at": None, "state": None}
 
 
 def test_bot_status_ignores_blank(monkeypatch, shared_tier):
     monkeypatch.setattr(bot_status.time, "time", lambda: 1000.0)
     bot_status.record_bot_version("")
-    assert bot_status.get_bot_status() == {"version": None, "reported_at": None}
+    assert bot_status.get_bot_status() == {"version": None, "reported_at": None, "state": None}
 
 
 def test_bot_status_without_a_shared_tier_reports_nothing(monkeypatch):
     monkeypatch.setattr(bot_status, "get_shared_redis", lambda: None)
     bot_status.record_bot_version("2.1.3")
-    assert bot_status.get_bot_status() == {"version": None, "reported_at": None}
+    assert bot_status.get_bot_status() == {"version": None, "reported_at": None, "state": None}
 
 
 def test_runtime_config_records_bot_version(client, bot_headers, shared_tier):

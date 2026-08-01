@@ -121,9 +121,28 @@ async def test_the_catalogue_keyboard_is_taken_away_before_the_invoice_is_built(
     await catalog.start_checkout(callback, MagicMock(), _i18n(), "ru", _backend(log))
     await _drain()
 
-    assert log.index("clear_keyboard") < log.index("create_checkout"), (
+    edits = [i for i, entry in enumerate(log) if isinstance(entry, tuple) and entry[0] == "edit_text"]
+    assert edits, f"the catalogue was never replaced. Log was {log!r}."
+    assert edits[0] < log.index("create_checkout"), (
         f"the buy buttons stayed live while the invoice was being built, so a second press would open a "
         f"second payment. Order was {log!r}."
+    )
+    assert log[edits[0]][2] is None, (
+        f"the placeholder kept a keyboard, so the catalogue buttons were still pressable: {log[edits[0]]!r}"
+    )
+
+
+async def test_the_wait_for_yookassa_is_explained_rather_than_left_blank():
+    log = []
+    callback = _callback(log)
+
+    await catalog.start_checkout(callback, MagicMock(), _i18n(), "ru", _backend(log))
+    await _drain()
+
+    edits = [entry for entry in log if isinstance(entry, tuple) and entry[0] == "edit_text"]
+    assert edits[0][1] == "[checkout.creating]", (
+        f"pressing pay left the previous screen up for up to ~16 seconds with nothing said; "
+        f"the first edit was {edits[0]!r}"
     )
 
 

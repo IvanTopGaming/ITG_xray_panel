@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import FederationConfig, Inbound, SystemSetting
 from panel_core.utils import federation_token_required, token_required
+from panel_core.services.reality_health import read_failures
 from panel_core.version import get_app_version
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,7 @@ def snapshot():
             "app_version": get_app_version(),
             "status": "ok",
             "timestamp": int(time.time() * 1000),
+            "reality_failures": read_failures(),
             "inbounds": result_inbounds,
         }
     ), 200

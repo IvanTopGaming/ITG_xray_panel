@@ -21,7 +21,8 @@ from panel_core.xray.facade import (
     _api_add_user_grpc,  # noqa: F401 — re-exported for consumers importing it from this module
     _api_remove_user_grpc,
 )
-from panel_core.xray.engine import ACCESS_LOG_PATH
+from panel_core.xray.engine import ACCESS_LOG_PATH, ERROR_LOG_PATH
+from panel_core.services.reality_health import record_failures
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
 from panel_core.services.traffic_store import (  # noqa: F401 — re-exported under the original names
     _ten_min_bucket,
@@ -35,6 +36,8 @@ from panel_core.services.traffic_store import (  # noqa: F401 — re-exported un
 )
 
 ACCESS_LOG_OFFSET_PATH = f"{ACCESS_LOG_PATH}.offset"
+REALITY_OFFSET_PATH = f"{ERROR_LOG_PATH}.reality.offset"
+_REALITY_REFUSED = "REALITY: processed invalid connection"
 logger = logging.getLogger(__name__)
 
 
@@ -363,6 +366,39 @@ def check_limits_job():
         check_limits_and_reset()
 
 
+def _collect_reality_failures_logic():
+    """Counts refused REALITY handshakes since the last run — see services.reality_health."""
+
+    if not os.path.exists(ERROR_LOG_PATH):
+        return 0
+    try:
+        size = os.path.getsize(ERROR_LOG_PATH)
+        offset = 0
+        try:
+            with open(REALITY_OFFSET_PATH, "r", encoding="utf-8") as fh:
+                offset = max(0, int(fh.read().strip()))
+        except (OSError, ValueError):
+            offset = 0
+        if offset > size:
+            offset = 0
+        with open(ERROR_LOG_PATH, "r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            chunk = fh.read()
+            new_offset = fh.tell()
+        with open(REALITY_OFFSET_PATH, "w", encoding="utf-8") as fh:
+            fh.write(str(new_offset))
+    except OSError:
+        logger.debug("Failed to read the Xray error log", exc_info=True)
+        return 0
+
+    return record_failures(chunk.count(_REALITY_REFUSED) if chunk else 0)
+
+
 def parse_access_logs():
     with scheduler.app.app_context():
         _parse_access_logs_logic()
+        try:
+            _collect_reality_failures_logic()
+        except Exception:
+            db.session.rollback()
+            logger.debug("Failed to collect REALITY handshake failures", exc_info=True)

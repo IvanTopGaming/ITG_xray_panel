@@ -472,7 +472,10 @@ def proxy_provision(
 
     panel = _get_panel_or_raise(panel_id)
     client = FederationClient(panel.url, panel.federation_token)
-    result = client.provision(telegram_id, inbound_tag, params)
+    try:
+        result = client.provision(telegram_id, inbound_tag, params)
+    except RemotePanelError as exc:
+        raise RemotePanelError(exc.status_code, f"Panel '{panel.name}': {exc.message}") from exc
     if not isinstance(result, dict) or result.get("expires_at_ms") is None:
         raise ValueError(
             f"Panel '{panel.name}' answered the provisioning request without an expiry. "

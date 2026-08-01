@@ -225,11 +225,28 @@ class TestV2RaySubscription:
 
         assert resp.status_code == 404
 
-    def test_404_for_disabled_client(self, client, seed_disabled):
+    def test_a_disabled_client_is_told_it_ended_rather_than_that_it_never_existed(self, client, seed_disabled):
+        """§109: 404 here reads to an app as "this link does not exist", which is a different problem.
+
+        A key that has been disabled or has run out is the commonest reason a user opens their app to
+        a failure, and it was answered exactly like a mistyped URL or a link revoked by wave 6's reset
+        button. The reply now carries the reason where the app displays it. An unknown UUID keeps its
+        404 — see the test above — or revoking a key would look like an expiry.
+        """
+
         with patch(_PATCH_PANEL, return_value=None):
             resp = client.get(f"/api/sub/{seed_disabled}", headers=_proxy_app_ua())
 
-        assert resp.status_code == 404
+        assert resp.status_code == 200, (
+            f"a disabled key still answers {resp.status_code}, so the user's app cannot tell an expired "
+            f"subscription from a dead link"
+        )
+        import base64
+        import urllib.parse
+
+        body = urllib.parse.unquote(base64.b64decode(resp.data).decode())
+        assert "127.0.0.1:1" in body, f"the placeholder is connectable, so tapping it hangs: {body!r}"
+        assert seed_disabled not in body, "the disabled key's own UUID was handed back out"
 
 
 class TestSubscriptionUserinfo:

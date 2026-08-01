@@ -144,6 +144,8 @@ def list_panels():
             item["last_poll"] = last_poll
         snapshot = get_panel_snapshot(item["id"]) or {}
         item["app_version"] = snapshot.get("app_version")
+        failures = snapshot.get("reality_failures")
+        item["reality_failures"] = failures if isinstance(failures, dict) else None
     return jsonify(items), 200
 
 

@@ -122,6 +122,9 @@ catalog.tariff_not_available:
 checkout.button.pay:
   ru: "💳 Оплатить {price} ₽"
   en: "💳 Pay {price} ₽"
+checkout.creating:
+  ru: "⏳ Выставляем счёт…\nЭто занимает несколько секунд — не закрывай этот экран."
+  en: "⏳ Creating your invoice…\nThis takes a few seconds — keep this screen open."
 
 trial.button.activate:
   ru: "🎁 Активировать пробный период ({days} дн.)"

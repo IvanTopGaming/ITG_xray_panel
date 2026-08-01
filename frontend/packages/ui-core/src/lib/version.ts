@@ -3,6 +3,7 @@ import api from './api';
 export interface RoleReport {
   version: string;
   reported_at: number;
+  state?: 'reporting' | 'silent';
 }
 
 export interface VersionInfo {
@@ -11,6 +12,7 @@ export interface VersionInfo {
     backend_key: string | null;
     bot: string | null;
     bot_reported_at: number | null;
+    bot_state?: 'reporting' | 'silent' | null;
     roles?: Record<string, RoleReport>;
   };
   latest: Record<string, string> | null;

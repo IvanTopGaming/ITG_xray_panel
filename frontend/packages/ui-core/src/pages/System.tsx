@@ -757,6 +757,7 @@ export default function System() {
                           s.current !== null ? (s.updateAvailable ? s.latest : null) : s.latest
                         }
                         isLocal={s.isLocal}
+                        silentSince={s.silentSince}
                       />
                     ))}
                   </div>
@@ -1013,23 +1014,38 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
   return <div className="w-full grid grid-cols-2 gap-2 text-[11px] font-mono">{lines}</div>;
 }
 
+function silentFor(sinceSeconds: number): string {
+  const minutes = Math.max(1, Math.round((Date.now() / 1000 - sinceSeconds) / 60));
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
+}
+
 function VersionPill({
   label,
   value,
   latest,
   isLocal,
+  silentSince,
 }: {
   label: string;
   value: string | null;
   latest?: string | null;
   isLocal?: boolean;
+  silentSince?: number | null;
 }) {
+  const isSilent = Boolean(silentSince);
   const isInformational = value === null;
-  const isActionable = Boolean(latest) && !isInformational;
+  const isActionable = Boolean(latest) && !isInformational && !isSilent;
   return (
     <div
       className={`flex items-center justify-between gap-3 px-3 py-2 bg-black/20 rounded-lg border ${
-        isActionable ? 'col-span-2 border-primary/25' : 'border-white/5'
+        isActionable
+          ? 'col-span-2 border-primary/25'
+          : isSilent
+            ? 'col-span-2 border-amber-500/30'
+            : 'border-white/5'
       }`}
     >
       <span className="shrink-0 text-gray-500 uppercase tracking-wider">
@@ -1037,8 +1053,16 @@ function VersionPill({
         {isLocal && <span className="ml-1.5 normal-case text-primary/70">(this host)</span>}
       </span>
       <span className="flex items-center gap-2">
+        {isSilent && (
+          <span
+            title={`This host stopped reporting. It was last heard from ${silentFor(silentSince as number)}, running a version it no longer confirms.`}
+            className="whitespace-nowrap text-amber-400"
+          >
+            not answering · last seen {silentFor(silentSince as number)}
+          </span>
+        )}
         {value !== null && <span className="whitespace-nowrap text-gray-200">{value}</span>}
-        {latest && (
+        {!isSilent && latest && (
           <span
             title={isInformational ? `Published version: ${latest}` : `Update available: ${latest}`}
             className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[9px] font-bold ${

@@ -329,6 +329,8 @@ async def user_sub(
         return
 
     await state.clear()
+    renew_tariff_id = next((c.get("tariff_id") for c in clients if c.get("tariff_id")), None)
+    renew_label = await i18n.t("notification.button.renew", lang) if renew_tariff_id else None
     title = await i18n.t("sub.page.title", lang)
     open_label = await i18n.t("sub.actions.open_page", lang)
     keys_label = await i18n.t("sub.actions.show_keys", lang)
@@ -351,6 +353,8 @@ async def user_sub(
             back_label=back_label,
             sub_url=sub_url,
             qr_label=await i18n.t("sub.actions.show_qr", lang),
+            renew_label=renew_label,
+            renew_tariff_id=renew_tariff_id,
         ),
     )
 

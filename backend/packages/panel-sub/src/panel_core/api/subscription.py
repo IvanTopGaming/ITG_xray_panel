@@ -59,7 +59,7 @@ def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> l
     return remote_links
 
 
-def _remote_clients_for_headers(telegram_id):
+def _remote_clients_for_headers(telegram_id, *, only_enabled=True):
 
     from types import SimpleNamespace
     from panel_core.models import LinkedPanel
@@ -75,7 +75,9 @@ def _remote_clients_for_headers(telegram_id):
                 continue
             for ib_data in snapshot.get("inbounds", []):
                 for c in ib_data.get("clients", []):
-                    if c.get("telegram_id") != telegram_id or not c.get("enable", True):
+                    if c.get("telegram_id") != telegram_id:
+                        continue
+                    if only_enabled and not c.get("enable", True):
                         continue
                     out.append(
                         SimpleNamespace(
@@ -95,15 +97,51 @@ WARN_REMARK = {
     "limit": "⚠ Device limit reached — open subscription page",
 }
 
+NO_ACCESS_REMARK = {
+    "ru": "⛔ Подписка закончилась — продлите в {where}",
+    "en": "⛔ Subscription ended — renew in {where}",
+}
 
-def _warn_v2ray(state: str) -> str:
-    remark = quote(WARN_REMARK[state], safe="")
+
+def _bot_handle() -> str:
+
+    row = SystemSetting.query.filter_by(key="bot_username").first()
+    handle = (row.value if row else "").strip().lstrip("@")
+    return f"@{handle}" if handle else ""
+
+
+def _no_access_remark(lang: str) -> str:
+    """§109: an expired subscription used to answer 404, exactly like a link that does not exist.
+
+    A client app renders that as a failed update, so the one screen a person looks at when the
+    VPN stops working could not tell them why — and after wave 6's link reset the two cases are
+    genuinely different instructions. The app will however show the *name* of a server, so the
+    message travels as a single entry pointing at a dead address: nothing to connect to, nothing
+    that hangs, no real credential handed out over a link that may have leaked. An unknown token
+    still answers 404 on purpose, or revoking a link would look like an expiry and probing random
+    tokens would get a meaningful answer.
+    """
+
+    template = NO_ACCESS_REMARK.get((lang or "ru").lower(), NO_ACCESS_REMARK["ru"])
+    handle = _bot_handle()
+    where = handle or ("боте" if (lang or "ru").lower() == "ru" else "the bot")
+    return template.format(where=where)
+
+
+def _remark_for(state: str, lang: str = "ru") -> str:
+    if state == "no_access":
+        return _no_access_remark(lang)
+    return WARN_REMARK[state]
+
+
+def _warn_v2ray(state: str, lang: str = "ru") -> str:
+    remark = quote(_remark_for(state, lang), safe="")
     link = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?encryption=none#{remark}"
     return base64.b64encode(link.encode("utf-8")).decode("utf-8")
 
 
-def _warn_clash(state: str) -> str:
-    name = WARN_REMARK[state]
+def _warn_clash(state: str, lang: str = "ru") -> str:
+    name = _remark_for(state, lang)
     return yaml.safe_dump(
         {
             "proxies": [
@@ -124,8 +162,8 @@ def _warn_clash(state: str) -> str:
     )
 
 
-def _warn_singbox(state: str) -> str:
-    name = WARN_REMARK[state]
+def _warn_singbox(state: str, lang: str = "ru") -> str:
+    name = _remark_for(state, lang)
     return json.dumps(
         {
             "outbounds": [
@@ -142,37 +180,38 @@ def _warn_singbox(state: str) -> str:
     )
 
 
-def _warn_response(state: str, user_agent: str, extra_headers: dict) -> Response:
+def _warn_response(state: str, user_agent: str, extra_headers: dict, *, lang: str = "ru", info=None) -> Response:
 
+    base = info if info is not None else _user_headers()
     if any(x in user_agent for x in ["clash", "meta", "stash"]):
-        body = _warn_clash(state)
+        body = _warn_clash(state, lang)
         return Response(
             body,
             mimetype="text/yaml",
             headers={
                 "Content-Disposition": 'attachment; filename="config.yaml"',
-                **_user_headers(),
+                **base,
                 **extra_headers,
             },
         )
     if any(x in user_agent for x in ["sing-box", "nekobox"]):
-        body = _warn_singbox(state)
+        body = _warn_singbox(state, lang)
         return Response(
             body,
             mimetype="application/json",
             headers={
                 "Content-Disposition": 'attachment; filename="config.json"',
-                **_user_headers(),
+                **base,
                 **extra_headers,
             },
         )
-    body = _warn_v2ray(state)
+    body = _warn_v2ray(state, lang)
     return Response(
         body,
-        mimetype="text/plain; charset=utf-8",
+        mimetype="text/plain",
         headers={
             "Content-Disposition": 'attachment; filename="config.txt"',
-            **_user_headers(),
+            **base,
             **extra_headers,
         },
     )
@@ -222,7 +261,7 @@ def _response_format(user_agent: str):
         return "clash", "text/yaml", "yaml"
     if any(x in user_agent for x in ("sing-box", "nekobox")):
         return "singbox", "application/json", "json"
-    return "v2ray", "text/plain; charset=utf-8", "txt"
+    return "v2ray", "text/plain", "txt"
 
 
 def _encode_links(links) -> str | None:
@@ -455,7 +494,7 @@ def get_sub_page_asset(filename):
 @limiter.limit("180 per minute")
 def get_subscription_aggregate(token):
     user = TelegramUser.query.filter_by(sub_token=token).first()
-    if not user or user.blocked:
+    if not user:
         return "User not found", 404
 
     user_agent = request.headers.get("User-Agent", "").lower()
@@ -467,33 +506,50 @@ def get_subscription_aggregate(token):
     elif forced_ua in ("v2ray", "v2rayng", "raw"):
         user_agent = "v2ray"
 
-    clients = Client.query.filter_by(telegram_id=user.telegram_id, enable=True).all()
+    clients = [] if user.blocked else Client.query.filter_by(telegram_id=user.telegram_id, enable=True).all()
     try:
         clients = clients + _remote_clients_for_headers(user.telegram_id)
     except Exception:
         pass
     headers = _aggregate_user_headers(clients)
 
+    def no_access(extra):
+        every = Client.query.filter_by(telegram_id=user.telegram_id).all()
+        try:
+            every = every + _remote_clients_for_headers(user.telegram_id, only_enabled=False)
+        except Exception:
+            pass
+        return _warn_response(
+            "no_access",
+            user_agent,
+            extra,
+            lang=user.language or "ru",
+            info=_aggregate_user_headers(every),
+        )
+
     if _looks_like_browser(user_agent):
         index_path = sub_page_index_path()
         if not os.path.isfile(index_path):
-            return Response(_BUNDLE_MISSING, status=503, mimetype="text/plain; charset=utf-8")
+            return Response(_BUNDLE_MISSING, status=503, mimetype="text/plain")
         with open(index_path, "r", encoding="utf-8") as fh:
             shell = fh.read()
-        return Response(shell, mimetype="text/html; charset=utf-8", headers=headers)
+        return Response(shell, mimetype="text/html", headers=headers)
 
     from panel_core.services.device_tracking import user_device_gate
 
     gate_state, extra_headers = user_device_gate(user.telegram_id, _gate_request_headers())
     if gate_state != "ok":
-        return _warn_response(gate_state, user_agent, extra_headers)
+        return _warn_response(gate_state, user_agent, extra_headers, lang=user.language or "ru")
+
+    if user.blocked:
+        return no_access(extra_headers)
 
     if any(x in user_agent for x in ["clash", "meta", "stash"]):
         cached = sub_cache.get("u-clash", token)
         if cached is None:
             cfg = generate_clash_config_for_user(user.telegram_id)
             if not cfg:
-                return "User not found", 404
+                return no_access(extra_headers)
             sub_cache.set("u-clash", token, cfg)
             cached = cfg
         return Response(
@@ -507,7 +563,7 @@ def get_subscription_aggregate(token):
         if cached is None:
             cfg = generate_singbox_config_for_user(user.telegram_id)
             if not cfg:
-                return "User not found", 404
+                return no_access(extra_headers)
             sub_cache.set("u-singbox", token, cfg)
             cached = cfg
         return Response(
@@ -520,12 +576,12 @@ def get_subscription_aggregate(token):
     if cached is None:
         links = get_subscription_content_for_user(user.telegram_id)
         if not links:
-            return "User not found", 404
+            return no_access(extra_headers)
         cached = base64.b64encode("\n".join(links).encode("utf-8")).decode("utf-8")
         sub_cache.set("u-v2ray", token, cached)
     return Response(
         cached,
-        mimetype="text/plain; charset=utf-8",
+        mimetype="text/plain",
         headers={"Content-Disposition": 'attachment; filename="config.txt"', **headers, **extra_headers},
     )
 
@@ -551,7 +607,13 @@ def get_subscription(uuid_str):
     else:
         pair = _remote_pair_for_uuid(uuid_str)
         if pair is None:
-            return "User not found", 404
+            if client is None:
+                return "User not found", 404
+            lang = "ru"
+            if client.telegram_id:
+                owner = db.session.get(TelegramUser, client.telegram_id)
+                lang = (owner.language if owner else "ru") or "ru"
+            return _warn_response("no_access", user_agent, {}, lang=lang, info=_user_headers(client))
         host, ib_data, client_data, stream = pair
         telegram_id = client_data.get("telegram_id")
         info_headers = _snapshot_client_headers(client_data)

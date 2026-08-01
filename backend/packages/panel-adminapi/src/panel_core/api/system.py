@@ -130,8 +130,9 @@ def system_version():
             "running": {
                 "backend": get_app_version(),
                 "backend_key": app_version_key(),
-                "bot": bot["version"],
+                "bot": bot["version"] if bot.get("state") == "reporting" else None,
                 "bot_reported_at": bot["reported_at"],
+                "bot_state": bot.get("state"),
                 "roles": roles,
                 "roles_visible": not is_worker(),
             },

@@ -171,6 +171,11 @@ export function SettingsTab() {
               subscription. Off by default — devices aren't limited and the device card on the
               subscription page is hidden.
             </p>
+            <p className="text-amber-400/90 text-xs">
+              Turning this on cuts off every user whose app does not send an HWID header: instead of
+              their keys they receive a single placeholder entry naming the apps that do support it.
+              Only turn it on if your users are on Happ, v2RayTun or Shadowrocket.
+            </p>
             <div className="space-y-3">
               <Switch
                 checked={deviceDraft.enabled}

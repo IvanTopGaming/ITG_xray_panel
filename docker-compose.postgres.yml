@@ -37,10 +37,14 @@ services:
       REDIS_PANEL_PASSWORD: ${REDIS_PANEL_PASSWORD:?REDIS_PANEL_PASSWORD is required}
       REDIS_NODE_PASSWORD: ${REDIS_NODE_PASSWORD:?REDIS_NODE_PASSWORD is required}
       REDIS_BOT_PASSWORD: ${REDIS_BOT_PASSWORD:?REDIS_BOT_PASSWORD is required}
-    # REDIS_BIND defaults to loopback on purpose. This Redis runs WITHOUT TLS, so the ACL
-    # password and the bot:events payload (telegram_id, e-mail) cross the wire in clear —
-    # it must never be reachable from the public internet. Set it to this VM's
-    # private-network address in .env, or run the bus over rediss://.
+    volumes:
+      - ./pg_certs:/certs:ro
+    # This port speaks TLS only (`--port 0 --tls-port 6379`), so clients must use rediss://.
+    # Plain redis:// was authenticated but never encrypted, and what crosses this wire is not
+    # only the ACL password and the bot:events payload: a node snapshot carries every client's
+    # UUID and the inbound's REALITY *private* key, which is enough to impersonate the node.
+    # REDIS_BIND still defaults to loopback, because TLS is not a reason to publish a data tier
+    # to the internet — it is what makes the hop survivable when there is no private network.
     ports:
       - "${REDIS_BIND:-127.0.0.1}:6379:6379"
     entrypoint:
@@ -50,11 +54,14 @@ services:
         printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +select &bot:events\nuser bot on >%s -@all +subscribe +psubscribe +unsubscribe +ping +select &bot:events\n'
         "$$REDIS_PANEL_PASSWORD" "$$REDIS_NODE_PASSWORD" "$$REDIS_BOT_PASSWORD" > /tmp/users.acl &&
         exec redis-server --aclfile /tmp/users.acl --save "" --appendonly no
+        --port 0 --tls-port 6379
+        --tls-cert-file /certs/server.crt --tls-key-file /certs/server.key
+        --tls-auth-clients no
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "redis-cli --user panel --pass \"$$REDIS_PANEL_PASSWORD\" --no-auth-warning -h 127.0.0.1 -p 6379 ping | grep -q PONG",
+          "redis-cli --tls --insecure --user panel --pass \"$$REDIS_PANEL_PASSWORD\" --no-auth-warning -h 127.0.0.1 -p 6379 ping | grep -q PONG",
         ]
       interval: 10s
       timeout: 5s

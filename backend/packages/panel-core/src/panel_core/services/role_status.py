@@ -50,6 +50,10 @@ def status_key(role_key):
     return f"panel:role:{role_key}:status"
 
 
+def last_seen_key(role_key):
+    return f"panel:role:{role_key}:last"
+
+
 def reset_stamp_throttle():
     global _last_stamp_at
     _last_stamp_at = 0.0
@@ -67,9 +71,10 @@ def record_role_version(role_key, version, *, now=None):
     r = get_shared_redis()
     if r is None:
         return False
-    payload = {"version": str(version), "reported_at": time.time()}
+    payload = json.dumps({"version": str(version), "reported_at": time.time()}).encode()
     try:
-        r.setex(status_key(role_key), DEFAULT_FRESHNESS_S, json.dumps(payload).encode())
+        r.setex(status_key(role_key), DEFAULT_FRESHNESS_S, payload)
+        r.set(last_seen_key(role_key), payload)
     except Exception as exc:
         logger.debug("role_status: write to the shared tier failed: %s", exc)
         return False
@@ -77,12 +82,7 @@ def record_role_version(role_key, version, *, now=None):
     return True
 
 
-def _read_one(r, role_key, freshness):
-    try:
-        raw = r.get(status_key(role_key))
-    except Exception as exc:
-        logger.debug("role_status: read for %s failed: %s", role_key, exc)
-        return None
+def _decode(raw):
     if raw is None:
         return None
     try:
@@ -91,9 +91,38 @@ def _read_one(r, role_key, freshness):
         reported_at = float(payload["reported_at"])
     except (ValueError, TypeError, KeyError):
         return None
-    if not version or (time.time() - reported_at) > freshness:
+    if not version:
         return None
     return {"version": version, "reported_at": reported_at}
+
+
+def _read_one(r, role_key, freshness):
+    """Fresh if the TTL key is still there, `silent` if only the TTL-less copy is.
+
+    Dropping a role the moment it stops reporting was the wave-6 decision and it is still
+    right for the *version* -- a stale number is a claim with no timestamp behind it. But
+    absence then carried two meanings at once, "this host was never deployed" and "this
+    host died", and for the bot host those are opposite instructions to whoever is looking:
+    while it is down no payment is confirmed at all. The TTL-less copy separates them
+    without reintroducing the stale claim -- `silent` says when it was last heard from and
+    never says it is running that version now.
+    """
+
+    try:
+        fresh = _decode(r.get(status_key(role_key)))
+    except Exception as exc:
+        logger.debug("role_status: read for %s failed: %s", role_key, exc)
+        return None
+    if fresh is not None and (time.time() - fresh["reported_at"]) <= freshness:
+        return {**fresh, "state": "reporting"}
+    try:
+        last = _decode(r.get(last_seen_key(role_key)))
+    except Exception as exc:
+        logger.debug("role_status: last-seen read for %s failed: %s", role_key, exc)
+        return None
+    if last is None:
+        return None
+    return {"version": last["version"], "reported_at": last["reported_at"], "state": "silent"}
 
 
 def get_role_versions(freshness=DEFAULT_FRESHNESS_S):

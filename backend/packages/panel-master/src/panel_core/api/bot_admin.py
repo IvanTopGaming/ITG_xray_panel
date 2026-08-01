@@ -23,7 +23,7 @@ from panel_core.models import (
     UserTariffAccess,
 )
 from panel_core.services import bot_events
-from panel_core.services.panel_proxy import get_panel_snapshot, proxy_update_user
+from panel_core.services.panel_proxy import RemotePanelError, get_panel_snapshot, proxy_update_user
 from panel_core.services.provisioning import apply_tariff_for_user, backfill_tariff
 from panel_core.services.remote_clients import (
     _bucket_panel_clients,
@@ -37,7 +37,7 @@ from panel_core.xray.facade import (
 )
 from panel_core.xray.gateway import LocalXrayUnavailable
 from panel_core.resources import BOT_TEXTS_DEFAULTS, BOT_TEXTS_META, read_data_text
-from panel_core.utils import token_required
+from panel_core.utils import remote_panel_failure, token_required
 
 bp = Blueprint("bot_admin", __name__)
 
@@ -590,6 +590,10 @@ def create_grant(tg_id):
         else:
             result = None
             grant.next_renewal_at = None
+    except RemotePanelError as exc:
+        db.session.rollback()
+        logger.warning("grant of tariff %r to tg=%s failed: %s", tariff.name, tg_id, exc.message)
+        return remote_panel_failure(exc)
     except LocalXrayUnavailable as exc:
         db.session.rollback()
         orphans = sorted(repr(item.inbound_tag) for item in tariff.items if item.panel_id is None)

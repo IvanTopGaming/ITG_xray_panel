@@ -18,7 +18,7 @@ from panel_core.models import (
     UserTariffAccess,
 )
 from panel_core.services import bot_events, tariff_delivery
-from panel_core.services.bot_status import record_bot_version
+from panel_core.services.bot_status import record_bot_username, record_bot_version
 from panel_core.services.provisioning import apply_tariff_for_user
 from panel_core.utils import bot_service_token_required
 
@@ -50,6 +50,7 @@ def _parse_admin_ids_csv(raw: str) -> list[int]:
 def get_runtime_config():
 
     record_bot_version(request.headers.get("X-Bot-Version"))
+    record_bot_username(request.headers.get("X-Bot-Username"))
     return jsonify(
         {
             "version": int(_setting("bot_config_version") or "0"),

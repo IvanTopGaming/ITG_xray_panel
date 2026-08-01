@@ -135,6 +135,7 @@ export interface LinkedPanel {
   federation_token: string;
   status: 'online' | 'offline' | 'stale' | 'unknown';
   app_version?: string | null;
+  reality_failures?: { count: number; since_ms: number } | null;
   last_poll: number | null;
   last_error: string | null;
   enable: boolean;

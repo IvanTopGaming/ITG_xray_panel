@@ -1,4 +1,5 @@
 import json
+import os
 import uuid
 import base64
 import secrets
@@ -7,7 +8,9 @@ from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
 from panel_core.models import Inbound, Client, TelegramUser, TariffItem
 from panel_core.services.sub_links import build_aggregate_sub_url, build_client_sub_url
+from panel_core.services.panel_proxy import RemotePanelError
 from panel_core.utils import (
+    remote_panel_failure,
     token_required,
     admin_or_federation_token_required,
     normalize_tag,
@@ -126,6 +129,34 @@ def _client_sub_url(telegram_id, client_id, token_map):
     return aggregate or build_client_sub_url(client_id)
 
 
+def _reject_reality_sni_caddy_cannot_route(port, stream):
+    """§106: the SNI in the inbound and PROXY_DOMAIN in the node's env must be the same string.
+
+    Caddy's layer4 router decides by SNI whether a connection on :443 is handed raw to Xray or
+    terminated as the panel, and it learns the decoy name from PROXY_DOMAIN alone. The inbound's
+    `serverNames` is what the client actually presents. When the two drift apart every client is
+    silently routed into the panel instead of Xray and simply never connects — there is no error
+    anywhere, because each half is doing exactly what it was told. Only :443 is checked: that is
+    the port Caddy proxies, and it is the same condition the config generator uses to switch
+    `acceptProxyProtocol` on.
+    """
+
+    if stream.get("security") != "reality" or int(port) != 443:
+        return
+    decoy = (os.getenv("PROXY_DOMAIN", "") or "").strip()
+    if not decoy:
+        return
+    names = stream.get("realitySettings", {}).get("serverNames") or []
+    sni = str(names[0] if names else "").strip()
+    if sni and sni != decoy:
+        raise ValueError(
+            f"REALITY SNI {sni!r} does not match this node's PROXY_DOMAIN {decoy!r}. On port 443 the "
+            f"reverse proxy routes by SNI, so a client presenting {sni!r} would be sent to the panel "
+            f"instead of Xray and would never connect. Use {decoy!r} here, or change PROXY_DOMAIN on "
+            f"the node and restart its proxy."
+        )
+
+
 @bp.route("/inbounds", methods=["GET"])
 @token_required
 def get_inbounds():
@@ -188,16 +219,21 @@ def get_inbounds():
             }
         )
     panel_filter = request.args.get("panel")
+    if panel_filter is None:
+        panel_filter = request.args.get("panel_id")
     if panel_filter != "local":
         from panel_core.models import LinkedPanel
         from panel_core.services.panel_proxy import get_panel_snapshot
 
         if panel_filter and panel_filter not in ("all", "local"):
             try:
-                panels = [db.session.get(LinkedPanel, int(panel_filter))]
-                panels = [p for p in panels if p and p.enable]
+                panel_id = int(panel_filter)
             except (ValueError, TypeError):
-                panels = []
+                return jsonify({"error": f"Panel {panel_filter!r} not found"}), 400
+            panel = db.session.get(LinkedPanel, panel_id)
+            if panel is None:
+                return jsonify({"error": f"Panel {panel_id} not found"}), 400
+            panels = [panel] if panel.enable else []
         else:
             panels = LinkedPanel.query.filter_by(enable=True).all()
 
@@ -233,6 +269,8 @@ def create_inbound():
 
         try:
             return jsonify(proxy_create_inbound(panel_id, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as exc:
@@ -257,6 +295,7 @@ def create_inbound():
         protocol = _normalize_inbound_protocol(data.get("protocol", "vless"))
         data["protocol"] = protocol
         stream = _build_stream_settings(data)
+        _reject_reality_sni_caddy_cannot_route(port, stream)
         fallback_address = _normalize_fallback_address(data.get("fallback_address"), protocol)
         routing_profile_id = data.get("routing_profile_id")
         if routing_profile_id in ["", None]:
@@ -297,6 +336,8 @@ def update_inbound(tag):
 
         try:
             return jsonify(proxy_update_inbound(panel_id, tag, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception:
@@ -426,6 +467,7 @@ def update_inbound(tag):
 
         merged_stream_data["protocol"] = ib.protocol
         built_stream_settings = _build_stream_settings(merged_stream_data)
+        _reject_reality_sni_caddy_cannot_route(ib.port, built_stream_settings)
 
         if old_protocol != ib.protocol and ib.protocol in PANEL_USER_PROTOCOLS:
             normalized_client_ids = set()
@@ -498,6 +540,8 @@ def delete_inbound(tag):
 
         try:
             result = proxy_delete_inbound(panel_id, tag)
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception:
@@ -581,6 +625,8 @@ def add_user(tag):
 
         try:
             return jsonify(proxy_create_user(panel_id, tag, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception:
@@ -667,6 +713,8 @@ def update_user(tag):
 
         try:
             return jsonify(proxy_update_user(panel_id, tag, request.get_json(silent=True) or {}))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception:
@@ -770,6 +818,8 @@ def delete_user_route(tag):
         email = request.args.get("email", "")
         try:
             return jsonify(proxy_delete_user(panel_id, tag, email))
+        except RemotePanelError as exc:
+            return remote_panel_failure(exc)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception:

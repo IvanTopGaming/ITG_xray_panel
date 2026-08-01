@@ -73,13 +73,113 @@ _shared_redis_cached = False
 _shared_redis_client = None
 
 
-def _build_redis(uri, **kwargs):
+CIRCUIT_OPEN_SECONDS = 10
+
+
+class _CircuitBreakerRedis:
+    """Stops a request paying the socket timeout again once the tier is known to be down.
+
+    Both request-path clients are built with one-second timeouts, which is right for a
+    single call and wrong for a whole outage: nothing remembered the failure, so every
+    request re-tried every lookup from scratch and a subscription answer that costs 0.5 s
+    healthy cost 4-10 s while the data tier was unreachable. Callers already treat a raised
+    exception as "no Redis" and fall through, so failing instantly is behaviour-preserving.
+    """
+
+    def __init__(self, client, label):
+        self._client = client
+        self._label = label
+        self._down_until = 0.0
+
+    def _open(self):
+        was_open = self._down_until > time.monotonic()
+        self._down_until = time.monotonic() + CIRCUIT_OPEN_SECONDS
+        if not was_open:
+            _redis_logger.warning(
+                "%s Redis unreachable - skipping it for %ds instead of waiting on every call",
+                self._label,
+                CIRCUIT_OPEN_SECONDS,
+            )
+
+    def _close(self):
+        if self._down_until:
+            self._down_until = 0.0
+            _redis_logger.info("%s Redis recovered", self._label)
+
+    def __getattr__(self, name):
+        attr = getattr(self._client, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            if time.monotonic() < self._down_until:
+                import redis  # type: ignore
+
+                raise redis.exceptions.ConnectionError(
+                    f"{self._label} Redis marked unreachable {CIRCUIT_OPEN_SECONDS}s ago; not retrying yet"
+                )
+            try:
+                result = attr(*args, **kwargs)
+            except Exception:
+                self._open()
+                raise
+            self._close()
+            return result
+
+        return call
+
+
+def _build_redis(uri, circuit_label=None, **kwargs):
     try:
         import redis  # type: ignore
 
-        return redis.Redis.from_url(uri, decode_responses=False, **kwargs)
+        client = redis.Redis.from_url(uri, decode_responses=False, **kwargs)
     except Exception:
         return None
+    if circuit_label is None:
+        return client
+    return _CircuitBreakerRedis(client, circuit_label)
+
+
+ON_BOX_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+
+
+def requires_tls(uri):
+    """Is this Redis reached across a network somebody else can listen to?
+
+    A bare service name (`redis`) or loopback never leaves the machine, so plain `redis://`
+    there is not a weakness — it is the master's and every node's own rate-limit store, and an
+    all-in-one deployment reaches the shared tier the same way. Anything with a dotted host is a
+    different machine, and the wire between them carries the ACL password, the bot:events payload
+    and — the part that decides the severity — node snapshots holding every client's UUID and the
+    inbound's REALITY private key. Postgres has demanded `verify-full` in that position since
+    wave 1; this is the same rule for the same wire.
+    """
+
+    from urllib.parse import urlparse
+
+    if uri.startswith("rediss://"):
+        return False
+    host = (urlparse(uri).hostname or "").strip().lower()
+    if host in ON_BOX_HOSTS or "." not in host:
+        return False
+    return True
+
+
+def validate_shared_redis_uri(uri, is_local):
+
+    if is_local or not uri:
+        return
+    if requires_tls(uri):
+        from urllib.parse import urlparse
+
+        host = urlparse(uri).hostname or "?"
+        raise RuntimeError(
+            f"{SHARED_REDIS_URI_ENV} reaches {host} over plain redis://. That wire carries the ACL "
+            f"password, every bot:events payload and the node snapshots — which hold each client's "
+            f"UUID and the inbound's REALITY private key — in clear text. Use rediss:// (the data "
+            f"tier serves TLS since wave 8), or point this at a Redis on the same machine."
+        )
 
 
 def shared_redis_uri():
@@ -107,7 +207,7 @@ def get_redis():
     if not uri.startswith(_REDIS_SCHEMES):
         _redis_client = None
         return None
-    _redis_client = _build_redis(uri, socket_connect_timeout=1, socket_timeout=1)
+    _redis_client = _build_redis(uri, circuit_label="local", socket_connect_timeout=1, socket_timeout=1)
     return _redis_client
 
 
@@ -128,13 +228,22 @@ def get_shared_redis():
             )
         _shared_redis_client = None
         return None
-    _shared_redis_client = _build_redis(uri, socket_connect_timeout=1, socket_timeout=1)
+    _shared_redis_client = _build_redis(uri, circuit_label="shared", socket_connect_timeout=1, socket_timeout=1)
     return _shared_redis_client
 
 
 def new_shared_redis_subscriber():
+    """A blocking pubsub connection: silence is normal, so it must never time out.
 
+    `socket_timeout=None` is passed explicitly because redis-py 8 changed its own default
+    from "block forever" to 5 seconds. Relying on the old default meant a quiet channel
+    raised TimeoutError every 5s, the caller treated that as a dropped connection and slept
+    before resubscribing, so `panel:refresh` had no subscriber for about half of every
+    cycle and lost that share of its messages. `socket_connect_timeout` is looser than the
+    request-path clients' 1s on purpose: this connection is long-lived, so a slow connect
+    costs nothing while a failed one costs a whole reconnect cycle.
+    """
     uri = shared_redis_uri()
     if not uri.startswith(_REDIS_SCHEMES):
         return None
-    return _build_redis(uri, socket_connect_timeout=1)
+    return _build_redis(uri, socket_connect_timeout=5, socket_timeout=None)

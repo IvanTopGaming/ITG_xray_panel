@@ -197,8 +197,9 @@ async def start_checkout(
 
     `create_checkout` calls YooKassa with an 8-second timeout and one retry, so up to ~16 seconds pass
     before it returns. Doing that inside the callback left the button spinning with nothing said. The
-    answer now goes out immediately and the catalogue keyboard is taken away, so the same message
-    becomes either the pay screen or an error once YooKassa has replied.
+    answer now goes out immediately and the catalogue is replaced by a line saying the invoice is
+    being created, so the same message becomes either the pay screen or an error once YooKassa has
+    replied and the wait is never unexplained.
     """
 
     try:
@@ -217,9 +218,9 @@ async def start_checkout(
 
     message = callback.message
     try:
-        await message.edit_reply_markup(reply_markup=None)
+        await message.edit_text(await i18n.t("checkout.creating", lang), reply_markup=None)
     except TelegramBadRequest as exc:
-        logger.info("start_checkout: could not clear the catalogue keyboard: %s", exc)
+        logger.info("start_checkout: could not show the invoice placeholder: %s", exc)
 
     task = asyncio.create_task(
         _finish_checkout(
