@@ -7,14 +7,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_GUNICORN_ENTRY_POINTS = {
-    ("docker-compose.yml", "backend"),
     ("docker-compose.master.yml", "backend"),
     ("docker-compose.node.yml", "backend"),
     ("docker-compose.sub.yml", "sub-backend"),
     ("docker-compose.bot.yml", "bot-api"),
     ("docker-compose.cron.yml", "cron"),
-    ("docker-compose.prod.yml", "backend"),
-    ("docker-compose.staging.yml", "backend"),
 }
 
 GEVENT_WORKER_FLAGS = {"-k", "--worker-class"}
