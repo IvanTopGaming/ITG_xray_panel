@@ -454,7 +454,6 @@ cmd_reconfigure() {
         new="${!key:-}"
         if [ -z "$new" ]; then
             if [ "$INTERACTIVE" -eq 0 ]; then return 0; fi
-            ask_var="" ; unset ask_var
             printf '%b' "    ${C_ACCENT}▸${C_RESET} ${prompt} ${C_DIM}[${current}]${C_RESET}: "
             read -r new
             new="${new:-$current}"

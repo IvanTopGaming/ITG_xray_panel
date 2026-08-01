@@ -537,11 +537,15 @@ All checks must pass before code reaches `main`. Run locally before pushing:
 | Frontend build | `cd frontend && npm run build` |
 | Backend pytest | `cd backend && uv sync --frozen && uv run pytest tests/ -q` |
 | Bot pytest | `cd tg_bot && uv sync --frozen && uv run pytest tests/ -q` |
+| caddygen | `cd caddy/caddygen && go vet ./... && go test -count=1 ./...` |
+| Shell lint | `shellcheck --severity=warning $(git ls-files '*.sh')` |
 | Dockerfile lint | hadolint (runs in CI only) |
 
 CI provisions uv via `astral-sh/setup-uv@v8.2.0` (there is no moving `v8` major tag — pin the exact version), then runs the commands above through `uvx` / `uv run`.
 
-`uvx ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. The `caddygen` Go tests (`cd caddy/caddygen && go test -count=1 ./...`) are not in CI but should pass after caddygen changes; `-count=1` is required — plain `go test ./...` can print a stale `ok (cached)` because `compose_test.go` reads `docker-compose.bot.yml` and `caddy/routes.yaml` from outside the Go module, which the test cache does not track. markdownlint is **not** run in CI.
+`uvx ruff format <dir>` and `npm run format` auto-fix formatting issues — run them before committing, not after CI fails. markdownlint is **not** run in CI.
+
+**Two jobs cover what nothing covered until wave 12, and both guard code that decides whether a deployment works at all.** `caddygen` was the only component with tests and no CI job — while it generates the Caddy config that decides which domains get a certificate and where the payment webhook lands. `-count=1` is not tidiness there: `compose_test.go` reads `docker-compose.*.yml` and `caddy/routes.yaml` from **outside** the Go module, the build cache does not track them, and a plain `go test` will print `ok (cached)` for a config that no longer generates. The shell job takes its file list from `git ls-files '*.sh'` rather than a fixed set, so a script cannot be added without being linted — it exists because `scripts/install.sh` is what a deployer pipes into bash as root, and it had no static analysis of any kind.
 
 CI **runs pytest** — the `Backend pytest` job (`ci.yml`) and the `Bot pytest` job both run `uv run pytest tests/ -q` after `uv sync --frozen` — so a test failure in either suite turns CI red and blocks `main`. Run the suite locally and confirm it's green before pushing; add tests when behavior changes — see `backend/tests/` for patterns. Watch for date-dependent tests: seed timestamps relative to the current month/day can flip near month/day boundaries.
 

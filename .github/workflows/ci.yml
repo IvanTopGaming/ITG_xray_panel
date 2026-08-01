@@ -64,6 +64,45 @@ jobs:
           recursive: true
           ignore: DL3008,DL3013,DL3015,DL3018,DL3003,SC2046,DL3022
 
+  shell-lint:
+    name: Shell (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/install.sh is what a deployer pipes into bash, as root, on a machine that then
+      # generates every secret and issues the data tier's CA. It had no static analysis at all.
+      # The file list comes from git rather than a fixed set, so a new script cannot be added
+      # without being covered.
+      - name: Shellcheck every tracked script
+        run: |
+          mapfile -t scripts < <(git ls-files '*.sh')
+          printf '  %s\n' "${scripts[@]}"
+          shellcheck --severity=warning "${scripts[@]}"
+
+  caddygen:
+    name: caddygen (go test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: caddy/caddygen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: caddy/caddygen/go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      # -count=1 is required, not tidiness: these tests read docker-compose.*.yml and
+      # caddy/routes.yaml from outside the Go module, and the build cache does not track those --
+      # a plain `go test` can print a stale `ok (cached)` for a config that no longer generates.
+      - name: Test
+        run: go test -count=1 ./...
+
   frontend-build:
     name: Frontend build
     runs-on: ubuntu-latest
