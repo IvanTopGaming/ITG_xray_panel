@@ -125,6 +125,14 @@ derive the rest themselves. Nothing is typed twice and no host needs ssh access 
 Everything it creates lives in one directory (`./itg-panel` by default). It installs no packages,
 writes nothing outside that directory, and leaves no copy of itself behind.
 
+The same script is the management tool afterwards — run it from the deployment directory:
+
+| | |
+| --- | --- |
+| `install.sh doctor` | what is running, whether the data tier answers and its certificate verifies, whether the image pins are current |
+| `install.sh update` | move the pins to what this ref publishes, then pull and restart |
+| `install.sh reconfigure` | change this host's domains, keeping every secret — a moved domain should not cost you the admin password and the secret path |
+
 <details>
 <summary><b>Doing it by hand instead</b></summary>
 
@@ -226,8 +234,11 @@ Its configuration is **not** in `.env`: in **Bot → Settings** on the master, s
 New settings are picked up within ~60 s — no restart needed.
 
 > ⚠️ If you take payments, point the YooKassa merchant dashboard's webhook at
-> `https://<BOT_DOMAIN>/api/billing/yookassa/webhook`. That endpoint lives on the bot host and
-> nowhere else; while that host is down, **no payment is confirmed at all**.
+> `https://<BOT_DOMAIN>/<BOT_WEBHOOK_PATH>/api/billing/yookassa/webhook` — the installer prints the
+> exact URL. The secret segment keeps that address off scanners; everything else on the domain
+> answers 404. Skipping the webhook entirely is survivable: the poller confirms within 30 seconds
+> instead of instantly. What is not survivable is the host itself being down — no other host can
+> confirm a payment.
 
 </details>
 

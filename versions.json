@@ -6,7 +6,7 @@
   "cron": "2.4.16",
   "frontend_admin": "2.4.15",
   "frontend_node": "2.4.15",
-  "caddy": "1.1.3",
+  "caddy": "1.1.4",
   "bot": "2.2.7",
   "xray_egress": "1.0.1",
   "xray_core_ref": "v26.3.27"

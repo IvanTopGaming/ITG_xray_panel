@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,6 +14,7 @@ type Route struct {
 	Upstream    string   `yaml:"upstream"`
 	TLS         bool     `yaml:"tls"`
 	OnlyPaths   []string `yaml:"only_paths"`
+	StripPrefix string   `yaml:"strip_prefix"`
 	APIPath     string   `yaml:"api_path"`
 	APIUpstream string   `yaml:"api_upstream"`
 }
@@ -24,6 +26,13 @@ type Config struct {
 }
 
 var envPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+func normalizePath(s string) string {
+	for strings.Contains(s, "//") {
+		s = strings.ReplaceAll(s, "//", "/")
+	}
+	return s
+}
 
 func interpolate(s string, lookup func(string) string) string {
 	return envPattern.ReplaceAllStringFunc(s, func(m string) string {
@@ -43,6 +52,13 @@ func LoadConfig(data []byte, lookup func(string) string) (*Config, error) {
 		r.Upstream = interpolate(r.Upstream, lookup)
 		r.APIPath = interpolate(r.APIPath, lookup)
 		r.APIUpstream = interpolate(r.APIUpstream, lookup)
+		r.StripPrefix = normalizePath(interpolate(r.StripPrefix, lookup))
+
+		paths := make([]string, 0, len(r.OnlyPaths))
+		for _, p := range r.OnlyPaths {
+			paths = append(paths, normalizePath(interpolate(p, lookup)))
+		}
+		r.OnlyPaths = paths
 		if r.Match == "" {
 			continue
 		}

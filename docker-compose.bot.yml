@@ -73,6 +73,7 @@ services:
       - caddy_config:/config
     environment:
       - BOT_DOMAIN=${BOT_DOMAIN:?BOT_DOMAIN is required}
+      - BOT_WEBHOOK_PATH=${BOT_WEBHOOK_PATH:?BOT_WEBHOOK_PATH is required}
       - ACME_EMAIL=${ACME_EMAIL:-}
       - ACME_CA=${ACME_CA:-}
     depends_on:

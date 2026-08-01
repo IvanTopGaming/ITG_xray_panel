@@ -165,11 +165,36 @@ def test_the_master_no_longer_demands_a_decoy_domain_it_cannot_serve():
 def test_the_bot_route_allowlists_only_the_webhook_path():
     routes = {route.get("name"): route for route in _routes()}
     only_paths = routes["bot"].get("only_paths")
-    assert only_paths == ["/api/billing/yookassa/webhook"], (
+    assert only_paths == ["/${BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"], (
         f"the bot route's only_paths allowlist is {only_paths!r}, not exactly "
-        '["/api/billing/yookassa/webhook"]. only_paths is the mechanism that keeps the bot host from '
-        "publishing the rest of bot-api -- /bot-service/* and /api/billing/checkout -- on BOT_DOMAIN. "
-        "Neither of the route-selection guards above checks what a selected route actually exposes."
+        '["/${BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"]. only_paths is the mechanism that keeps '
+        "the bot host from publishing the rest of bot-api -- /bot-service/* and /api/billing/checkout "
+        "-- on BOT_DOMAIN. Neither of the route-selection guards above checks what a selected route "
+        "actually exposes."
+    )
+
+
+def test_the_bot_webhook_sits_under_a_secret_segment():
+    """The notification URL is handed to a payment provider and then lives on the public internet.
+
+    Without the secret it is guessable from the product name alone, which invites scanning traffic
+    and a trivially aimed flood at the one host where a payment can be confirmed -- while that host
+    is down, nothing confirms one. The secret is not what makes a forged notification harmless: the
+    handler re-fetches the authoritative status from YooKassa. It is what keeps the address from
+    being found. caddygen strips the segment again before proxying, so Flask still sees the path it
+    registered.
+    """
+
+    routes = {route.get("name"): route for route in _routes()}
+    bot = routes["bot"]
+
+    assert bot.get("strip_prefix") == "/${BOT_WEBHOOK_PATH}", (
+        f"the bot route strips {bot.get('strip_prefix')!r}. Without stripping the secret the request "
+        "reaches bot-api as /<secret>/api/billing/... and 404s -- every notification lost, and the "
+        "payment only confirmed later by the 30-second poller."
+    )
+    assert all("${BOT_WEBHOOK_PATH}" in path for path in bot.get("only_paths", [])), (
+        "the webhook is allowlisted at a fixed path, so it is published at a guessable address."
     )
 
 

@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-#
-# ITG Xray Panel installer.
-#
-#   bash <(curl -fsSL https://raw.githubusercontent.com/IvanTopGaming/ITG_xray_panel/main/scripts/install.sh)
-#
-# One host, one role, one directory. Everything this script creates lives under --dir; it installs
-# no packages, writes nothing to /etc or /usr, and leaves no copy of itself behind. Its scratch
-# space is a mktemp -d removed on exit, including on failure.
-#
-# The data tier goes first: it generates every shared secret, its own CA, and prints one bundle
-# string. Every other host is given that string and derives the rest from it, so no password is
-# ever typed twice and no ssh trust is needed between machines.
 
 set -euo pipefail
 
@@ -26,27 +14,121 @@ INTERACTIVE=1
 START=1
 
 WORK=""
-cleanup() { [ -n "$WORK" ] && rm -rf "$WORK"; }
+cleanup() {
+    spinner_stop 2>/dev/null || true
+    [ -n "$WORK" ] && rm -rf "$WORK"
+    printf '%b' "$SHOW_CURSOR"
+}
 trap cleanup EXIT
 
-die() { printf '\n  error: %s\n\n' "$*" >&2; exit 1; }
-say() { printf '  %s\n' "$*"; }
-head1() { printf '\n%s\n' "$*"; }
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+    C_ACCENT=$'\033[38;5;111m'; C_OK=$'\033[38;5;114m'
+    C_WARN=$'\033[38;5;179m'; C_ERR=$'\033[38;5;203m'
+    HIDE_CURSOR=$'\033[?25l'; SHOW_CURSOR=$'\033[?25h'
+    TTY=1
+else
+    C_RESET=""; C_DIM=""; C_BOLD=""
+    C_ACCENT=""; C_OK=""; C_WARN=""; C_ERR=""
+    HIDE_CURSOR=""; SHOW_CURSOR=""
+    TTY=0
+fi
+
+RULE_WIDTH=66
+
+rule() {
+    local title="${1:-}" line
+    if [ -z "$title" ]; then
+        printf '%b\n' "  ${C_DIM}$(printf '─%.0s' $(seq 1 $RULE_WIDTH))${C_RESET}"
+        return
+    fi
+    line=$(printf '─%.0s' $(seq 1 $((RULE_WIDTH - ${#title} - 3))))
+    printf '\n%b\n' "  ${C_DIM}──${C_RESET} ${C_BOLD}${title}${C_RESET} ${C_DIM}${line}${C_RESET}"
+}
+
+banner() {
+    printf '\n'
+    printf '%b\n' "  ${C_ACCENT}${C_BOLD}ITG Xray Panel${C_RESET}  ${C_DIM}· installer${C_RESET}"
+    printf '%b\n' "  ${C_DIM}one host, one role, one directory${C_RESET}"
+    printf '\n'
+}
+
+ok()   { printf '%b\n' "    ${C_OK}✓${C_RESET} $*"; }
+info() { printf '%b\n' "    ${C_ACCENT}·${C_RESET} $*"; }
+warn() { printf '%b\n' "    ${C_WARN}!${C_RESET} $*"; }
+note() { printf '%b\n' "  ${C_DIM}$*${C_RESET}"; }
+
+role_line() {
+    printf '%b\n' "    ${C_BOLD}$1${C_RESET}  ${C_ACCENT}$(printf '%-11s' "$2")${C_RESET} ${C_DIM}$3${C_RESET}"
+}
+
+die() {
+    spinner_stop
+    printf '\n%b\n\n' "  ${C_ERR}✗${C_RESET} ${C_BOLD}$1${C_RESET}"
+    [ $# -gt 1 ] && { printf '%b\n\n' "    ${C_DIM}$2${C_RESET}"; }
+    exit 1
+}
+
+SPIN_PID=""
+spinner_start() {
+    [ "$TTY" -eq 1 ] || { printf '%b\n' "    ${C_DIM}·${C_RESET} $1…"; return; }
+    printf '%b' "$HIDE_CURSOR"
+    ( local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0
+      while :; do
+          i=$(( (i + 1) % 10 ))
+          printf '\r    %b%s%b %s…' "$C_ACCENT" "${frames:$i:1}" "$C_RESET" "$1"
+          sleep 0.08
+      done ) &
+    SPIN_PID=$!
+}
+spinner_stop() {
+    [ -n "$SPIN_PID" ] || return 0
+    kill "$SPIN_PID" 2>/dev/null || true
+    wait "$SPIN_PID" 2>/dev/null || true
+    SPIN_PID=""
+    printf '\r\033[K'
+    printf '%b' "$SHOW_CURSOR"
+}
+
+panel_top()  { printf '\n%b\n' "  ${C_ACCENT}╭$(printf '─%.0s' $(seq 1 $RULE_WIDTH))╮${C_RESET}"; }
+panel_bot()  { printf '%b\n' "  ${C_ACCENT}╰$(printf '─%.0s' $(seq 1 $RULE_WIDTH))╯${C_RESET}"; }
+
+panel_line() {
+    local text="$1" pad spaces=""
+    pad=$(( RULE_WIDTH - ${#text} ))
+    [ "$pad" -gt 0 ] && spaces="$(printf '%*s' "$pad" '')"
+    printf '%b\n' "  ${C_ACCENT}│${C_RESET}${text}${spaces}${C_ACCENT}│${C_RESET}"
+}
 
 usage() {
     cat <<EOF
-usage: install.sh [options]
 
-  --role ROLE        data | cron | master | node | sub | bot
-  --dir PATH         where the deployment lives (default: ./itg-panel)
-  --bundle STRING    the string the data tier printed (not needed for --role data)
-  --source PATH      install from a local checkout instead of fetching from GitHub
-  --ref REF          git ref to fetch from (default: main)
-  --non-interactive  ask nothing; take answers from the environment
-  --no-start         write the files but do not run docker compose up
-  -h, --help         this
+  usage: install.sh [command] [options]
+
+  commands:
+    install            set this machine up as one role (default)
+    doctor             check an installed host and say what is wrong
+    update             move the image pins forward and restart
+    reconfigure        change this host's domains, keeping every secret
+
+  options:
+    --role ROLE        data | cron | master | node | sub | bot
+    --dir PATH         where the deployment lives (default: ./itg-panel)
+    --bundle STRING    the string the data tier printed (not needed for --role data)
+    --source PATH      install from a local checkout instead of fetching from GitHub
+    --ref REF          git ref to fetch from (default: main)
+    --non-interactive  ask nothing; take answers from the environment
+    --no-start         write the files but do not run docker compose up
+    -h, --help         this
+
 EOF
 }
+
+COMMAND="install"
+COMMAND_EXPLICIT=0
+case "${1:-}" in
+    install|doctor|update|reconfigure) COMMAND="$1"; COMMAND_EXPLICIT=1; shift ;;
+esac
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -62,79 +144,413 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# ---------------------------------------------------------------------------- preflight
+[ "$INTERACTIVE" -eq 1 ] && banner
 
-need() {
-    command -v "$1" >/dev/null 2>&1 || die "$1 is required and not installed. $2"
+env_get() {
+    sed -n "s/^$2=\([^#]*\).*/\1/p" "$1" | head -1 | sed 's/[[:space:]]*$//'
 }
 
-need openssl "Install it with your package manager (apt install openssl)."
-if [ -z "$SOURCE" ]; then
-    need curl "Install it with your package manager (apt install curl)."
-fi
-if [ "$START" -eq 1 ]; then
-    need docker "See https://docs.docker.com/engine/install/ — this script deliberately does not install it for you."
-    docker compose version >/dev/null 2>&1 ||
-        die "the docker compose plugin is missing. Install docker-compose-plugin; 'docker-compose' (v1) is not supported."
-fi
+env_set() {
+    local file="$1" key="$2" value="$3" line rest comment tmp
+    tmp="$file.tmp"
+    : > "$tmp"
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^${key}=(.*)$ ]]; then
+            rest="${BASH_REMATCH[1]}"
+            comment=""
+            case "$rest" in *"#"*) comment="  #${rest#*#}" ;; esac
+            printf '%s=%s%s\n' "$key" "$value" "$comment" >> "$tmp"
+        else
+            printf '%s\n' "$line" >> "$tmp"
+        fi
+    done < "$file"
+    mv "$tmp" "$file"
+}
+
+load_deployment() {
+    DIR="${DIR:-.}"
+    [ -d "$DIR" ] || die "$DIR does not exist" "Pass --dir pointing at the deployment directory."
+    DIR="$(cd "$DIR" && pwd)"
+    ENV_FILE="$DIR/.env"
+    [ -f "$ENV_FILE" ] || die "no .env in $DIR" "Run the installer here first, or pass --dir."
+
+    COMPOSE_FILE="$(cd "$DIR" && ls docker-compose.*.yml 2>/dev/null | head -1)"
+    [ -n "$COMPOSE_FILE" ] || die "no docker-compose file in $DIR" "This does not look like a deployment directory."
+    case "$COMPOSE_FILE" in
+        docker-compose.postgres.yml) ROLE=data ;;
+        docker-compose.cron.yml) ROLE=cron ;;
+        docker-compose.master.yml) ROLE=master ;;
+        docker-compose.node.yml) ROLE=node ;;
+        docker-compose.sub.yml) ROLE=sub ;;
+        docker-compose.bot.yml) ROLE=bot ;;
+        *) die "unrecognised compose file $COMPOSE_FILE" ;;
+    esac
+}
+
+pins_for_role() {
+    case "$ROLE" in
+        data) printf '' ;;
+        cron) printf 'CRON_IMAGE:cron\n' ;;
+        master) printf 'MASTER_IMAGE:master\nFRONTEND_ADMIN_IMAGE:frontend_admin\nCADDY_IMAGE:caddy\n' ;;
+        node) printf 'WORKER_IMAGE:worker\nFRONTEND_NODE_IMAGE:frontend_node\nCADDY_IMAGE:caddy\nXRAY_EGRESS_IMAGE:xray_egress\n' ;;
+        sub) printf 'SUB_IMAGE:sub\nCADDY_IMAGE:caddy\n' ;;
+        bot) printf 'BOT_API_IMAGE:bot_api\nBOT_IMAGE:bot\nCADDY_IMAGE:caddy\n' ;;
+    esac
+}
+
+image_for() {
+    case "$2" in
+        master) printf '%s/panel-master:v%s' "$GHCR" "$1" ;;
+        worker) printf '%s/panel-worker:v%s' "$GHCR" "$1" ;;
+        sub) printf '%s/panel-sub:v%s' "$GHCR" "$1" ;;
+        bot_api) printf '%s/panel-bot-api:v%s' "$GHCR" "$1" ;;
+        cron) printf '%s/panel-cron:v%s' "$GHCR" "$1" ;;
+        bot) printf '%s/panel-bot:v%s' "$GHCR" "$1" ;;
+        frontend_admin) printf '%s/panel-frontend-admin:v%s' "$GHCR" "$1" ;;
+        frontend_node) printf '%s/panel-frontend-node:v%s' "$GHCR" "$1" ;;
+        caddy) printf '%s/panel-caddy:v%s' "$GHCR" "$1" ;;
+        xray_egress) printf '%s/panel-egress:v%s' "$GHCR" "$1" ;;
+    esac
+}
+
+uri_host() { printf '%s' "$1" | sed -n 's|.*@\([^:/?]*\).*|\1|p'; }
+uri_port() { printf '%s' "$1" | sed -n 's|.*@[^:]*:\([0-9]*\).*|\1|p'; }
+
+tcp_open() {
+    timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null
+}
+
+GHCR="ghcr.io/ivantopgaming"
+
+version_of() {
+    case "$1" in
+        docker) docker --version 2>/dev/null | sed -n 's/Docker version \([^,]*\).*/\1/p' ;;
+        openssl) openssl version 2>/dev/null | awk '{print $2}' ;;
+        curl) curl --version 2>/dev/null | head -1 | awk '{print $2}' ;;
+    esac
+}
+
+need() {
+    local cmd="$1" hint="$2" version
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        die "$cmd is required and not installed" "$hint"
+    fi
+    version="$(version_of "$cmd")"
+    ok "$(printf '%-16s' "$cmd")${C_DIM}${version:-present}${C_RESET}"
+}
+
+preflight() {
+    [ "$INTERACTIVE" -eq 1 ] && rule "Checking this machine"
+
+    need openssl "Install it with your package manager, e.g. apt install openssl"
+    [ -z "$SOURCE" ] && need curl "Install it with your package manager, e.g. apt install curl"
+    if [ "$START" -eq 1 ]; then
+        need docker "See https://docs.docker.com/engine/install/ — this installer deliberately does not install it for you."
+        if docker compose version >/dev/null 2>&1; then
+            ok "$(printf '%-16s' "docker compose")${C_DIM}$(docker compose version --short 2>/dev/null)${C_RESET}"
+        else
+            die "the docker compose plugin is missing" \
+                "Install docker-compose-plugin. The old standalone 'docker-compose' (v1) is not supported."
+        fi
+    fi
+}
 
 WORK="$(mktemp -d)"
 
-# ---------------------------------------------------------------------------- helpers
-
 gen_secret() {
-    # base64url alphabet only: safe inside URIs, .env values and sed-free rendering
     openssl rand -base64 "${1:-36}" | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
+valid_hostname() {
+    [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+}
+
+is_ip_literal() {
+    [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || [[ "$1" == *:* ]]
+}
+
+san_for() {
+    if is_ip_literal "$1"; then printf 'IP:%s' "$1"; else printf 'DNS:%s' "$1"; fi
+}
+
 ask() {
-    # ask VARNAME "prompt" ["default"]
-    local var="$1" prompt="$2" default="${3:-}" current answer
-    current="$(printf '%s' "${!var:-}")"
-    if [ -n "$current" ]; then return 0; fi
+    local var="$1" prompt="$2" default="${3:-}" validator="${4:-}" answer
+    if [ -n "$(printf '%s' "${!var:-}")" ]; then return 0; fi
     if [ "$INTERACTIVE" -eq 0 ]; then
         [ -n "$default" ] || die "--non-interactive was given but $var is unset and has no default"
         printf -v "$var" '%s' "$default"
         return 0
     fi
-    if [ -n "$default" ]; then
-        read -r -p "  $prompt [$default]: " answer
-        answer="${answer:-$default}"
-    else
-        while :; do
-            read -r -p "  $prompt: " answer
-            [ -n "$answer" ] && break
-            say "a value is required"
-        done
-    fi
+    while :; do
+        if [ -n "$default" ]; then
+            printf '%b' "    ${C_ACCENT}▸${C_RESET} ${prompt} ${C_DIM}[${default}]${C_RESET}: "
+            read -r answer
+            answer="${answer:-$default}"
+        else
+            printf '%b' "    ${C_ACCENT}▸${C_RESET} ${prompt}: "
+            read -r answer
+        fi
+        [ -z "$answer" ] && { warn "a value is required"; continue; }
+        if [ -n "$validator" ] && ! "$validator" "$answer"; then
+            warn "that does not look like a hostname"
+            continue
+        fi
+        break
+    done
     printf -v "$var" '%s' "$answer"
 }
 
 fetch() {
-    # fetch REMOTE_PATH LOCAL_PATH
     local remote="$1" local_path="$2"
     mkdir -p "$(dirname "$local_path")"
     if [ -n "$SOURCE" ]; then
-        [ -f "$SOURCE/$remote" ] || die "$SOURCE/$remote not found — is --source pointing at a checkout?"
+        [ -f "$SOURCE/$remote" ] || die "$SOURCE/$remote not found" "Is --source pointing at a checkout of the repo?"
         cp "$SOURCE/$remote" "$local_path"
     else
         curl -fsSL "https://raw.githubusercontent.com/$REPO_SLUG/$REF/$remote" -o "$local_path" ||
-            die "could not download $remote from $REPO_SLUG@$REF"
+            die "could not download $remote" "Tried $REPO_SLUG@$REF. Check the network, or pass --ref."
     fi
 }
 
 json_field() {
-    # json_field FILE KEY  — flat string values only, which is all versions.json and the bundle have
     sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
 }
 
 declare -A VALUES=()
 
+compose() { ( cd "$DIR" && docker compose -f "$COMPOSE_FILE" "$@" ); }
+
+has_docker() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
+
+check_pins() {
+    local reported="$1" line key vkey want have stale=0
+    fetch "versions.json" "$WORK/versions.json"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        key="${line%%:*}"; vkey="${line##*:}"
+        want="$(image_for "$(json_field "$WORK/versions.json" "$vkey")" "$vkey")"
+        have="$(env_get "$ENV_FILE" "$key")"
+        [ -n "$have" ] || continue
+        if [ "$have" != "$want" ]; then
+            stale=$((stale + 1))
+            [ "$reported" = "report" ] && warn "$(printf '%-22s' "$key")${C_DIM}${have##*:} → ${want##*:}${C_RESET}"
+            PIN_UPDATES+=("$key=$want")
+        fi
+    done <<< "$(pins_for_role)"
+    return "$stale"
+}
+
+check_data_tier() {
+    local uri host port
+    uri="$(env_get "$ENV_FILE" DATABASE_URL)"
+    if [ -n "$uri" ]; then
+        host="$(uri_host "$uri")"; port="$(uri_port "$uri")"
+        if tcp_open "$host" "${port:-5432}"; then
+            ok "Postgres  ${C_DIM}${host}:${port:-5432} reachable${C_RESET}"
+        else
+            warn "Postgres  ${C_DIM}${host}:${port:-5432} did not answer${C_RESET}"
+        fi
+    fi
+    uri="$(env_get "$ENV_FILE" SHARED_REDIS_URI)"
+    if [ -n "$uri" ]; then
+        host="$(uri_host "$uri")"; port="$(uri_port "$uri")"
+        if ! tcp_open "$host" "${port:-6379}"; then
+            warn "Redis     ${C_DIM}${host}:${port:-6379} did not answer${C_RESET}"
+        elif [ -f "$DIR/ca.crt" ] && command -v openssl >/dev/null 2>&1; then
+            if printf '' | timeout 8 openssl s_client -connect "$host:${port:-6379}" \
+                 -CAfile "$DIR/ca.crt" -verify_return_error >/dev/null 2>&1; then
+                ok "Redis     ${C_DIM}${host}:${port:-6379} TLS verified against ca.crt${C_RESET}"
+            else
+                warn "Redis     ${C_DIM}answers, but its certificate does not verify against ca.crt${C_RESET}"
+            fi
+        else
+            ok "Redis     ${C_DIM}${host}:${port:-6379} reachable${C_RESET}"
+        fi
+    fi
+    [ -z "$(env_get "$ENV_FILE" DATABASE_URL)$(env_get "$ENV_FILE" SHARED_REDIS_URI)" ] &&
+        note "  this role holds no data-tier credentials"
+    return 0
+}
+
+cmd_doctor() {
+    rule "Deployment"
+    ok "role      ${C_BOLD}${ROLE}${C_RESET}  ${C_DIM}${DIR}${C_RESET}"
+    ok "compose   ${C_DIM}${COMPOSE_FILE}${C_RESET}"
+
+    rule "Containers"
+    if has_docker; then
+        local out
+        out="$(compose ps --format '{{.Service}} {{.State}} {{.Status}}' 2>/dev/null || true)"
+        if [ -z "$out" ]; then
+            warn "nothing is running here"
+        else
+            while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                case "$line" in
+                    *running*) ok "$line" ;;
+                    *) warn "$line" ;;
+                esac
+            done <<< "$out"
+        fi
+    else
+        note "  docker is not available, skipping"
+    fi
+
+    rule "Data tier"
+    check_data_tier
+
+    rule "Image pins"
+    PIN_UPDATES=()
+    if check_pins report; then
+        ok "every image is on the version this ref publishes"
+    else
+        note "  run: install.sh update"
+    fi
+    printf '\n'
+}
+
+cmd_update() {
+    rule "Image pins"
+    PIN_UPDATES=()
+    if check_pins report; then
+        ok "already up to date"
+        printf '\n'
+        return 0
+    fi
+
+    local entry key value
+    for entry in "${PIN_UPDATES[@]}"; do
+        key="${entry%%=*}"; value="${entry#*=}"
+        env_set "$ENV_FILE" "$key" "$value"
+    done
+    ok "${#PIN_UPDATES[@]} pin(s) moved forward in .env"
+
+    if [ "$START" -eq 0 ]; then
+        rule "Not restarting"
+        note "  apply with: cd $DIR && docker compose -f $COMPOSE_FILE pull && docker compose -f $COMPOSE_FILE up -d"
+        printf '\n'
+        return 0
+    fi
+    has_docker || die "docker is not available" "The pins are updated; run pull and up -d yourself."
+
+    rule "Pulling"
+    compose pull 2>&1 | sed 's/^/    /'
+    rule "Restarting"
+    compose up -d 2>&1 | sed 's/^/    /'
+    printf '\n'
+    ok "updated"
+    printf '\n'
+}
+
+cmd_reconfigure() {
+    rule "Reconfigure ${ROLE}"
+    note "  Domains only. Secrets, the data-tier URIs and the admin password stay as they are."
+    printf '\n'
+
+    local changed=0
+    reask() {
+        local key="$1" prompt="$2" current new
+        current="$(env_get "$ENV_FILE" "$key")"
+        new="${!key:-}"
+        if [ -z "$new" ]; then
+            if [ "$INTERACTIVE" -eq 0 ]; then return 0; fi
+            ask_var="" ; unset ask_var
+            printf '%b' "    ${C_ACCENT}▸${C_RESET} ${prompt} ${C_DIM}[${current}]${C_RESET}: "
+            read -r new
+            new="${new:-$current}"
+        fi
+        if [ "$new" != "$current" ]; then
+            env_set "$ENV_FILE" "$key" "$new"
+            ok "${key} ${C_DIM}${current} → ${new}${C_RESET}"
+            changed=$((changed + 1))
+            case "$key" in
+                PANEL_DOMAIN)
+                    [ -n "$(env_get "$ENV_FILE" CORS_ORIGINS)" ] &&
+                        env_set "$ENV_FILE" CORS_ORIGINS "https://$new"
+                    ;;
+            esac
+        fi
+    }
+
+    case "$ROLE" in
+        master) reask PANEL_DOMAIN "admin panel domain"; reask SUB_DOMAIN "the subscription host's domain" ;;
+        node) reask PANEL_DOMAIN "this node's domain"; reask PROXY_DOMAIN "decoy domain"; reask SUB_DOMAIN "the subscription host's domain" ;;
+        sub) reask SUB_DOMAIN "this host's subscription domain"; reask PANEL_DOMAIN "the master's domain" ;;
+        bot) reask BOT_DOMAIN "this host's domain"; reask SUB_DOMAIN "the subscription host's domain"; reask PANEL_DOMAIN "the master's domain" ;;
+        data|cron) die "role '$ROLE' has no domains to reconfigure" "Its address lives in the bundle every other host holds." ;;
+    esac
+
+    if [ "$changed" -eq 0 ]; then
+        ok "nothing changed"
+        printf '\n'
+        return 0
+    fi
+    rule "Applying"
+    if [ "$START" -eq 1 ] && has_docker; then
+        compose up -d 2>&1 | sed 's/^/    /'
+        ok "restarted"
+    else
+        note "  apply with: cd $DIR && docker compose -f $COMPOSE_FILE up -d"
+    fi
+    printf '\n'
+}
+
+find_deployment() {
+    local candidate
+    for candidate in "${DIR:-}" . ./itg-panel; do
+        [ -n "$candidate" ] || continue
+        if [ -f "$candidate/.env" ] && ls "$candidate"/docker-compose.*.yml >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [ "$COMMAND_EXPLICIT" -eq 0 ] && [ "$INTERACTIVE" -eq 1 ]; then
+    if EXISTING="$(find_deployment)"; then
+        EXISTING_ROLE="$(basename "$(ls "$EXISTING"/docker-compose.*.yml | head -1)")"
+        case "$EXISTING_ROLE" in
+            *postgres*) EXISTING_ROLE=data ;; *cron*) EXISTING_ROLE=cron ;;
+            *master*) EXISTING_ROLE=master ;; *node*) EXISTING_ROLE=node ;;
+            *sub*) EXISTING_ROLE=sub ;; *bot*) EXISTING_ROLE=bot ;;
+        esac
+        rule "Found a deployment here"
+        ok "role ${C_BOLD}${EXISTING_ROLE}${C_RESET} ${C_DIM}in $(cd "$EXISTING" && pwd)${C_RESET}"
+        printf '\n'
+        role_line 1 doctor      "check it: containers, data tier, image pins"
+        role_line 2 update      "move the image pins forward, pull and restart"
+        role_line 3 reconfigure "change this host's domains, keep every secret"
+        role_line 4 install     "set up another role, in a different directory"
+        printf '\n'
+        while :; do
+            ask MENU_CHOICE "what would you like to do"
+            case "$MENU_CHOICE" in
+                1|doctor) COMMAND=doctor ;;
+                2|update) COMMAND=update ;;
+                3|reconfig|reconfigure) COMMAND=reconfigure ;;
+                4|install) COMMAND=install ;;
+                *) warn "pick 1-4"; MENU_CHOICE=""; continue ;;
+            esac
+            break
+        done
+        [ "$COMMAND" != "install" ] && DIR="$EXISTING"
+    fi
+fi
+
+if [ "$COMMAND" != "install" ]; then
+    load_deployment
+    case "$COMMAND" in
+        doctor) cmd_doctor ;;
+        update) cmd_update ;;
+        reconfigure) cmd_reconfigure ;;
+    esac
+    exit 0
+fi
+
+preflight
+
 render_env() {
-    # Rewrites the host's own .env.<role>.example, replacing the values we know and keeping
-    # everything else -- the section headers and the notes explaining what breaks without each
-    # variable. Done in pure bash: passwords and URIs contain characters (& | /) that turn a sed
-    # replacement into a corrupted file or a silent truncation.
     local example="$1" out="$2" line key rest comment
     : > "$out"
     while IFS= read -r line || [ -n "$line" ]; do
@@ -154,9 +570,6 @@ render_env() {
 }
 
 align_env() {
-    # Substituting values changes their width, so the trailing notes stop lining up. Re-align them
-    # per block of adjacent settings, the way the examples are written. Cosmetic, and the whole
-    # point of rendering from the example rather than printing a bare list of keys.
     local file="$1" tmp="$WORK/aligned" line value comment width
     local -a block=()
     : > "$tmp"
@@ -196,28 +609,35 @@ align_env() {
     mv "$tmp" "$file"
 }
 
-# ---------------------------------------------------------------------------- role
-
 if [ -z "$ROLE" ]; then
-    if [ "$INTERACTIVE" -eq 0 ]; then die "--role is required with --non-interactive"; fi
-    head1 "Which role does this machine run?"
-    say "data    Postgres + Redis + backups. No inbound or outbound internet. Install this first."
-    say "cron    every background job; owns the shared schema, so it boots before master/sub/bot."
-    say "master  admin API + admin SPA."
-    say "node    Xray + node SPA. One per location."
-    say "sub     subscription links and the subscription page."
-    say "bot     Telegram bot, bot-api and the whole billing surface."
+    [ "$INTERACTIVE" -eq 0 ] && die "--role is required with --non-interactive"
+    rule "Which role does this machine run?"
     printf '\n'
-    ask ROLE "role"
+    role_line 1 data   "Postgres + Redis + backups · install this one first"
+    role_line 2 cron   "every background job · owns the shared schema"
+    role_line 3 master "admin API + admin SPA"
+    role_line 4 node   "Xray + node SPA · one per location"
+    role_line 5 sub    "subscription links and the subscription page"
+    role_line 6 bot    "Telegram bot, bot-api and the billing surface"
+    printf '\n'
+    while :; do
+        ask ROLE_CHOICE "role, by number or name"
+        case "$ROLE_CHOICE" in
+            1|data) ROLE=data ;; 2|cron) ROLE=cron ;; 3|master) ROLE=master ;;
+            4|node) ROLE=node ;; 5|sub) ROLE=sub ;; 6|bot) ROLE=bot ;;
+            *) warn "pick 1-6, or type the role name"; ROLE_CHOICE=""; continue ;;
+        esac
+        break
+    done
 fi
-case " $ROLES " in *" $ROLE "*) ;; *) die "unknown role '$ROLE' (expected one of: $ROLES)" ;; esac
+case " $ROLES " in *" $ROLE "*) ;; *) die "unknown role '$ROLE'" "Expected one of: $ROLES" ;; esac
 
 DIR="${DIR:-./itg-panel}"
 mkdir -p "$DIR"
 DIR="$(cd "$DIR" && pwd)"
-[ -f "$DIR/.env" ] && die "$DIR/.env already exists. Move it aside first — this script will not overwrite a live deployment."
+[ -f "$DIR/.env" ] && die "$DIR/.env already exists" \
+    "This installer will not overwrite a live deployment. Move it aside, or pass a different --dir."
 
-COMPOSE_FILE=""
 case "$ROLE" in
     data) COMPOSE_FILE="docker-compose.postgres.yml" ;;
     cron) COMPOSE_FILE="docker-compose.cron.yml" ;;
@@ -227,17 +647,17 @@ case "$ROLE" in
     bot) COMPOSE_FILE="docker-compose.bot.yml" ;;
 esac
 
-EXAMPLE_NAME=".env.${ROLE}.example"
-[ "$ROLE" = "data" ] && EXAMPLE_NAME=".env.data.example"
-
+rule "Fetching what this role needs"
+spinner_start "reading $([ -n "$SOURCE" ] && echo "$SOURCE" || echo "$REPO_SLUG@$REF")"
 fetch "$COMPOSE_FILE" "$DIR/$COMPOSE_FILE"
-fetch "$EXAMPLE_NAME" "$WORK/example"
+fetch ".env.${ROLE}.example" "$WORK/example"
 fetch "versions.json" "$WORK/versions.json"
 case "$ROLE" in
     master|node|sub|bot) fetch "caddy/routes.yaml" "$DIR/caddy/routes.yaml" ;;
 esac
-
-# ---------------------------------------------------------------------------- image pins
+spinner_stop
+ok "$COMPOSE_FILE"
+case "$ROLE" in master|node|sub|bot) ok "caddy/routes.yaml" ;; esac
 
 V="$WORK/versions.json"
 GHCR="ghcr.io/ivantopgaming"
@@ -251,16 +671,17 @@ VALUES[FRONTEND_ADMIN_IMAGE]="$GHCR/panel-frontend-admin:v$(json_field "$V" fron
 VALUES[FRONTEND_NODE_IMAGE]="$GHCR/panel-frontend-node:v$(json_field "$V" frontend_node)"
 VALUES[CADDY_IMAGE]="$GHCR/panel-caddy:v$(json_field "$V" caddy)"
 VALUES[XRAY_EGRESS_IMAGE]="$GHCR/panel-egress:v$(json_field "$V" xray_egress)"
-
-# ---------------------------------------------------------------------------- data tier
+ok "image pins from versions.json"
 
 if [ "$ROLE" = "data" ]; then
-    head1 "Data tier"
-    say "Every other host will reach this machine by the name you give here, and the certificate"
-    say "is issued for exactly that name. A private-network DNS name is the right answer."
+    rule "Data tier"
+    note "The address the other five hosts will use to reach this machine. It goes"
+    note "into their DATABASE_URL and Redis URIs, and the certificate is issued for"
+    note "exactly it — connect by any other name and TLS verification refuses."
+    note "A private DNS name or this machine's private IP. Nothing public is needed."
     printf '\n'
-    ask DATA_HOSTNAME "hostname other hosts will use for this machine"
-    ask POSTGRES_BIND "which interface to publish Postgres and Redis on" "127.0.0.1"
+    ask DATA_HOSTNAME "address other hosts will reach this machine at" "" valid_hostname
+    ask POSTGRES_BIND "publish Postgres and Redis on which address" "127.0.0.1"
     REDIS_BIND="${REDIS_BIND:-$POSTGRES_BIND}"
 
     POSTGRES_PASSWORD="$(gen_secret 30)"
@@ -269,31 +690,38 @@ if [ "$ROLE" = "data" ]; then
     REDIS_BOT_PASSWORD="$(gen_secret 30)"
     SECRET_KEY="$(gen_secret 48)"
 
-    head1 "Issuing the certificate Postgres and Redis present"
+    rule "Issuing this tier's certificate"
     mkdir -p "$DIR/pg_certs"
+
+    spinner_start "generating a certificate authority"
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
         -keyout "$DIR/pg_certs/ca.key" -out "$DIR/pg_certs/ca.crt" \
         -subj "/CN=ITG Panel Data Tier CA" \
         -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+    spinner_stop
+    ok "certificate authority ${C_DIM}(valid 10 years, never renewed)${C_RESET}"
+
+    spinner_start "issuing the server certificate"
     openssl req -newkey rsa:2048 -sha256 -nodes \
         -keyout "$DIR/pg_certs/server.key" -out "$WORK/server.csr" \
         -subj "/CN=$DATA_HOSTNAME" 2>/dev/null
-    printf 'subjectAltName=DNS:%s\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' \
-        "$DATA_HOSTNAME" > "$WORK/server.ext"
+    printf 'subjectAltName=%s\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' \
+        "$(san_for "$DATA_HOSTNAME")" > "$WORK/server.ext"
     openssl x509 -req -in "$WORK/server.csr" -CA "$DIR/pg_certs/ca.crt" -CAkey "$DIR/pg_certs/ca.key" \
         -CAcreateserial -out "$DIR/pg_certs/server.crt" -days 3650 -sha256 \
         -extfile "$WORK/server.ext" 2>/dev/null
+    spinner_stop
+    ok "server certificate for ${C_BOLD}${DATA_HOSTNAME}${C_RESET}"
 
-    # Postgres refuses to start on a key it considers world- or group-readable, and Redis must read
-    # the same file. Both containers run as uid 999, so one owner satisfies them; the gids differ
-    # (999 vs 1000), so a group-based mode would not.
     chmod 600 "$DIR/pg_certs/server.key" "$DIR/pg_certs/ca.key"
     chmod 644 "$DIR/pg_certs/server.crt" "$DIR/pg_certs/ca.crt"
     if [ "$(id -u)" = "0" ]; then
         chown 999:999 "$DIR/pg_certs/server.key" "$DIR/pg_certs/server.crt"
+        ok "permissions ${C_DIM}(0600, owned by uid 999 — Postgres refuses anything wider)${C_RESET}"
     else
-        say "not running as root: skipping chown 999:999 on pg_certs — do it by hand or Postgres will refuse the key"
+        warn "not root: could not chown pg_certs to uid 999"
+        note "    Postgres will refuse the key until you do it by hand."
     fi
 
     VALUES[POSTGRES_PASSWORD]="$POSTGRES_PASSWORD"
@@ -304,6 +732,7 @@ if [ "$ROLE" = "data" ]; then
     VALUES[REDIS_BIND]="$REDIS_BIND"
 
     render_env "$WORK/example" "$DIR/.env"
+    ok "secrets generated ${C_DIM}(1 database, 3 Redis credentials, 1 signing key)${C_RESET}"
 
     CA_B64="$(base64 -w0 < "$DIR/pg_certs/ca.crt" 2>/dev/null || base64 < "$DIR/pg_certs/ca.crt" | tr -d '\n')"
     printf '{"data_hostname":"%s","postgres_user":"%s","postgres_password":"%s","postgres_db":"%s","redis_panel":"%s","redis_node":"%s","redis_bot":"%s","secret_key":"%s","ca":"%s"}' \
@@ -312,20 +741,31 @@ if [ "$ROLE" = "data" ]; then
         "$SECRET_KEY" "$CA_B64" > "$WORK/bundle.json"
     BUNDLE_OUT="$(base64 -w0 < "$WORK/bundle.json" 2>/dev/null || base64 < "$WORK/bundle.json" | tr -d '\n')"
 
-    head1 "Done. This machine is ready to start."
-    say "The line below carries every shared secret and this tier's CA. Paste it into the installer"
-    say "on each of the other five hosts. Treat it as the keys to the whole deployment."
+    panel_top
+    panel_line ""
+    panel_line "  This tier is ready. Copy the line below."
+    panel_line ""
+    panel_line "  It carries every shared secret and this tier's CA. Paste it"
+    panel_line "  into the installer on each of the other five hosts - they"
+    panel_line "  derive their own configuration from it."
+    panel_line ""
+    panel_line "  Treat it as the keys to the whole deployment."
+    panel_line ""
+    panel_bot
     printf '\n%s\n\n' "$BUNDLE_OUT"
 else
-    # ------------------------------------------------------------------------ every other host
     if [ -z "$BUNDLE_IN" ]; then
-        if [ "$INTERACTIVE" -eq 0 ]; then die "role '$ROLE' needs the data tier's bundle: pass --bundle or set BUNDLE"; fi
-        head1 "Paste the bundle the data tier printed"
+        [ "$INTERACTIVE" -eq 0 ] && die "role '$ROLE' needs the data tier's bundle" \
+            "Pass --bundle, or set BUNDLE in the environment."
+        rule "The data tier's bundle"
+        note "The long line the data-tier installer printed. Paste it whole."
+        printf '\n'
         ask BUNDLE_IN "bundle"
     fi
     printf '%s' "$BUNDLE_IN" | base64 -d > "$WORK/bundle.json" 2>/dev/null ||
-        die "that bundle is not valid base64. Copy the whole single line the data tier printed."
-    grep -q '"data_hostname"' "$WORK/bundle.json" || die "that bundle does not look like one this installer produced."
+        die "that is not a valid bundle" "Copy the whole single line the data tier printed, with nothing around it."
+    grep -q '"data_hostname"' "$WORK/bundle.json" ||
+        die "that bundle is not one this installer produced" "Re-run the installer on the data tier to print a fresh one."
 
     B="$WORK/bundle.json"
     DATA_HOSTNAME="$(json_field "$B" data_hostname)"
@@ -334,11 +774,12 @@ else
     PG_DB="$(json_field "$B" postgres_db)"
     REDIS_PANEL_PASSWORD="$(json_field "$B" redis_panel)"
     REDIS_NODE_PASSWORD="$(json_field "$B" redis_node)"
-    SHARED_SECRET_KEY="$(json_field "$B" secret_key)"
     REDIS_BOT_PASSWORD="$(json_field "$B" redis_bot)"
+    SHARED_SECRET_KEY="$(json_field "$B" secret_key)"
 
     json_field "$B" ca | base64 -d > "$DIR/ca.crt" 2>/dev/null || die "the bundle's CA could not be decoded"
     chmod 644 "$DIR/ca.crt"
+    ok "data tier ${C_BOLD}${DATA_HOSTNAME}${C_RESET} ${C_DIM}· credentials and CA taken from the bundle${C_RESET}"
 
     CA_IN_CONTAINER="/etc/ssl/panel-ca.crt"
     VALUES[SECRET_KEY]="$SHARED_SECRET_KEY"
@@ -351,17 +792,16 @@ else
         node) VALUES[SHARED_REDIS_URI]="$(redis_uri node "$REDIS_NODE_PASSWORD")" ;;
         bot) VALUES[BOT_SHARED_REDIS_URI]="$(redis_uri bot "$REDIS_BOT_PASSWORD")" ;;
     esac
-
     case "$ROLE" in
         master|node) VALUES[RATELIMIT_STORAGE_URI]="redis://redis:6379/0" ;;
         sub|bot) VALUES[RATELIMIT_STORAGE_URI]="$(redis_uri panel "$REDIS_PANEL_PASSWORD")" ;;
     esac
 
-    head1 "This host"
     case "$ROLE" in
         master)
-            ask PANEL_DOMAIN "admin panel domain for this host"
-            ask SUB_DOMAIN "the subscription host's domain"
+            rule "This host"
+            ask PANEL_DOMAIN "admin panel domain for this host" "" valid_hostname
+            ask SUB_DOMAIN "the subscription host's domain" "" valid_hostname
             VALUES[PANEL_DOMAIN]="$PANEL_DOMAIN"
             VALUES[SUB_DOMAIN]="$SUB_DOMAIN"
             VALUES[CORS_ORIGINS]="https://$PANEL_DOMAIN"
@@ -369,9 +809,13 @@ else
             VALUES[PANEL_ADMIN_PASSWORD]="$(gen_secret 15)"
             ;;
         node)
-            ask PANEL_DOMAIN "this node's own domain"
-            ask PROXY_DOMAIN "decoy domain (must equal the REALITY inbound's SNI)" "www.google.com"
-            ask SUB_DOMAIN "the subscription host's domain"
+            rule "This host"
+            note "PROXY_DOMAIN is the decoy this node masquerades as. It must equal the"
+            note "REALITY inbound's SNI, or every client is handed to the panel instead."
+            printf '\n'
+            ask PANEL_DOMAIN "this node's own domain" "" valid_hostname
+            ask PROXY_DOMAIN "decoy domain" "www.google.com" valid_hostname
+            ask SUB_DOMAIN "the subscription host's domain" "" valid_hostname
             VALUES[PANEL_DOMAIN]="$PANEL_DOMAIN"
             VALUES[PROXY_DOMAIN]="$PROXY_DOMAIN"
             VALUES[SUB_DOMAIN]="$SUB_DOMAIN"
@@ -381,41 +825,88 @@ else
             VALUES[EGRESS_INTERNAL_TOKEN]="$(gen_secret 24)"
             ;;
         sub)
-            ask SUB_DOMAIN "this host's subscription domain"
-            ask PANEL_DOMAIN "the master's domain"
+            rule "This host"
+            ask SUB_DOMAIN "this host's subscription domain" "" valid_hostname
+            ask PANEL_DOMAIN "the master's domain" "" valid_hostname
             VALUES[SUB_DOMAIN]="$SUB_DOMAIN"
             VALUES[PANEL_DOMAIN]="$PANEL_DOMAIN"
             ;;
         bot)
-            ask BOT_DOMAIN "this host's domain (serves the YooKassa webhook)"
-            ask SUB_DOMAIN "the subscription host's domain"
-            ask PANEL_DOMAIN "the master's domain"
+            rule "This host"
+            note "This host serves the YooKassa webhook and nothing else publicly."
+            printf '\n'
+            ask BOT_DOMAIN "this host's domain" "" valid_hostname
+            ask SUB_DOMAIN "the subscription host's domain" "" valid_hostname
+            ask PANEL_DOMAIN "the master's domain" "" valid_hostname
             VALUES[BOT_DOMAIN]="$BOT_DOMAIN"
             VALUES[SUB_DOMAIN]="$SUB_DOMAIN"
             VALUES[PANEL_DOMAIN]="$PANEL_DOMAIN"
+            VALUES[BOT_WEBHOOK_PATH]="$(gen_secret 12)"
             ;;
     esac
 
     render_env "$WORK/example" "$DIR/.env"
+    ok "configuration written"
 
-    head1 "Done."
     case "$ROLE" in
+        bot)
+            panel_top
+            panel_line ""
+            panel_line "  Paste the URL below into YooKassa as the notification URL."
+            panel_line ""
+            panel_line "  The secret segment keeps the address from being guessable -"
+            panel_line "  every other path on this domain answers 404. It is not what"
+            panel_line "  makes a forged notification harmless: the handler re-checks"
+            panel_line "  each payment against YooKassa before granting anything."
+            panel_line ""
+            panel_line "  Leave it unset and payments still confirm - the poller"
+            panel_line "  catches them within 30 seconds instead of instantly."
+            panel_line ""
+            panel_bot
+            printf '\n%s\n\n' "https://${VALUES[BOT_DOMAIN]}/${VALUES[BOT_WEBHOOK_PATH]}/api/billing/yookassa/webhook"
+            ;;
         master|node)
-            say "admin user:     admin"
-            say "admin password: ${VALUES[PANEL_ADMIN_PASSWORD]}"
-            say "panel URL:      https://${VALUES[PANEL_DOMAIN]}/${VALUES[PANEL_SECRET_PATH]}/"
-            say "Written down only here — the .env holds them too, nothing else will show them again."
+            panel_top
+            panel_line ""
+            panel_line "  Admin access - shown once, and also stored in .env"
+            panel_line ""
+            panel_line "    user      admin"
+            panel_line "    password  ${VALUES[PANEL_ADMIN_PASSWORD]}"
+            panel_line ""
+            panel_line "    https://${VALUES[PANEL_DOMAIN]}/${VALUES[PANEL_SECRET_PATH]}/"
+            panel_line ""
+            panel_line "  Everything outside that path answers 404."
+            panel_line ""
+            panel_bot
             ;;
     esac
 fi
 
-# ---------------------------------------------------------------------------- start
+next_steps() {
+    case "$ROLE" in
+        data) note "Next: run this installer on the cron host and paste the bundle above." ;;
+        cron) note "Next: the master, the sub host and the bot host, in any order." ;;
+        master) note "Next: bring up your nodes, then link them from Panels → Add panel." ;;
+        node) note "Next: on this node open System → Link, then paste the token into the master." ;;
+        sub|bot) note "Next: whichever of the six hosts you have not installed yet." ;;
+    esac
+}
 
 if [ "$START" -eq 1 ]; then
-    head1 "Starting"
-    ( cd "$DIR" && docker compose -f "$COMPOSE_FILE" up -d )
-    say "up. Logs: docker compose -f $COMPOSE_FILE logs -f"
+    rule "Starting"
+    ( cd "$DIR" && docker compose -f "$COMPOSE_FILE" up -d ) 2>&1 | sed 's/^/    /'
+    printf '\n'
+    ok "running in ${C_BOLD}${DIR}${C_RESET}"
+    note "  logs:   cd $DIR && docker compose -f $COMPOSE_FILE logs -f"
+    note "  check:  install.sh doctor --dir $DIR"
+    printf '\n'
+    next_steps
+    printf '\n'
 else
-    head1 "Files written to $DIR (not started)"
-    say "Start it with: cd $DIR && docker compose -f $COMPOSE_FILE up -d"
+    rule "Written, not started"
+    ok "files in ${C_BOLD}${DIR}${C_RESET}"
+    note "  start: cd $DIR && docker compose -f $COMPOSE_FILE up -d"
+    printf '\n'
+    next_steps
+    printf '\n'
 fi

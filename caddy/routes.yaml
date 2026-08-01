@@ -21,5 +21,6 @@ sni_routes:
     match: "${BOT_DOMAIN}"
     upstream: "backend:5000"
     tls: true
+    strip_prefix: "/${BOT_WEBHOOK_PATH}"
     only_paths:
-      - "/api/billing/yookassa/webhook"
+      - "/${BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"

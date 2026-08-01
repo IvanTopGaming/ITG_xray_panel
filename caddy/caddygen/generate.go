@@ -97,16 +97,16 @@ func reverseProxy(upstream string) map[string]any {
 	}
 }
 
-func httpServer(listen string, upstream string, onlyPaths []string, apiPath, apiUpstream string) map[string]any {
+func httpServer(listen string, upstream string, onlyPaths []string, apiPath, apiUpstream, stripPrefix string) map[string]any {
 	var routes []any
 	if apiUpstream != "" && apiPath != "" {
-		stripPrefix := strings.TrimSuffix(apiPath, "/api/")
-		if stripPrefix != "" && stripPrefix != "/" {
+		apiStrip := strings.TrimSuffix(apiPath, "/api/")
+		if apiStrip != "" && apiStrip != "/" {
 			routes = append(routes, map[string]any{
 				"match": []any{map[string]any{"path": []any{apiPath + "*"}}},
 				"handle": []any{
 					securityHeaders(),
-					map[string]any{"handler": "rewrite", "strip_path_prefix": stripPrefix},
+					map[string]any{"handler": "rewrite", "strip_path_prefix": apiStrip},
 					reverseProxy(apiUpstream),
 				},
 			})
@@ -117,9 +117,18 @@ func httpServer(listen string, upstream string, onlyPaths []string, apiPath, api
 		for _, p := range onlyPaths {
 			globs = append(globs, p+"*")
 		}
+
+		handlers := []any{securityHeaders()}
+		if stripPrefix != "" && stripPrefix != "/" {
+			handlers = append(handlers, map[string]any{
+				"handler":           "rewrite",
+				"strip_path_prefix": stripPrefix,
+			})
+		}
+		handlers = append(handlers, reverseProxy(upstream))
 		routes = append(routes, map[string]any{
 			"match":  []any{map[string]any{"path": globs}},
-			"handle": []any{securityHeaders(), reverseProxy(upstream)},
+			"handle": handlers,
 		})
 		routes = append(routes, map[string]any{
 			"handle": []any{map[string]any{"handler": "static_response", "status_code": 404}},
@@ -205,7 +214,7 @@ func Generate(cfg *Config) ([]byte, error) {
 		if name == "" {
 			name = fmt.Sprintf("srv%d", port)
 		}
-		httpServers[name+"_security_layer"] = httpServer(loopback, r.Upstream, r.OnlyPaths, r.APIPath, r.APIUpstream)
+		httpServers[name+"_security_layer"] = httpServer(loopback, r.Upstream, r.OnlyPaths, r.APIPath, r.APIUpstream, r.StripPrefix)
 		l4routes = append(l4routes, layer4TLS(r.Match, loopback))
 		port++
 	}
