@@ -44,9 +44,6 @@ export function useVersionStatus() {
     }
 
     const publishedVersion = latest?.[roleKey] ?? null;
-    // §10.8: sub, bot-api and cron have no UI of their own, so until they started stamping their
-    // version into the shared Redis the only thing this row could show was what the release said
-    // they ought to be running.
     const report = data?.running.roles?.[roleKey] ?? null;
     const silent = report?.state === 'silent';
     const reported = silent ? null : (report?.version ?? null);

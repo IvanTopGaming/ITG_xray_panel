@@ -10,13 +10,6 @@ services:
       - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
       - BACKEND_SLOW_SQL_MS=${BACKEND_SLOW_SQL_MS:-200}
-    # No SECRET_KEY, no PANEL_DOMAIN, no PANEL_SECRET_PATH: this role registers no blueprint,
-    # issues no JWT and serves no domain. It also declares no env_file on purpose — every
-    # variable it reads is named right here.
-    #
-    # No ports are published either. The container listens on 5000 for its own healthcheck
-    # and nothing else; all of this service's work is outbound (Postgres, the shared Redis,
-    # and an HTTP call to every node).
     command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core.roles.cron:create_app()"
     logging:
       driver: json-file

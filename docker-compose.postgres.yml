@@ -1,4 +1,3 @@
-# docker-compose.postgres.yml
 services:
   postgres:
     image: postgres:16
@@ -17,8 +16,6 @@ services:
       - "ssl_key_file=/certs/server.key"
       - "-c"
       - "password_encryption=scram-sha-256"
-    # POSTGRES_BIND defaults to loopback on purpose: an unset value must not publish the
-    # data tier to the internet. Set it to this VM's private-network address in .env.
     ports:
       - "${POSTGRES_BIND:-127.0.0.1}:5432:5432"
     volumes:
@@ -39,12 +36,6 @@ services:
       REDIS_BOT_PASSWORD: ${REDIS_BOT_PASSWORD:?REDIS_BOT_PASSWORD is required}
     volumes:
       - ./pg_certs:/certs:ro
-    # This port speaks TLS only (`--port 0 --tls-port 6379`), so clients must use rediss://.
-    # Plain redis:// was authenticated but never encrypted, and what crosses this wire is not
-    # only the ACL password and the bot:events payload: a node snapshot carries every client's
-    # UUID and the inbound's REALITY *private* key, which is enough to impersonate the node.
-    # REDIS_BIND still defaults to loopback, because TLS is not a reason to publish a data tier
-    # to the internet — it is what makes the hop survivable when there is no private network.
     ports:
       - "${REDIS_BIND:-127.0.0.1}:6379:6379"
     entrypoint:

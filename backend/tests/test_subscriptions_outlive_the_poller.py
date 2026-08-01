@@ -217,8 +217,6 @@ def test_a_recovered_poller_clears_the_warning_state(redis, caplog):
     assert panel_proxy.get_panel_snapshot(PANEL_ID) == SNAPSHOT
     redis.expire_volatile()
 
-    # caplog accumulates across the whole test, so the first outage's line would satisfy the
-    # assertion below on its own and the mutation "never clear the suppression" stayed green.
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         panel_proxy.get_panel_snapshot(PANEL_ID)

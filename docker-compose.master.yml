@@ -99,11 +99,6 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      # The master host serves the admin panel and nothing else. caddy/routes.yaml drops
-      # every route whose ${VAR} interpolates empty, so handing this container only these
-      # two variables is what keeps the sub/bot/proxy routes off this box — see the
-      # "Deploy note — every host serves only its own domains" section of CLAUDE.md.
-      # Never add env_file here: it re-injects the whole .env regardless of this block.
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
     depends_on:

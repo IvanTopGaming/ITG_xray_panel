@@ -94,10 +94,6 @@ VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN = {
     "image tag, so no .env.<host>.example *_IMAGE var pins it",
 }
 
-# The single .env.example is gone: one file could not be correct for every host (see
-# tests/test_env_examples.py). Each image pin now lives in the example of the host that
-# actually runs it -- and a tag shared by several hosts, CADDY_IMAGE above all, has to
-# agree in every one of them, which is a drift surface the split created.
 ENV_EXAMPLE_BY_COMPOSE = {
     "docker-compose.master.yml": ".env.master.example",
     "docker-compose.node.yml": ".env.node.example",

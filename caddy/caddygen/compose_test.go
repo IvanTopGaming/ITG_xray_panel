@@ -29,9 +29,6 @@ type composeFile struct {
 
 var composeRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[-?][^}]*)?\}`)
 
-// A deliberately fat .env holding every domain in the deployment. The narrowing under test
-// must come from each compose file's `environment:` block, not from the operator having
-// happened to leave a variable out of that host's file.
 var sharedDotEnv = map[string]string{
 	"PANEL_DOMAIN":      "panel.example.com",
 	"PROXY_DOMAIN":      "www.google.com",

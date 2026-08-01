@@ -84,7 +84,6 @@ def sub_app(monkeypatch, tmp_path):
         db.session.add(Inbound(tag="local", port=443, protocol="vless", stream_settings="{}"))
         db.session.add(TelegramUser(telegram_id=700, sub_token=SUB_TOKEN, language="ru"))
         db.session.add(Client(id=NODE_UUID, email="tg700_local", inbound_tag="local", telegram_id=700, enable=True))
-        # `status` is what the cron host last wrote, on a change. It is never refreshed afterwards.
         db.session.add(
             LinkedPanel(
                 name="de",

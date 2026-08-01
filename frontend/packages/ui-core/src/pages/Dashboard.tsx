@@ -1381,8 +1381,6 @@ function UserRow({
   const [revokeTarget, setRevokeTarget] = useState<UserDevice | null>(null);
   const [revokeLoading, setRevokeLoading] = useState(false);
 
-  // The route list has to come from the machine that will do the routing: the master runs no Xray
-  // and holds no outbounds of its own, so an unscoped fetch would offer an empty dropdown.
   const routeScope = inbound.panel_id ?? 'local';
   const { data: outbounds } = useQuery({
     queryKey: ['outbounds', routeScope],

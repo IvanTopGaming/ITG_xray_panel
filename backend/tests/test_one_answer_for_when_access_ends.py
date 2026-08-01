@@ -256,8 +256,6 @@ def test_a_damaged_row_is_ignored_rather_than_read_as_unlimited(sub_app):
             )
         )
         db.session.commit()
-        # The column carries `default=0`, which SQLAlchemy applies to a None on INSERT — the NULL a
-        # pre-3a node produces arrives by UPDATE, where Python-side defaults do not fire.
         db.session.execute(
             db.text("UPDATE client SET expiry_time = NULL WHERE id = :cid"),
             {"cid": damaged},

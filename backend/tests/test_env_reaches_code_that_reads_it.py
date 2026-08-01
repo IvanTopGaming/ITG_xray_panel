@@ -41,8 +41,6 @@ WHY = (
     "`up` until the deployer supplies a value, which is a promise that it does something."
 )
 
-# service name -> the source trees that end up inside that service's image.
-# Only services built from this repo are checked; redis/postgres/xray/socket-proxy read their own.
 ROLE_SERVICES = {
     ("docker-compose.master.yml", "backend"): "master",
     ("docker-compose.node.yml", "backend"): "worker",
@@ -75,21 +73,13 @@ PLAIN_SERVICES = {
     ("docker-compose.bot.yml", "caddy"): [REPO_ROOT / "caddy"],
 }
 
-# Consumed by the interpreter, gRPC or the base image, with no line of ours to point at.
 RUNTIME_VARIABLES = {
     "PYTHONUNBUFFERED",
     "GRPC_DNS_RESOLVER",
-    "DOCKER_HOST",  # read by the `docker` SDK itself, which only panel-worker installs
+    "DOCKER_HOST",
     "TZ",
 }
 
-# §87: a test is not the code inside the image. `tg_bot/tests/test_consumer_claim.py` sets
-# RATELIMIT_STORAGE_URI *to prove the consumer ignores it*, and that one line kept this guard green
-# while `docker-compose.bot.yml` demanded the variable from the Telegram poller, which has no
-# limiter and never looks it up. A guard that reads its own test suite grades itself.
-# The role services never had the hole -- their roots are `packages/<dist>/src`, which `backend/tests`
-# is outside of -- but the exclusion is applied to every root, so a future PLAIN_SERVICES entry
-# rooted at a package directory cannot re-open it.
 _SKIPPED_DIRECTORIES = {"__pycache__", "node_modules", "tests", "test"}
 
 SERVICE_RE = re.compile(r"^  ([A-Za-z0-9_-]+):$")

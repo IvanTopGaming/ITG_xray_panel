@@ -32,13 +32,6 @@ from panel_core.extensions import get_shared_redis
 DEFAULT_FRESHNESS_S = 180
 STAMP_EVERY_S = 60
 
-# "worker" is deliberately absent, and the reason is two defects rather than one. A node's
-# data-tier credential is `-@all +publish +select &bot:events` (wave 2, and that narrowness is what
-# makes a node safe in an untrusted segment), so `SETEX` answers NOPERM and the stamp never lands --
-# silently, at DEBUG. And the key would be wrong even with the permission: it is `panel:role:worker`
-# for *every* node, so three nodes would overwrite each other once a minute and the master would
-# show one arbitrary version labelled "worker". A node's version therefore travels in its federation
-# snapshot, which is already per-panel and already polled every 10 seconds.
 ROLE_KEYS = ("master", "sub", "bot_api", "cron")
 
 logger = logging.getLogger(__name__)

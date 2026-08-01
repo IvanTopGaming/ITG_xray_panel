@@ -140,9 +140,6 @@ export default function Routing() {
     setPanelId(selectablePanels.length ? selectablePanels[0].id : null);
   }, [selectablePanels, panelId]);
 
-  // A master with no node picked yet would query its own (empty) tables and show a list that reads
-  // as "this node has nothing" — the exact lie this wave removes. Render nothing until the scope is
-  // known. A node is always its own scope, so it never waits.
   const scopeResolved = isWorker || panelId != null;
 
   if (!isWorker && !panelsLoading && selectablePanels.length === 0) {

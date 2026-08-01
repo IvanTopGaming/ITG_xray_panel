@@ -1,8 +1,6 @@
 DATA_PLANE = {"sync_traffic", "check_limits", "parse_logs"}
-# §8.5: cleanup_stats is node-only — DomainStat is written by parse_logs, a worker cron.
 WORKER_ONLY_MAINTENANCE = {"cleanup_stats"}
 EVENT_BUS = {"cleanup_bot_events", "replay_undelivered_bot_events"}
-# Wave 2 moved every one of these off the master onto the cron service.
 CRON_ONLY = {
     "auto_renew_free_users",
     "poll_linked_panels",

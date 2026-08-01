@@ -112,9 +112,6 @@ def _checkout(client, tariff_id, telegram_id=4242):
     )
 
 
-# --- the checkout ------------------------------------------------------------------------------
-
-
 def test_a_tariff_whose_items_all_lack_a_panel_id_never_reaches_an_invoice(botapi_app, client):
     tariff_id = _make_tariff(botapi_app, name="Legacy 30d", panel_ids=[None, None])
 
@@ -190,9 +187,6 @@ def test_a_fully_routed_tariff_still_checks_out(botapi_app, client):
         assert Payment.query.count() == 1
 
 
-# --- the catalogue -----------------------------------------------------------------------------
-
-
 def test_the_catalogue_hides_what_cannot_be_delivered_and_keeps_what_can(botapi_app, client):
     good = _make_tariff(botapi_app, name="Standard 30d", panel_ids=[7])
     legacy = _make_tariff(botapi_app, name="Legacy 30d", panel_ids=[None])
@@ -210,9 +204,6 @@ def test_the_catalogue_hides_what_cannot_be_delivered_and_keeps_what_can(botapi_
     )
     assert mixed not in listed, "the catalogue offered a tariff with one item lacking a panel_id"
     assert empty not in listed, "the catalogue offered a tariff carrying no items"
-
-
-# --- the trial ---------------------------------------------------------------------------------
 
 
 def test_an_undeliverable_trial_is_neither_offered_nor_burned(botapi_app, client):
@@ -276,9 +267,6 @@ def test_a_failing_provision_still_gives_the_trial_back(botapi_app, client):
         assert db.session.get(TelegramUser, 4242).trial_used_at is None, (
             "a failed provisioning consumed the user's only trial"
         )
-
-
-# --- the payment that was already taken ---------------------------------------------------------
 
 
 def test_a_payment_taken_before_this_wave_fails_without_reaching_provisioning(botapi_app):

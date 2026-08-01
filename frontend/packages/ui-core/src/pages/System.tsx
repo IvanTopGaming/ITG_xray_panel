@@ -49,8 +49,6 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'about', label: 'About' },
 ];
 
-// The two tabs the node picker scopes. Security is the master's own password, Maintenance's backup
-// card and About are about this panel, and none of them changes when another node is selected.
 const NODE_SCOPED_TABS: SettingsTab[] = ['core', 'maintenance'];
 
 const GITHUB_URL = 'https://github.com/IvanTopGaming/ITG_xray_panel';
@@ -91,8 +89,6 @@ export default function System() {
     setPanelId(selectablePanels.length ? selectablePanels[0].id : null);
   }, [selectablePanels, panelId]);
 
-  // A node always means itself; a master always means the node it picked. There is no third case:
-  // the master runs no Xray, so an unscoped request has nothing to answer from.
   const xrayScopeResolved = hasLocalXray || panelId != null;
   const xrayScope = hasLocalXray ? '' : panelId != null ? `?panel_id=${panelId}` : '';
   const showNodePicker = !isWorker && NODE_SCOPED_TABS.includes(activeTab);

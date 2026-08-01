@@ -43,7 +43,6 @@ from tests.schema import ensure_schema
 
 SUB_TOKEN = "sub-token-served-while-the-data-tier-is-down"
 
-# (role module under panel_core.roles, the PANEL_ROLE value that module binds)
 ROLES = (("master", "master"), ("worker", "worker"), ("sub", "sub"), ("botapi", "bot"), ("cron", "cron"))
 
 

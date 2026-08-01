@@ -7,9 +7,6 @@ services:
       - PANEL_ROLE=sub
       - PYTHONUNBUFFERED=1
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
-      # PANEL_DOMAIN is the server address api/subscription.py falls back to for an inbound
-      # that carries no explicit host. No PANEL_SECRET_PATH — the only module that reads it
-      # is api/federation.py, which ships from panel-adminapi and is not in this image.
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
       - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
       - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
@@ -54,11 +51,6 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      # The sub host serves SUB_DOMAIN and nothing else. caddy/routes.yaml drops every
-      # route whose ${VAR} interpolates empty, and the `sub` route is the only one that
-      # references no other variable — PANEL_SECRET_PATH is read solely by the `panel`
-      # route's api_path, which is dropped here anyway.
-      # Never add env_file here: it re-injects the whole .env regardless of this block.
       - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
     depends_on:
       sub-backend:

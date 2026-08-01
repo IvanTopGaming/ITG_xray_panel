@@ -152,11 +152,6 @@ def _node_expiry(node_app, telegram_id):
         return Client.query.filter_by(telegram_id=telegram_id).one().expiry_time
 
 
-# --------------------------------------------------------------------------------------
-# The one-line claim of this wave: a renewal on a node adds to the remainder.
-# --------------------------------------------------------------------------------------
-
-
 def test_a_renewal_on_a_node_adds_to_the_remainder_instead_of_resetting_it(node_app, orchestrator_app):
     from panel_core.services.provisioning import apply_tariff_for_user
     from panel_core.models import Tariff
@@ -299,11 +294,6 @@ def test_a_node_that_answers_without_an_expiry_is_refused_loudly(orchestrator_ap
         "a node left behind on an older release answers a period-based request without an expiry; "
         "treating that reply as success is how §10.5's silent NULL gets written"
     )
-
-
-# --------------------------------------------------------------------------------------
-# The endpoint's own validation, exercised on the role that serves it.
-# --------------------------------------------------------------------------------------
 
 
 def _post_provision(node_app, payload):

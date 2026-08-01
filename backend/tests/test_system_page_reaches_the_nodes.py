@@ -32,7 +32,6 @@ from tests.frontend_import_graph import PACKAGE_ROOTS
 SYSTEM_PAGE = PACKAGE_ROOTS["ui-core"] / "pages" / "System.tsx"
 DASHBOARD = PACKAGE_ROOTS["ui-core"] / "pages" / "Dashboard.tsx"
 
-# Every endpoint this wave taught to take a node, and the exact scoped call it must be reached by.
 SCOPED_CALLS = (
     "api.get(`/system/settings${xrayScope}`)",
     "api.put(`/system/settings${xrayScope}`",

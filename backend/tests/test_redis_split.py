@@ -84,9 +84,6 @@ def test_only_the_limiter_and_the_startup_check_read_the_rate_limit_uri():
             if path.name in allowed:
                 continue
             text = path.read_text()
-            # `local_redis_uri()` is the same read wearing a different name — wave 5d moved the
-            # limiter's storage from import time to app-build time and introduced that helper, so a
-            # scan for the literal alone would stop seeing new readers.
             if "RATELIMIT_STORAGE_URI" in text or "local_redis_uri" in text:
                 offenders.append(str(path.relative_to(root)))
     assert offenders == [], (

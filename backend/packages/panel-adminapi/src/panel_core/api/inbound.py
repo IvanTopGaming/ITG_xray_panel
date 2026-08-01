@@ -165,9 +165,6 @@ def get_inbounds():
 
     inbounds = Inbound.query.all()
 
-    # The ledger lives in the shared Postgres and is written by the sub role alone (wave 3b), so on
-    # a node this table has no writer and every count would be a confident 0. `None` means "not
-    # known here"; the master fills the real number in when it overlays a node's snapshot.
     counts = None if is_worker() else device_counts_by_user()
 
     _tok_map = dict(

@@ -1196,11 +1196,6 @@ def _user_page_nodes(telegram_id):
             snapshot = get_panel_snapshot(panel.id)
             if not snapshot:
                 continue
-            # The same source the master's Panels page reads. This used to consult
-            # `LinkedPanel.status` in Postgres, which the cron host writes only when the status
-            # *changes* -- so with the poller dead the admin saw an amber "Stale" card while this
-            # page went on telling the user the node was online, forever. One fact, two stores,
-            # different staleness, diverging in the direction that lies to the user.
             live_status, _ = get_panel_liveness(panel.id)
             status = (live_status or panel.status or "").lower()
             panel_online = status != "offline"

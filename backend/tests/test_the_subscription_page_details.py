@@ -52,7 +52,6 @@ def test_the_import_buttons_stay_reachable_by_keyboard():
 
     source = _read("src/components/AppButtons.tsx")
     assert "aria-disabled={isDesktop}" in source, "the desktop state is expressed with `disabled` again"
-    # `aria-disabled={isDesktop}` contains `disabled={isDesktop}`, so the plain form needs a boundary.
     assert re.search(r"(?<![\w-])disabled=\{isDesktop\}", source) is None, (
         "the native `disabled` attribute is back, which takes the buttons out of the tab order again"
     )

@@ -119,9 +119,6 @@ def system_version():
     from panel_core.panel_role import is_worker
     from panel_core.services.role_status import get_role_versions
 
-    # A node's data-tier credential is publish-only, so every read here would answer `{}` — and an
-    # empty map reads as "the neighbours are silent" rather than "this host cannot see them". The
-    # fleet view belongs to the panel that can actually see the fleet.
     roles = {} if is_worker() else get_role_versions()
     bot = get_bot_status()
     latest = get_latest()

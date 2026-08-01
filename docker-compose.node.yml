@@ -154,12 +154,6 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      # This node serves its own admin panel and its own decoy SNI, nothing else.
-      # PANEL_DOMAIN here is THIS NODE's domain, never the master's — the backend also
-      # uses it as the node's identity in bot events (services/notifications.py).
-      # caddy/routes.yaml drops every route whose ${VAR} interpolates empty, so these
-      # three variables are exactly what keeps the sub and bot routes off this box.
-      # Never add env_file here: it re-injects the whole .env regardless of this block.
       - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
       - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
       - PROXY_DOMAIN=${PROXY_DOMAIN:?PROXY_DOMAIN is required}

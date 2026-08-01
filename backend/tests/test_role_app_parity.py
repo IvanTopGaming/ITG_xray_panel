@@ -4,9 +4,6 @@ import pytest
 
 from tests.schema import ensure_schema
 
-# §8.1 (wave 3b): `subscription` belongs to the sub role and to no other. A master or a node
-# registering it exposed an unauthenticated endpoint on an admin host and made every edit to the
-# subscription code a three-image release.
 WORKER_BLUEPRINTS = {
     "auth",
     "inbound",
@@ -17,10 +14,6 @@ WORKER_BLUEPRINTS = {
     "federation",
     "backup",
 }
-# §8.2: the five `federation` endpoints are child-side; the master is never a child.
-# §7.10 (wave 4c-1): `backup` is node-side for the same kind of reason — both routes copy a SQLite
-# file, and the master keeps its data in Postgres, where the old pair answered a misleading 404 and
-# a `{"status": "restored"}` that had restored nothing.
 MASTER_BLUEPRINTS = (WORKER_BLUEPRINTS - {"federation", "backup"}) | {"bot_admin", "panels"}
 SUB_BLUEPRINTS = {"subscription"}
 BOT_BLUEPRINTS = {"bot_service", "billing"}
@@ -44,8 +37,6 @@ PAYMENT_JOBS = {
 }
 WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS | EVENT_BUS_JOBS
 BOT_JOBS = PAYMENT_JOBS
-# §8.4 (wave 2): every background job moved off the master onto the cron service, so the
-# master is now a pure request-serving API with no scheduler at all.
 MASTER_JOBS = set()
 CRON_JOBS = {
     ("poll_linked_panels", 10),
@@ -54,7 +45,6 @@ CRON_JOBS = {
     ("cleanup_bot_events", 86400),
     ("check_latest_version", 21600),
 }
-# The cron service registers no blueprint: /healthz and /readyz come from build_base_app.
 CRON_BLUEPRINTS = set()
 
 CASES = [

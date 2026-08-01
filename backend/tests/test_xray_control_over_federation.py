@@ -67,7 +67,6 @@ BOT_TOKEN = "bot-token-must-not-open-the-node-xray-surface"
 
 NODE_CONFIG_PATH = "/etc/xray/config.json"
 
-# (verb, path, proxy function, request body). All six, never a sample -- see the docstring.
 ROUTES = (
     ("get", "/api/system/settings", "proxy_get_system_settings", None),
     ("put", "/api/system/settings", "proxy_update_system_settings", {"xrayLogLevel": "debug"}),
@@ -154,7 +153,6 @@ def node_app(monkeypatch, tmp_path):
         )
         db.session.commit()
 
-    # The node's own Xray is a container and a file; neither exists in a test process.
     config = tmp_path / "xray-config.json"
     config.write_text(json.dumps({"inbounds": [{"tag": "vless-reality"}], "log": {"loglevel": "info"}}))
     real_exists, real_open = os.path.exists, open

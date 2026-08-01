@@ -168,9 +168,6 @@ def headers(master):
     return {"Authorization": f"Bearer {jwt_lib.encode(payload, SECRET_KEY, algorithm='HS256')}"}
 
 
-# ---------------------------------------------------------------- neighbours' versions
-
-
 def test_a_role_stamps_its_version_where_another_container_can_read_it(shared):
     assert role_status.record_role_version("sub", "2.4.13") is True
     assert role_status.get_role_versions()["sub"]["version"] == "2.4.13"
@@ -315,9 +312,6 @@ def test_serving_a_request_stamps_this_role(master, headers, shared):
     assert role_status.status_key("master") in shared.values, (
         "nothing stamps this role's version, so a master is invisible to any panel but its own."
     )
-
-
-# ---------------------------------------------------------------- the four local readings
 
 
 def test_health_answers_with_every_reading(master, headers, shared):

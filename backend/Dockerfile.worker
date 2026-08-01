@@ -1,5 +1,4 @@
 ARG XRAY_IMAGE=ghcr.io/xtls/xray-core:latest
-# hadolint ignore=DL3006
 FROM ${XRAY_IMAGE} AS xraybin
 
 FROM python:3.12-slim AS builder

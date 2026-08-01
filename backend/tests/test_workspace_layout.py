@@ -226,7 +226,6 @@ MASTER_MODULES = (
     "roles/master.py",
 )
 
-# Wave 2: the background jobs left the master for a service that runs on its own host.
 CRON_MODULES = (
     "jobs/billing.py",
     "jobs/panels.py",
@@ -277,11 +276,6 @@ ADMINAPI_MODULES = (
     "api/system.py",
 )
 
-# Node-only surface: registered by `roles/worker.py` and by nothing else. It used to ship from
-# panel-adminapi, which the master installs whole -- so 454 lines of "let this box be linked as a
-# node" and "hand over this box's database" rode in the master image with nothing but the absence of
-# two `register_blueprint` lines keeping them off. Adding either line back was verified to answer
-# 200: a fresh link-token, and the database. Packaging says no now, so the factory does not have to.
 WORKER_ONLY_MODULES = (
     "api/federation.py",
     "api/backup.py",
