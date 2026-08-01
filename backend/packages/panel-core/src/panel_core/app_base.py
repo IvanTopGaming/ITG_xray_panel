@@ -157,15 +157,13 @@ def _resolve_admin_bootstrap_credentials(panel_host):
 def run_startup_migration(app, db_path, *, seed_bot_texts=True, drop_dead_tables=False):
     if is_postgres(app.config["SQLALCHEMY_DATABASE_URI"]):
         return migrate_postgres_db(logger=app.logger, drop_dead_tables=drop_dead_tables)
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
     db.create_all()
     return migrate_sqlite_db(db_path, logger=app.logger, seed_bot_texts=seed_bot_texts)
 
 
 def db_path():
-    db_folder = os.path.join(os.getcwd(), "db")
-    os.makedirs(db_folder, exist_ok=True)
-
-    return os.path.join(db_folder, "panel.db")
+    return os.path.join(os.getcwd(), "db", "panel.db")
 
 
 def build_base_app(role, *, public_surface=True):

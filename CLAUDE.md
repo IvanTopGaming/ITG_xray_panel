@@ -107,12 +107,12 @@ uvx ruff format --check tg_bot/
 cd caddy/caddygen && go test -count=1 ./...   # tests for the routes.yaml → Caddy-JSON generator; -count=1 bypasses the test cache, which does not track the docker-compose.bot.yml / routes.yaml files these tests read from outside the Go module
 ```
 
-### Certificates & demo data
+### Certificates
 ```bash
 bash scripts/generate_certs.sh        # issue/renew the LE SAN cert (stops caddy, certbot --standalone, installs into ./certs, restarts caddy)
 bash scripts/generate_local_cert.sh   # self-signed cert for local domains
 ```
-`scripts/seed_demo.py` + `scripts/seed_bot_demo.py` populate realistic demo inbounds/users/tariffs/payments/traffic (run them where the app is importable — e.g. copied into the backend container; idempotent, tagged `[demo]`). Handy for screenshots and manual testing.
+**There is no demo-data seeder any more.** `scripts/seed_demo.py` and `scripts/seed_bot_demo.py` were deleted in wave 10: both began with `from app import create_app`, and the package `app` stopped existing in phase 3c when the backend became the namespace package `panel_core` — so they had raised `ModuleNotFoundError` on their first import line for months while this file described them as a working tool. Writing a replacement is not a repair: after the split, demo data has to be seeded into **two** databases (the master's Postgres and a node's own SQLite), which is a different script.
 
 ## Architecture
 
