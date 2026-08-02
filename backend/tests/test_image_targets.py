@@ -204,6 +204,35 @@ def test_every_image_var_in_env_examples_is_either_version_pinned_or_explicitly_
     )
 
 
+@pytest.mark.parametrize("env_var", sorted(THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY))
+def test_every_third_party_image_pin_names_a_tag_a_registry_could_serve(env_var):
+    declaring = [example for example in ENV_EXAMPLES if re.search(rf"^{env_var}=", _read(example), re.M)]
+    assert declaring, (
+        f"no .env.<host>.example declares {env_var}, so this guard would pass vacuously. Either the "
+        f"variable is gone (drop it from THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY) or its pin "
+        f"was lost.\n\n{DRIFT_DOC}"
+    )
+    for example in declaring:
+        value = re.search(rf"^{env_var}=(\S+)$", _read(example), re.M)
+        assert value, f"{example}'s {env_var} has an empty value\n\n{DRIFT_DOC}"
+        reference = value.group(1)
+        _, separator, tag = reference.rpartition(":")
+        assert separator and "/" not in tag, (
+            f"{example} pins {env_var}={reference} with no tag, so the deploy silently tracks whatever "
+            f":latest happens to be that day. Every image on every host is pinned; this one is not.\n\n"
+            f"{DRIFT_DOC}"
+        )
+        assert not re.fullmatch(r"v?[XYZ](\.[XYZ])*", tag) and not re.search(r"[<>]|CHANGE|TODO", tag), (
+            f"{example} pins {env_var}={reference}, which is a placeholder rather than a tag any registry "
+            f"can serve — `docker compose up` on that host fails on the pull and the role never starts. "
+            f"This is not hypothetical: SOCKET_PROXY_IMAGE carried a literal `vX.Y.Z` from the per-host "
+            f"split until the 3.0.0 release, so a node installed by scripts/install.sh could not come up "
+            f"at all. It survived because the guard above accounts for third-party vars by NAME and then "
+            f"never looks at their VALUE — version-pinned vars are checked against versions.json, and "
+            f"these had nothing to be checked against.\n\n{DRIFT_DOC}"
+        )
+
+
 def test_every_versions_json_key_is_either_env_pinned_or_explicitly_a_non_image_ref():
     versions = json.loads(_read("versions.json"))
     accounted_for = set(VERSION_PINNED_ENV_VARS) | set(VERSIONS_JSON_KEYS_WITHOUT_AN_ENV_PIN)
