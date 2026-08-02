@@ -486,6 +486,93 @@ func TestGenerate_OnlyTerminatedRoutesGetACertificate(t *testing.T) {
 	}
 }
 
+func automateNames(t *testing.T, root map[string]any) []string {
+	t.Helper()
+	tlsApp, ok := root["apps"].(map[string]any)["tls"].(map[string]any)
+	if !ok {
+		t.Fatalf("no tls app in the generated config")
+	}
+	certs, ok := tlsApp["certificates"].(map[string]any)
+	if !ok {
+		t.Fatalf("tls app has no certificates block, so Caddy manages nothing and every "+
+			"handshake fails with \"no certificate available\" while the log says nothing "+
+			"about ACME at all; automation.policies alone decides HOW a name is served, not "+
+			"WHICH names are obtained. layer4 terminates TLS here and never feeds "+
+			"automatic-HTTPS. tls app=%v", tlsApp)
+	}
+	raw, ok := certs["automate"].([]any)
+	if !ok {
+		t.Fatalf("certificates block carries no automate list: %v", certs)
+	}
+	out := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		out = append(out, entry.(string))
+	}
+	return out
+}
+
+func TestGenerate_EveryTerminatedRouteIsActuallyObtained(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PROXY_DOMAIN": "www.google.com",
+		"PANEL_DOMAIN": "panel.example.com",
+		"SUB_DOMAIN":   "sub.example.com",
+	}))
+	b, err := Generate(cfg)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	root := jsonValid(t, b)
+	automate := automateNames(t, root)
+
+	for _, want := range []string{"panel.example.com", "sub.example.com"} {
+		found := false
+		for _, got := range automate {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q terminates TLS but is not in certificates.automate, so nothing ever "+
+				"requests it; automate=%v", want, automate)
+		}
+	}
+	for _, got := range automate {
+		if got == "www.google.com" {
+			t.Fatalf("the decoy is a raw passthrough and must never be requested; "+
+				"a failed validation counts against the ACME account. automate=%v", automate)
+		}
+	}
+
+	subjects := policySubjects(tlsAutomationPolicies(t, root))
+	for _, name := range automate {
+		found := false
+		for _, subject := range subjects {
+			if subject == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q is obtained but no automation policy covers it, so it falls to the "+
+				"default issuer instead of the one chosen for it; subjects=%v", name, subjects)
+		}
+	}
+}
+
+func TestGenerate_LocalHostnamesAreObtainedToo(t *testing.T) {
+	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
+		"PANEL_DOMAIN": "panel.local",
+	}))
+	b, err := Generate(cfg)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	automate := automateNames(t, jsonValid(t, b))
+	if len(automate) != 1 || automate[0] != "panel.local" {
+		t.Fatalf("a local hostname takes the internal issuer, but it still has to be obtained; "+
+			"automate=%v", automate)
+	}
+}
+
 func TestGenerate_NoCertificateFilesAreLoaded(t *testing.T) {
 	cfg, _ := LoadConfig([]byte(routesYAML), envMap(map[string]string{
 		"PROXY_DOMAIN": "www.google.com",

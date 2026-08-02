@@ -62,6 +62,20 @@ func tlsAutomation(cfg *Config) map[string]any {
 	return map[string]any{"policies": policies}
 }
 
+func tlsApp(cfg *Config) map[string]any {
+	app := map[string]any{"automation": tlsAutomation(cfg)}
+	var automate []any
+	for _, r := range cfg.SNIRoutes {
+		if r.TLS {
+			automate = append(automate, r.Match)
+		}
+	}
+	if len(automate) > 0 {
+		app["certificates"] = map[string]any{"automate": automate}
+	}
+	return app
+}
+
 func securityHeaders() map[string]any {
 	return map[string]any{
 		"handler": "headers",
@@ -223,9 +237,7 @@ func Generate(cfg *Config) ([]byte, error) {
 
 	root := map[string]any{
 		"apps": map[string]any{
-			"tls": map[string]any{
-				"automation": tlsAutomation(cfg),
-			},
+			"tls": tlsApp(cfg),
 			"http": map[string]any{
 				"servers": httpServers,
 			},

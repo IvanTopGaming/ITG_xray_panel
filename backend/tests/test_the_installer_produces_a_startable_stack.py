@@ -360,3 +360,52 @@ def test_reconfigure_keeps_the_secrets_and_takes_new_domains(tmp_path):
     assert after["SUB_DOMAIN"] == "moved.example.com", "reconfigure did not take the new domain"
     assert after["SECRET_KEY"] == before["SECRET_KEY"], "reconfigure rotated SECRET_KEY"
     assert after["DATABASE_URL"] == before["DATABASE_URL"], "reconfigure rewrote the data-tier URI"
+
+
+def _file_shaped_bind_mounts(compose):
+    import yaml
+
+    document = yaml.safe_load((REPO / compose).read_text()) or {}
+    out = set()
+    for definition in (document.get("services") or {}).values():
+        if not isinstance(definition, dict):
+            continue
+        for volume in definition.get("volumes") or []:
+            if not isinstance(volume, str) or not volume.startswith("./"):
+                continue
+            source = volume.split(":", 1)[0]
+            if "." in source.rsplit("/", 1)[-1]:
+                out.add(source[2:])
+    return sorted(out)
+
+
+@pytest.mark.parametrize("role", sorted(COMPOSE_BY_ROLE))
+def test_the_installer_delivers_every_file_the_compose_bind_mounts(role, tmp_path):
+    target = tmp_path / role
+    target.mkdir()
+
+    bundle = None
+    if role != "data":
+        data_dir = tmp_path / f"data-{role}"
+        data_dir.mkdir()
+        bundle = _bundle_from(_run("data", data_dir).stdout)
+
+    _run(role, target, bundle=bundle)
+
+    expected = _file_shaped_bind_mounts(COMPOSE_BY_ROLE[role])
+    assert expected, (
+        f"{COMPOSE_BY_ROLE[role]} bind-mounts no file-shaped path at all, so this guard would pass "
+        f"vacuously for role {role} -- the parser stopped matching the compose file's shape."
+    )
+    for relative in expected:
+        path = target / relative
+        assert path.is_file(), (
+            f"role {role}: {COMPOSE_BY_ROLE[role]} bind-mounts ./{relative}, but the installer did "
+            f"not put a file there. Docker does not fail on a missing bind-mount source -- it "
+            f"silently creates a DIRECTORY, and whatever consumes the path fails in a way the "
+            f"container survives. That is exactly how scripts/pg_backup.sh shipped: the pg-backup "
+            f"entrypoint swallowed 'Is a directory' with `|| true`, the container sat `running` "
+            f"forever, `install.sh doctor` reported it healthy, and the shared Postgres -- every "
+            f"bot token, YooKassa key and federation token in the deployment -- had no backup at "
+            f"all. Fetch or write the file in install.sh."
+        )
