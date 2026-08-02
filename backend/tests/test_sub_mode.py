@@ -32,8 +32,20 @@ def test_sub_mode_mounts_only_subscription(monkeypatch):
     m_mig.assert_not_called()
 
 
-def test_master_mode_unchanged(monkeypatch):
+def test_master_mode_unchanged(monkeypatch, tmp_path):
+    """The master refuses to boot on a schema that does not exist, so give it one of its own.
+
+    This used to rely on backend/db/panel.db being left behind by an earlier run: green on a
+    developer's machine, and on a clean checkout it fails with "the database schema is not
+    initialized". CI found it the first time this branch was ever pushed.
+    """
+
+    from tests.schema import ensure_schema
+
     _env(monkeypatch, "master")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/master.db"))
+    monkeypatch.chdir(tmp_path)
+
     from panel_core.dispatch import create_app
     from panel_core.extensions import scheduler
 
