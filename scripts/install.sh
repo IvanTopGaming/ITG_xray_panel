@@ -3,6 +3,7 @@
 set -euo pipefail
 
 REPO_SLUG="IvanTopGaming/ITG_xray_panel"
+MON_REPO_SLUG="IvanTopGaming/ITG_xray_panel_monitoring"
 ROLES="data cron master node sub bot"
 
 ROLE=""
@@ -10,6 +11,9 @@ DIR=""
 SOURCE=""
 REF="main"
 BUNDLE_IN="${BUNDLE:-}"
+MON_BUNDLE_IN="${MON_BUNDLE:-}"
+MON_SOURCE=""
+MONITORING=1
 INTERACTIVE=1
 START=1
 
@@ -115,6 +119,10 @@ usage() {
     --role ROLE        data | cron | master | node | sub | bot
     --dir PATH         where the deployment lives (default: ./itg-panel)
     --bundle STRING    the string the data tier printed (not needed for --role data)
+    --mon-bundle STR   the string the monitoring central printed — brings up an
+                       agent next to this role once the stack is up
+    --mon-source PATH  install the agent from a local monitoring checkout
+    --no-monitoring    never ask about monitoring, never install the agent
     --source PATH      install from a local checkout instead of fetching from GitHub
     --ref REF          git ref to fetch from (default: main)
     --non-interactive  ask nothing; take answers from the environment
@@ -135,6 +143,9 @@ while [ $# -gt 0 ]; do
         --role) ROLE="${2:-}"; shift 2 ;;
         --dir) DIR="${2:-}"; shift 2 ;;
         --bundle) BUNDLE_IN="${2:-}"; shift 2 ;;
+        --mon-bundle) MON_BUNDLE_IN="${2:-}"; shift 2 ;;
+        --mon-source) MON_SOURCE="${2:-}"; shift 2 ;;
+        --no-monitoring) MONITORING=0; shift ;;
         --source) SOURCE="${2:-}"; shift 2 ;;
         --ref) REF="${2:-}"; shift 2 ;;
         --non-interactive) INTERACTIVE=0; shift ;;
@@ -165,6 +176,10 @@ env_set() {
         fi
     done < "$file"
     mv "$tmp" "$file"
+}
+
+mon_dir_for() {
+    printf '%s/itg-monitoring' "$(dirname "$1")"
 }
 
 load_deployment() {
@@ -406,7 +421,33 @@ cmd_doctor() {
     else
         note "  run: install.sh update"
     fi
+
+    rule "Monitoring"
+    check_monitoring
     printf '\n'
+}
+
+check_monitoring() {
+    local mon_dir out
+    mon_dir="$(mon_dir_for "$DIR")"
+    if [ ! -f "$mon_dir/agent/.env" ]; then
+        note "  no agent installed next to this deployment"
+        return 0
+    fi
+    ok "agent     ${C_DIM}${mon_dir}${C_RESET}"
+    has_docker || { note "  docker is not available, skipping"; return 0; }
+    out="$( ( cd "$mon_dir/agent" && docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null ) || true)"
+    if [ -z "$out" ]; then
+        warn "the agent is installed but nothing of it runs"
+        return 0
+    fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$line" in
+            *running*) ok "$line" ;;
+            *) warn "$line" ;;
+        esac
+    done <<< "$out"
 }
 
 cmd_update() {
@@ -883,6 +924,42 @@ else
     esac
 fi
 
+maybe_install_monitoring() {
+    [ "$MONITORING" -eq 1 ] || return 0
+
+    if [ -z "$MON_BUNDLE_IN" ]; then
+        [ "$INTERACTIVE" -eq 1 ] || return 0
+        rule "Monitoring"
+        note "An agent can sit next to this role and ship its metrics to a central"
+        note "server: host load, containers, the backend's own /healthz — and on a"
+        note "node, per-inbound Xray traffic. It publishes no port of its own."
+        note "You need the bundle line the monitoring installer printed on central."
+        printf '\n'
+        ask MON_WANT "install the monitoring agent here? (y/N)" "N"
+        case "$MON_WANT" in
+            y|Y|yes|Yes) ;;
+            *) return 0 ;;
+        esac
+        ask MON_BUNDLE_IN "monitoring bundle"
+    fi
+
+    local mon_dir
+    mon_dir="$(mon_dir_for "$DIR")"
+
+    rule "Monitoring agent"
+    if [ -n "$MON_SOURCE" ]; then
+        bash "$MON_SOURCE/install.sh" --role agent --panel-role "$ROLE" \
+            --panel-dir "$DIR" --dir "$mon_dir" --bundle "$MON_BUNDLE_IN" \
+            --source "$MON_SOURCE" --non-interactive ||
+            warn "the monitoring agent did not come up — the panel itself is unaffected"
+    else
+        bash <(curl -fsSL "https://raw.githubusercontent.com/$MON_REPO_SLUG/main/install.sh") \
+            --role agent --panel-role "$ROLE" --panel-dir "$DIR" --dir "$mon_dir" \
+            --bundle "$MON_BUNDLE_IN" --non-interactive ||
+            warn "the monitoring agent did not come up — the panel itself is unaffected"
+    fi
+}
+
 next_steps() {
     case "$ROLE" in
         data) note "Next: run this installer on the cron host and paste the bundle above." ;;
@@ -901,6 +978,7 @@ if [ "$START" -eq 1 ]; then
     note "  logs:   cd $DIR && docker compose -f $COMPOSE_FILE logs -f"
     note "  check:  install.sh doctor --dir $DIR"
     printf '\n'
+    maybe_install_monitoring
     next_steps
     printf '\n'
 else
