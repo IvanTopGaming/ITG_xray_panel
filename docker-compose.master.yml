@@ -19,7 +19,6 @@ services:
     restart: always
     volumes:
       - ./ca.crt:/etc/ssl/panel-ca.crt:ro
-      - ./db_data:/app/db
     environment:
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
       - GRPC_DNS_RESOLVER=native

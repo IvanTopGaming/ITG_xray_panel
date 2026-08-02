@@ -6,7 +6,7 @@
   "cron": "3.0.0",
   "frontend_admin": "3.0.0",
   "frontend_node": "3.0.0",
-  "caddy": "3.0.0",
+  "caddy": "3.0.1",
   "bot": "3.0.0",
   "xray_egress": "3.0.0",
   "xray_core_ref": "v26.3.27"
