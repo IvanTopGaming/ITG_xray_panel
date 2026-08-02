@@ -83,6 +83,30 @@ def _reset_xray_gateway():
 
 
 @pytest.fixture(autouse=True)
+def _xray_paths_stay_out_of_etc(tmp_path_factory):
+    """Keep the worker's config and lock inside the test's own directory.
+
+    Building the worker role runs bootstrap_defaults, which calls generate_config_file, which takes
+    a FileLock on /etc/xray/config.lock -- and filelock creates the parent directory. Under root that
+    silently succeeds and the suite writes into the host's /etc; under any other user it raises
+    PermissionError, and every test that builds a node fails at setup. That is 35 failures and 132
+    errors in CI against a suite that is green locally, purely because the local run happens to be
+    root. Redirecting the two paths fixes both halves at once.
+    """
+
+    from panel_core.xray import engine
+
+    base = tmp_path_factory.mktemp("xray-etc")
+    saved = {name: getattr(engine, name) for name in ("CONFIG_PATH", "LOCK_PATH", "CANDIDATE_PATH")}
+    engine.CONFIG_PATH = str(base / "config.json")
+    engine.LOCK_PATH = str(base / "config.lock")
+    engine.CANDIDATE_PATH = str(base / "config.candidate.json")
+    yield
+    for name, value in saved.items():
+        setattr(engine, name, value)
+
+
+@pytest.fixture(autouse=True)
 def _reset_redis_clients():
 
     from panel_core.extensions import reset_redis_clients
