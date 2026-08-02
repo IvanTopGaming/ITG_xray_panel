@@ -3,7 +3,7 @@ import time
 import jwt as jwt_lib
 import pytest
 
-from app.models import (
+from panel_core.models import (
     Admin,
     Client,
     FederationConfig,
@@ -14,7 +14,7 @@ from app.models import (
 
 @pytest.fixture
 def app_with_federation(app):
-    from app.api import federation
+    from panel_core.api import federation
 
     if not any(bp.name == "federation" for bp in app.blueprints.values()):
         app.register_blueprint(federation.bp, url_prefix="/api")
@@ -26,7 +26,7 @@ def admin_headers(app_with_federation, db):
     admin = Admin(username="admin", password="x", password_changed_at=0)
     db.session.add(admin)
     db.session.commit()
-    from app.utils import SECRET_KEY
+    from panel_core.utils import SECRET_KEY
 
     token = jwt_lib.encode(
         {
@@ -83,15 +83,24 @@ class TestLinkToken:
         assert decoded.endswith("|" + cfg.link_token)
         assert cfg.link_token_used is False
 
-    def test_returns_409_when_already_linked(self, client, admin_headers, db):
+    def test_issuing_on_a_linked_panel_is_allowed_and_revokes_the_old_token(self, client, admin_headers, db):
         cfg = db.session.get(FederationConfig, 1)
         cfg.federation_token = "existing-token"
         cfg.linked_at = int(time.time() * 1000)
         db.session.commit()
 
         resp = client.post("/api/federation/link-token", headers=admin_headers)
-        assert resp.status_code == 409
-        assert "already linked" in resp.get_json()["error"]
+        assert resp.status_code == 200
+        assert resp.get_json()["revoked"] is True
+
+        cfg = db.session.get(FederationConfig, 1)
+        assert cfg.federation_token is None
+        assert cfg.linked_at is None
+
+    def test_issuing_on_an_unlinked_panel_reports_nothing_was_revoked(self, client, admin_headers, db):
+        resp = client.post("/api/federation/link-token", headers=admin_headers)
+        assert resp.status_code == 200
+        assert resp.get_json()["revoked"] is False
 
     def test_allows_regenerate_when_not_fully_linked(self, client, admin_headers, db):
 
@@ -126,9 +135,16 @@ class TestHandshake:
         body = resp.get_json()
         assert "federation_token" in body
         assert len(body["federation_token"]) > 20
-        assert body["name"] == "Panel"
-        assert body["panel_version"] == 15
+        assert "name" not in body, (
+            "a node does not name itself on the wire: the master discards the reply's name and shows "
+            "LinkedPanel.name, typed by the admin who added the panel"
+        )
         assert isinstance(body["inbound_count"], int)
+        assert "panel_version" not in body, (
+            "the handshake must not advertise a contract version: compatibility between hosts is guaranteed "
+            "by deploying the whole fleet in one wave, not by negotiation, and a version nobody reads is "
+            "worse than none at all"
+        )
 
         cfg = db.session.get(FederationConfig, 1)
         assert cfg.federation_token == body["federation_token"]
@@ -137,7 +153,7 @@ class TestHandshake:
         assert cfg.link_token_used is True
         assert cfg.linked_at is not None
 
-    def test_handshake_with_custom_panel_name(self, client, admin_headers, db):
+    def test_handshake_does_not_report_a_name_of_its_own(self, client, admin_headers, db):
         db.session.add(SystemSetting(key="panel_name", value="DE-1"))
         db.session.commit()
 
@@ -153,7 +169,7 @@ class TestHandshake:
             },
         )
         assert resp.status_code == 200
-        assert resp.get_json()["name"] == "DE-1"
+        assert "name" not in resp.get_json()
 
     def test_handshake_wrong_token(self, client, admin_headers, db):
         client.post("/api/federation/link-token", headers=admin_headers)
@@ -217,7 +233,7 @@ class TestSnapshot:
         assert body["status"] == "ok"
         assert body["inbounds"] == []
         assert "timestamp" in body
-        assert "panel_name" in body
+        assert "panel_name" not in body
 
     def test_snapshot_with_inbounds_and_clients(self, client, federation_headers, db):
         ib = Inbound(
@@ -260,7 +276,11 @@ class TestSnapshot:
         assert ib_data["label"] == "Main VLESS"
         assert ib_data["stream_settings"] == {"network": "tcp"}
         assert ib_data["fallback_address"] == "127.0.0.1:8080"
-        assert ib_data["device_limit"] == 3
+        assert "device_limit" not in ib_data, (
+            "the snapshot still carries device_limit. Nothing has enforced a per-inbound device "
+            "limit since wave 3b -- the gate counts one global budget per Telegram account -- so "
+            "sending it invites a master to render a cap that does not exist (wave 4d)"
+        )
 
         assert len(ib_data["clients"]) == 1
         cl = ib_data["clients"][0]
@@ -274,7 +294,11 @@ class TestSnapshot:
         assert cl["reset_day"] == 15
         assert cl["flow"] == "xtls-rprx-vision"
         assert cl["telegram_id"] == 42
-        assert cl["device_count"] == 0
+        assert "device_count" not in cl, (
+            "a node cannot count devices any more: since wave 3b the ledger is keyed by telegram_id "
+            "and lives in the shared Postgres, which a node never reaches. The master fills the count "
+            "from its own database when it overlays the snapshot."
+        )
 
     def test_snapshot_stream_settings_as_dict(self, client, federation_headers, db):
 

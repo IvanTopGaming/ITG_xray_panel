@@ -68,7 +68,7 @@ def sub_actions_kb(
         buttons.append([InlineKeyboardButton(text=renew_label, callback_data=f"buy:{renew_tariff_id}")])
     buttons.extend(
         [
-            [InlineKeyboardButton(text=qr_label, callback_data="qr_select_server")],
+            [InlineKeyboardButton(text=qr_label, callback_data="show_qr")],
             [InlineKeyboardButton(text=stats_label, callback_data="user_stats")],
             [InlineKeyboardButton(text=back_label, callback_data=back_callback)],
         ]
@@ -76,21 +76,8 @@ def sub_actions_kb(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def user_qr_server_kb(
-    panels,
-    *,
-    server_template: str,
-    back_label: str,
-) -> InlineKeyboardMarkup:
-    buttons = []
-    for idx, p in enumerate(panels):
-        buttons.append([InlineKeyboardButton(text=server_template.format(name=p.name), callback_data=f"qr_gen_{idx}")])
-    buttons.append([InlineKeyboardButton(text=back_label, callback_data="back_to_keys")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def qr_back_kb(*, back_label: str) -> InlineKeyboardMarkup:
-    buttons = [[InlineKeyboardButton(text=back_label, callback_data="back_to_keys")]]
+def qr_back_kb(*, back_label: str, back_callback: str = "back_to_keys") -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(text=back_label, callback_data=back_callback)]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -101,11 +88,18 @@ def user_sub_page_kb(
     help_label: str,
     back_label: str,
     sub_url: str | None = None,
+    qr_label: str | None = None,
+    renew_label: str | None = None,
+    renew_tariff_id: int | None = None,
 ) -> InlineKeyboardMarkup:
 
     buttons = []
     if sub_url:
         buttons.append([InlineKeyboardButton(text=open_label, url=sub_url)])
+        if qr_label:
+            buttons.append([InlineKeyboardButton(text=qr_label, callback_data="sub_qr")])
+    if renew_label and renew_tariff_id:
+        buttons.append([InlineKeyboardButton(text=renew_label, callback_data=f"buy:{renew_tariff_id}")])
     buttons.append([InlineKeyboardButton(text=keys_label, callback_data="show_keys")])
     buttons.append([InlineKeyboardButton(text=help_label, callback_data="user_help")])
     buttons.append([InlineKeyboardButton(text=back_label, callback_data="user_home")])
@@ -129,72 +123,6 @@ def expired_keys_kb(*, show_again_label: str, back_label: str, client_id: str) -
     buttons = [
         [InlineKeyboardButton(text=show_again_label, callback_data=f"show_key_{client_id}")],
         [InlineKeyboardButton(text=back_label, callback_data="user_home")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def admin_main_kb():
-    buttons = [
-        [
-            InlineKeyboardButton(text="🖥 System Resources", callback_data="admin_system"),
-            InlineKeyboardButton(text="🔄 Restart Core", callback_data="admin_restart_menu"),
-        ],
-        [InlineKeyboardButton(text="📦 Backup & Restore", callback_data="admin_backups_menu")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def admin_backups_kb():
-    buttons = [
-        [InlineKeyboardButton(text="⬇️ Download PANEL DB", callback_data="backup_dl_panel_menu")],
-        [InlineKeyboardButton(text="⬆️ Restore Data", callback_data="admin_backup_restore")],
-        [InlineKeyboardButton(text="⬅️ Back to Dashboard", callback_data="admin_home")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def server_selection_kb(panels, action_prefix, include_all=False, linked_panels=None):
-    buttons = []
-    if include_all:
-        buttons.append([InlineKeyboardButton(text="🌐 All Servers", callback_data=f"{action_prefix}all")])
-
-    for idx, panel in enumerate(panels):
-        buttons.append([InlineKeyboardButton(text=f"💻 {panel.name}", callback_data=f"{action_prefix}{idx}")])
-
-    for lp in linked_panels or []:
-        if lp.get("enable", True):
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"🔗 {lp.get('name', 'Panel')}",
-                        callback_data=f"{action_prefix}lp_{lp['id']}",
-                    )
-                ]
-            )
-
-    buttons.append([InlineKeyboardButton(text="⬅️ Cancel", callback_data="admin_home")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def admin_restore_type_kb():
-    buttons = [
-        [InlineKeyboardButton(text="🎛 Restore PANEL DB", callback_data="restore_type_panel")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_cancel_restore")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def admin_back_kb():
-    buttons = [[InlineKeyboardButton(text="⬅️ Back to Dashboard", callback_data="admin_home")]]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def confirm_restart_kb(target):
-    buttons = [
-        [
-            InlineKeyboardButton(text="✅ Yes, Restart", callback_data=f"confirm_restart_{target}"),
-            InlineKeyboardButton(text="❌ Cancel", callback_data="admin_home"),
-        ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

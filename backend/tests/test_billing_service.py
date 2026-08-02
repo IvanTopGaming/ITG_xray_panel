@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 import pytest
 
-from app.extensions import db
-from app.models import Payment, SystemSetting, Tariff, TariffItem, UserTariffAccess
-from app.services import billing
+from panel_core.extensions import db
+from panel_core.models import Payment, SystemSetting, Tariff, TariffItem, UserTariffAccess
+from panel_core.services import billing
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def _mock_yk_payment(payment_id="yk-test-001", url="https://yookassa.test/pay/ab
 
 
 def test_create_checkout_inserts_pending_payment_and_returns_url(app, public_tariff):
-    with app.app_context(), patch("app.services.billing.yookassa.Payment.create") as mock_create:
+    with app.app_context(), patch("panel_core.services.billing.yookassa.Payment.create") as mock_create:
         mock_create.return_value = _mock_yk_payment()
         result = billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
 
@@ -72,7 +72,7 @@ def test_create_checkout_inserts_pending_payment_and_returns_url(app, public_tar
 
 def test_create_checkout_omits_receipt_for_self_employed(app, public_tariff):
 
-    with app.app_context(), patch("app.services.billing.yookassa.Payment.create") as mock_create:
+    with app.app_context(), patch("panel_core.services.billing.yookassa.Payment.create") as mock_create:
         mock_create.return_value = _mock_yk_payment()
         billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
 
@@ -82,7 +82,7 @@ def test_create_checkout_omits_receipt_for_self_employed(app, public_tariff):
 
 
 def test_create_checkout_includes_metadata(app, public_tariff):
-    with app.app_context(), patch("app.services.billing.yookassa.Payment.create") as mock_create:
+    with app.app_context(), patch("panel_core.services.billing.yookassa.Payment.create") as mock_create:
         mock_create.return_value = _mock_yk_payment()
         result = billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
 
@@ -144,7 +144,7 @@ def test_create_checkout_private_tariff_requires_grant(app, configured_yookassa)
             )
         )
         db.session.commit()
-    with app.app_context(), patch("app.services.billing.yookassa.Payment.create") as mock_create:
+    with app.app_context(), patch("panel_core.services.billing.yookassa.Payment.create") as mock_create:
         mock_create.return_value = _mock_yk_payment(payment_id="yk-vip-001")
         result = billing.create_checkout(telegram_id=42, tariff_id=tariff_id, lang="ru")
     assert result["yookassa_id"] == "yk-vip-001"
@@ -185,7 +185,7 @@ def test_create_checkout_commits_payment_before_yookassa_call(app, public_tariff
     with app.app_context():
         _event.listen(_SQLASession, "after_commit", _on_commit)
         try:
-            with patch("app.services.billing.yookassa.Payment.create", side_effect=_on_yk):
+            with patch("panel_core.services.billing.yookassa.Payment.create", side_effect=_on_yk):
                 billing.create_checkout(telegram_id=42, tariff_id=public_tariff, lang="ru")
         finally:
             _event.remove(_SQLASession, "after_commit", _on_commit)
@@ -198,7 +198,7 @@ def test_create_checkout_commits_payment_before_yookassa_call(app, public_tariff
     )
 
 
-from app.services import provisioning  # noqa: E402,F401
+from panel_core.services import provisioning  # noqa: E402,F401
 
 
 def _make_payment(app, telegram_id, tariff_id, status="pending"):
@@ -221,8 +221,8 @@ def test_apply_payment_marks_succeeded_and_calls_provisioning(app, public_tariff
     pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
     with (
         app.app_context(),
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
         mock_provision.return_value = {
             "clients": [{"email": "tg42@vless-de"}],
@@ -250,8 +250,8 @@ def test_apply_payment_is_idempotent(app, public_tariff):
     pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff, status="succeeded")
     with (
         app.app_context(),
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
         billing.apply_payment(db.session.get(Payment, pid))
     mock_provision.assert_not_called()
@@ -267,8 +267,8 @@ def test_apply_payment_marks_failed_when_tariff_archived_with_no_items(app, publ
         db.session.commit()
     with (
         app.app_context(),
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
         billing.apply_payment(db.session.get(Payment, pid))
 
@@ -288,8 +288,8 @@ def test_apply_payment_marks_failed_when_tariff_archived_between_checkout_and_we
         db.session.commit()
     with (
         app.app_context(),
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
         billing.apply_payment(db.session.get(Payment, pid))
 
@@ -314,8 +314,8 @@ def test_apply_payment_skips_when_row_no_longer_pending(app, public_tariff):
 
     with (
         app.app_context(),
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
         billing.apply_payment(db.session.get(Payment, pid))
 
@@ -332,8 +332,8 @@ def test_apply_payment_marks_failed_when_private_tariff_lost_grant(app, public_t
         db.session.commit()
     with (
         app.app_context(),
-        patch("app.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("app.services.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
         billing.apply_payment(db.session.get(Payment, pid))
 
@@ -341,3 +341,54 @@ def test_apply_payment_marks_failed_when_private_tariff_lost_grant(app, public_t
         assert db.session.get(Payment, pid).status == "failed"
     mock_provision.assert_not_called()
     assert mock_publish.call_args.args[0] == "payment_failed"
+
+
+def test_apply_payment_fails_loudly_when_the_role_cannot_provision(app, public_tariff):
+    """§7.6: a tariff this role can never materialise must end as `failed`, not linger pending.
+
+    `apply_tariff_for_user` already refuses the local branch on a role without a local Xray
+    (phase 3b). What was missing is the consequence: every exception was treated as transient,
+    so the row went back to `pending`, the 30 s poll retried it forever and `cleanup_old_payments`
+    hit the same error and `continue`d — the payment could never reach a terminal state and the
+    user was never told anything.
+    """
+    from panel_core.xray.gateway import LocalXrayUnavailable
+
+    pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
+    ):
+        mock_provision.side_effect = LocalXrayUnavailable("no local xray on this role")
+        billing.apply_payment(db.session.get(Payment, pid))
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "failed"
+
+    mock_publish.assert_called_once()
+    event_type, tg_id, payload = mock_publish.call_args.args
+    assert event_type == "payment_failed"
+    assert tg_id == 42
+    assert payload["reason"] == "provisioning_impossible"
+
+
+def test_apply_payment_returns_a_transient_failure_to_pending(app, public_tariff):
+    """Control for the test above: the discrimination must be real, not a blanket `failed`.
+
+    An unreachable node is retryable — the row has to go back to `pending` so the poll picks it
+    up, and the exception has to propagate so the caller knows nothing was granted.
+    """
+    pid = _make_payment(app, telegram_id=42, tariff_id=public_tariff)
+    with (
+        app.app_context(),
+        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
+        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
+        pytest.raises(RuntimeError),
+    ):
+        mock_provision.side_effect = RuntimeError("node unreachable")
+        billing.apply_payment(db.session.get(Payment, pid))
+
+    with app.app_context():
+        assert db.session.get(Payment, pid).status == "pending"
+    mock_publish.assert_not_called()

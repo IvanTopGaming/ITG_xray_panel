@@ -44,7 +44,7 @@ jobs:
         run: npm ci
 
       - name: TypeScript check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: ESLint
         run: npm run lint
@@ -60,8 +60,48 @@ jobs:
 
       - uses: hadolint/hadolint-action@v3.1.0
         with:
+          dockerfile: Dockerfile*
           recursive: true
           ignore: DL3008,DL3013,DL3015,DL3018,DL3003,SC2046,DL3022
+
+  shell-lint:
+    name: Shell (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/install.sh is what a deployer pipes into bash, as root, on a machine that then
+      # generates every secret and issues the data tier's CA. It had no static analysis at all.
+      # The file list comes from git rather than a fixed set, so a new script cannot be added
+      # without being covered.
+      - name: Shellcheck every tracked script
+        run: |
+          mapfile -t scripts < <(git ls-files '*.sh')
+          printf '  %s\n' "${scripts[@]}"
+          shellcheck --severity=warning "${scripts[@]}"
+
+  caddygen:
+    name: caddygen (go test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: caddy/caddygen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: caddy/caddygen/go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      # -count=1 is required, not tidiness: these tests read docker-compose.*.yml and
+      # caddy/routes.yaml from outside the Go module, and the build cache does not track those --
+      # a plain `go test` can print a stale `ok (cached)` for a config that no longer generates.
+      - name: Test
+        run: go test -count=1 ./...
 
   frontend-build:
     name: Frontend build
@@ -90,6 +130,20 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pw
+          POSTGRES_DB: paneltest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       SECRET_KEY: test
       PANEL_DOMAIN: localhost
@@ -98,6 +152,7 @@ jobs:
       PROXY_DOMAIN: localhost
       PANEL_SECRET_PATH: /test
       RATELIMIT_STORAGE_URI: memory://
+      DATABASE_URL_TEST: postgresql+psycopg2://postgres:pw@localhost:5432/paneltest
     steps:
       - uses: actions/checkout@v4
 
@@ -113,20 +168,20 @@ jobs:
       - name: Run tests
         run: uv run pytest tests/ -q
 
-  metrics-agent:
-    name: Metrics agent (Go)
+  bot-tests:
+    name: Bot pytest
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: metrics-agent
+        working-directory: tg_bot
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: metrics-agent/go.sum
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
 
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run tests
+        run: uv run pytest tests/ -q

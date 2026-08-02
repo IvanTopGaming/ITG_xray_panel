@@ -4,8 +4,8 @@ import subprocess
 
 import pytest
 
-from app.extensions import db
-from app.models import Client, Inbound, TelegramUser
+from panel_core.extensions import db
+from panel_core.models import Client, Inbound, TelegramUser
 
 
 pytestmark = pytest.mark.skipif(shutil.which("mihomo") is None, reason="mihomo binary not installed")
@@ -54,7 +54,7 @@ SS_STREAM = json.dumps(
 
 @pytest.fixture
 def app(app):
-    from app.api import subscription as sub_api
+    from panel_core.api import subscription as sub_api
 
     if "subscription" not in app.blueprints:
         app.register_blueprint(sub_api.bp, url_prefix="/api")
@@ -107,7 +107,7 @@ CASES = [
 
 @pytest.mark.parametrize("tag,port,protocol,stream,flow,uuid", CASES)
 def test_clash_single_client_check_passes(app, mihomo_workdir, tmp_path, tag, port, protocol, stream, flow, uuid):
-    from app.api.subscription import generate_clash_config
+    from panel_core.api.subscription import generate_clash_config
 
     with app.app_context():
         cid = _seed(tag, port, protocol, stream, flow=flow, uuid=uuid)
@@ -119,7 +119,7 @@ def test_clash_single_client_check_passes(app, mihomo_workdir, tmp_path, tag, po
 
 @pytest.mark.parametrize("tag,port,protocol,stream,flow,uuid", CASES)
 def test_clash_aggregated_check_passes(app, mihomo_workdir, tmp_path, tag, port, protocol, stream, flow, uuid):
-    from app.api.subscription import generate_clash_config_for_user
+    from panel_core.api.subscription import generate_clash_config_for_user
 
     with app.app_context():
         _seed(tag, port, protocol, stream, flow=flow, uuid=uuid)

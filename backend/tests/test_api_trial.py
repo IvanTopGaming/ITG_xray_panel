@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.models import (
+from panel_core.models import (
     Client,
     Inbound,
     SystemSetting,
@@ -15,7 +15,7 @@ from app.models import (
 
 @pytest.fixture
 def app_with_service_api(app, db):
-    from app.api import bot_service
+    from panel_core.api import bot_service
 
     if not any(bp.name == "bot_service" for bp in app.blueprints.values()):
         app.register_blueprint(bot_service.bp, url_prefix="/api")
@@ -58,7 +58,7 @@ def test_activate_trial_creates_client_and_marks_used(app_with_service_api, db, 
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.provisioning._sync_after_provision"):
         resp = client.post(
             "/api/bot-service/trial/activate",
             headers=service_headers,
@@ -108,7 +108,7 @@ def test_activate_trial_creates_telegram_user_if_missing(
     app_with_service_api, db, client, service_headers, trial_setup
 ):
 
-    with patch("app.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.provisioning._sync_after_provision"):
         resp = client.post(
             "/api/bot-service/trial/activate",
             headers=service_headers,
@@ -126,18 +126,25 @@ def test_activate_trial_requires_token(app_with_service_api, db, client):
     assert resp.status_code == 401
 
 
-def test_activate_trial_publishes_event(app_with_service_api, db, client, service_headers, trial_setup):
+def test_activate_trial_publishes_nothing(app_with_service_api, db, client, service_headers, trial_setup):
+    """§69: `trial_activated` had no branch in the bot's consumer — it only filled `bot_event`.
+
+    The bot shows the trial's outcome from the HTTP response it is already waiting on, so the event
+    was never needed. See tests/test_events_without_a_consumer.py for the guard that holds both
+    ends of this.
+    """
+
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
 
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.services.bot_events.publish") as mock_publish,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.bot_events.publish") as mock_publish,
     ):
-        client.post(
+        resp = client.post(
             "/api/bot-service/trial/activate",
             headers=service_headers,
             json={"telegram_id": 42},
         )
-    mock_publish.assert_called_once()
-    assert mock_publish.call_args.args[0] == "trial_activated"
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert mock_publish.call_args_list == []

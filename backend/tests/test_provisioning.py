@@ -1,4 +1,4 @@
-from app.services.provisioning import _generate_email, _generate_identity
+from panel_core.services.provisioning import _generate_email, _generate_identity
 
 
 def test_generate_identity_vless_returns_uuid_hex():
@@ -43,8 +43,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.models import Client, Inbound, Tariff, TariffItem
-from app.services.provisioning import apply_tariff_for_user, provision_single_item
+from panel_core.models import Client, Inbound, Tariff, TariffItem
+from panel_core.services.provisioning import apply_tariff_for_user, provision_single_item
 
 
 @pytest.fixture
@@ -104,8 +104,8 @@ def test_apply_extends_existing_client(app, db, basic_setup):
         down=1_500_000,
     )
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        result = apply_tariff_for_user(42, tariff, source="trial")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        result = apply_tariff_for_user(42, tariff, source="trial", operation_id="test-op")
 
     db.session.refresh(client)
 
@@ -140,8 +140,8 @@ def test_apply_extends_uses_now_when_expiry_already_past(app, db, basic_setup):
         limit_bytes=0,
     )
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        result = apply_tariff_for_user(42, tariff, source="auto_renew")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        result = apply_tariff_for_user(42, tariff, source="auto_renew", operation_id="test-op")
 
     expected = now_ms + 30 * 86400_000
     assert abs(result["expires_at_ms"] - expected) < 2_000
@@ -157,10 +157,10 @@ def test_apply_expiry_is_wall_clock_offset_from_purchase_time(app, db, basic_set
 
     fixed_now_ms = int(_time.time() * 1000)
     with (
-        patch("app.services.provisioning.time.time", return_value=fixed_now_ms / 1000),
-        patch("app.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.provisioning.time.time", return_value=fixed_now_ms / 1000),
+        patch("panel_core.services.provisioning._sync_after_provision"),
     ):
-        result = apply_tariff_for_user(7777, one_day_tariff, source="trial")
+        result = apply_tariff_for_user(7777, one_day_tariff, source="trial", operation_id="test-op")
 
     assert result["expires_at_ms"] == fixed_now_ms + 86400_000
 
@@ -184,8 +184,8 @@ def test_apply_msk_item_sets_70gb_limit(app, db, basic_setup):
         limit_bytes=999,
     )
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        apply_tariff_for_user(42, tariff, source="trial")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(42, tariff, source="trial", operation_id="test-op")
 
     db.session.refresh(msk)
     assert msk.limit_bytes == 70 * 1024**3
@@ -195,8 +195,8 @@ def test_apply_creates_missing_client(app, db, basic_setup):
 
     tariff = basic_setup
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        result = apply_tariff_for_user(99, tariff, source="trial")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        result = apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     clients = Client.query.filter_by(telegram_id=99).all()
     assert len(clients) == 2
@@ -222,8 +222,8 @@ def test_apply_creates_only_missing_when_partial_overlap(app, db, basic_setup):
         limit_bytes=0,
     )
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        apply_tariff_for_user(42, tariff, source="trial")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(42, tariff, source="trial", operation_id="test-op")
 
     clients = Client.query.filter_by(telegram_id=42).all()
     assert len(clients) == 2
@@ -249,8 +249,8 @@ def test_apply_handles_email_collision(app, db, basic_setup):
     db.session.query(Client).filter_by(telegram_id=999).update({"email": "tg99_DE-vless"})
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        apply_tariff_for_user(99, tariff, source="trial")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     new_clients = Client.query.filter_by(telegram_id=99).all()
     assert len(new_clients) == 2
@@ -263,12 +263,12 @@ def test_provision_calls_xray_regen_once(app, db, basic_setup):
 
     tariff = basic_setup
     with (
-        patch("app.services.provisioning.generate_config_file") as mock_gen,
-        patch("app.services.provisioning.restart_xray_container") as mock_restart,
-        patch("app.services.provisioning._api_add_user_grpc", return_value=True),
-        patch("app.services.provisioning.sub_cache"),
+        patch("panel_core.services.provisioning.generate_config_file") as mock_gen,
+        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True),
+        patch("panel_core.services.provisioning.sub_cache"),
     ):
-        apply_tariff_for_user(99, tariff, source="trial")
+        apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     assert mock_gen.call_count == 1
     assert mock_restart.call_count == 0
@@ -278,12 +278,12 @@ def test_provision_new_vless_uses_grpc_no_restart(app, db, basic_setup):
 
     tariff = basic_setup
     with (
-        patch("app.services.provisioning.generate_config_file") as mock_gen,
-        patch("app.services.provisioning.restart_xray_container") as mock_restart,
-        patch("app.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
-        patch("app.services.provisioning.sub_cache"),
+        patch("panel_core.services.provisioning.generate_config_file") as mock_gen,
+        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("panel_core.services.provisioning.sub_cache"),
     ):
-        apply_tariff_for_user(99, tariff, source="trial")
+        apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     assert mock_gen.call_count == 1
     assert mock_restart.call_count == 0
@@ -298,12 +298,12 @@ def test_provision_extending_enabled_vless_skips_runtime(app, db, basic_setup):
     _make_client(db, telegram_id=42, inbound_tag="MSK-vless", expiry_ms=now_ms, limit_bytes=0)
 
     with (
-        patch("app.services.provisioning.generate_config_file") as mock_gen,
-        patch("app.services.provisioning.restart_xray_container") as mock_restart,
-        patch("app.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
-        patch("app.services.provisioning.sub_cache"),
+        patch("panel_core.services.provisioning.generate_config_file") as mock_gen,
+        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("panel_core.services.provisioning.sub_cache"),
     ):
-        apply_tariff_for_user(42, tariff, source="auto_renew")
+        apply_tariff_for_user(42, tariff, source="auto_renew", operation_id="test-op")
 
     assert mock_gen.call_count == 1
     assert mock_restart.call_count == 0
@@ -320,12 +320,12 @@ def test_provision_extending_disabled_vless_re_adds_via_grpc(app, db, basic_setu
     db.session.commit()
 
     with (
-        patch("app.services.provisioning.generate_config_file"),
-        patch("app.services.provisioning.restart_xray_container") as mock_restart,
-        patch("app.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
-        patch("app.services.provisioning.sub_cache"),
+        patch("panel_core.services.provisioning.generate_config_file"),
+        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("panel_core.services.provisioning.sub_cache"),
     ):
-        apply_tariff_for_user(42, tariff, source="auto_renew")
+        apply_tariff_for_user(42, tariff, source="auto_renew", operation_id="test-op")
 
     assert mock_restart.call_count == 0
     assert mock_add.call_count == 1
@@ -343,12 +343,12 @@ def test_provision_non_vless_inbound_requires_restart(app, db):
     db.session.commit()
 
     with (
-        patch("app.services.provisioning.generate_config_file"),
-        patch("app.services.provisioning.restart_xray_container") as mock_restart,
-        patch("app.services.provisioning._api_add_user_grpc") as mock_add,
-        patch("app.services.provisioning.sub_cache"),
+        patch("panel_core.services.provisioning.generate_config_file"),
+        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.provisioning._api_add_user_grpc") as mock_add,
+        patch("panel_core.services.provisioning.sub_cache"),
     ):
-        apply_tariff_for_user(99, tariff, source="trial")
+        apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     assert mock_restart.call_count == 1
     assert mock_add.call_count == 0
@@ -359,12 +359,12 @@ def test_provision_grpc_failure_falls_back_to_restart(app, db, basic_setup):
     tariff = basic_setup
 
     with (
-        patch("app.services.provisioning.generate_config_file"),
-        patch("app.services.provisioning.restart_xray_container") as mock_restart,
-        patch("app.services.provisioning._api_add_user_grpc", return_value=False),
-        patch("app.services.provisioning.sub_cache"),
+        patch("panel_core.services.provisioning.generate_config_file"),
+        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=False),
+        patch("panel_core.services.provisioning.sub_cache"),
     ):
-        apply_tariff_for_user(99, tariff, source="trial")
+        apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     assert mock_restart.call_count == 1
 
@@ -397,8 +397,8 @@ def test_apply_sets_flow_only_on_flow_compatible_inbounds(app, db):
 
     tariff = _flow_tariff(db)
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        apply_tariff_for_user(501, tariff, source="trial")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(501, tariff, source="trial", operation_id="test-op")
 
     by_inbound = {c.inbound_tag: c for c in Client.query.filter_by(telegram_id=501).all()}
     assert by_inbound["XH-vless"].flow == ""
@@ -409,7 +409,7 @@ def test_provision_single_item_no_flow_on_xhttp_inbound(app, db):
 
     _flow_tariff(db)
 
-    with patch("app.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.provisioning._sync_after_provision"):
         provision_single_item(
             telegram_id=502,
             inbound_tag="XH-vless",
@@ -426,7 +426,7 @@ def test_provision_single_item_vision_on_tcp_reality_inbound(app, db):
 
     _flow_tariff(db)
 
-    with patch("app.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.provisioning._sync_after_provision"):
         provision_single_item(
             telegram_id=503,
             inbound_tag="TCPR-vless",
@@ -459,13 +459,13 @@ def test_apply_remote_provision_happens_before_local_writes(app, db):
 
     def _spy(panel_id, telegram_id, inbound_tag, params):
         pending_at_call.append((len(db.session.new), len(db.session.dirty)))
-        return {"status": "ok"}
+        return {"status": "ok", "expires_at_ms": 1}
 
     with (
-        patch("app.services.panel_proxy.proxy_provision", side_effect=_spy),
-        patch("app.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.panel_proxy.proxy_provision", side_effect=_spy),
+        patch("panel_core.services.provisioning._sync_after_provision"),
     ):
-        apply_tariff_for_user(601, tariff, source="trial")
+        apply_tariff_for_user(601, tariff, source="trial", operation_id="test-op")
 
     assert pending_at_call == [(0, 0)]
     assert Client.query.filter_by(telegram_id=601, inbound_tag="LOC-vless").count() == 1
@@ -476,11 +476,11 @@ def test_apply_remote_failure_leaves_local_state_untouched(app, db):
     tariff = _federated_tariff(db)
 
     with (
-        patch("app.services.panel_proxy.proxy_provision", side_effect=RuntimeError("panel down")),
-        patch("app.services.provisioning._sync_after_provision"),
+        patch("panel_core.services.panel_proxy.proxy_provision", side_effect=RuntimeError("panel down")),
+        patch("panel_core.services.provisioning._sync_after_provision"),
         pytest.raises(RuntimeError),
     ):
-        apply_tariff_for_user(602, tariff, source="admin_grant")
+        apply_tariff_for_user(602, tariff, source="admin_grant", operation_id="test-op")
 
     assert len(db.session.new) == 0
     assert len(db.session.dirty) == 0
@@ -489,7 +489,7 @@ def test_apply_remote_failure_leaves_local_state_untouched(app, db):
 
 def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
 
-    from app.models import NotificationLog
+    from panel_core.models import NotificationLog
 
     tariff = basic_setup
 
@@ -516,8 +516,8 @@ def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
     )
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        apply_tariff_for_user(77, tariff, source="auto_renew")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(77, tariff, source="auto_renew", operation_id="test-op")
 
     remaining = NotificationLog.query.filter_by(client_id=existing.id).all()
     kinds = {n.kind for n in remaining}
@@ -528,7 +528,7 @@ def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):
 
 
 def test_apply_extend_clears_expiry_notification_log(app, db, basic_setup):
-    from app.models import NotificationLog
+    from panel_core.models import NotificationLog
 
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
@@ -543,8 +543,8 @@ def test_apply_extend_clears_expiry_notification_log(app, db, basic_setup):
     db.session.add(NotificationLog(telegram_id=42, client_id=client.id, kind="expired"))
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision"):
-        apply_tariff_for_user(42, tariff, source="trial")
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        apply_tariff_for_user(42, tariff, source="trial", operation_id="test-op")
 
     assert NotificationLog.query.filter_by(client_id=client.id, kind="expiry_3d").count() == 0
     assert NotificationLog.query.filter_by(client_id=client.id, kind="expired").count() == 0

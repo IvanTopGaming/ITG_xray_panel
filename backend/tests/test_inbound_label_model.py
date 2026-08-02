@@ -1,4 +1,4 @@
-from app.models import Client, Inbound
+from panel_core.models import Client, Inbound
 
 
 def test_inbound_label_present_when_set(app, db):

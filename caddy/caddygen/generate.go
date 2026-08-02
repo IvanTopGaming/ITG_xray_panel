@@ -3,8 +3,64 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 )
+
+func isLocalHostname(host string) bool {
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if strings.HasSuffix(host, ".local") {
+		return true
+	}
+	return !strings.Contains(host, ".")
+}
+
+func acmeIssuer(cfg *Config) map[string]any {
+	issuer := map[string]any{"module": "acme"}
+	if cfg.ACMEEmail != "" {
+		issuer["email"] = cfg.ACMEEmail
+	}
+	if cfg.ACMECA != "" {
+		issuer["ca"] = cfg.ACMECA
+	}
+	return issuer
+}
+
+func tlsAutomation(cfg *Config) map[string]any {
+	var public, internal []any
+	for _, r := range cfg.SNIRoutes {
+		if !r.TLS {
+			continue
+		}
+		if isLocalHostname(r.Match) {
+			internal = append(internal, r.Match)
+		} else {
+			public = append(public, r.Match)
+		}
+	}
+	policies := []any{}
+	if len(public) > 0 {
+		policies = append(policies, map[string]any{
+			"subjects": public,
+			"issuers":  []any{acmeIssuer(cfg)},
+		})
+	}
+	if len(internal) > 0 {
+		policies = append(policies, map[string]any{
+			"subjects": internal,
+			"issuers":  []any{map[string]any{"module": "internal"}},
+		})
+	}
+	return map[string]any{"policies": policies}
+}
 
 func securityHeaders() map[string]any {
 	return map[string]any{
@@ -18,8 +74,8 @@ func securityHeaders() map[string]any {
 				"Referrer-Policy":           []any{"strict-origin-when-cross-origin"},
 				"Content-Security-Policy": []any{
 					"default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; " +
-						"script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-						"font-src 'self' https://fonts.gstatic.com data:; img-src 'self' https: data: blob:; " +
+						"script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+						"font-src 'self' data:; img-src 'self' https: data: blob:; " +
 						"connect-src 'self' https: wss:;",
 				},
 			},
@@ -41,16 +97,16 @@ func reverseProxy(upstream string) map[string]any {
 	}
 }
 
-func httpServer(listen string, upstream string, onlyPaths []string, apiPath, apiUpstream string) map[string]any {
+func httpServer(listen string, upstream string, onlyPaths []string, apiPath, apiUpstream, stripPrefix string) map[string]any {
 	var routes []any
 	if apiUpstream != "" && apiPath != "" {
-		stripPrefix := strings.TrimSuffix(apiPath, "/api/")
-		if stripPrefix != "" && stripPrefix != "/" {
+		apiStrip := strings.TrimSuffix(apiPath, "/api/")
+		if apiStrip != "" && apiStrip != "/" {
 			routes = append(routes, map[string]any{
 				"match": []any{map[string]any{"path": []any{apiPath + "*"}}},
 				"handle": []any{
 					securityHeaders(),
-					map[string]any{"handler": "rewrite", "strip_path_prefix": stripPrefix},
+					map[string]any{"handler": "rewrite", "strip_path_prefix": apiStrip},
 					reverseProxy(apiUpstream),
 				},
 			})
@@ -61,9 +117,18 @@ func httpServer(listen string, upstream string, onlyPaths []string, apiPath, api
 		for _, p := range onlyPaths {
 			globs = append(globs, p+"*")
 		}
+
+		handlers := []any{securityHeaders()}
+		if stripPrefix != "" && stripPrefix != "/" {
+			handlers = append(handlers, map[string]any{
+				"handler":           "rewrite",
+				"strip_path_prefix": stripPrefix,
+			})
+		}
+		handlers = append(handlers, reverseProxy(upstream))
 		routes = append(routes, map[string]any{
 			"match":  []any{map[string]any{"path": globs}},
-			"handle": []any{securityHeaders(), reverseProxy(upstream)},
+			"handle": handlers,
 		})
 		routes = append(routes, map[string]any{
 			"handle": []any{map[string]any{"handler": "static_response", "status_code": 404}},
@@ -149,7 +214,7 @@ func Generate(cfg *Config) ([]byte, error) {
 		if name == "" {
 			name = fmt.Sprintf("srv%d", port)
 		}
-		httpServers[name+"_security_layer"] = httpServer(loopback, r.Upstream, r.OnlyPaths, r.APIPath, r.APIUpstream)
+		httpServers[name+"_security_layer"] = httpServer(loopback, r.Upstream, r.OnlyPaths, r.APIPath, r.APIUpstream, r.StripPrefix)
 		l4routes = append(l4routes, layer4TLS(r.Match, loopback))
 		port++
 	}
@@ -159,14 +224,7 @@ func Generate(cfg *Config) ([]byte, error) {
 	root := map[string]any{
 		"apps": map[string]any{
 			"tls": map[string]any{
-				"certificates": map[string]any{
-					"load_files": []any{
-						map[string]any{
-							"certificate": "/root/cert/fullchain.pem",
-							"key":         "/root/cert/key.pem",
-						},
-					},
-				},
+				"automation": tlsAutomation(cfg),
 			},
 			"http": map[string]any{
 				"servers": httpServers,

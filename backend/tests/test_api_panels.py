@@ -4,8 +4,8 @@ from unittest.mock import patch, MagicMock
 import jwt as jwt_lib
 import pytest
 
-from app.models import Admin, LinkedPanel, SystemSetting, Tariff, TariffItem
-from app.utils import SECRET_KEY
+from panel_core.models import Admin, LinkedPanel, SystemSetting, Tariff, TariffItem
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.mark.parametrize(
@@ -24,7 +24,7 @@ from app.utils import SECRET_KEY
     ],
 )
 def test_validate_panel_url_rejects_internal(bad_url):
-    from app.api.panels import _validate_panel_url
+    from panel_core.api.panels import _validate_panel_url
 
     with pytest.raises(ValueError):
         _validate_panel_url(bad_url)
@@ -35,7 +35,7 @@ def test_validate_panel_url_rejects_internal(bad_url):
     ["https://child.example.com", "https://panel.acme.io:8443/x", "http://8.8.8.8/api"],
 )
 def test_validate_panel_url_allows_public(ok_url):
-    from app.api.panels import _validate_panel_url
+    from panel_core.api.panels import _validate_panel_url
 
     assert _validate_panel_url(ok_url) == ok_url
 
@@ -43,7 +43,7 @@ def test_validate_panel_url_allows_public(ok_url):
 @pytest.fixture
 def app(app):
 
-    from app.api import panels
+    from panel_core.api import panels
 
     if not any(bp_name == "panels" for bp_name in app.blueprints):
         app.register_blueprint(panels.bp, url_prefix="/api")
@@ -138,7 +138,7 @@ def test_list_panels_overlays_live_status_from_redis(client, admin_token, db):
         f"panel:{panel.id}:last_poll": b"1781200000000",
     }.get(key)
 
-    with patch("app.api.panels.get_redis", return_value=fake):
+    with patch("panel_core.services.panel_proxy.get_shared_redis", return_value=fake):
         resp = client.get("/api/panels", headers=_auth(admin_token))
 
     assert resp.status_code == 200
@@ -156,7 +156,7 @@ def test_list_panels_keeps_db_values_when_redis_empty(client, admin_token, db):
     fake = MagicMock()
     fake.get.return_value = None
 
-    with patch("app.api.panels.get_redis", return_value=fake):
+    with patch("panel_core.services.panel_proxy.get_shared_redis", return_value=fake):
         resp = client.get("/api/panels", headers=_auth(admin_token))
 
     item = next(p for p in resp.get_json() if p["id"] == panel.id)
@@ -164,7 +164,7 @@ def test_list_panels_keeps_db_values_when_redis_empty(client, admin_token, db):
     assert item["last_poll"] == 111
 
 
-@patch("app.api.panels.requests.post")
+@patch("panel_core.api.panels.requests.post")
 def test_create_panel_success(mock_post, client, admin_token, db):
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -194,7 +194,7 @@ def test_create_panel_success(mock_post, client, admin_token, db):
     assert panel.federation_token == "new-fed-token-xyz"
 
 
-@patch("app.api.panels.requests.post")
+@patch("panel_core.api.panels.requests.post")
 def test_create_panel_uses_custom_master_name(mock_post, client, admin_token, db):
     db.session.add(SystemSetting(key="panel_name", value="My Master"))
     db.session.commit()
@@ -234,7 +234,7 @@ def test_create_panel_missing_url(client, admin_token):
     assert "url" in resp.get_json()["error"].lower()
 
 
-@patch("app.api.panels.requests.post")
+@patch("panel_core.api.panels.requests.post")
 def test_create_panel_duplicate_name(mock_post, client, admin_token, db):
     _make_panel(db, name="taken")
     resp = client.post(
@@ -246,7 +246,7 @@ def test_create_panel_duplicate_name(mock_post, client, admin_token, db):
     assert "already exists" in resp.get_json()["error"]
 
 
-@patch("app.api.panels.requests.post")
+@patch("panel_core.api.panels.requests.post")
 def test_create_panel_connection_error(mock_post, client, admin_token):
     mock_post.side_effect = __import__("requests").ConnectionError("refused")
     resp = client.post(
@@ -258,7 +258,7 @@ def test_create_panel_connection_error(mock_post, client, admin_token):
     assert "connect" in resp.get_json()["error"].lower()
 
 
-@patch("app.api.panels.requests.post")
+@patch("panel_core.api.panels.requests.post")
 def test_create_panel_timeout(mock_post, client, admin_token):
     mock_post.side_effect = __import__("requests").Timeout("timed out")
     resp = client.post(
@@ -270,7 +270,7 @@ def test_create_panel_timeout(mock_post, client, admin_token):
     assert "timed out" in resp.get_json()["error"].lower()
 
 
-@patch("app.api.panels.requests.post")
+@patch("panel_core.api.panels.requests.post")
 def test_create_panel_handshake_rejected(mock_post, client, admin_token):
     mock_resp = MagicMock()
     mock_resp.status_code = 403
@@ -350,7 +350,7 @@ def test_delete_panel(client, admin_token, db):
     assert db.session.get(LinkedPanel, panel_id) is None
 
 
-@patch("app.api.panels.get_redis")
+@patch("panel_core.services.panel_proxy.get_shared_redis")
 def test_delete_panel_cleans_redis(mock_get_redis, client, admin_token, db):
     mock_redis = MagicMock()
     mock_get_redis.return_value = mock_redis
@@ -359,7 +359,13 @@ def test_delete_panel_cleans_redis(mock_get_redis, client, admin_token, db):
 
     resp = client.delete(f"/api/panels/{panel_id}", headers=_auth(admin_token))
     assert resp.status_code == 200
-    mock_redis.delete.assert_called_once_with(f"panel:{panel_id}:snapshot", f"panel:{panel_id}:status")
+    mock_redis.delete.assert_called_once_with(
+        f"panel:{panel_id}:snapshot",
+        f"panel:{panel_id}:status",
+        f"panel:{panel_id}:last_poll",
+        f"panel:{panel_id}:snapshot:last",
+        f"panel:{panel_id}:last_poll:last",
+    )
 
 
 def test_delete_panel_not_found(client, admin_token):
@@ -408,101 +414,92 @@ def test_delete_panel_disables_emptied_tariff(client, admin_token, db):
     assert db.session.get(Tariff, tariff.id).enabled is False
 
 
-@patch("app.api.panels.requests.get")
-def test_test_panel_online(mock_get, client, admin_token, db):
-    panel = _make_panel(db, name="healthy")
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_get.return_value = mock_resp
+def _probe(monkeypatch, *, raises=None):
+    """The probe goes through FederationClient now, not a second raw requests stack (§61)."""
 
-    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
-    assert resp.status_code == 200
-    data = resp.get_json()
+    calls = []
+
+    class Stub:
+        def __init__(self, url, token):
+            calls.append((url, token))
+
+        def snapshot(self):
+            if raises is not None:
+                raise raises
+            return {"inbounds": []}
+
+    monkeypatch.setattr("panel_core.api.panels.FederationClient", Stub)
+    return calls
+
+
+def test_test_panel_online(client, admin_token, db, monkeypatch):
+    panel = _make_panel(db, name="healthy")
+    calls = _probe(monkeypatch)
+    nudged = []
+    monkeypatch.setattr("panel_core.api.panels._nudge_panel_refresh", lambda pid: nudged.append(pid))
+
+    data = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token)).get_json()
+
     assert data["status"] == "online"
     assert data["last_error"] is None
-    assert "latency_ms" in data
     assert isinstance(data["latency_ms"], int)
-
-    mock_get.assert_called_once()
-    call_headers = mock_get.call_args[1]["headers"]
-    assert call_headers["X-Federation-Token"] == "fed-tok-123"
-
-
-@patch("app.api.panels.requests.get")
-def test_test_panel_error_status(mock_get, client, admin_token, db):
-    panel = _make_panel(db, name="errored")
-    mock_resp = MagicMock()
-    mock_resp.status_code = 500
-    mock_get.return_value = mock_resp
-
-    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["status"] == "error"
-    assert data["last_error"] == "HTTP 500"
-
-
-@patch("app.api.panels.requests.get")
-def test_test_panel_connection_refused(mock_get, client, admin_token, db):
-    panel = _make_panel(db, name="down")
-    mock_get.side_effect = __import__("requests").ConnectionError("refused")
-
-    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["status"] == "offline"
-    assert data["latency_ms"] is None
-    assert "refused" in data["last_error"].lower()
-
-
-@patch("app.api.panels.requests.get")
-def test_test_panel_timeout(mock_get, client, admin_token, db):
-    panel = _make_panel(db, name="slow")
-    mock_get.side_effect = __import__("requests").Timeout("timed out")
-
-    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["status"] == "offline"
-    assert data["latency_ms"] is None
-    assert "timed out" in data["last_error"].lower()
-
-
-def test_test_panel_not_found(client, admin_token):
-    resp = client.post("/api/panels/9999/test", headers=_auth(admin_token))
-    assert resp.status_code == 404
-
-
-@patch("app.api.panels.requests.get")
-def test_test_panel_writes_last_poll_in_ms_on_success(mock_get, client, admin_token, db):
-
-    panel = _make_panel(db, name="ok-panel")
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_get.return_value = mock_resp
-
-    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
-    assert resp.status_code == 200
-    assert resp.get_json()["last_poll"] >= 10**12, (
-        f"last_poll={resp.get_json()['last_poll']} looks like seconds, not ms"
+    assert calls == [("https://child.example.com", "fed-tok-123")]
+    assert nudged == [panel.id], (
+        "the probe must ask the cron host to re-poll rather than write the record itself — that is "
+        "how an admin action refreshes a fact it does not own"
     )
 
 
-@patch("app.api.panels.requests.get")
-def test_test_panel_writes_last_poll_in_ms_on_connection_error(mock_get, client, admin_token, db):
-    panel = _make_panel(db, name="refused-panel")
-    mock_get.side_effect = __import__("requests").ConnectionError("refused")
+def test_test_panel_reports_the_nodes_own_words(client, admin_token, db, monkeypatch):
+    from panel_core.services.panel_proxy import RemotePanelError
 
-    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
-    assert resp.status_code == 200
-    assert resp.get_json()["last_poll"] >= 10**12
+    panel = _make_panel(db, name="errored")
+    _probe(monkeypatch, raises=RemotePanelError(500, "Xray failed to start"))
+
+    data = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token)).get_json()
+
+    assert data["status"] == "error"
+    assert data["last_error"] == "Xray failed to start", (
+        "the admin is shown a generic message while the node said something specific — the whole of §61"
+    )
+    assert data["latency_ms"] is None
 
 
-@patch("app.api.panels.requests.get")
-def test_test_panel_writes_last_poll_in_ms_on_timeout(mock_get, client, admin_token, db):
-    panel = _make_panel(db, name="timeout-panel")
-    mock_get.side_effect = __import__("requests").Timeout("timed out")
+def test_test_panel_unreachable(client, admin_token, db, monkeypatch):
+    from panel_core.services.panel_proxy import RemotePanelError
 
-    resp = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token))
-    assert resp.status_code == 200
-    assert resp.get_json()["last_poll"] >= 10**12
+    panel = _make_panel(db, name="down")
+    _probe(monkeypatch, raises=RemotePanelError(502, "Panel is unreachable: connection refused"))
+
+    data = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token)).get_json()
+
+    assert data["status"] == "offline"
+    assert "unreachable" in data["last_error"]
+    assert data["latency_ms"] is None
+
+
+def test_the_probe_is_not_a_second_writer_of_the_panel_status(client, admin_token, db, monkeypatch):
+    """Wave 2 gave `LinkedPanel.status` one owner, and this route quietly became a second.
+
+    Worse than a duplicate: it produced a value (`"error"`) the cron host never writes, so the two
+    did not even share a vocabulary and whichever ran last decided what the fleet looked like.
+    """
+
+    from panel_core.services.panel_proxy import RemotePanelError
+
+    panel = _make_panel(db, name="stored")
+    panel.status = "online"
+    panel.last_poll = 111
+    panel.last_error = None
+    db.session.commit()
+    stored_before = (panel.status, panel.last_poll, panel.last_error)
+    _probe(monkeypatch, raises=RemotePanelError(502, "Panel is unreachable: refused"))
+    monkeypatch.setattr("panel_core.api.panels._nudge_panel_refresh", lambda pid: None)
+
+    body = client.post(f"/api/panels/{panel.id}/test", headers=_auth(admin_token)).get_json()
+    assert body["status"] == "offline"
+
+    fresh = db.session.get(LinkedPanel, panel.id)
+    assert (fresh.status, fresh.last_poll, fresh.last_error) == stored_before, (
+        "the probe wrote the stored record. It reports what it measured; the cron host owns what is written down."
+    )

@@ -105,6 +105,26 @@ class BackendClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def claim_notification(
+        self,
+        telegram_id: int,
+        kind: str,
+        tariff_id: int | None,
+        scope: str,
+    ) -> dict:
+        c = self._ensure_client()
+        resp = await c.post(
+            "/bot-service/notifications/claim",
+            json={
+                "telegram_id": telegram_id,
+                "kind": kind,
+                "tariff_id": tariff_id,
+                "scope": scope,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def set_payment_chat_coords(
         self,
         payment_id: int,

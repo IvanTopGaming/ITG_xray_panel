@@ -1,7 +1,7 @@
 import logging
 import os
 
-from db_migration import migrate_sqlite_db
+from panel_core.db_migration import migrate_sqlite_db
 
 
 def main() -> int:

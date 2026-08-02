@@ -1,0 +1,91 @@
+services:
+  bot-api:
+    image: ${BOT_API_IMAGE:?BOT_API_IMAGE is required}
+    container_name: panel-bot-api
+    restart: always
+    environment:
+      - PANEL_ROLE=bot
+      - PYTHONUNBUFFERED=1
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
+      - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:?RATELIMIT_STORAGE_URI is required}
+      - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
+      - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core.roles.botapi:create_app()"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3).read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      bot-net:
+        aliases:
+          - backend
+
+    volumes:
+      - ./ca.crt:/etc/ssl/panel-ca.crt:ro
+  bot:
+    image: ${BOT_IMAGE:?BOT_IMAGE is required}
+    container_name: panel-bot
+    restart: always
+    environment:
+      - BACKEND_API_URL=http://bot-api:5000/api
+      - BOT_SERVICE_TOKEN=${BOT_SERVICE_TOKEN:-}
+      - BOT_LOG_LEVEL=${BOT_LOG_LEVEL:-INFO}
+      - SHARED_REDIS_URI=${BOT_SHARED_REDIS_URI:?BOT_SHARED_REDIS_URI is required}
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    depends_on:
+      bot-api:
+        condition: service_healthy
+    networks:
+      - bot-net
+
+    volumes:
+      - ./ca.crt:/etc/ssl/panel-ca.crt:ro
+  caddy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE is required}
+    container_name: panel-bot-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - BOT_DOMAIN=${BOT_DOMAIN:?BOT_DOMAIN is required}
+      - BOT_WEBHOOK_PATH=${BOT_WEBHOOK_PATH:?BOT_WEBHOOK_PATH is required}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+      - ACME_CA=${ACME_CA:-}
+    depends_on:
+      bot-api:
+        condition: service_healthy
+    networks:
+      - bot-net
+
+networks:
+  bot-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,4 +1,4 @@
-from app.services.xray import _extract_reason
+from panel_core.xray.engine import _extract_reason
 
 
 def test_extract_reason_takes_segment_after_last_arrow():
@@ -21,29 +21,29 @@ def test_extract_reason_empty_falls_back():
 import subprocess
 from unittest.mock import MagicMock, patch
 import pytest
-from app.services import xray as xray_svc
+from panel_core.xray import engine as xray_svc
 
 
 def test_validate_skips_when_binary_absent():
-    with patch("app.services.xray.os.path.exists", return_value=False):
-        with patch("app.services.xray.subprocess.run") as run:
+    with patch("panel_core.xray.engine.os.path.exists", return_value=False):
+        with patch("panel_core.xray.engine.subprocess.run") as run:
             xray_svc._validate_xray_config("/tmp/c.json")
     run.assert_not_called()
 
 
 def test_validate_ok_on_exit_zero():
-    with patch("app.services.xray.os.path.exists", return_value=True):
+    with patch("panel_core.xray.engine.os.path.exists", return_value=True):
         with patch(
-            "app.services.xray.subprocess.run",
+            "panel_core.xray.engine.subprocess.run",
             return_value=MagicMock(returncode=0, stderr=b"Configuration OK.", stdout=b""),
         ):
             xray_svc._validate_xray_config("/tmp/c.json")
 
 
 def test_validate_raises_on_nonzero_with_reason():
-    with patch("app.services.xray.os.path.exists", return_value=True):
+    with patch("panel_core.xray.engine.os.path.exists", return_value=True):
         with patch(
-            "app.services.xray.subprocess.run",
+            "panel_core.xray.engine.subprocess.run",
             return_value=MagicMock(
                 returncode=23,
                 stderr=b"Failed to start: bad outbound protocol 'freedomm'",
@@ -56,9 +56,9 @@ def test_validate_raises_on_nonzero_with_reason():
 
 
 def test_validate_fail_closed_on_timeout():
-    with patch("app.services.xray.os.path.exists", return_value=True):
+    with patch("panel_core.xray.engine.os.path.exists", return_value=True):
         with patch(
-            "app.services.xray.subprocess.run",
+            "panel_core.xray.engine.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="xray", timeout=10),
         ):
             with pytest.raises(ValueError):
@@ -72,9 +72,9 @@ class TestGenerateConfigGate:
         self._ctx = app.app_context()
         self._ctx.push()
         self._patches = [
-            patch("app.services.xray.LOCK_PATH", str(tmp_path / "config.lock")),
-            patch("app.services.xray.CONFIG_PATH", str(tmp_path / "config.json")),
-            patch("app.services.xray.CANDIDATE_PATH", str(tmp_path / "config.json.candidate")),
+            patch("panel_core.xray.engine.LOCK_PATH", str(tmp_path / "config.lock")),
+            patch("panel_core.xray.engine.CONFIG_PATH", str(tmp_path / "config.json")),
+            patch("panel_core.xray.engine.CANDIDATE_PATH", str(tmp_path / "config.json.candidate")),
         ]
         for p in self._patches:
             p.start()
@@ -86,19 +86,19 @@ class TestGenerateConfigGate:
         self._ctx.pop()
 
     def test_valid_config_is_committed(self):
-        from app.services.xray import generate_config_file
+        from panel_core.xray.engine import generate_config_file
 
-        with patch("app.services.xray._validate_xray_config"):
+        with patch("panel_core.xray.engine._validate_xray_config"):
             generate_config_file()
         assert self.cfg.exists()
         assert not self.candidate.exists()
 
     def test_rejected_config_is_not_committed_and_candidate_removed(self):
-        from app.services.xray import generate_config_file
+        from panel_core.xray.engine import generate_config_file
 
         self.cfg.write_text('{"old": "good"}')
         with patch(
-            "app.services.xray._validate_xray_config",
+            "panel_core.xray.engine._validate_xray_config",
             side_effect=ValueError("Xray rejected the config: bad thing"),
         ):
             with pytest.raises(ValueError, match="bad thing"):
@@ -109,6 +109,6 @@ class TestGenerateConfigGate:
 
 def test_candidate_path_has_json_extension():
 
-    from app.services import xray as xray_svc
+    from panel_core.xray import engine as xray_svc
 
     assert xray_svc.CANDIDATE_PATH.endswith(".json")

@@ -6,16 +6,16 @@ from unittest.mock import patch
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, Inbound, Client, Tariff, TariffItem
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin, Inbound, Client, Tariff, TariffItem
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app(app):
 
-    from app.api import inbound as inbound_api
-    from app.api import federation as federation_api
+    from panel_core.api import inbound as inbound_api
+    from panel_core.api import federation as federation_api
 
     if not any(bp.name == "inbound" for bp in app.blueprints.values()):
         app.register_blueprint(inbound_api.bp, url_prefix="/api")
@@ -60,14 +60,14 @@ def auth_headers(admin):
 
 
 _COMMON_PATCHES = [
-    "app.api.inbound.generate_config_file",
-    "app.api.inbound.restart_xray_container",
-    "app.services.xray.generate_config_file",
-    "app.services.xray.restart_xray_container",
-    "app.services.stats._api_add_user_grpc",
-    "app.services.stats._api_remove_user_grpc",
-    "app.services.sub_cache.invalidate_user",
-    "app.services.sub_cache.invalidate_all_for_inbound",
+    "panel_core.api.inbound.generate_config_file",
+    "panel_core.api.inbound.restart_xray_container",
+    "panel_core.xray.engine.generate_config_file",
+    "panel_core.xray.engine.restart_xray_container",
+    "panel_core.api.inbound._api_add_user_grpc",
+    "panel_core.api.inbound._api_remove_user_grpc",
+    "panel_core.services.sub_cache.invalidate_user",
+    "panel_core.services.sub_cache.invalidate_all_for_inbound",
 ]
 
 
@@ -160,16 +160,22 @@ class TestGetInbounds:
         resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
         assert resp.get_json()[0]["label"] == "Germany VPN"
 
-    def test_client_sub_url_exposed(self, app, client, auth_headers, monkeypatch):
+    def test_client_sub_url_points_at_the_sub_host(self, app, client, auth_headers, monkeypatch):
+        """The Dashboard's copy button has nowhere else to point.
 
-        from app.models import TelegramUser
+        This role serves no /api/sub/* at all since wave 3b, so a link built from its own domain
+        would be a 404 handed to an admin. A client tied to a Telegram account gets the aggregate
+        link; one created by hand gets the per-UUID link on the same host.
+        """
+
+        from panel_core.models import TelegramUser
 
         monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
-        monkeypatch.delenv("SUB_DOMAIN", raising=False)
+        monkeypatch.setenv("SUB_DOMAIN", "sub.example.com")
 
         ib = _make_inbound()
+        c_no_tg = _make_client(inbound_tag=ib.tag, email="no-tg")
         _make_client(inbound_tag=ib.tag, email="with-tg", telegram_id=555)
-        _make_client(inbound_tag=ib.tag, email="no-tg")
         db.session.add(TelegramUser(telegram_id=555, sub_token="someToken"))
         db.session.commit()
 
@@ -177,8 +183,23 @@ class TestGetInbounds:
         assert resp.status_code == 200
         clients = resp.get_json()[0]["settings"]["clients"]
         by_email = {c["email"]: c for c in clients}
-        assert by_email["with-tg"]["sub_url"].endswith("/api/sub/u/someToken")
-        assert by_email["no-tg"]["sub_url"] is None
+        assert by_email["with-tg"]["sub_url"] == "https://sub.example.com/api/sub/u/someToken"
+        assert by_email["no-tg"]["sub_url"] == f"https://sub.example.com/api/sub/{c_no_tg.id}"
+        assert "panel.example.com" not in resp.get_data(as_text=True)
+
+    def test_client_sub_url_is_absent_without_a_sub_domain(self, app, client, auth_headers, monkeypatch):
+        """No fallback: an unset SUB_DOMAIN yields no link rather than a link to this host."""
+
+        monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
+        monkeypatch.delenv("SUB_DOMAIN", raising=False)
+
+        ib = _make_inbound()
+        _make_client(inbound_tag=ib.tag, email="no-tg")
+        db.session.commit()
+
+        resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
+        clients = resp.get_json()[0]["settings"]["clients"]
+        assert clients[0]["sub_url"] is None
 
 
 class TestCreateInbound:
@@ -295,7 +316,14 @@ class TestUpdateInbound:
         assert resp.status_code == 400
         assert "exists" in resp.get_json()["error"].lower()
 
-    def test_update_device_limit(self, app, client, auth_headers):
+    def test_device_limit_is_accepted_as_nothing(self, app, client, auth_headers):
+        """Wave 4d: the column stays, the field stops being an input.
+
+        Dropping the column is a schema change the Postgres migration cannot make (INFRA §40), so
+        the row keeps its old value forever -- but nothing reads it for enforcement and nothing may
+        write it any more, or the panel goes back to reporting a cap it does not apply.
+        """
+
         _make_inbound(tag="dl", port=6001)
         resp = client.put(
             "/api/inbounds/dl",
@@ -303,7 +331,11 @@ class TestUpdateInbound:
             json={"device_limit": 5},
         )
         assert resp.status_code == 200
-        assert Inbound.query.filter_by(tag="dl").first().device_limit == 5
+        assert Inbound.query.filter_by(tag="dl").first().device_limit == 0
+
+        listing = client.get("/api/inbounds", headers=auth_headers)
+        assert listing.status_code == 200
+        assert all("device_limit" not in ib for ib in listing.get_json())
 
     def test_switching_transport_to_xhttp_clears_client_flow(self, app, client, auth_headers):
 
@@ -381,7 +413,7 @@ class TestDeleteInbound:
         assert TariffItem.query.filter_by(id=local_id).count() == 0
         assert TariffItem.query.filter_by(id=remote_id).count() == 1
 
-    @patch("app.services.panel_proxy.proxy_delete_inbound")
+    @patch("panel_core.services.panel_proxy.proxy_delete_inbound")
     def test_delete_remote_inbound_purges_panel_items(self, mock_proxy, app, client, auth_headers):
         mock_proxy.return_value = {"status": "deleted"}
         tariff = Tariff(name="Rem", price_rub=100, period_days=30)
@@ -661,7 +693,7 @@ class TestDeleteUser:
 
 
 class TestResetTraffic:
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_single_reset(self, mock_reset, app, client, auth_headers):
         _make_inbound(tag="rst-ib", port=1501)
         _make_client(inbound_tag="rst-ib", email="rst-user")
@@ -673,7 +705,7 @@ class TestResetTraffic:
         assert resp.status_code == 200
         mock_reset.assert_called_once_with("rst-ib", "rst-user")
 
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_bulk_reset(self, mock_reset, app, client, auth_headers):
         _make_inbound(tag="brst-ib", port=1502)
         _make_client(inbound_tag="brst-ib", email="u1")
@@ -800,7 +832,7 @@ class TestAuth:
 
 
 class TestBulkDelete:
-    @patch("app.api.inbound.bulk_delete_users", return_value=2)
+    @patch("panel_core.api.inbound.bulk_delete_users", return_value=2)
     def test_bulk_delete(self, mock_bd, app, client, auth_headers):
         _make_inbound(tag="bd-ib", port=1701)
         _make_client(inbound_tag="bd-ib", email="d1")
@@ -913,7 +945,7 @@ class TestBulkAdjustTraffic:
 
 
 class TestResetInboundTraffic:
-    @patch("app.api.inbound.reset_inbound_traffic")
+    @patch("panel_core.api.inbound.reset_inbound_traffic")
     def test_reset_inbound_traffic(self, mock_reset, app, client, auth_headers):
         _make_inbound(tag="rit-ib", port=1401)
         resp = client.post("/api/inbounds/rit-ib/reset-traffic", headers=auth_headers)
@@ -924,6 +956,34 @@ class TestResetInboundTraffic:
         resp = client.post("/api/inbounds/x/reset-traffic")
         assert resp.status_code == 401
 
+    def test_reset_inbound_traffic_501_without_a_local_xray(self, client, auth_headers):
+        """§26: this was the 13th inbound route and the only one with no capability gate.
+
+        On an orchestrator it reached the DB, found no Inbound and raised a bare `Exception`,
+        which the handler could only turn into a 500. The other twelve routes gate first and
+        say where the operation belongs.
+        """
+        from panel_core.api.inbound import XRAY_LOCAL_INBOUND_UNSUPPORTED
+        from panel_core.xray import gateway as gw
+
+        gw.set_xray_gateway(gw.RemoteXrayGateway())
+
+        resp = client.post("/api/inbounds/whatever/reset-traffic", headers=auth_headers)
+
+        assert resp.status_code == 501
+        assert resp.get_json() == {"error": XRAY_LOCAL_INBOUND_UNSUPPORTED}
+
+    def test_reset_inbound_traffic_unknown_tag_is_400_not_500(self, client, auth_headers):
+        """`reset_inbound_traffic` raised a bare Exception for a missing row.
+
+        The project contract is that user-facing validation failures are `ValueError` and reach
+        the caller as 400; a bare Exception is reserved for genuine server faults.
+        """
+        resp = client.post("/api/inbounds/does-not-exist/reset-traffic", headers=auth_headers)
+
+        assert resp.status_code == 400
+        assert resp.get_json() == {"error": "Inbound not found"}
+
 
 class TestBulkCrossPanelRouting:
     def test_bulk_delete_routes_remote_group_and_keeps_local(self, app, client, auth_headers):
@@ -931,9 +991,9 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-local", email="loc1")
 
         with (
-            patch("app.api.inbound.bulk_delete_users", return_value=1) as mock_local,
+            patch("panel_core.api.inbound.bulk_delete_users", return_value=1) as mock_local,
             patch(
-                "app.services.panel_proxy.proxy_bulk_delete_users",
+                "panel_core.services.panel_proxy.proxy_bulk_delete_users",
                 return_value={"status": "deleted", "count": 2},
             ) as mock_remote,
         ):
@@ -962,9 +1022,9 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-local2", email="keep")
 
         with (
-            patch("app.api.inbound.bulk_delete_users", return_value=1),
+            patch("panel_core.api.inbound.bulk_delete_users", return_value=1),
             patch(
-                "app.services.panel_proxy.proxy_bulk_delete_users",
+                "panel_core.services.panel_proxy.proxy_bulk_delete_users",
                 side_effect=ValueError("Panel 'child' is offline"),
             ),
         ):
@@ -989,7 +1049,7 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-en", email="e1", enable=False)
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_enable_users",
+            "panel_core.services.panel_proxy.proxy_bulk_enable_users",
             return_value={"status": "ok", "count": 3},
         ) as mock_remote:
             resp = client.post(
@@ -1015,7 +1075,7 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-adj", email="a1", expiry_time=now_ms)
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_adjust_days",
+            "panel_core.services.panel_proxy.proxy_bulk_adjust_days",
             return_value={"status": "ok", "updated": 2, "skipped": 1},
         ) as mock_remote:
             resp = client.post(
@@ -1042,7 +1102,7 @@ class TestBulkCrossPanelRouting:
         _make_client(inbound_tag="xp-tr", email="t1", limit_bytes=1024**3)
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_adjust_traffic",
+            "panel_core.services.panel_proxy.proxy_bulk_adjust_traffic",
             return_value={"status": "ok", "updated": 1, "skipped": 0},
         ) as mock_remote:
             resp = client.post(
@@ -1062,13 +1122,13 @@ class TestBulkCrossPanelRouting:
         assert resp.get_json()["updated"] == 2
         mock_remote.assert_called_once_with(6, [{"tag": "rem-in", "email": "r1"}], 5, "add")
 
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_bulk_reset_routes_remote_group(self, mock_local, app, client, auth_headers):
         _make_inbound(tag="xp-rst", port=2106)
         _make_client(inbound_tag="xp-rst", email="rs1")
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_reset_traffic",
+            "panel_core.services.panel_proxy.proxy_bulk_reset_traffic",
             return_value={"status": "reset"},
         ) as mock_remote:
             resp = client.post(
@@ -1086,10 +1146,10 @@ class TestBulkCrossPanelRouting:
         mock_local.assert_called_once_with("xp-rst", "rs1")
         mock_remote.assert_called_once_with(3, [{"tag": "rem-in", "email": "r1"}])
 
-    @patch("app.api.inbound.reset_user_traffic")
+    @patch("panel_core.api.inbound.reset_user_traffic")
     def test_single_reset_with_panel_id_proxies(self, mock_local, app, client, auth_headers):
         with patch(
-            "app.services.panel_proxy.proxy_bulk_reset_traffic",
+            "panel_core.services.panel_proxy.proxy_bulk_reset_traffic",
             return_value={"status": "reset"},
         ) as mock_remote:
             resp = client.post(
@@ -1194,7 +1254,7 @@ class TestBulkSetFlow:
         _make_client(inbound_tag="fl-loc", email="f1", flow="")
 
         with patch(
-            "app.services.panel_proxy.proxy_bulk_set_flow",
+            "panel_core.services.panel_proxy.proxy_bulk_set_flow",
             return_value={"status": "ok", "updated": 2, "skipped": 1},
         ) as mock_remote:
             resp = client.post(

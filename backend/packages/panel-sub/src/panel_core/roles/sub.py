@@ -1,0 +1,27 @@
+import os
+
+from panel_core.app_base import build_base_app, db_path
+from panel_core.panel_role import ROLE_SUB
+from panel_core.xray.gateway import NullXrayGateway, set_xray_gateway, xray_gateway_configured
+
+
+def create_app():
+    app = build_base_app(ROLE_SUB)
+    sqlite_path = db_path()
+
+    if not xray_gateway_configured():
+        set_xray_gateway(NullXrayGateway())
+
+    from panel_core.api import subscription
+
+    app.register_blueprint(subscription.bp, url_prefix="/api")
+
+    index_path = subscription.sub_page_index_path()
+    if not os.path.isfile(index_path):
+        app.logger.error(
+            "subscription page bundle missing at %s — the page answers 503; config delivery is unaffected",
+            index_path,
+        )
+
+    app.logger.info("backend ready (db=%s, no scheduled jobs on this role)", sqlite_path)
+    return app

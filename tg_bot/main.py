@@ -8,10 +8,9 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import config
-from api_service import panel_api
 from backend_client import BackendClient
 from bot_events_consumer import run_consumer
-from handlers import admin, catalog, user
+from handlers import catalog, user
 from i18n import I18n
 from middleware import LangMiddleware
 from runtime_config import runtime_config
@@ -32,6 +31,15 @@ def _build_bot() -> Bot:
     )
 
 
+async def _report_identity(bot) -> None:
+    try:
+        me = await bot.get_me()
+    except Exception as exc:
+        logger.warning("could not ask Telegram for this bot's username: %s", exc)
+        return
+    runtime_config.set_bot_username(me.username or "")
+
+
 async def main() -> None:
     logging.basicConfig(
         level=getattr(logging, config.BOT_LOG_LEVEL, logging.INFO),
@@ -49,7 +57,6 @@ async def main() -> None:
             await asyncio.sleep(3600)
 
     await runtime_config.bootstrap()
-    await panel_api.reload_from_runtime()
 
     bot = _build_bot()
     dp = Dispatcher(storage=MemoryStorage())
@@ -61,17 +68,12 @@ async def main() -> None:
     dp.message.middleware(middleware)
     dp.callback_query.middleware(middleware)
 
-    dp.include_router(admin.router)
     dp.include_router(user.router)
     dp.include_router(catalog.router)
 
     state: dict[str, object] = {"bot": bot}
 
     async def on_runtime_change(session_changed: bool) -> None:
-        try:
-            await panel_api.reload_from_runtime()
-        except Exception as exc:
-            logger.exception("runtime-change: panel_api reload failed: %s", exc)
         if not session_changed:
             return
 
@@ -88,6 +90,7 @@ async def main() -> None:
 
         new_bot = _build_bot()
         state["bot"] = new_bot
+        await _report_identity(new_bot)
         try:
             await new_bot.delete_webhook(drop_pending_updates=True)
         except Exception as exc:
@@ -96,7 +99,9 @@ async def main() -> None:
 
     runtime_config.set_change_listener(on_runtime_change)
     refresh_task = asyncio.create_task(runtime_config.refresh_loop())
-    consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware))
+    consumer_task = asyncio.create_task(run_consumer(lambda: state["bot"], i18n, middleware, backend=backend))
+
+    await _report_identity(bot)
 
     logger.info("bot started, polling Telegram")
     try:
@@ -111,7 +116,6 @@ async def main() -> None:
             except (asyncio.CancelledError, Exception):
                 pass
         await backend.close()
-        await panel_api.close()
         await runtime_config.close()
         try:
             await state["bot"].session.close()  # type: ignore[union-attr]

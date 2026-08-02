@@ -1,0 +1,125 @@
+services:
+  redis:
+    image: ${REDIS_IMAGE:?REDIS_IMAGE is required}
+    container_name: panel-redis
+    restart: always
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - redis-net
+
+  backend:
+    image: ${MASTER_IMAGE:?MASTER_IMAGE is required}
+    container_name: panel-backend
+    restart: always
+    volumes:
+      - ./ca.crt:/etc/ssl/panel-ca.crt:ro
+      - ./db_data:/app/db
+    environment:
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - GRPC_DNS_RESOLVER=native
+      - PYTHONUNBUFFERED=1
+      - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
+      - PANEL_USER=${PANEL_ADMIN_USER:-admin}
+      - PANEL_PASSWORD=${PANEL_ADMIN_PASSWORD:?PANEL_ADMIN_PASSWORD is required}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - RATELIMIT_STORAGE_URI=${RATELIMIT_STORAGE_URI:-redis://redis:6379/0}
+      - SHARED_REDIS_URI=${SHARED_REDIS_URI:?SHARED_REDIS_URI is required}
+      - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
+      - EGRESS_INTERNAL_TOKEN=${EGRESS_INTERNAL_TOKEN:-}
+      - FEDERATION_ALLOW_PRIVATE_URLS=${FEDERATION_ALLOW_PRIVATE_URLS:-}
+      - PANEL_ROLE=master
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL is required}
+    env_file:
+      - .env
+    command: gunicorn --bind 0.0.0.0:5000 -w 1 -k gevent --timeout 120 "panel_core.roles.master:create_app()"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3).read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - panel-net
+      - redis-net
+
+  frontend:
+    image: ${FRONTEND_ADMIN_IMAGE:?FRONTEND_ADMIN_IMAGE is required}
+    container_name: panel-frontend
+    restart: always
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1/${PANEL_SECRET_PATH}/ >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - PANEL_ROLE=master
+    networks:
+      - panel-net
+
+  caddy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE is required}
+    container_name: panel-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/routes.yaml:/etc/caddy/routes.yaml:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+      - ACME_CA=${ACME_CA:-}
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks:
+      - panel-net
+
+networks:
+  panel-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          ip_range: 172.28.0.0/25
+          gateway: 172.28.0.1
+  redis-net:
+    driver: bridge
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:

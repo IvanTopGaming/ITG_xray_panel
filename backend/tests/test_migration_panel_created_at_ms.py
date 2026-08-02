@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from db_migration import _apply_data_fixups
+from panel_core.db_migration import _apply_data_fixups
 
 
 @pytest.fixture

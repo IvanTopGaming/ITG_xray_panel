@@ -26,4 +26,14 @@ envsubst '${PANEL_SECRET_PATH}' < /etc/nginx/templates/default.conf.template > /
 
 sed -i "s|<base href=\"/\"|<base href=\"/$PANEL_SECRET_PATH/\"|g" /usr/share/nginx/html/index.html
 
+PANEL_ROLE="${PANEL_ROLE:-master}"
+PANEL_ROLE=$(printf "%s" "$PANEL_ROLE" | tr "[:upper:]" "[:lower:]")
+set -- $PANEL_ROLE
+PANEL_ROLE="${1:-master}"
+case "$PANEL_ROLE" in
+  worker) : ;;
+  *) PANEL_ROLE=master ;;
+esac
+sed -i "s|<meta name=\"panel-role\" content=\"__PANEL_ROLE__\"|<meta name=\"panel-role\" content=\"$PANEL_ROLE\"|g" /usr/share/nginx/html/index.html
+
 exec nginx -g "daemon off;"

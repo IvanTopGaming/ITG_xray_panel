@@ -1,0 +1,404 @@
+import calendar
+import ipaddress
+import os
+import re
+import logging
+import threading
+from datetime import datetime
+import json
+from panel_core.models import Inbound, Client, NotificationLog
+from panel_core.extensions import db, scheduler
+from panel_core.xray.grpc_client import (
+    grpc,
+    stats_command_pb2,
+    stats_command_pb2_grpc,
+    get_channel,
+    _close_channel,
+)
+from panel_core.xray.facade import (
+    generate_config_file,
+    restart_xray_container,
+    _api_add_user_grpc,  # noqa: F401 — re-exported for consumers importing it from this module
+    _api_remove_user_grpc,
+)
+from panel_core.xray.engine import ACCESS_LOG_PATH, ERROR_LOG_PATH
+from panel_core.services.reality_health import record_failures
+from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
+from panel_core.services.traffic_store import (  # noqa: F401 — re-exported under the original names
+    _ten_min_bucket,
+    _upsert_snapshot,
+    _upsert_domain_stat,
+    bulk_delete_users,
+    cleanup_old_domain_stats,
+    cleanup_stats_job,
+    reset_inbound_traffic,
+    reset_user_traffic,
+)
+
+ACCESS_LOG_OFFSET_PATH = f"{ACCESS_LOG_PATH}.offset"
+REALITY_OFFSET_PATH = f"{ERROR_LOG_PATH}.reality.offset"
+_REALITY_REFUSED = "REALITY: processed invalid connection"
+logger = logging.getLogger(__name__)
+
+
+_RESET_LOCK = threading.Lock()
+
+
+_ACCEPT_FULL = re.compile(
+    r"(\d{1,3}(?:\.\d{1,3}){3}):\d+\s+accepted\s+"
+    r"(?:[a-zA-Z]+:)?([^\s:]+):\d+.*?email:\s+(\S+)"
+)
+_ACCEPT_BASIC = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3}):\d+\s+accepted\s+.*?email:\s+(\S+)")
+
+
+def _is_ip_address(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
+
+
+def sync_traffic_stats():
+
+    inbounds = Inbound.query.all()
+    clients = Client.query.filter_by(enable=True).all()
+    if not inbounds:
+        return
+
+    try:
+        channel = get_channel()
+        stub = stats_command_pb2_grpc.StatsServiceStub(channel)
+    except grpc.RpcError as e:
+        _close_channel()
+        logger.info("Traffic sync failed (channel init): %s", e)
+        return
+
+    def _query_pair(pattern_up: str, pattern_down: str) -> tuple[int, int] | None:
+        try:
+            with _RESET_LOCK:
+                u = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_up, reset=True), timeout=1)
+                d = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern_down, reset=True), timeout=1)
+        except grpc.RpcError:
+            return None
+        up_delta = u.stat[0].value if u.stat else 0
+        down_delta = d.stat[0].value if d.stat else 0
+        return up_delta, down_delta
+
+    user_deltas: list[tuple[Client, int, int]] = []
+    inbound_deltas: list[tuple[Inbound, int, int]] = []
+
+    for c in clients:
+        runtime_email = build_runtime_email(c.inbound_tag, c.email)
+        pair = _query_pair(
+            f"user>>>{runtime_email}>>>traffic>>>uplink",
+            f"user>>>{runtime_email}>>>traffic>>>downlink",
+        )
+        if pair is None:
+            continue
+        up_d, down_d = pair
+        if up_d or down_d:
+            user_deltas.append((c, up_d, down_d))
+
+    for ib in inbounds:
+        pair = _query_pair(
+            f"inbound>>>{ib.tag}>>>traffic>>>uplink",
+            f"inbound>>>{ib.tag}>>>traffic>>>downlink",
+        )
+        if pair is None:
+            continue
+        up_d, down_d = pair
+        if up_d or down_d:
+            inbound_deltas.append((ib, up_d, down_d))
+
+    if not user_deltas and not inbound_deltas:
+        return
+
+    bucket = _ten_min_bucket(datetime.now())
+    for c, up_d, down_d in user_deltas:
+        c.up += up_d
+        c.down += down_d
+        _upsert_snapshot("user", c.email, c.inbound_tag, bucket, up_d, down_d)
+    for ib, up_d, down_d in inbound_deltas:
+        ib.up += up_d
+        ib.down += down_d
+        _upsert_snapshot("inbound", ib.tag, "", bucket, up_d, down_d)
+    db.session.commit()
+
+    try:
+        from panel_core.services.notifications import emit_if_new, evaluate_traffic
+
+        for c, _up_d, _down_d in user_deltas:
+            if c.telegram_id is None:
+                continue
+            kind = evaluate_traffic(c)
+            if kind is None:
+                continue
+            used_bytes = (c.up or 0) + (c.down or 0)
+            emit_if_new(
+                "traffic_notification",
+                kind,
+                c,
+                {
+                    "used_bytes": used_bytes,
+                    "limit_bytes": c.limit_bytes,
+                    "limit_kind": "per_inbound",
+                    "pct": round(used_bytes / c.limit_bytes, 4),
+                },
+            )
+    except Exception as e:
+        logger.warning("traffic notification pass failed: %s", e)
+
+
+def check_limits_and_reset():
+
+    clients = Client.query.filter_by(enable=True).all()
+    now_dt = datetime.now()
+    now_ts = int(now_dt.timestamp() * 1000)
+    current_day = now_dt.day
+
+    to_reset: list[Client] = []
+    to_disable: list[tuple[Client, str]] = []
+
+    days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
+
+    for c in clients:
+        effective_reset_day = min(c.reset_day, days_in_month) if c.reset_day > 0 else 0
+        if effective_reset_day > 0 and effective_reset_day == current_day:
+            last_reset_dt = None
+            if c.last_reset_time and c.last_reset_time > 0:
+                try:
+                    last_reset_dt = datetime.fromtimestamp(c.last_reset_time / 1000)
+                except (OSError, OverflowError, ValueError):
+                    last_reset_dt = None
+            already_reset_today = last_reset_dt is not None and last_reset_dt.date() == now_dt.date()
+            if not already_reset_today:
+                to_reset.append(c)
+
+        over_limit = c.limit_bytes > 0 and (c.up + c.down) >= c.limit_bytes
+        expired = c.expiry_time > 0 and now_ts > c.expiry_time
+        if expired or over_limit:
+            to_disable.append((c, "over_limit" if over_limit else "expired"))
+
+    try:
+        from panel_core.services.notifications import emit_if_new, evaluate_expiry
+
+        for c in clients:
+            if c.telegram_id is None:
+                continue
+            kind = evaluate_expiry(c, now_ts)
+            if kind is None:
+                continue
+            emit_if_new(
+                "expiry_notification",
+                kind,
+                c,
+                {"expiry_time_ms": c.expiry_time},
+            )
+    except Exception as e:
+        logger.warning("expiry notification pass failed: %s", e)
+
+    if not to_reset and not to_disable:
+        return
+
+    relevant_tags = {c.inbound_tag for c in to_reset} | {c.inbound_tag for c, _ in to_disable}
+    inbounds_by_tag = (
+        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(relevant_tags)).all()} if relevant_tags else {}
+    )
+
+    if to_reset:
+        try:
+            channel = get_channel()
+            stub = stats_command_pb2_grpc.StatsServiceStub(channel)
+            for c in to_reset:
+                runtime_email = build_runtime_email(c.inbound_tag, c.email)
+                for suffix in ("uplink", "downlink"):
+                    try:
+                        with _RESET_LOCK:
+                            stub.QueryStats(
+                                stats_command_pb2.QueryStatsRequest(
+                                    pattern=f"user>>>{runtime_email}>>>traffic>>>{suffix}",
+                                    reset=True,
+                                )
+                            )
+                    except grpc.RpcError as e:
+                        logger.debug("Failed to reset gRPC %s for %s: %s", suffix, c.email, e)
+        except grpc.RpcError as e:
+            logger.debug("Failed to acquire gRPC channel for monthly reset: %s", e)
+
+    restart_required = False
+    for c, _reason in to_disable:
+        ib = inbounds_by_tag.get(c.inbound_tag)
+        try:
+            if ib and ib.protocol in ("vless", "vmess"):
+                if not _api_remove_user_grpc(c.inbound_tag, c.email):
+                    restart_required = True
+            else:
+                restart_required = True
+        except Exception as e:
+            restart_required = True
+            logger.warning("Failed to process limit disable for %s/%s: %s", c.inbound_tag, c.email, e)
+
+    for c in to_reset:
+        c.up = 0
+        c.down = 0
+        c.last_reset_time = now_ts
+
+        NotificationLog.query.filter(
+            NotificationLog.client_id == c.id,
+            NotificationLog.kind.in_(("traffic_80", "traffic_95", "traffic_exhausted")),
+        ).delete(synchronize_session=False)
+
+    for c, reason in to_disable:
+        c.enable = False
+        logger.info("disabled %s/%s: %s", c.inbound_tag, c.email, reason)
+
+    db.session.commit()
+    generate_config_file()
+    if restart_required:
+        restart_xray_container()
+
+
+def _read_access_offset():
+    try:
+        with open(ACCESS_LOG_OFFSET_PATH, "r", encoding="utf-8") as file_obj:
+            return max(0, int(file_obj.read().strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def _write_access_offset(offset):
+    try:
+        with open(ACCESS_LOG_OFFSET_PATH, "w", encoding="utf-8") as file_obj:
+            file_obj.write(str(max(0, int(offset))))
+    except (OSError, ValueError):
+        logger.debug("Failed to write access log offset", exc_info=True)
+
+
+def _parse_access_logs_logic():
+    if not os.path.exists(ACCESS_LOG_PATH):
+        return
+
+    try:
+        file_size = os.path.getsize(ACCESS_LOG_PATH)
+        offset = _read_access_offset()
+        if offset > file_size:
+            offset = 0
+
+        with open(ACCESS_LOG_PATH, "r", encoding="utf-8", errors="replace") as file_obj:
+            file_obj.seek(offset)
+            logs = file_obj.read()
+            new_offset = file_obj.tell()
+
+        _write_access_offset(new_offset)
+
+        if not logs:
+            return
+
+        ip_updates: dict[str, set] = {}
+        domain_updates: dict[str, dict] = {}
+
+        for line in logs.split("\n"):
+            match = _ACCEPT_FULL.search(line)
+            if match:
+                ip = match.group(1)
+                dest_host = match.group(2)
+                runtime_email = match.group(3)
+            else:
+                match = _ACCEPT_BASIC.search(line)
+                if not match:
+                    continue
+                ip = match.group(1)
+                dest_host = None
+                runtime_email = match.group(2)
+
+            if runtime_email not in ip_updates:
+                ip_updates[runtime_email] = set()
+            ip_updates[runtime_email].add(ip)
+
+            if dest_host and not _is_ip_address(dest_host):
+                if runtime_email not in domain_updates:
+                    domain_updates[runtime_email] = {}
+                domain_updates[runtime_email][dest_host] = domain_updates[runtime_email].get(dest_host, 0) + 1
+
+        if not ip_updates and not domain_updates:
+            return
+
+        now_ts = int(datetime.now().timestamp() * 1000)
+        today_str = datetime.now().date().isoformat()
+        all_emails = set(ip_updates) | set(domain_updates)
+
+        for runtime_email in all_emails:
+            inbound_tag, email = parse_runtime_email(runtime_email)
+            if inbound_tag:
+                matched_clients = Client.query.filter_by(inbound_tag=inbound_tag, email=email).all()
+            else:
+                matched_clients = Client.query.filter_by(email=email).all()
+
+            for c in matched_clients:
+                if runtime_email in ip_updates:
+                    c.last_seen = now_ts
+                    try:
+                        current = json.loads(c.source_ips) if c.source_ips else []
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        current = []
+                    for ip in ip_updates[runtime_email]:
+                        if ip not in current:
+                            current.insert(0, ip)
+                    c.source_ips = json.dumps(current[:10])
+
+                if runtime_email in domain_updates:
+                    for domain, count in domain_updates[runtime_email].items():
+                        _upsert_domain_stat(today_str, domain, c.email, c.inbound_tag, count)
+
+        db.session.commit()
+    except Exception as e:
+        logger.info("Log parsing error: %s", e)
+
+
+def sync_traffic_job():
+    with scheduler.app.app_context():
+        sync_traffic_stats()
+
+
+def check_limits_job():
+    with scheduler.app.app_context():
+        check_limits_and_reset()
+
+
+def _collect_reality_failures_logic():
+    """Counts refused REALITY handshakes since the last run — see services.reality_health."""
+
+    if not os.path.exists(ERROR_LOG_PATH):
+        return 0
+    try:
+        size = os.path.getsize(ERROR_LOG_PATH)
+        offset = 0
+        try:
+            with open(REALITY_OFFSET_PATH, "r", encoding="utf-8") as fh:
+                offset = max(0, int(fh.read().strip()))
+        except (OSError, ValueError):
+            offset = 0
+        if offset > size:
+            offset = 0
+        with open(ERROR_LOG_PATH, "r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            chunk = fh.read()
+            new_offset = fh.tell()
+        with open(REALITY_OFFSET_PATH, "w", encoding="utf-8") as fh:
+            fh.write(str(new_offset))
+    except OSError:
+        logger.debug("Failed to read the Xray error log", exc_info=True)
+        return 0
+
+    return record_failures(chunk.count(_REALITY_REFUSED) if chunk else 0)
+
+
+def parse_access_logs():
+    with scheduler.app.app_context():
+        _parse_access_logs_logic()
+        try:
+            _collect_reality_failures_logic()
+        except Exception:
+            db.session.rollback()
+            logger.debug("Failed to collect REALITY handshake failures", exc_info=True)

@@ -1,14 +1,26 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
+ARG UI_PACKAGE
+
+RUN test -n "$UI_PACKAGE" || { \
+        echo "UI_PACKAGE build-arg is required (admin or node)" >&2; \
+        exit 1; \
+    }
+
 COPY package.json package-lock.json ./
+COPY packages/ui-core/package.json packages/ui-core/
+COPY packages/admin/package.json packages/admin/
+COPY packages/node/package.json packages/node/
+COPY packages/sub-page/package.json packages/sub-page/
 
 RUN npm ci
 
 COPY . .
 COPY --from=project versions.json ./versions.json
 
-RUN npm run build
+RUN npm run build --workspace "@panel/$UI_PACKAGE" && \
+    cp -r "packages/$UI_PACKAGE/dist" /app/dist
 
 FROM nginx:alpine
 

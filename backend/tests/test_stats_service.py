@@ -7,11 +7,11 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
-from app.models import Client, DomainStat, Inbound, NotificationLog
+from panel_core.models import Client, DomainStat, Inbound, NotificationLog
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
-from app.services.stats import (
+from panel_core.services.stats import (
     _is_ip_address,
     _ten_min_bucket,
     check_limits_and_reset,
@@ -130,10 +130,10 @@ class TestIsIpAddress:
 
 
 _GRPC_PATCHES = {
-    "get_channel": "app.services.stats.get_channel",
-    "remove_grpc": "app.services.stats._api_remove_user_grpc",
-    "gen_config": "app.services.stats.generate_config_file",
-    "restart": "app.services.stats.restart_xray_container",
+    "get_channel": "panel_core.services.stats.get_channel",
+    "remove_grpc": "panel_core.services.stats._api_remove_user_grpc",
+    "gen_config": "panel_core.services.stats.generate_config_file",
+    "restart": "panel_core.services.stats.restart_xray_container",
 }
 
 
@@ -297,7 +297,7 @@ class TestCheckLimitsMonthlyReset:
             patch(_GRPC_PATCHES["gen_config"]),
             patch(_GRPC_PATCHES["restart"]),
             patch(
-                "app.services.stats.stats_command_pb2_grpc.StatsServiceStub",
+                "panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub",
                 return_value=mock_stub,
             ),
         ):
@@ -399,7 +399,7 @@ class TestCheckLimitsClearsNotifications:
             patch(_GRPC_PATCHES["gen_config"]),
             patch(_GRPC_PATCHES["restart"]),
             patch(
-                "app.services.stats.stats_command_pb2_grpc.StatsServiceStub",
+                "panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub",
                 return_value=mock_stub,
             ),
         ):
@@ -455,16 +455,16 @@ class TestParseAccessLogs:
             enable=True,
         )
 
-        from app.services.runtime_identity import build_runtime_email
+        from panel_core.services.runtime_identity import build_runtime_email
 
         runtime = build_runtime_email("DE-vless", "user1")
         log_line = f"2025/06/15 14:30:00 192.168.1.10:54321 accepted tcp:example.com:443 [DE-vless] email: {runtime}\n"
 
         with (
-            patch("app.services.stats.os.path.exists", return_value=True),
-            patch("app.services.stats.os.path.getsize", return_value=len(log_line)),
-            patch("app.services.stats._read_access_offset", return_value=0),
-            patch("app.services.stats._write_access_offset"),
+            patch("panel_core.services.stats.os.path.exists", return_value=True),
+            patch("panel_core.services.stats.os.path.getsize", return_value=len(log_line)),
+            patch("panel_core.services.stats._read_access_offset", return_value=0),
+            patch("panel_core.services.stats._write_access_offset"),
             patch("builtins.open", mock_open(read_data=log_line)),
         ):
             _parse_access_logs_logic()
@@ -485,7 +485,7 @@ class TestParseAccessLogs:
             enable=True,
         )
 
-        from app.services.runtime_identity import build_runtime_email
+        from panel_core.services.runtime_identity import build_runtime_email
 
         runtime = build_runtime_email("DE-vless", "user1")
         log_line = (
@@ -493,10 +493,10 @@ class TestParseAccessLogs:
         )
 
         with (
-            patch("app.services.stats.os.path.exists", return_value=True),
-            patch("app.services.stats.os.path.getsize", return_value=len(log_line)),
-            patch("app.services.stats._read_access_offset", return_value=0),
-            patch("app.services.stats._write_access_offset"),
+            patch("panel_core.services.stats.os.path.exists", return_value=True),
+            patch("panel_core.services.stats.os.path.getsize", return_value=len(log_line)),
+            patch("panel_core.services.stats._read_access_offset", return_value=0),
+            patch("panel_core.services.stats._write_access_offset"),
             patch("builtins.open", mock_open(read_data=log_line)),
         ):
             _parse_access_logs_logic()
@@ -550,7 +550,7 @@ class TestResetUserTraffic:
         with (
             patch(_GRPC_PATCHES["get_channel"], return_value=MagicMock()),
             patch(
-                "app.services.stats.stats_command_pb2_grpc.StatsServiceStub",
+                "panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub",
                 return_value=mock_stub,
             ),
         ):
@@ -696,9 +696,9 @@ class TestSyncTrafficTransactionShape:
         stub.QueryStats.side_effect = _on_query
 
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
-            patch("app.services.stats._upsert_snapshot", side_effect=_on_upsert),
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
+            patch("panel_core.services.stats._upsert_snapshot", side_effect=_on_upsert),
         ):
             sync_traffic_stats()
 
@@ -722,8 +722,8 @@ class TestSyncTrafficCorrectness:
         stub = _make_stats_stub(per_call_value=1000)
 
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
         ):
             sync_traffic_stats()
 
@@ -740,8 +740,8 @@ class TestSyncTrafficCorrectness:
         stub = _make_stats_stub(per_call_value=2000)
 
         with (
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
         ):
             sync_traffic_stats()
 
@@ -751,8 +751,8 @@ class TestSyncTrafficCorrectness:
 
     def test_no_clients_no_inbounds_returns_early(self, app, db):
         with (
-            patch("app.services.stats.get_channel") as mock_channel,
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub") as mock_stub_cls,
+            patch("panel_core.services.stats.get_channel") as mock_channel,
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub") as mock_stub_cls,
         ):
             sync_traffic_stats()
 
@@ -803,11 +803,11 @@ class TestCheckLimitsTransactionShape:
 
         with (
             _SqlOrderRecorder(order),
-            patch("app.services.stats.get_channel", return_value=MagicMock()),
-            patch("app.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
-            patch("app.services.stats._api_remove_user_grpc", side_effect=_on_grpc_remove),
-            patch("app.services.stats.generate_config_file"),
-            patch("app.services.stats.restart_xray_container"),
+            patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
+            patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
+            patch("panel_core.services.stats._api_remove_user_grpc", side_effect=_on_grpc_remove),
+            patch("panel_core.services.stats.generate_config_file"),
+            patch("panel_core.services.stats.restart_xray_container"),
         ):
             check_limits_and_reset()
 
@@ -819,3 +819,68 @@ class TestCheckLimitsTransactionShape:
             f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
             f"This holds the SQLite write lock across gRPC calls. Order: {order}"
         )
+
+
+def test_reset_user_traffic_goes_through_the_gateway(app, db):
+    from unittest.mock import MagicMock, patch
+
+    from panel_core.extensions import db as _db
+    from panel_core.models import Client, Inbound
+    from panel_core.services.stats import reset_user_traffic
+
+    _db.session.add(Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}"))
+    _db.session.add(Client(id="c1", email="u1", inbound_tag="DE-vless", up=500, down=500, enable=True, expiry_time=0))
+    _db.session.commit()
+
+    gateway = MagicMock()
+    gateway.has_local_xray.return_value = True
+    with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
+        reset_user_traffic("DE-vless", "u1")
+
+    gateway.reset_user_counters.assert_called_once()
+    client = Client.query.filter_by(inbound_tag="DE-vless", email="u1").first()
+    assert (client.up, client.down) == (0, 0)
+
+
+def test_reset_user_traffic_skips_xray_without_local_instance(app, db):
+    from unittest.mock import MagicMock, patch
+
+    from panel_core.extensions import db as _db
+    from panel_core.models import Client, Inbound
+    from panel_core.services.stats import reset_user_traffic
+
+    _db.session.add(Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}"))
+    _db.session.add(Client(id="c2", email="u2", inbound_tag="DE-vless", up=500, down=500, enable=True, expiry_time=0))
+    _db.session.commit()
+
+    gateway = MagicMock()
+    gateway.has_local_xray.return_value = False
+    with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
+        reset_user_traffic("DE-vless", "u2")
+
+    gateway.reset_user_counters.assert_not_called()
+    client = Client.query.filter_by(inbound_tag="DE-vless", email="u2").first()
+    assert (client.up, client.down) == (0, 0)
+
+
+def test_bulk_delete_users_goes_through_the_gateway(app, db):
+    from unittest.mock import MagicMock, patch
+
+    from panel_core.extensions import db as _db
+    from panel_core.models import Client, Inbound
+    from panel_core.services.stats import bulk_delete_users
+
+    _db.session.add(Inbound(tag="DE-vless", protocol="vless", port=10001, stream_settings="{}"))
+    _db.session.add(Client(id="c3", email="u3", inbound_tag="DE-vless", enable=True, expiry_time=0))
+    _db.session.commit()
+
+    gateway = MagicMock()
+    gateway.has_local_xray.return_value = True
+    gateway.remove_user.return_value = True
+    with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
+        deleted = bulk_delete_users([{"tag": "DE-vless", "email": "u3"}])
+
+    assert deleted == 1
+    gateway.apply_config.assert_called_once()
+    gateway.remove_user.assert_called_once_with("DE-vless", "u3")
+    assert Client.query.filter_by(email="u3").first() is None

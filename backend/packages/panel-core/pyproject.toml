@@ -1,0 +1,28 @@
+[project]
+name = "panel-core"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "flask",
+    "flask-cors",
+    "pyjwt",
+    "gunicorn",
+    "gevent",
+    "flask-limiter",
+    "redis",
+    "flask-sqlalchemy",
+    "flask-migrate",
+    "flask-apscheduler",
+    "requests",
+    "pyyaml",
+    "cryptography",
+    "psycopg2-binary==2.9.10",
+    "psycogreen==1.0.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/panel_core"]

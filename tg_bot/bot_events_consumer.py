@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -37,29 +38,84 @@ async def _resolve_bot(source: BotSource) -> Bot:
 
 
 def _redis_uri() -> Optional[str]:
-    raw = (os.getenv("RATELIMIT_STORAGE_URI") or "").strip()
-    if raw.startswith("redis://"):
+    raw = (os.getenv("SHARED_REDIS_URI") or "").strip()
+    if raw.startswith(("redis://", "rediss://")):
         return raw
     return None
 
 
-def _format_expires_at(expires_at_ms: Optional[int]) -> str:
-    if not expires_at_ms:
+_NODE_EVENT_TYPES = ("expiry_notification", "traffic_notification")
+
+
+_SCOPE_MAX = 200
+
+
+def _bounded_scope(scope: str) -> str:
+    if len(scope) <= _SCOPE_MAX:
+        return scope
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+    return scope[: _SCOPE_MAX - len(digest) - 1] + "|" + digest
+
+
+def _claim_scope(etype: str, payload: dict) -> str:
+    client_scope = "{}/{}/{}".format(
+        payload.get("node", ""),
+        payload.get("inbound_tag", ""),
+        payload.get("email", ""),
+    )
+    if etype == "traffic_notification":
+        return _bounded_scope("{}/{}".format(client_scope, payload.get("cycle") or 0))
+    if payload.get("tariff_id"):
+        return ""
+    return _bounded_scope(client_scope)
+
+
+async def _resolve_claim(etype, tg_id, payload, backend) -> tuple[bool, str, bool]:
+    if backend is None:
+        return True, payload.get("lang", "ru"), bool(payload.get("renewable"))
+    try:
+        verdict = await backend.claim_notification(
+            telegram_id=int(tg_id),
+            kind=payload.get("kind", ""),
+            tariff_id=payload.get("tariff_id"),
+            scope=_claim_scope(etype, payload),
+        )
+    except Exception as exc:
+        logger.warning("claim failed for %s/%s: %s - sending anyway", tg_id, etype, exc)
+        return True, "ru", False
+    return bool(verdict.get("claimed")), verdict.get("lang", "ru"), bool(verdict.get("renewable"))
+
+
+async def _format_expires_at(expires_at_ms: Optional[int], *, i18n: I18n, lang: str) -> str:
+    if expires_at_ms is None:
         return "?"
+    try:
+        value = int(expires_at_ms)
+    except (TypeError, ValueError):
+        return "?"
+    if value <= 0:
+        return await i18n.t("stats.expiry.permanent", lang)
     try:
         tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
     except Exception:
         tz = ZoneInfo("UTC")
-    d = dt.datetime.fromtimestamp(expires_at_ms / 1000, tz=tz)
+    d = dt.datetime.fromtimestamp(value / 1000, tz=tz)
     return d.strftime("%d.%m.%Y %H:%M")
 
 
-async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, middleware) -> None:
+async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, middleware, backend=None) -> None:
     bot = await _resolve_bot(bot_source)
     etype = event.get("type")
     tg_id = event.get("telegram_id")
     payload = event.get("payload") or {}
     lang = payload.get("lang", "ru")
+
+    if etype in _NODE_EVENT_TYPES:
+        claimed, lang, renewable = await _resolve_claim(etype, tg_id, payload, backend)
+        if not claimed:
+            return
+    else:
+        renewable = bool(payload.get("renewable"))
 
     if etype == "texts_changed":
         target_lang = payload.get("lang")
@@ -81,7 +137,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         text = await i18n.t(
             "notification.payment_succeeded",
             lang,
-            expires=_format_expires_at(payload.get("expires_at_ms")),
+            expires=await _format_expires_at(payload.get("expires_at_ms"), i18n=i18n, lang=lang),
         )
         subs_label = await i18n.t("menu.subscription", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -101,6 +157,11 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         tariffs_label = await i18n.t("menu.tariffs", lang)
         back_label = await i18n.t("common.back_to_main", lang)
         markup = kb.payment_retry_kb(tariffs_label=tariffs_label, back_label=back_label)
+    elif etype == "sub_link_reset":
+        text = await i18n.t("notification.sub_link_reset", lang)
+        subs_label = await i18n.t("menu.subscription", lang)
+        back_label = await i18n.t("common.back_to_main", lang)
+        markup = kb.trial_success_kb(subs_label=subs_label, back_label=back_label)
     elif etype == "access_renewed":
         text = await i18n.t("notification.access_renewed", lang)
     elif etype == "access_paused":
@@ -117,7 +178,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             "notification.access_granted",
             lang,
             tariff_name=h(payload.get("tariff_name", "")),
-            expires=_format_expires_at(payload.get("expires_at_ms")),
+            expires=await _format_expires_at(payload.get("expires_at_ms"), i18n=i18n, lang=lang),
         )
         subs_label = await i18n.t("menu.subscription", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -127,7 +188,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             "notification.access_granted_once",
             lang,
             tariff_name=h(payload.get("tariff_name", "")),
-            expires=_format_expires_at(payload.get("expires_at_ms")),
+            expires=await _format_expires_at(payload.get("expires_at_ms"), i18n=i18n, lang=lang),
         )
         subs_label = await i18n.t("menu.subscription", lang)
         back_label = await i18n.t("common.back_to_main", lang)
@@ -155,12 +216,12 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             key,
             lang,
             email=payload.get("email", ""),
-            expires=_format_expires_at(payload.get("expiry_time_ms")),
+            expires=await _format_expires_at(payload.get("expiry_time_ms"), i18n=i18n, lang=lang),
         )
 
         rows = []
         tariff_id = payload.get("tariff_id")
-        if payload.get("renewable") and tariff_id:
+        if renewable and tariff_id:
             renew_label = await i18n.t("notification.button.renew", lang)
             rows.append([_types.InlineKeyboardButton(text=renew_label, callback_data=f"buy:{tariff_id}")])
         home_label = await i18n.t("common.back_to_main", lang)
@@ -195,7 +256,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         )
         rows = []
         tariff_id = payload.get("tariff_id")
-        if payload.get("renewable") and tariff_id:
+        if renewable and tariff_id:
             renew_label = await i18n.t("notification.button.renew", lang)
             rows.append([_types.InlineKeyboardButton(text=renew_label, callback_data=f"buy:{tariff_id}")])
         home_label = await i18n.t("common.back_to_main", lang)
@@ -222,7 +283,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         logger.warning("bot_events.send to %s failed: %s", tg_id, exc)
 
 
-async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None) -> None:
+async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None, backend=None) -> None:
     uri = _redis_uri()
     if uri is None:
         logger.warning("bot_events_consumer: no redis URI; events disabled")
@@ -253,7 +314,7 @@ async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None) -> No
                     event = json.loads(raw["data"])
                 except Exception:
                     continue
-                await _handle(event, bot_source, i18n, middleware)
+                await _handle(event, bot_source, i18n, middleware, backend)
         except asyncio.CancelledError:
             return
         except Exception as exc:

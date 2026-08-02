@@ -4,15 +4,15 @@ import uuid
 import jwt
 import pytest
 
-from app.extensions import db
-from app.models import Admin, Client, DomainStat, Inbound, TrafficSnapshot
-from app.utils import SECRET_KEY
+from panel_core.extensions import db
+from panel_core.models import Admin, Client, DomainStat, Inbound, TrafficSnapshot
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app(app):
 
-    from app.api import statistics as stats_api
+    from panel_core.api import statistics as stats_api
 
     if not any(bp.name == "statistics" for bp in app.blueprints.values()):
         app.register_blueprint(stats_api.bp, url_prefix="/api")
@@ -570,7 +570,7 @@ class TestDomainUsers:
 
 class TestTopDomainsCoveringIndex:
     def test_models_define_cover_indexes(self, app):
-        from app.models import DomainStat, TrafficSnapshot
+        from panel_core.models import DomainStat, TrafficSnapshot
 
         ds_indexes = {ix.name: [c.name for c in ix.columns] for ix in DomainStat.__table__.indexes}
         ts_indexes = {ix.name: [c.name for c in ix.columns] for ix in TrafficSnapshot.__table__.indexes}
@@ -594,8 +594,8 @@ class TestTopDomainsCoveringIndex:
     def test_top_domains_query_uses_covering_index(self, app, client, admin_token):
         from sqlalchemy import text
 
-        from app.api.statistics import _top_domains_sql
-        from app.extensions import db
+        from panel_core.api.statistics import _top_domains_sql
+        from panel_core.extensions import db
 
         _seed_domain_stat("example.com", "2026-06-01", 5)
 
@@ -606,6 +606,42 @@ class TestTopDomainsCoveringIndex:
 
         assert "ix_ds_date_domain_cover" in plan
         assert "COVERING INDEX" in plan
+
+    def test_the_sqlite_only_hint_is_not_emitted_for_postgres(self):
+        """INFRA §20: `INDEXED BY` is SQLite syntax; Postgres answers 500, not zeroes.
+
+        The hint is not decorative -- `domain_stat` also carries `ix_ds_domain`, and without the
+        hint SQLite's planner picks that one and stops covering the query (the test above fails).
+        So it cannot simply be deleted; it has to be emitted only where it parses.
+        """
+
+        from unittest.mock import patch
+
+        from panel_core.api.statistics import _top_domains_sql
+
+        class _PgBind:
+            class dialect:
+                name = "postgresql"
+
+        with patch("panel_core.api.statistics.db.session.get_bind", return_value=_PgBind()):
+            sql, _ = _top_domains_sql("2026-05-01", None, "", "")
+
+        assert "INDEXED BY" not in sql, (
+            f"the SQLite-only optimizer hint reaches Postgres, where it is a syntax error: {sql}"
+        )
+        assert "FROM domain_stat WHERE" in sql
+
+    def test_an_unknown_dialect_falls_back_to_portable_sql(self):
+        """Failing towards a slower plan beats failing towards a syntax error."""
+
+        from unittest.mock import patch
+
+        from panel_core.api.statistics import _top_domains_sql
+
+        with patch("panel_core.api.statistics.db.session.get_bind", side_effect=RuntimeError("no bind")):
+            sql, _ = _top_domains_sql("2026-05-01", None, "", "")
+
+        assert "INDEXED BY" not in sql
 
     def test_overview_and_domains_endpoints_still_work(self, app, client, admin_token):
         _seed_domain_stat("alpha.com", "2026-06-01", 50)

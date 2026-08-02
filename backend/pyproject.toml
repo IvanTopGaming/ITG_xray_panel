@@ -3,33 +3,34 @@ name = "itg-xray-panel-backend"
 version = "0"
 requires-python = "==3.12.*"
 dependencies = [
-    "flask",
-    "flask-cors",
-    "docker",
-    "grpcio==1.66.2",
-    "grpcio-tools==1.66.2",
-    "protobuf==5.28.3",
-    "psutil",
-    "pyjwt",
-    "gunicorn",
-    "gevent",
-    "flask-limiter",
-    "redis",
-    "flask-sqlalchemy",
-    "flask-migrate",
-    "flask-apscheduler",
-    "filelock",
-    "requests",
-    "pyyaml",
-    "cryptography",
-    "yookassa>=3.0,<4.0",
+    "panel-core",
+    "panel-links",
+    "panel-adminapi",
+    "panel-worker",
+    "panel-master",
+    "panel-sub",
+    "panel-botapi",
+    "panel-cron",
 ]
 
-[dependency-groups]
-dev = ["pytest==8.3.3", "pytest-flask==1.3.0"]
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+panel-core = { workspace = true }
+panel-links = { workspace = true }
+panel-adminapi = { workspace = true }
+panel-worker = { workspace = true }
+panel-master = { workspace = true }
+panel-sub = { workspace = true }
+panel-botapi = { workspace = true }
+panel-cron = { workspace = true }
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = ["pytest==8.3.3", "pytest-flask==1.3.0"]
 
 [tool.ruff]
 line-length = 120
@@ -38,8 +39,8 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F"]
 ignore = [
-    "E501",  # line too long — not enforced
-    "E402",  # module-level import not at top — intentional (gevent patch_all first)
+    "E501",
+    "E402",
 ]
 
 [tool.ruff.format]

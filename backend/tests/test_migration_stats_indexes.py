@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from db_migration import _ensure_stats_indexes, _index_exists
+from panel_core.db_migration import _ensure_stats_indexes, _index_exists
 
 
 @pytest.fixture

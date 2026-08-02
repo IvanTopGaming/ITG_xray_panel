@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from db_migration import (
+from panel_core.db_migration import (
     _ensure_bot_text_customized_column,
     _load_bot_text_defaults,
     _seed_bot_texts,

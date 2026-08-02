@@ -32,17 +32,42 @@ jobs:
           SHORT_SHA="${SHA:0:7}"
           XRAY_REF=$(python3 -c "import json; print(json.load(open('versions.json'))['xray_core_ref'])")
 
-          for SERVICE in backend frontend caddy bot metrics; do
+          for SERVICE in master worker sub bot_api cron frontend_admin frontend_node caddy bot; do
             case $SERVICE in
-              backend)
+              master)
                 CONTEXT="./backend"
-                IMAGE="ghcr.io/ivantopgaming/panel-backend"
-                BUILD_ARGS="--build-arg XRAY_CORE_REF=$XRAY_REF --build-context project=."
+                IMAGE="ghcr.io/ivantopgaming/panel-master"
+                BUILD_ARGS="--build-arg PANEL_PACKAGE=panel-master --build-context project=."
                 ;;
-              frontend)
+              sub)
+                CONTEXT="./backend"
+                IMAGE="ghcr.io/ivantopgaming/panel-sub"
+                BUILD_ARGS="--build-context project=. -f backend/Dockerfile.sub"
+                ;;
+              bot_api)
+                CONTEXT="./backend"
+                IMAGE="ghcr.io/ivantopgaming/panel-bot-api"
+                BUILD_ARGS="--build-arg PANEL_PACKAGE=panel-botapi --build-context project=."
+                ;;
+              cron)
+                CONTEXT="./backend"
+                IMAGE="ghcr.io/ivantopgaming/panel-cron"
+                BUILD_ARGS="--build-arg PANEL_PACKAGE=panel-cron --build-context project=."
+                ;;
+              worker)
+                CONTEXT="./backend"
+                IMAGE="ghcr.io/ivantopgaming/panel-worker"
+                BUILD_ARGS="--build-arg XRAY_CORE_REF=$XRAY_REF --build-context project=. -f backend/Dockerfile.worker"
+                ;;
+              frontend_admin)
                 CONTEXT="./frontend"
-                IMAGE="ghcr.io/ivantopgaming/panel-frontend"
-                BUILD_ARGS="--build-context project=."
+                IMAGE="ghcr.io/ivantopgaming/panel-frontend-admin"
+                BUILD_ARGS="--build-arg UI_PACKAGE=admin --build-context project=."
+                ;;
+              frontend_node)
+                CONTEXT="./frontend"
+                IMAGE="ghcr.io/ivantopgaming/panel-frontend-node"
+                BUILD_ARGS="--build-arg UI_PACKAGE=node --build-context project=."
                 ;;
               caddy)
                 CONTEXT="./caddy"
@@ -54,10 +79,9 @@ jobs:
                 IMAGE="ghcr.io/ivantopgaming/panel-bot"
                 BUILD_ARGS="--build-context project=."
                 ;;
-              metrics)
-                CONTEXT="./metrics-agent"
-                IMAGE="ghcr.io/ivantopgaming/panel-metrics"
-                BUILD_ARGS=""
+              *)
+                echo "Unknown service '$SERVICE' — no build case defined for it" >&2
+                exit 1
                 ;;
             esac
 

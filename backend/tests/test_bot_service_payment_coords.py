@@ -1,12 +1,12 @@
 import pytest
 
-from app.extensions import db as _db
-from app.models import Payment, SystemSetting
+from panel_core.extensions import db as _db
+from panel_core.models import Payment, SystemSetting
 
 
 @pytest.fixture
 def app_with_bot_service(app):
-    from app.api import bot_service
+    from panel_core.api import bot_service
 
     if not any(bp.name == "bot_service" for bp in app.blueprints.values()):
         app.register_blueprint(bot_service.bp, url_prefix="/api")

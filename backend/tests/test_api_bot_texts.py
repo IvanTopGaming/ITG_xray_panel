@@ -3,14 +3,14 @@ import pytest
 
 import jwt as jwt_lib
 
-from app.models import Admin, BotText
-from app.utils import SECRET_KEY
+from panel_core.models import Admin, BotText
+from panel_core.utils import SECRET_KEY
 
 
 @pytest.fixture
 def app_with_admin(app):
 
-    from app.api import bot_admin
+    from panel_core.api import bot_admin
 
     if not any(bp.name == "bot_admin" for bp in app.blueprints.values()):
         app.register_blueprint(bot_admin.bp, url_prefix="/api")
@@ -116,20 +116,24 @@ def test_get_keys_metadata_returns_keys_and_descriptions(app_with_admin, db, cli
     items = body["keys"]
 
     assert isinstance(items, list)
-    if items:
-        first = items[0]
-        assert "key" in first
-        assert "description" in first
-        assert "variables" in first
-        assert "default_ru" in first
-        assert "default_en" in first
+    assert items, (
+        "the endpoint returned zero keys, which is a 200 with an empty body — the Bot -> Texts tab goes "
+        "blank with no error and no log line. This is what a broken bot_texts_defaults.yaml lookup looks "
+        "like from the outside, so the assertion must not be conditional on items being non-empty."
+    )
+    first = items[0]
+    assert "key" in first
+    assert "description" in first
+    assert "variables" in first
+    assert "default_ru" in first
+    assert "default_en" in first
 
 
 def test_put_text_publishes_event(app_with_admin, db, client, admin_headers):
 
     from unittest.mock import patch
 
-    with patch("app.services.bot_events.publish") as mock_publish:
+    with patch("panel_core.services.bot_events.publish") as mock_publish:
         client.put(
             "/api/bot/texts/welcome.title",
             headers=admin_headers,

@@ -10,7 +10,6 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 import httpx
-from api_service import panel_api
 from backend_client import BackendClient
 from i18n import I18n
 from runtime_config import runtime_config
@@ -330,6 +329,8 @@ async def user_sub(
         return
 
     await state.clear()
+    renew_tariff_id = next((c.get("tariff_id") for c in clients if c.get("tariff_id")), None)
+    renew_label = await i18n.t("notification.button.renew", lang) if renew_tariff_id else None
     title = await i18n.t("sub.page.title", lang)
     open_label = await i18n.t("sub.actions.open_page", lang)
     keys_label = await i18n.t("sub.actions.show_keys", lang)
@@ -351,6 +352,9 @@ async def user_sub(
             help_label=help_label,
             back_label=back_label,
             sub_url=sub_url,
+            qr_label=await i18n.t("sub.actions.show_qr", lang),
+            renew_label=renew_label,
+            renew_tariff_id=renew_tariff_id,
         ),
     )
 
@@ -477,17 +481,11 @@ async def show_key_details(
     has_other_keys: bool = False,
 ):
     client_id = record["id"]
-    email = record["email"]
-    inbound_tag = record["inbound_tag"]
 
     await state.set_state(UserStates.viewing_keys)
     await state.update_data(selected_key_client_id=client_id)
 
-    try:
-        links = await panel_api.get_dedup_subscription_links(email, inbound_tag=inbound_tag)
-    except Exception:
-        logger.exception("Failed to fetch subscription links")
-        links = []
+    links = [link for link in (record.get("links") or []) if link]
 
     msg = callback.message
 
@@ -516,11 +514,6 @@ async def show_key_details(
     display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
 
     from urllib.parse import unquote
-
-    if has_other_keys:
-        matched = [lk for lk in links if "#" in lk and unquote(lk.rsplit("#", 1)[-1]) == display]
-        if matched:
-            links = matched
 
     await state.update_data(cached_links=links)
 
@@ -713,42 +706,14 @@ async def back_to_keys_picker(
     await _render_keys_picker(callback, state, i18n=i18n, lang=lang, clients=users_records)
 
 
-@router.callback_query(F.data == "qr_select_server")
-async def qr_select_server(
-    callback: types.CallbackQuery,
-    state: FSMContext,
-    i18n: I18n,
-    lang: str,
-):
-    await state.set_state(UserStates.viewing_qr)
-    title = await i18n.t("qr.select_title", lang)
-    server_template = await i18n.t("qr.server_label", lang)
-    back = await i18n.t("common.back_to_keys", lang)
-    await safe_edit(
-        callback.message,
-        title,
-        reply_markup=kb.user_qr_server_kb(
-            panel_api.panels,
-            server_template=server_template,
-            back_label=back,
-        ),
-    )
-
-
-@router.callback_query(UserStates.viewing_qr, F.data.startswith("qr_gen_"))
-async def qr_generate_for_server(
+@router.callback_query(F.data == "show_qr")
+async def qr_for_key(
     callback: types.CallbackQuery,
     state: FSMContext,
     backend: BackendClient,
     i18n: I18n,
     lang: str,
 ):
-    try:
-        idx = int(callback.data.split("_")[2])
-    except (ValueError, IndexError):
-        await callback.answer("Invalid selection")
-        return
-
     data = await state.get_data()
     client_id = data.get("selected_key_client_id")
 
@@ -775,27 +740,67 @@ async def qr_generate_for_server(
         await callback.answer("Access denied", show_alert=True)
         return
 
-    email = record["email"]
-    inbound_tag = record["inbound_tag"]
-    raw_links = await panel_api.get_subscription_link_single(email, idx, inbound_tag=inbound_tag)
-    link = raw_links[0] if raw_links else None
+    links = [link for link in (record.get("links") or []) if link]
+    if not links:
+        await callback.answer(await i18n.t("qr.no_link", lang), show_alert=True)
+        return
 
-    if link:
-        if "#" in link:
-            link = link.split("#")[0] + f"#{panel_api.panels[idx].name}"
+    display = record.get("inbound_label") or record.get("inbound_tag") or record.get("email", "")
+    await _send_qr(callback, links[0], caption=f"\U0001f4f1 <b>{h(display)}</b>", i18n=i18n, lang=lang)
 
-        qr_file = generate_qr(link)
-        back = await i18n.t("common.back_to_keys", lang)
 
-        await callback.message.delete()
-        await callback.message.answer_photo(
-            qr_file,
-            caption=f"📱 <b>{h(panel_api.panels[idx].name)} QR</b>",
-            reply_markup=kb.qr_back_kb(back_label=back),
-            parse_mode="HTML",
-        )
-    else:
-        await callback.answer("❌ No active key found on this server.", show_alert=True)
+@router.callback_query(F.data == "sub_qr")
+async def qr_for_subscription(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    backend: BackendClient,
+    i18n: I18n,
+    lang: str,
+):
+    try:
+        state_data = await backend.get_user_state(callback.from_user.id)
+    except Exception as exc:
+        logger.info("get_user_state failed: %s", exc)
+        await callback.answer("Service temporarily unavailable.", show_alert=True)
+        return
+
+    sub_url = (state_data or {}).get("sub_url")
+    if not sub_url:
+        await callback.answer(await i18n.t("qr.no_link", lang), show_alert=True)
+        return
+
+    await _send_qr(
+        callback,
+        sub_url,
+        caption=await i18n.t("sub.page.title", lang),
+        i18n=i18n,
+        lang=lang,
+        back_callback="user_sub",
+        back_key="common.back_to_main",
+    )
+
+
+async def _send_qr(
+    callback,
+    data,
+    *,
+    caption,
+    i18n: I18n,
+    lang: str,
+    back_callback: str = "back_to_keys",
+    back_key: str = "common.back_to_keys",
+):
+
+    qr_file = generate_qr(data)
+    back = await i18n.t(back_key, lang)
+
+    await callback.message.delete()
+    await callback.message.answer_photo(
+        qr_file,
+        caption=caption,
+        reply_markup=kb.qr_back_kb(back_label=back, back_callback=back_callback),
+        parse_mode="HTML",
+    )
 
 
 async def _format_expiry(expiry_ts_ms, *, i18n: I18n, lang: str) -> str:
@@ -840,24 +845,23 @@ def _progress_bar(percent, length=12):
     return "█" * filled + "░" * (length - filled)
 
 
-async def _format_key_stats(
-    email,
-    inbound_tag,
-    inbound_label,
-    stats,
-    *,
-    i18n: I18n,
-    lang: str,
-) -> str:
-    enable = stats["enable"]
-    key_total = stats["total"]
-    limit = stats["limit"]
-    expiry = stats["expiry"]
-    per_server = stats.get("per_server", [])
+def _record_total(record) -> int:
+    return int(record.get("up") or 0) + int(record.get("down") or 0)
+
+
+async def _format_key_stats(record, *, i18n: I18n, lang: str) -> str:
+
+    enable = bool(record.get("enable", True))
+    key_total = _record_total(record)
+    limit = int(record.get("limit_bytes") or 0)
+    expiry = int(record.get("expiry_time") or 0)
+    server = record.get("panel_name")
 
     status_key = "stats.key.status_active" if enable else "stats.key.status_disabled"
     status = await i18n.t(status_key, lang)
-    display = inbound_label or inbound_tag
+    display = record.get("inbound_label") or record.get("inbound_tag") or record.get("email", "")
+    if server:
+        display = f"{display} · {server}"
 
     lines = [f"🔑 <b>{h(display)}</b>  {status}"]
 
@@ -877,13 +881,6 @@ async def _format_key_stats(
 
     expiry_str = await _format_expiry(expiry, i18n=i18n, lang=lang)
     lines.append(await i18n.t("stats.key.expiry_label", lang, expiry=expiry_str))
-
-    if len(per_server) > 1:
-        per_server_header = await i18n.t("stats.key.per_server", lang)
-        server_lines = []
-        for s in per_server:
-            server_lines.append(f"    • {h(s['name'])}: ↑{format_bytes(s['up'])} ↓{format_bytes(s['down'])}")
-        lines.append(f"  {per_server_header}\n" + "\n".join(server_lines))
 
     return "\n".join(lines)
 
@@ -906,34 +903,14 @@ async def user_stats(
     if not users_records:
         return
 
-    tasks = [
-        panel_api.get_client_stats_aggregate(record["email"], inbound_tag=record["inbound_tag"])
-        for record in users_records
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
     msg = callback.message
 
     key_blocks = []
     grand_total = 0
 
-    for record, result in zip(users_records, results):
-        email = record["email"]
-        inbound_tag = record["inbound_tag"]
-        inbound_label = record.get("inbound_label") or inbound_tag
-        if isinstance(result, Exception) or result is None:
-            key_blocks.append(await i18n.t("stats.key.unavailable", lang, email=h(inbound_label)))
-            continue
-        grand_total += result["total"]
-        key_blocks.append(
-            await _format_key_stats(
-                email,
-                inbound_tag,
-                inbound_label,
-                result,
-                i18n=i18n,
-                lang=lang,
-            )
-        )
+    for record in users_records:
+        grand_total += _record_total(record)
+        key_blocks.append(await _format_key_stats(record, i18n=i18n, lang=lang))
 
     header_line = await i18n.t("stats.header", lang)
     user_line = await i18n.t(
@@ -1010,12 +987,15 @@ async def cb_trial_activate(
         await callback.answer("Error, try again later", show_alert=True)
         return
 
-    expires_ms = result.get("expires_at_ms", 0)
-    try:
-        _tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
-    except Exception:
-        _tz = ZoneInfo("UTC")
-    expires_str = datetime.datetime.fromtimestamp(expires_ms / 1000, tz=_tz).strftime("%d.%m.%Y %H:%M")
+    expires_ms = int(result.get("expires_at_ms") or 0)
+    if expires_ms <= 0:
+        expires_str = await i18n.t("stats.expiry.permanent", lang)
+    else:
+        try:
+            _tz = ZoneInfo(runtime_config.display_timezone or "Europe/Moscow")
+        except Exception:
+            _tz = ZoneInfo("UTC")
+        expires_str = datetime.datetime.fromtimestamp(expires_ms / 1000, tz=_tz).strftime("%d.%m.%Y %H:%M")
     success = await i18n.t("trial.success", lang, expires_at=expires_str)
     subs_label = await i18n.t("menu.subscription", lang)
     back_label = await i18n.t("common.back_to_main", lang)

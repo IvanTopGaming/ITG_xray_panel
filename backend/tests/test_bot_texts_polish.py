@@ -5,7 +5,8 @@ import tempfile
 import pytest
 import yaml
 
-from db_migration import CURRENT_BOT_TEXTS_VERSION, _maybe_force_reseed_bot_texts, _seed_bot_texts
+from panel_core.db_migration import CURRENT_BOT_TEXTS_VERSION, _maybe_force_reseed_bot_texts, _seed_bot_texts
+from tests.import_graph import source_path
 
 
 @pytest.fixture
@@ -60,8 +61,7 @@ def test_seed_with_force_overwrites_existing_row(seeded_db):
 
 
 def _load_yaml():
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, "..", "app", "data", "bot_texts_defaults.yaml")
+    path = source_path("data/bot_texts_defaults.yaml")
     with open(path, "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 
@@ -159,8 +159,6 @@ def test_required_new_keys_exist():
         "keys.details.self_destruct",
         "keys.details.none",
         "security.timeout",
-        "qr.select_title",
-        "qr.server_label",
         "catalog.tariff_card.header",
         "catalog.tariff_card.item",
         "catalog.tariff_card.item.unlimited_amount",
@@ -192,14 +190,12 @@ def test_stats_keys_present():
         "stats.header",
         "stats.user_line",
         "stats.grand_total",
-        "stats.key.unavailable",
         "stats.key.status_active",
         "stats.key.status_disabled",
         "stats.key.used_label",
         "stats.key.left_label",
         "stats.key.unlimited",
         "stats.key.expiry_label",
-        "stats.key.per_server",
         "stats.expiry.permanent",
         "stats.expiry.expired",
         "stats.expiry.hours_left",

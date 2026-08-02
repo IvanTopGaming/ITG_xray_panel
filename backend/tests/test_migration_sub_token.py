@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from db_migration import (
+from panel_core.db_migration import (
     CURRENT_DB_VERSION,
     _ensure_schema_columns,
     _backfill_sub_tokens,
@@ -87,5 +87,5 @@ def test_unique_index_present(telegram_user_pre_v18):
     assert "ix_telegram_user_sub_token" in idx_names
 
 
-def test_current_db_version_is_21():
-    assert CURRENT_DB_VERSION == 21
+def test_current_db_version_is_at_least_24():
+    assert CURRENT_DB_VERSION >= 24

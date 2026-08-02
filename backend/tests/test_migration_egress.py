@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from db_migration import CURRENT_DB_VERSION, _ensure_schema_columns
+from panel_core.db_migration import CURRENT_DB_VERSION, _ensure_schema_columns
 
 
 @pytest.fixture
@@ -42,5 +42,5 @@ def test_schema_patch_adds_egress_columns(outbound_pre_v21):
     assert {"send_through", "public_ip", "gateway"} <= cols
 
 
-def test_current_db_version_is_21():
-    assert CURRENT_DB_VERSION == 21
+def test_current_db_version_is_at_least_24():
+    assert CURRENT_DB_VERSION >= 24

@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.extensions import db
-from app.models import Client, Inbound, SystemSetting
+from panel_core.extensions import db
+from panel_core.models import Client, Inbound, SystemSetting
 
 
 VLESS_STREAM = json.dumps(
@@ -29,7 +29,7 @@ TEST_UUID = "11111111-1111-1111-1111-111111111111"
 @pytest.fixture
 def app(app):
 
-    from app.api import subscription as sub_api
+    from panel_core.api import subscription as sub_api
 
     if not any(bp_name == "subscription" for bp_name in app.blueprints):
         app.register_blueprint(sub_api.bp, url_prefix="/api")
@@ -100,13 +100,13 @@ def seed_disabled(app):
     return disabled_uuid
 
 
-_PATCH_PANEL = "app.services.panel_proxy.get_panel_snapshot"
-_PATCH_DEVICE_GATE = "app.services.device_tracking.device_gate"
-_PATCH_SUB_CACHE_GET = "app.services.sub_cache.get"
-_PATCH_SUB_CACHE_SET = "app.services.sub_cache.set"
+_PATCH_PANEL = "panel_core.services.panel_proxy.get_panel_snapshot"
+_PATCH_DEVICE_GATE = "panel_core.services.device_tracking.user_device_gate"
+_PATCH_SUB_CACHE_GET = "panel_core.services.sub_cache.get"
+_PATCH_SUB_CACHE_SET = "panel_core.services.sub_cache.set"
 
 
-def _device_gate_ok(client_obj, inbound_obj, headers):
+def _device_gate_ok(telegram_id, headers):
 
     return ("ok", {})
 
@@ -126,9 +126,9 @@ def _browser_ua():
 
 class TestShareLinkFlowCompat:
     def test_drops_flow_on_xhttp_stream(self):
-        from app.api.subscription import _build_share_links
+        from panel_core.services.share_links import build_share_links
 
-        links = _build_share_links(
+        links = build_share_links(
             "example.com",
             "vless",
             443,
@@ -141,9 +141,9 @@ class TestShareLinkFlowCompat:
         assert "flow=" not in links[0]
 
     def test_keeps_flow_on_tcp_reality_stream(self):
-        from app.api.subscription import _build_share_links
+        from panel_core.services.share_links import build_share_links
 
-        links = _build_share_links(
+        links = build_share_links(
             "example.com",
             "vless",
             443,
@@ -156,9 +156,9 @@ class TestShareLinkFlowCompat:
         assert "flow=xtls-rprx-vision" in links[0]
 
     def test_drops_flow_on_tcp_without_tls(self):
-        from app.api.subscription import _build_share_links
+        from panel_core.services.share_links import build_share_links
 
-        links = _build_share_links(
+        links = build_share_links(
             "example.com",
             "vless",
             443,
@@ -171,7 +171,7 @@ class TestShareLinkFlowCompat:
         assert "flow=" not in links[0]
 
     def test_clash_proxy_drops_flow_on_xhttp_stream(self):
-        from app.api.subscription import _build_clash_proxy
+        from panel_core.api.subscription import _build_clash_proxy
 
         node = _build_clash_proxy(
             "XH",
@@ -185,7 +185,7 @@ class TestShareLinkFlowCompat:
         assert "flow" not in node
 
     def test_singbox_outbound_drops_flow_on_xhttp_stream(self):
-        from app.api.subscription import _build_singbox_outbound
+        from panel_core.api.subscription import _build_singbox_outbound
 
         ob = _build_singbox_outbound(
             "XH",
@@ -225,11 +225,28 @@ class TestV2RaySubscription:
 
         assert resp.status_code == 404
 
-    def test_404_for_disabled_client(self, client, seed_disabled):
+    def test_a_disabled_client_is_told_it_ended_rather_than_that_it_never_existed(self, client, seed_disabled):
+        """§109: 404 here reads to an app as "this link does not exist", which is a different problem.
+
+        A key that has been disabled or has run out is the commonest reason a user opens their app to
+        a failure, and it was answered exactly like a mistyped URL or a link revoked by wave 6's reset
+        button. The reply now carries the reason where the app displays it. An unknown UUID keeps its
+        404 — see the test above — or revoking a key would look like an expiry.
+        """
+
         with patch(_PATCH_PANEL, return_value=None):
             resp = client.get(f"/api/sub/{seed_disabled}", headers=_proxy_app_ua())
 
-        assert resp.status_code == 404
+        assert resp.status_code == 200, (
+            f"a disabled key still answers {resp.status_code}, so the user's app cannot tell an expired "
+            f"subscription from a dead link"
+        )
+        import base64
+        import urllib.parse
+
+        body = urllib.parse.unquote(base64.b64decode(resp.data).decode())
+        assert "127.0.0.1:1" in body, f"the placeholder is connectable, so tapping it hangs: {body!r}"
+        assert seed_disabled not in body, "the disabled key's own UUID was handed back out"
 
 
 class TestSubscriptionUserinfo:
@@ -412,7 +429,7 @@ class TestForcedUAParam:
 
 class TestDeviceGateWarnConfig:
     def test_unsupported_state_returns_warn(self, client, seed_vless):
-        def _gate_unsupported(c, ib, hdrs):
+        def _gate_unsupported(telegram_id, hdrs):
             return ("unsupported", {"x-hwid-active": "true"})
 
         with (
@@ -426,7 +443,7 @@ class TestDeviceGateWarnConfig:
         assert "unsupported" in decoded.lower() or "127.0.0.1" in decoded
 
     def test_limit_state_returns_warn(self, client, seed_vless):
-        def _gate_limit(c, ib, hdrs):
+        def _gate_limit(telegram_id, hdrs):
             return ("limit", {"x-hwid-active": "true"})
 
         with (
@@ -512,27 +529,27 @@ class TestSubCacheHit:
 
 
 def test_extract_transport_path_host_reads_nested_and_flat():
-    from app.api.subscription import _extract_transport_path_host
+    from panel_core.services.share_links import extract_transport_path_host
 
-    assert _extract_transport_path_host(
+    assert extract_transport_path_host(
         {"network": "xhttp", "xhttpSettings": {"path": "/realpath", "host": "edge.example.com"}}
     ) == ("/realpath", "edge.example.com")
 
-    assert _extract_transport_path_host({"network": "xhttp", "wsPath": "/flat", "wsHost": "cdn.example.com"}) == (
+    assert extract_transport_path_host({"network": "xhttp", "wsPath": "/flat", "wsHost": "cdn.example.com"}) == (
         "/flat",
         "cdn.example.com",
     )
 
-    assert _extract_transport_path_host({"network": "ws", "wsPath": "noslash"}) == ("/noslash", "")
+    assert extract_transport_path_host({"network": "ws", "wsPath": "noslash"}) == ("/noslash", "")
 
-    assert _extract_transport_path_host({"network": "tcp"}) == ("", "")
-    assert _extract_transport_path_host({"network": "grpc"}) == ("", "")
+    assert extract_transport_path_host({"network": "tcp"}) == ("", "")
+    assert extract_transport_path_host({"network": "grpc"}) == ("", "")
 
 
 def test_local_xhttp_link_includes_path_and_host(app):
 
     from urllib.parse import urlparse, parse_qs
-    from app.api.subscription import _get_local_subscription_content
+    from panel_core.api.subscription import _get_local_subscription_content
 
     with app.app_context():
         ib = Inbound(
@@ -566,7 +583,7 @@ def test_local_xhttp_link_includes_path_and_host(app):
 def test_remote_xhttp_link_includes_path_and_host():
 
     from urllib.parse import urlparse, parse_qs
-    from app.api.subscription import _build_remote_link
+    from panel_core.services.share_links import build_remote_link
 
     ib_data = {
         "protocol": "vless",
@@ -580,7 +597,7 @@ def test_remote_xhttp_link_includes_path_and_host():
             "tlsSettings": {"serverName": "child.example.com"},
         },
     }
-    links = _build_remote_link("child.example.com", ib_data, {"id": "00000000-0000-0000-0000-0000000000aa", "flow": ""})
+    links = build_remote_link("child.example.com", ib_data, {"id": "00000000-0000-0000-0000-0000000000aa", "flow": ""})
     assert len(links) == 1
     q = parse_qs(urlparse(links[0]).query)
     assert q.get("type") == ["xhttp"]
@@ -594,13 +611,13 @@ def test_remote_xhttp_link_includes_path_and_host():
         "label": "gRPC",
         "stream_settings": {"network": "grpc", "security": "tls", "grpcSettings": {"serviceName": "mygrpc"}},
     }
-    g = parse_qs(urlparse(_build_remote_link("c", grpc_ib, {"id": "x", "flow": ""})[0]).query)
+    g = parse_qs(urlparse(build_remote_link("c", grpc_ib, {"id": "x", "flow": ""})[0]).query)
     assert g.get("serviceName") == ["mygrpc"]
 
 
 def test_local_and_remote_builders_are_unified():
 
-    from app.api.subscription import _build_share_links, _build_remote_link
+    from panel_core.services.share_links import build_remote_link, build_share_links
 
     stream = {
         "network": "xhttp",
@@ -610,8 +627,8 @@ def test_local_and_remote_builders_are_unified():
     }
     for proto in ("vless", "vmess", "trojan"):
         ib_data = {"protocol": proto, "port": 443, "tag": "t", "label": "L", "stream_settings": stream}
-        remote = _build_remote_link("host.example.com", ib_data, {"id": "uuid-9", "flow": ""})
-        direct = _build_share_links("host.example.com", proto, 443, stream, "uuid-9", "", "L")
+        remote = build_remote_link("host.example.com", ib_data, {"id": "uuid-9", "flow": ""})
+        direct = build_share_links("host.example.com", proto, 443, stream, "uuid-9", "", "L")
         assert remote == direct, f"local/remote diverge for {proto}"
 
 
@@ -670,20 +687,16 @@ def _matrix_payload(proto, net, sec):
 
 @_pytest.mark.parametrize("proto,net,sec", _MATRIX, ids=lambda v: v if isinstance(v, str) else "")
 def test_link_matrix(proto, net, sec):
-    from app.services.xray import _build_stream_settings
-    from app.api.subscription import (
-        _build_share_links,
-        _build_remote_link,
-        _apply_clash_transport,
-        _apply_singbox_transport,
-    )
+    from panel_core.xray.protocol import _build_stream_settings
+    from panel_core.api.subscription import _apply_clash_transport, _apply_singbox_transport
+    from panel_core.services.share_links import build_remote_link, build_share_links
 
     stream = _build_stream_settings(_matrix_payload(proto, net, sec))
     flow = "xtls-rprx-vision" if (proto == "vless" and net == "tcp" and sec in ("reality", "tls")) else ""
     uuid = "11111111-1111-1111-1111-111111111111"
 
-    local = _build_share_links("host.example.com", proto, 443, stream, uuid, flow, "Lbl")
-    remote = _build_remote_link(
+    local = build_share_links("host.example.com", proto, 443, stream, uuid, flow, "Lbl")
+    remote = build_remote_link(
         "host.example.com",
         {"protocol": proto, "port": 443, "label": "Lbl", "stream_settings": stream},
         {"id": uuid, "flow": flow},
@@ -736,8 +749,8 @@ def test_clash_and_singbox_for_user_merge_federation_nodes(app):
 
     import yaml as _yaml
     from unittest.mock import patch
-    from app.models import LinkedPanel
-    from app.api.subscription import generate_clash_config_for_user, generate_singbox_config_for_user
+    from panel_core.models import LinkedPanel
+    from panel_core.api.subscription import generate_clash_config_for_user, generate_singbox_config_for_user
 
     TG = 880017
     remote_snapshot = {
@@ -801,7 +814,7 @@ def test_clash_and_singbox_for_user_merge_federation_nodes(app):
         )
         db.session.commit()
 
-        with patch("app.services.panel_proxy.get_panel_snapshot", return_value=remote_snapshot):
+        with patch("panel_core.services.panel_proxy.get_panel_snapshot", return_value=remote_snapshot):
             clash = generate_clash_config_for_user(TG)
             singbox = generate_singbox_config_for_user(TG)
 

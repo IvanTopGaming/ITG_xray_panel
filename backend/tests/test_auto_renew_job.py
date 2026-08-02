@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.models import (
+from panel_core.models import (
     Inbound,
     Tariff,
     TariffItem,
@@ -26,7 +26,7 @@ def basic(app, db):
 
 
 def test_due_grant_is_renewed(app, db, basic):
-    from app.jobs.billing import auto_renew_free_users
+    from panel_core.jobs.billing import auto_renew_free_users
 
     tariff = basic
     grant = UserTariffAccess(
@@ -38,7 +38,7 @@ def test_due_grant_is_renewed(app, db, basic):
     db.session.add(grant)
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.provisioning._sync_after_provision"):
         auto_renew_free_users()
 
     db.session.refresh(grant)
@@ -46,7 +46,7 @@ def test_due_grant_is_renewed(app, db, basic):
 
 
 def test_future_grant_is_skipped(app, db, basic):
-    from app.jobs.billing import auto_renew_free_users
+    from panel_core.jobs.billing import auto_renew_free_users
 
     tariff = basic
     future = datetime.utcnow() + timedelta(hours=1)
@@ -59,7 +59,7 @@ def test_future_grant_is_skipped(app, db, basic):
     db.session.add(grant)
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision") as mock_sync:
+    with patch("panel_core.services.provisioning._sync_after_provision") as mock_sync:
         auto_renew_free_users()
 
     db.session.refresh(grant)
@@ -69,7 +69,7 @@ def test_future_grant_is_skipped(app, db, basic):
 
 
 def test_paid_grant_is_skipped(app, db, basic):
-    from app.jobs.billing import auto_renew_free_users
+    from panel_core.jobs.billing import auto_renew_free_users
 
     tariff = basic
     past = datetime.utcnow() - timedelta(hours=1)
@@ -82,7 +82,7 @@ def test_paid_grant_is_skipped(app, db, basic):
     db.session.add(grant)
     db.session.commit()
 
-    with patch("app.services.provisioning._sync_after_provision") as mock_sync:
+    with patch("panel_core.services.provisioning._sync_after_provision") as mock_sync:
         auto_renew_free_users()
 
     mock_sync.assert_not_called()
@@ -92,7 +92,7 @@ def test_paid_grant_is_skipped(app, db, basic):
 
 def test_archived_tariff_pauses_grant(app, db, basic):
 
-    from app.jobs.billing import auto_renew_free_users
+    from panel_core.jobs.billing import auto_renew_free_users
 
     tariff = basic
     tariff.visibility = "archived"
@@ -106,8 +106,8 @@ def test_archived_tariff_pauses_grant(app, db, basic):
     db.session.commit()
 
     with (
-        patch("app.services.provisioning._sync_after_provision") as mock_sync,
-        patch("app.jobs.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.provisioning._sync_after_provision") as mock_sync,
+        patch("panel_core.jobs.billing.bot_events.publish") as mock_publish,
     ):
         auto_renew_free_users()
 
@@ -129,7 +129,7 @@ def test_archived_tariff_pauses_grant(app, db, basic):
 
 def test_disabled_tariff_pauses_with_reason_disabled(app, db, basic):
 
-    from app.jobs.billing import auto_renew_free_users
+    from panel_core.jobs.billing import auto_renew_free_users
 
     tariff = basic
     tariff.enabled = False
@@ -143,8 +143,8 @@ def test_disabled_tariff_pauses_with_reason_disabled(app, db, basic):
     db.session.commit()
 
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.jobs.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.jobs.billing.bot_events.publish") as mock_publish,
     ):
         auto_renew_free_users()
 
@@ -155,7 +155,7 @@ def test_disabled_tariff_pauses_with_reason_disabled(app, db, basic):
 
 def test_access_renewed_event_carries_user_lang(app, db, basic):
 
-    from app.jobs.billing import auto_renew_free_users
+    from panel_core.jobs.billing import auto_renew_free_users
 
     tariff = basic
     db.session.add(TelegramUser(telegram_id=777, language="en"))
@@ -170,8 +170,8 @@ def test_access_renewed_event_carries_user_lang(app, db, basic):
     db.session.commit()
 
     with (
-        patch("app.services.provisioning._sync_after_provision"),
-        patch("app.jobs.billing.bot_events.publish") as mock_publish,
+        patch("panel_core.services.provisioning._sync_after_provision"),
+        patch("panel_core.jobs.billing.bot_events.publish") as mock_publish,
     ):
         auto_renew_free_users()
 
@@ -183,7 +183,7 @@ def test_access_renewed_event_carries_user_lang(app, db, basic):
 
 def test_per_row_error_is_isolated(app, db, basic):
 
-    from app.jobs.billing import auto_renew_free_users
+    from panel_core.jobs.billing import auto_renew_free_users
 
     tariff = basic
     db.session.add(TelegramUser(telegram_id=99, language="ru"))
@@ -209,7 +209,7 @@ def test_per_row_error_is_isolated(app, db, basic):
         if call_counter["n"] == 1:
             raise RuntimeError("synthetic")
 
-    with patch("app.services.provisioning._sync_after_provision", side_effect=fake_sync):
+    with patch("panel_core.services.provisioning._sync_after_provision", side_effect=fake_sync):
         auto_renew_free_users()
 
     db.session.refresh(g1)

@@ -1,12 +1,12 @@
 import pytest
 
-from app.extensions import db
-from app.models import TelegramUser
+from panel_core.extensions import db
+from panel_core.models import TelegramUser
 
 
 @pytest.fixture
 def app(app):
-    from app.api import bot_service
+    from panel_core.api import bot_service
 
     if "bot_service" not in app.blueprints:
         app.register_blueprint(bot_service.bp, url_prefix="/api")
@@ -31,7 +31,7 @@ def test_new_user_gets_sub_token(app):
 def test_get_user_state_includes_sub_url(client, app, monkeypatch):
     monkeypatch.setenv("SUB_DOMAIN", "sub.example.com")
     with app.app_context():
-        from app.models import SystemSetting
+        from panel_core.models import SystemSetting
 
         db.session.add(SystemSetting(key="bot_service_token", value="testtoken"))
         u = TelegramUser(telegram_id=900, sub_token="tok-900-bbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -47,13 +47,19 @@ def test_get_user_state_includes_sub_url(client, app, monkeypatch):
     assert data["sub_url"] == "https://sub.example.com/api/sub/u/tok-900-bbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
-def test_get_user_state_no_sub_domain_uses_panel_fallback(client, app, monkeypatch):
+def test_get_user_state_without_a_sub_domain_hands_out_no_link_at_all(client, app, monkeypatch):
+    """Wave 3b removed the PANEL_DOMAIN fallback: no link beats a link that cannot work.
+
+    The fallback pointed at the master, which since this wave serves no /api/sub/* whatsoever.
+    Every link the bot hands a user is built here, in bot-api's own process, which is why
+    docker-compose.bot.yml demands SUB_DOMAIN through `:?` rather than defaulting it.
+    """
 
     monkeypatch.delenv("SUB_DOMAIN", raising=False)
     monkeypatch.setenv("PANEL_DOMAIN", "panel.example.com")
     monkeypatch.setenv("PANEL_SECRET_PATH", "secret123")
     with app.app_context():
-        from app.models import SystemSetting
+        from panel_core.models import SystemSetting
 
         db.session.add(SystemSetting(key="bot_service_token", value="testtoken2"))
         u = TelegramUser(telegram_id=901, sub_token="tok-901-cccccccccccccccccccccccccccc")
@@ -63,17 +69,14 @@ def test_get_user_state_no_sub_domain_uses_panel_fallback(client, app, monkeypat
         "/api/bot-service/users/901/state",
         headers={"Authorization": "Bearer testtoken2"},
     )
-    assert (
-        resp.get_json()["sub_url"]
-        == "https://panel.example.com/secret123/api/sub/u/tok-901-cccccccccccccccccccccccccccc"
-    )
+    assert resp.get_json()["sub_url"] is None
 
 
 def test_get_user_state_no_domains_returns_none(client, app, monkeypatch):
     monkeypatch.delenv("SUB_DOMAIN", raising=False)
     monkeypatch.delenv("PANEL_DOMAIN", raising=False)
     with app.app_context():
-        from app.models import SystemSetting
+        from panel_core.models import SystemSetting
 
         db.session.add(SystemSetting(key="bot_service_token", value="testtoken3"))
         u = TelegramUser(telegram_id=902, sub_token="tok-902-dddddddddddddddddddddddddddd")
