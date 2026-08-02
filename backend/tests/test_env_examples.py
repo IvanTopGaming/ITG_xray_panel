@@ -137,3 +137,28 @@ def test_the_data_tier_is_not_published_to_the_world_by_default(variable):
         f"to it is open is exactly the shape this was changed to stop; put this VM's private-network "
         f"address there."
     )
+
+
+COMMENT_ON_AN_EMPTY_VALUE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=[ \t]*#")
+
+
+@pytest.mark.parametrize("example", sorted(set(HOST_EXAMPLES.values())))
+def test_no_empty_value_carries_an_inline_comment(example):
+    offenders = [
+        (number, line)
+        for number, line in enumerate(_read(example).splitlines(), start=1)
+        if COMMENT_ON_AN_EMPTY_VALUE.match(line)
+    ]
+    assert offenders == [], (
+        f"{example} writes `KEY=` with an inline comment after it, and Docker Compose then hands "
+        f"the container the COMMENT as the value. Compose strips an inline comment only when a "
+        f"value precedes it: `K=v  # note` yields 'v', but `K=  # note` yields '# note'. Offending "
+        f"lines: {offenders}\n\n"
+        f"This shipped in 3.0.0 and stopped every TLS host from getting a certificate: ACME_EMAIL "
+        f'became "# optional; where Let\'s Encrypt mails warnings" and ACME_CA became '
+        f'"https://# optional; LE staging URL while rehearsing", so Caddy tried to register an '
+        f"ACME account against a URL with no host and gave up on every renewal attempt. The same "
+        f"shape was one line away from handing the bot its BOT_SERVICE_TOKEN as a sentence and the "
+        f"data tier its Redis ACL passwords as sentences.\n\n"
+        f"Put the note on its own line above the assignment instead."
+    )
