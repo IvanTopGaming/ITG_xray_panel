@@ -36,6 +36,24 @@ MASTER_TABLES = [
     "system_setting",
 ]
 
+# The cron service seeds these while it creates the schema -- 159 bot_text rows, the
+# bot_texts_seeded_version setting -- so they are never empty on a correctly deployed data tier.
+# Copying them would collide; refusing on them would refuse every real migration. They are merged
+# on their natural key instead, and the merge is narrowed further below.
+MERGE_TABLES = {
+    "bot_text": ("key", "lang"),
+    "system_setting": ("key",),
+    "admin": ("username",),
+}
+
+# Only the texts an admin actually edited. The rest are defaults, and the ones the cron service
+# just seeded are newer than the monolith's copy.
+BOT_TEXT_MERGE_FILTER = "customized"
+
+# Written by the schema machinery, not by the panel: carrying the monolith's value across would
+# tell the new deployment its texts are older or newer than they are.
+SETTING_KEYS_NOT_CARRIED = ("bot_texts_seeded_version",)
+
 NODE_ONLY_TABLES = [
     "inbound",
     "client",
@@ -132,22 +150,43 @@ def copy_to_postgres(sqlite_path, pg_url):
             if name not in target_meta.tables:
                 fail(f"{name} is missing from the target schema", "Is the cron service on the current release?")
 
-            existing = dconn.execute(select(target_meta.tables[name])).first()
-            if existing is not None:
-                fail(
-                    f"{name} in Postgres already holds rows",
-                    "This is meant for a fresh data tier. Empty it, or migrate into a clean database.",
-                )
-
             src_table = source_meta.tables[name]
             dst_table = target_meta.tables[name]
+
+            if name not in MERGE_TABLES:
+                existing = dconn.execute(select(dst_table)).first()
+                if existing is not None:
+                    fail(
+                        f"{name} in Postgres already holds rows",
+                        "This is meant for a fresh data tier. Empty it, or migrate into a clean database.",
+                    )
+
             shared = [c.name for c in dst_table.columns if c.name in src_table.columns]
             rows = [
                 {k: v for k, v in dict(r._mapping).items() if k in shared}
                 for r in sconn.execute(select(*[src_table.c[c] for c in shared]))
             ]
+
+            if name == "bot_text" and BOT_TEXT_MERGE_FILTER in shared:
+                rows = [r for r in rows if r.get(BOT_TEXT_MERGE_FILTER)]
+            if name == "system_setting":
+                rows = [r for r in rows if r.get("key") not in SETTING_KEYS_NOT_CARRIED]
+
             if rows:
-                dconn.execute(insert(dst_table), rows)
+                if name in MERGE_TABLES:
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                    keys = MERGE_TABLES[name]
+                    stmt = pg_insert(dst_table).values(rows)
+                    updatable = {c: stmt.excluded[c] for c in shared if c not in keys and c != "id"}
+                    stmt = (
+                        stmt.on_conflict_do_update(index_elements=keys, set_=updatable)
+                        if updatable
+                        else stmt.on_conflict_do_nothing(index_elements=keys)
+                    )
+                    dconn.execute(stmt)
+                else:
+                    dconn.execute(insert(dst_table), rows)
             counts[name] = len(rows)
 
         for table in target_meta.sorted_tables:
