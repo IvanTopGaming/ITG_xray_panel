@@ -335,6 +335,14 @@ declare -A VALUES=()
 
 compose() { ( cd "$DIR" && docker compose -f "$COMPOSE_FILE" "$@" ); }
 
+compose_show() {
+    if [ "$TTY" -eq 1 ]; then
+        compose "$@"
+    else
+        compose "$@" 2>&1 | sed 's/^/    /'
+    fi
+}
+
 has_docker() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
 
 check_pins() {
@@ -475,9 +483,9 @@ cmd_update() {
     has_docker || die "docker is not available" "The pins are updated; run pull and up -d yourself."
 
     rule "Pulling"
-    compose pull 2>&1 | sed 's/^/    /'
+    compose_show pull
     rule "Restarting"
-    compose up -d 2>&1 | sed 's/^/    /'
+    compose_show up -d
     printf '\n'
     ok "updated"
     printf '\n'
@@ -527,7 +535,7 @@ cmd_reconfigure() {
     fi
     rule "Applying"
     if [ "$START" -eq 1 ] && has_docker; then
-        compose up -d 2>&1 | sed 's/^/    /'
+        compose_show up -d
         ok "restarted"
     else
         note "  apply with: cd $DIR && docker compose -f $COMPOSE_FILE up -d"
@@ -972,7 +980,7 @@ next_steps() {
 
 if [ "$START" -eq 1 ]; then
     rule "Starting"
-    ( cd "$DIR" && docker compose -f "$COMPOSE_FILE" up -d ) 2>&1 | sed 's/^/    /'
+    compose_show up -d
     printf '\n'
     ok "running in ${C_BOLD}${DIR}${C_RESET}"
     note "  logs:   cd $DIR && docker compose -f $COMPOSE_FILE logs -f"
