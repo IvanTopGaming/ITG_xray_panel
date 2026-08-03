@@ -34,6 +34,7 @@ services:
       REDIS_PANEL_PASSWORD: ${REDIS_PANEL_PASSWORD:?REDIS_PANEL_PASSWORD is required}
       REDIS_NODE_PASSWORD: ${REDIS_NODE_PASSWORD:?REDIS_NODE_PASSWORD is required}
       REDIS_BOT_PASSWORD: ${REDIS_BOT_PASSWORD:?REDIS_BOT_PASSWORD is required}
+      REDIS_MONITORING_PASSWORD: ${REDIS_MONITORING_PASSWORD:?REDIS_MONITORING_PASSWORD is required}
     volumes:
       - ./pg_certs:/certs:ro
     ports:
@@ -42,8 +43,8 @@ services:
       - "sh"
       - "-c"
       - >
-        printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +select &bot:events\nuser bot on >%s -@all +subscribe +psubscribe +unsubscribe +ping +select &bot:events\n'
-        "$$REDIS_PANEL_PASSWORD" "$$REDIS_NODE_PASSWORD" "$$REDIS_BOT_PASSWORD" > /tmp/users.acl &&
+        printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +select &bot:events\nuser bot on >%s -@all +subscribe +psubscribe +unsubscribe +ping +select &bot:events\nuser monitoring on >%s -@all +info +config|get +client|list +client|setname +latency +slowlog +ping +select\n'
+        "$$REDIS_PANEL_PASSWORD" "$$REDIS_NODE_PASSWORD" "$$REDIS_BOT_PASSWORD" "$$REDIS_MONITORING_PASSWORD" > /tmp/users.acl &&
         exec redis-server --aclfile /tmp/users.acl --save "" --appendonly no
         --port 0 --tls-port 6379
         --tls-cert-file /certs/server.crt --tls-key-file /certs/server.key
