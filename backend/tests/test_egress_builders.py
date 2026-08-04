@@ -61,3 +61,36 @@ def test_host_script_builder_is_gone():
     assert not hasattr(egress, "build_host_script")
     assert not hasattr(egress, "DEFAULT_UPLINK_IFACE")
     assert hasattr(egress, "build_bind_ips"), "the sidecar endpoint must survive the removal"
+
+
+def test_build_host_plan_carries_what_the_host_needs(app, two_egress):
+    from panel_core.services.egress import build_host_plan
+
+    with app.app_context():
+        rows = build_host_plan()
+
+    assert [r["public_ip"] for r in rows] == ["198.51.100.9", "203.0.113.7"], (
+        "the host plan must list every outbound holding a public_ip, ordered by it. "
+        "The sidecar's /bind-ips answers a different question — internal addresses inside "
+        "Xray's netns — and cannot drive the host: it carries neither public_ip nor gateway."
+    )
+    by_ip = {r["public_ip"]: r for r in rows}
+    assert by_ip["198.51.100.9"]["gateway"] == "198.51.100.1"
+    assert by_ip["198.51.100.9"]["send_through"] == "172.28.0.129"
+    assert by_ip["198.51.100.9"]["tag"] == "ded-2"
+    assert by_ip["203.0.113.7"]["gateway"] == "", (
+        "an absent gateway must be an empty string, not None: the host script reads this "
+        "through jq, and a null would reach iproute2 as the literal string 'null'."
+    )
+
+
+def test_build_host_plan_skips_an_outbound_with_no_public_ip(app, two_egress):
+    from panel_core.services.egress import build_host_plan
+
+    with app.app_context():
+        tags = [r["tag"] for r in build_host_plan()]
+
+    assert "plain" not in tags, (
+        "an ordinary freedom outbound has no dedicated address; putting it in the plan would "
+        "make the synchroniser alias and SNAT nothing."
+    )
