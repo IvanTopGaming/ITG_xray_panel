@@ -53,3 +53,23 @@ def build_bind_ips():
         .all()
     )
     return [{"send_through": o.send_through, "prefix": prefix} for o in rows if _valid_ip(o.send_through)]
+
+
+def build_host_plan():
+    from panel_core.models import Outbound
+
+    rows = (
+        Outbound.query.filter(Outbound.public_ip.isnot(None), Outbound.public_ip != "")
+        .order_by(Outbound.public_ip)
+        .all()
+    )
+    return [
+        {
+            "tag": o.tag,
+            "public_ip": o.public_ip,
+            "send_through": o.send_through or "",
+            "gateway": o.gateway or "",
+        }
+        for o in rows
+        if _valid_ip(o.public_ip) and _valid_ip(o.send_through) and _valid_ip(o.gateway)
+    ]
