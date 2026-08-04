@@ -39,6 +39,7 @@ run() {
     fi
 }
 
+[ "$(id -u)" -eq 0 ] || { log "must run as root: raising an address and writing netfilter rules both need it"; exit 2; }
 command -v jq >/dev/null 2>&1 || { log "jq is required"; exit 2; }
 command -v iptables >/dev/null 2>&1 || { log "iptables is required"; exit 2; }
 
@@ -104,8 +105,21 @@ while IFS=$'\t' read -r pub via gw; do
     fi
 done <<< "$DESIRED"
 
+jump_is_first() {
+    local rules
+    rules="$(iptables -t nat -S POSTROUTING 2>/dev/null | grep '^-A POSTROUTING ' || true)"
+    [ "${rules%%$'\n'*}" = "-A POSTROUTING -j $CHAIN" ]
+}
+
 iptables -t nat -n -L "$CHAIN" >/dev/null 2>&1 || run iptables -t nat -N "$CHAIN"
-iptables -t nat -C POSTROUTING -j "$CHAIN" >/dev/null 2>&1 || run iptables -t nat -I POSTROUTING -j "$CHAIN"
+
+if ! iptables -t nat -C POSTROUTING -j "$CHAIN" >/dev/null 2>&1; then
+    run iptables -t nat -I POSTROUTING -j "$CHAIN"
+elif ! jump_is_first; then
+    log "another rule was inserted ahead of $CHAIN in POSTROUTING; moving it back to the front"
+    run iptables -t nat -D POSTROUTING -j "$CHAIN"
+    run iptables -t nat -I POSTROUTING -j "$CHAIN"
+fi
 
 WANT_SNAT=""
 while IFS=$'\t' read -r pub via gw; do
@@ -155,8 +169,13 @@ if [ "$HAVE_RULES" != "$(printf '%b' "$WANT_RULES" | cut -f1-3)" ]; then
         if ! run ip route flush table "$table"; then
             log "table $table held nothing to flush"
         fi
-        run ip route add default via "$gw" dev "$UPLINK" table "$table"
-        run ip rule add from "$pub" table "$table" priority "$prio"
+        if ! run ip route add default via "$gw" dev "$UPLINK" table "$table"; then
+            log "$pub: gateway $gw is unusable from $UPLINK; every other address keeps its routing"
+            continue
+        fi
+        if ! run ip rule add from "$pub" table "$table" priority "$prio"; then
+            log "$pub: no rule could be added at priority $prio"
+        fi
     done < <(printf '%b' "$WANT_RULES")
 fi
 
