@@ -75,3 +75,36 @@ def test_host_script_route_is_gone(client, auth_headers, app):
     rules = {str(r.rule) for r in app.url_map.iter_rules()}
     assert "/api/system/egress/host-script" not in rules
     assert "/api/system/egress/bind-ips" in rules, "the sidecar endpoint must survive the removal"
+
+
+def test_host_plan_requires_the_egress_token(client, monkeypatch):
+    monkeypatch.setenv("EGRESS_INTERNAL_TOKEN", "s3cret")
+    assert client.get("/api/system/egress/host-plan").status_code == 403
+    ok = client.get("/api/system/egress/host-plan", headers={"X-Egress-Token": "s3cret"})
+    assert ok.status_code == 200
+    assert isinstance(ok.get_json(), list)
+
+
+def test_host_plan_503_when_token_unset(client, monkeypatch):
+    monkeypatch.delenv("EGRESS_INTERNAL_TOKEN", raising=False)
+    assert client.get("/api/system/egress/host-plan", headers={"X-Egress-Token": "x"}).status_code == 503
+
+
+def test_host_plan_is_not_reachable_with_an_admin_jwt_alone(client, auth_headers, monkeypatch):
+    monkeypatch.setenv("EGRESS_INTERNAL_TOKEN", "s3cret")
+    assert client.get("/api/system/egress/host-plan", headers=auth_headers).status_code == 403, (
+        "the plan is read by a host daemon that holds the egress token and nothing else. "
+        "Accepting an admin JWT here would widen the surface for no consumer."
+    )
+
+
+def test_bind_ips_keeps_its_own_shape(client, monkeypatch, app):
+    monkeypatch.setenv("EGRESS_INTERNAL_TOKEN", "s3cret")
+    body = client.get("/api/system/egress/bind-ips", headers={"X-Egress-Token": "s3cret"}).get_json()
+    assert all(set(row) == {"send_through", "prefix"} for row in body), (
+        "the sidecar inside Xray's netns parses this with jq and needs no host fields. "
+        "Growing it into the host plan would tie two independent consumers to one format."
+    )
+    rules = {str(r.rule) for r in app.url_map.iter_rules()}
+    assert "/api/system/egress/bind-ips" in rules
+    assert "/api/system/egress/host-plan" in rules

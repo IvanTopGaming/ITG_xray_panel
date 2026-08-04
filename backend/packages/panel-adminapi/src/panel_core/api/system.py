@@ -12,7 +12,7 @@ from panel_core.utils import (
 )
 from panel_core.extensions import limiter, db
 from panel_core.models import SystemSetting
-from panel_core.services.egress import build_bind_ips
+from panel_core.services.egress import build_bind_ips, build_host_plan
 from panel_core.xray.facade import (
     has_local_xray,
     restart_xray_container,
@@ -325,3 +325,14 @@ def egress_bind_ips():
     if not hmac.compare_digest(provided, expected):
         return jsonify({"error": "forbidden"}), 403
     return jsonify(build_bind_ips())
+
+
+@bp.route("/system/egress/host-plan", methods=["GET"])
+def egress_host_plan():
+    expected = os.environ.get("EGRESS_INTERNAL_TOKEN", "")
+    if not expected:
+        return jsonify({"error": "egress token not configured"}), 503
+    provided = request.headers.get("X-Egress-Token", "")
+    if not hmac.compare_digest(provided, expected):
+        return jsonify({"error": "forbidden"}), 403
+    return jsonify(build_host_plan())
