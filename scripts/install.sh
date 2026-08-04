@@ -333,7 +333,15 @@ json_field() {
 
 declare -A VALUES=()
 
-compose() { ( cd "$DIR" && docker compose -f "$COMPOSE_FILE" "$@" ); }
+egress_configured() { [ -n "${DIR:-}" ] && [ -f "$DIR/egress.conf" ]; }
+
+compose() {
+    local extra=()
+    if [ "${ROLE:-}" = "node" ] && egress_configured; then
+        extra=(--profile egress)
+    fi
+    ( cd "$DIR" && docker compose -f "$COMPOSE_FILE" ${extra[@]+"${extra[@]}"} "$@" )
+}
 
 compose_show() {
     if [ "$TTY" -eq 1 ]; then
@@ -456,6 +464,127 @@ check_monitoring() {
             *) warn "$line" ;;
         esac
     done <<< "$out"
+}
+
+EGRESS_UNIT=/etc/systemd/system/panel-egress-sync.service
+EGRESS_TIMER=/etc/systemd/system/panel-egress-sync.timer
+
+conf_uplink() {
+    [ -f "$DIR/egress.conf" ] || return 0
+    sed -n 's/^EGRESS_UPLINK_IFACE=\([^#]*\).*/\1/p' "$DIR/egress.conf" | head -1 | sed 's/[[:space:]]*$//'
+}
+
+egress_uplink() {
+    local iface
+    iface="$(conf_uplink)"
+    [ -n "$iface" ] || iface="$(ip route show default | awk '/default/ {print $5; exit}')"
+    printf '%s' "$iface"
+}
+
+egress_primary() {
+    ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]\{1,\}\).*/\1/p' | head -1
+}
+
+egress_enable() {
+    command -v jq >/dev/null 2>&1 ||
+        die "jq is required to manage egress addresses" "Install it, e.g. apt install jq"
+    [ "$(id -u)" = "0" ] ||
+        die "managing egress addresses needs root" "Aliases and nat rules are host state."
+
+    local iface
+    iface="$(ip route show default | awk '/default/ {print $5; exit}')"
+    [ -n "$iface" ] || die "no default route on this machine" "Set EGRESS_UPLINK_IFACE by hand."
+
+    printf 'EGRESS_UPLINK_IFACE=%s\n' "$iface" > "$DIR/egress.conf"
+    ok "uplink ${C_BOLD}${iface}${C_RESET} ${C_DIM}(override in $DIR/egress.conf)${C_RESET}"
+
+    fetch "scripts/egress-sync.sh" "$DIR/egress-sync.sh"
+    chmod +x "$DIR/egress-sync.sh"
+    ok "egress-sync.sh"
+
+    cat > "$EGRESS_UNIT" <<EOF
+[Unit]
+Description=ITG panel egress address synchroniser
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$DIR/egress-sync.sh --dir $DIR
+EOF
+
+    cat > "$EGRESS_TIMER" <<EOF
+[Unit]
+Description=Keep the panel's egress addresses in step
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now panel-egress-sync.timer >/dev/null 2>&1
+    ok "panel-egress-sync.timer ${C_DIM}(every 30s, and once at boot)${C_RESET}"
+
+    compose_show up -d xray-egress
+}
+
+egress_apply() {
+    local code=0
+    "$DIR/egress-sync.sh" --dir "$DIR" || code=$?
+    case "$code" in
+        0) ok "host is in step with the panel"; return 0 ;;
+        1) warn "the synchroniser could not reach the panel — the host was left as it was" ;;
+        *) warn "the synchroniser stopped part-way — the host is partly converged" ;;
+    esac
+    return 1
+}
+
+api_url() {
+    local addr
+    addr="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' panel-backend 2>/dev/null | awk '{print $1}')"
+    [ -n "$addr" ] || die "panel-backend is not running" "Start the stack first: install.sh doctor"
+    printf 'http://%s:5000/api' "$addr"
+}
+
+API_TOKEN=""
+api_token() {
+    [ -n "$API_TOKEN" ] && return 0
+    local user pass body
+    user="$(env_get "$ENV_FILE" PANEL_ADMIN_USER)"
+    user="${user:-admin}"
+    pass="$(env_get "$ENV_FILE" PANEL_ADMIN_PASSWORD)"
+    while :; do
+        body="$(jq -n --arg u "$user" --arg p "$pass" '{username:$u,password:$p}')"
+        API_TOKEN="$(curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
+            -d "$body" "$(api_url)/auth/login" 2>/dev/null | jq -r '.token // empty')"
+        [ -n "$API_TOKEN" ] && return 0
+        [ "$INTERACTIVE" -eq 1 ] || die "the admin password in .env was refused"
+        warn "the panel refused the password in .env — it was changed in the UI"
+        printf '%b' "    ${C_ACCENT}▸${C_RESET} admin password: "
+        read -rs pass
+        printf '\n'
+    done
+}
+
+api_get() {
+    api_token
+    curl -fsS --max-time 20 -H "Authorization: Bearer $API_TOKEN" "$(api_url)$1"
+}
+
+api_post() {
+    api_token
+    curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $API_TOKEN" \
+        -H 'Content-Type: application/json' -d "$2" "$(api_url)$1"
+}
+
+api_delete() {
+    api_token
+    curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $API_TOKEN" "$(api_url)$1"
 }
 
 cmd_update() {
