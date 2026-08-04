@@ -407,12 +407,16 @@ with no Caddy and no public `:80`. It runs on its own long-lived CA rather than 
 
 ## 🌐 Dedicated egress IP
 
-Give a specific client its own public IP without a second server — rent a **secondary IP** on the same host and route that user through it. The panel is the source of truth; the host networking is applied once by a generated script (the `backend` never touches the host).
+Give a specific client its own public IP without a second server — rent a **secondary IP** on the same host and route that user through it. The panel is the source of truth; the host networking is applied by a `systemd` timer that asks the panel what it should look like (the `backend` never touches the host).
 
-1. Attach the rented IP to the **node's** VM, set `EGRESS_INTERNAL_TOKEN` (+ `EGRESS_UPLINK_IFACE` if your NIC isn't `eth0`) in that host's `.env`, and bring the stack up **with the sidecar**: `docker compose -f docker-compose.node.yml --profile egress up -d`. The sidecar is opt-in, so existing deployments are unaffected.
-2. **Routing → Outbounds → New (freedom)** → enter the **Public IP** (and **Gateway** if the IP is on a separate gateway). The internal bind-IP is auto-assigned.
-3. **System → Download host script** → run it on the host as root (`bash egress-setup.sh`). Idempotent — re-run it after any egress change. It aliases the public IP and installs a self-cleaning `EGRESS_SNAT` chain (+ policy routing).
-4. Assign the client's per-user route (`preferred_outbound`) to that outbound. Verify with `curl https://ifconfig.me` from the client — it shows the dedicated IP, while everyone else still exits the primary one.
+1. Rent the IP. It does **not** have to be attached to the node's VM — the installer raises it if the provider has only issued it. Make sure `jq` is present on that host.
+2. On the node, as root: `install.sh egress` (or pick *egress* from the installer's menu — it appears on a node). It lists every address, bound and free, including ones sitting on the uplink that the panel does not know about.
+3. Pick a free address → it asks for a name and, if the address is off-subnet, a gateway. It then creates the freedom outbound through the panel, installs `panel-egress-sync.timer`, brings up the `xray-egress` sidecar and verifies the address answers from the host.
+4. Assign the client's per-user route (`preferred_outbound`) to that outbound in the panel. Verify with `curl https://ifconfig.me` from the client — it shows the dedicated IP, while everyone else still exits the primary one.
+
+The timer re-checks every 30 seconds and at boot, so an edit made in the web UI reaches the host on its own and a reboot restores the aliases, the `EGRESS_SNAT` chain and the policy routing. `install.sh doctor` reports whether the host actually matches the panel — not merely whether the timer is running. An unreachable panel leaves the host exactly as it is; only an explicitly empty plan clears it.
+
+> Prefer the panel's Routing → Outbounds form? It still works — enter the **Public IP** and **Gateway** there and the internal bind-IP is auto-assigned. The host side is the same either way, and the timer picks the change up within 30 seconds.
 
 > First upgrade to a build with this feature recreates `panel-net` on its fixed `172.28.0.0/24` subnet, so that node needs a one-time `docker compose -f docker-compose.node.yml down && up -d` (brief downtime) rather than a plain `up -d`.
 
