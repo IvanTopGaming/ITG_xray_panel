@@ -59,10 +59,30 @@ if [ -z "$PLAN_URL" ]; then
     PLAN_URL="http://$BACKEND_ADDR:5000/api/system/egress/host-plan"
 fi
 
-if ! PLAN="$(curl -fsS --max-time 10 -H "X-Egress-Token: $TOKEN" "$PLAN_URL")"; then
-    log "the panel did not answer; leaving the host untouched"
-    exit 1
-fi
+RESPONSE="$(curl -sS --max-time 10 -w '\n%{http_code}' -H "X-Egress-Token: $TOKEN" "$PLAN_URL" 2>/dev/null || true)"
+CODE="${RESPONSE##*$'\n'}"
+PLAN="${RESPONSE%$'\n'*}"
+
+case "$CODE" in
+    200) ;;
+    404)
+        log "this node's backend has no egress plan endpoint — it predates worker 3.0.1"
+        log "run: install.sh update --dir $DIR"
+        exit 1
+        ;;
+    403)
+        log "the panel rejected EGRESS_INTERNAL_TOKEN from $ENV_FILE"
+        exit 1
+        ;;
+    503)
+        log "EGRESS_INTERNAL_TOKEN is not set on the backend container"
+        exit 1
+        ;;
+    *)
+        log "the panel did not answer (HTTP ${CODE:-none}); leaving the host untouched"
+        exit 1
+        ;;
+esac
 
 if ! DESIRED="$(printf '%s' "$PLAN" | jq -r '.[] | "\(.public_ip)\t\(.send_through)\t\(.gateway)"')"; then
     log "the panel's answer did not parse; leaving the host untouched"

@@ -580,6 +580,11 @@ EOF
 
 egress_apply() {
     local code=0
+    if [ ! -x "$DIR/egress-sync.sh" ]; then
+        warn "the host side is not installed here — nothing applied the change to this machine"
+        note "  Bind an address from this menu to install it."
+        return 1
+    fi
     "$DIR/egress-sync.sh" --dir "$DIR" || code=$?
     case "$code" in
         0) ok "host is in step with the panel"; return 0 ;;
@@ -590,8 +595,8 @@ egress_apply() {
 }
 
 backend_addr() {
-    docker inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{if eq $name "panel-net"}}{{$net.IPAddress}}{{end}}{{end}}' \
-        panel-backend 2>/dev/null
+    docker inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{$name}}={{$net.IPAddress}}{{"\n"}}{{end}}' \
+        panel-backend 2>/dev/null | awk -F= '$1 ~ /(^|_)panel-net$/ && $2 != "" { print $2; exit }'
 }
 
 api_url() {
@@ -603,55 +608,60 @@ api_url() {
 
 API_TOKEN=""
 API_URL=""
-api_ready() {
-    [ -n "$API_URL" ] && return 0
+
+api_token() {
+    local user pass body reply code tries=0
     API_URL="$(api_url)" || true
     if [ -z "$API_URL" ]; then
-        warn "panel-backend is not on panel-net — is the stack up?"
+        warn "panel-backend is not reachable on this host's panel-net"
         note "  check with: install.sh doctor --dir $DIR"
         return 1
     fi
-    return 0
-}
-
-api_token() {
-    [ -n "$API_TOKEN" ] && return 0
-    api_ready || return 1
-    local user pass body reply
     user="$(env_get "$ENV_FILE" PANEL_ADMIN_USER)"
     user="${user:-admin}"
-    pass="$(env_get "$ENV_FILE" PANEL_ADMIN_PASSWORD)"
+    pass="${PANEL_ADMIN_PASSWORD:-$(env_get "$ENV_FILE" PANEL_ADMIN_PASSWORD)}"
+
     while :; do
         body="$(jq -n --arg u "$user" --arg p "$pass" '{username:$u,password:$p}')"
-        reply="$(curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
-            -d "$body" "$API_URL/auth/login" 2>/dev/null || true)"
-        API_TOKEN="$(printf '%s' "$reply" | jq -r '.token // empty' 2>/dev/null || true)"
+        reply="$(curl -sS --max-time 10 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d "$body" "$API_URL/login" 2>&1 || true)"
+        code="${reply##*$'\n'}"
+        API_TOKEN="$(printf '%s' "${reply%$'\n'*}" | jq -r '.token // empty' 2>/dev/null || true)"
         [ -n "$API_TOKEN" ] && return 0
-        if [ "$INTERACTIVE" -eq 0 ]; then
-            warn "the panel refused the admin password from .env"
+
+        case "$code" in
+            401) : ;;
+            000|"") warn "no answer from $API_URL — is panel-backend up?"; return 1 ;;
+            *) warn "the panel answered HTTP $code to the login"; return 1 ;;
+        esac
+
+        tries=$((tries + 1))
+        if [ "$INTERACTIVE" -eq 0 ] || [ "$tries" -gt 3 ] || [ ! -r /dev/tty ]; then
+            warn "the panel refused the admin password"
+            note "  Put the current one in $ENV_FILE, or pass it for one run:"
+            note "    PANEL_ADMIN_PASSWORD=<pw> install.sh egress --dir $DIR"
             return 1
         fi
-        warn "the panel refused the password in .env — was it changed in the UI?"
+        warn "the panel refused the password (attempt $tries of 3)"
         printf '%b' "    ${C_ACCENT}▸${C_RESET} admin password: "
-        read -rs pass
-        printf '\n'
-        [ -n "$pass" ] || { warn "giving up on the panel"; return 1; }
+        IFS= read -r pass </dev/tty || { printf '\n'; return 1; }
+        [ -n "$pass" ] || return 1
     done
 }
 
 api_get() {
-    api_token || return 1
+    [ -n "$API_TOKEN" ] || return 1
     curl -fsS --max-time 20 -H "Authorization: Bearer $API_TOKEN" "$API_URL$1"
 }
 
 api_post() {
-    api_token || return 1
+    [ -n "$API_TOKEN" ] || return 1
     curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $API_TOKEN" \
         -H 'Content-Type: application/json' -d "$2" "$API_URL$1"
 }
 
 api_delete() {
-    api_token || return 1
+    [ -n "$API_TOKEN" ] || return 1
     curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $API_TOKEN" "$API_URL$1"
 }
 
@@ -782,7 +792,7 @@ egress_rows() {
         [ "$addr" = "$primary" ] && continue
         printf '%s' "$EGRESS_OUTBOUNDS" | jq -e --arg a "$addr" 'any(.[]; .public_ip == $a)' >/dev/null && continue
         printf 'free\t%s\t\t0\n' "$addr"
-    done < <(ip -4 -o addr show dev "$iface" scope global | awk '{print $4}' | cut -d/ -f1)
+    done < <(ip -4 -o addr show dev "$iface" scope global | awk '{print $4}' | cut -d/ -f1 | sort -u)
 
     for manual in ${EGRESS_MANUAL:-}; do
         printf '%s' "$EGRESS_OUTBOUNDS" | jq -e --arg a "$manual" 'any(.[]; .public_ip == $a)' >/dev/null && continue
@@ -863,10 +873,13 @@ cmd_egress() {
     local -a ips=() tags=() states=()
     local line n state ip tag users idx
 
+    api_token || return 1
+
     EGRESS_MANUAL="${EGRESS_MANUAL:-}"
     while :; do
         rule "Dedicated egress IP"
         if ! egress_load; then
+            warn "could not read the current state from the panel"
             printf '\n'
             return 1
         fi
@@ -889,7 +902,7 @@ cmd_egress() {
         printf '\n'
 
         EGRESS_CHOICE=""
-        ask EGRESS_CHOICE "pick an address"
+        ask EGRESS_CHOICE "pick an option"
         line="$EGRESS_CHOICE"
         case "$line" in
             q|Q) printf '\n'; return 0 ;;
@@ -915,12 +928,48 @@ cmd_egress() {
         fi
 
         idx=$((line - 1))
-        if [ "${states[$idx]}" = "bound" ]; then
-            egress_unbind "${ips[$idx]}" "${tags[$idx]}" || true
-        else
-            egress_bind "${ips[$idx]}" || true
-        fi
+        egress_actions "${states[$idx]}" "${ips[$idx]}" "${tags[$idx]}" || true
     done
+}
+
+egress_actions() {
+    local state="$1" ip="$2" tag="$3" choice=""
+
+    rule "$ip"
+    if [ "$state" = "bound" ]; then
+        note "  exit ${C_BOLD}${tag}${C_RESET}"
+        printf '\n'
+        note "  1  unbind — delete the outbound; its clients return to the shared exit"
+        note "  2  sync the host with the panel"
+    else
+        note "  not bound to any exit"
+        printf '\n'
+        note "  1  bind — create the outbound and apply it to this host"
+    fi
+    note "  q  back"
+    printf '\n'
+
+    ask choice "what should happen to $ip"
+    case "$choice" in
+        1)
+            if [ "$state" = "bound" ]; then
+                egress_unbind "$ip" "$tag"
+            else
+                egress_bind "$ip"
+            fi
+            ;;
+        2)
+            [ "$state" = "bound" ] || { warn "no such option"; return 0; }
+            if egress_configured; then
+                egress_apply || true
+            else
+                warn "the host side is not installed here"
+                note "  Nothing on this machine applies the panel's egress addresses yet."
+            fi
+            ;;
+        q|Q) return 0 ;;
+        *) warn "no such option" ;;
+    esac
 }
 
 find_deployment() {
