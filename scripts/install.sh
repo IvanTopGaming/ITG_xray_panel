@@ -114,6 +114,7 @@ usage() {
     doctor             check an installed host and say what is wrong
     update             move the image pins forward and restart
     reconfigure        change this host's domains, keeping every secret
+    egress             manage this node's dedicated outgoing IPs
 
   options:
     --role ROLE        data | cron | master | node | sub | bot
@@ -135,7 +136,7 @@ EOF
 COMMAND="install"
 COMMAND_EXPLICIT=0
 case "${1:-}" in
-    install|doctor|update|reconfigure) COMMAND="$1"; COMMAND_EXPLICIT=1; shift ;;
+    install|doctor|update|reconfigure|egress) COMMAND="$1"; COMMAND_EXPLICIT=1; shift ;;
 esac
 
 while [ $# -gt 0 ]; do
@@ -438,9 +439,42 @@ cmd_doctor() {
         note "  run: install.sh update"
     fi
 
+    if [ "$ROLE" = "node" ]; then
+        rule "Egress"
+        check_egress
+    fi
+
     rule "Monitoring"
     check_monitoring
     printf '\n'
+}
+
+check_egress() {
+    local pending
+    if ! egress_configured; then
+        note "  no dedicated egress addresses on this node"
+        return 0
+    fi
+    ok "uplink    ${C_DIM}$(egress_uplink)${C_RESET}"
+
+    if systemctl is-active --quiet panel-egress-sync.timer 2>/dev/null; then
+        ok "timer     ${C_DIM}panel-egress-sync.timer active${C_RESET}"
+    else
+        warn "timer     ${C_DIM}panel-egress-sync.timer is not active${C_RESET}"
+        note "    Nothing restores the addresses after a reboot until it is."
+    fi
+
+    if ! pending="$("$DIR/egress-sync.sh" --dir "$DIR" --dry-run 2>/dev/null)"; then
+        warn "panel     ${C_DIM}the plan could not be read; the host was left as it is${C_RESET}"
+        return 0
+    fi
+    if [ -z "$pending" ]; then
+        ok "state     ${C_DIM}host matches the panel${C_RESET}"
+    else
+        warn "state     ${C_DIM}$(printf '%s' "$pending" | grep -c '^+') change(s) not applied${C_RESET}"
+        printf '%s\n' "$pending" | sed 's/^/      /'
+        note "    apply with: install.sh egress --dir $DIR  →  s"
+    fi
 }
 
 check_monitoring() {
@@ -672,6 +706,158 @@ cmd_reconfigure() {
     printf '\n'
 }
 
+EGRESS_OUTBOUNDS=""
+EGRESS_CLIENTS=""
+
+egress_load() {
+    EGRESS_OUTBOUNDS="$(api_get /outbounds | jq -c '[.[] | select(.public_ip != "" and .public_ip != null)]')"
+    EGRESS_CLIENTS="$(api_get /inbounds | jq -c '[.[].clients[]? | select(.preferred_outbound != "" and .preferred_outbound != null) | .preferred_outbound]')"
+}
+
+egress_rows() {
+    local iface primary addr manual
+    iface="$(egress_uplink)"
+    primary="$(egress_primary)"
+
+    printf '%s' "$EGRESS_OUTBOUNDS" | jq -r --argjson c "$EGRESS_CLIENTS" \
+        '.[] | . as $o | "bound\t\($o.public_ip)\t\($o.tag)\t\([$c[] | select(. == $o.tag)] | length)"'
+
+    while read -r addr; do
+        [ -n "$addr" ] || continue
+        [ "$addr" = "$primary" ] && continue
+        printf '%s' "$EGRESS_OUTBOUNDS" | jq -e --arg a "$addr" 'any(.[]; .public_ip == $a)' >/dev/null && continue
+        printf 'free\t%s\t\t0\n' "$addr"
+    done < <(ip -4 -o addr show dev "$iface" scope global | awk '{print $4}' | cut -d/ -f1)
+
+    for manual in ${EGRESS_MANUAL:-}; do
+        printf '%s' "$EGRESS_OUTBOUNDS" | jq -e --arg a "$manual" 'any(.[]; .public_ip == $a)' >/dev/null && continue
+        printf 'free\t%s\t\t0\n' "$manual"
+    done
+}
+
+egress_bind() {
+    local ip="$1" tag="" gw="" body reply iface primary_cidr seen
+
+    iface="$(egress_uplink)"
+    ask tag "name for this exit" "egress-${ip##*.}"
+
+    primary_cidr="$(ip -4 -o addr show dev "$iface" scope global | awk '{print $4}' | head -1)"
+    if ip route get "$ip" 2>/dev/null | head -1 | grep -q ' via '; then
+        note "  ${ip} is outside ${primary_cidr}, so it needs its own gateway."
+        ask gw "gateway for $ip"
+    fi
+
+    body="$(jq -n --arg t "$tag" --arg p "$ip" --arg g "$gw" \
+        '{tag:$t, protocol:"freedom", public_ip:$p, gateway:$g}')"
+
+    if ! reply="$(api_post /outbounds "$body" 2>&1)"; then
+        warn "the panel refused it"
+        note "  $(printf '%s' "$reply" | jq -r '.error // .' 2>/dev/null || printf '%s' "$reply")"
+        return 1
+    fi
+    ok "outbound ${C_BOLD}${tag}${C_RESET} created"
+
+    if ! egress_configured; then
+        rule "Setting up the host side"
+        egress_enable
+    fi
+    egress_apply || return 1
+
+    seen="$(curl -fsS --max-time 8 --interface "$ip" https://ifconfig.me 2>/dev/null || true)"
+    if [ -z "$seen" ]; then
+        warn "the address is bound, but nothing answered through it"
+        note "  Check that the provider routes ${ip} to this machine."
+    elif [ "$seen" = "$ip" ]; then
+        ok "verified: ${ip} routes out as itself"
+    else
+        warn "traffic through ${ip} comes out as ${seen}"
+        note "  The address is reachable but something upstream rewrites it."
+    fi
+    note "  This proves the address works from the host. Assign it to a client in"
+    note "  the panel — their key's Route button — to send their traffic through it."
+    printf '\n'
+}
+
+egress_unbind() {
+    local ip="$1" tag="$2" users reply
+
+    users="$(printf '%s' "$EGRESS_CLIENTS" | jq -r --arg t "$tag" '[.[] | select(. == $t)] | length')"
+
+    if ! reply="$(api_delete "/outbounds/$tag" 2>&1)"; then
+        warn "the panel refused it"
+        note "  $(printf '%s' "$reply" | jq -r '.error // .' 2>/dev/null || printf '%s' "$reply")"
+        return 1
+    fi
+
+    egress_apply || true
+
+    if [ "${users:-0}" -gt 0 ]; then
+        ok "${ip} unbound; ${users} client(s) went back to the shared exit"
+    else
+        ok "${ip} unbound"
+    fi
+    printf '\n'
+}
+
+cmd_egress() {
+    [ "$ROLE" = "node" ] || die "egress addresses live on a node" "This host runs no Xray."
+    command -v jq >/dev/null 2>&1 ||
+        die "jq is required to manage egress addresses" "Install it, e.g. apt install jq"
+    has_docker || die "docker is not available"
+
+    local -a ips=() tags=() states=()
+    local line n state ip tag users idx
+
+    EGRESS_MANUAL="${EGRESS_MANUAL:-}"
+    while :; do
+        rule "Dedicated egress IP"
+        egress_load
+        ips=(); tags=(); states=(); n=0
+        while IFS=$'\t' read -r state ip tag users; do
+            [ -n "$ip" ] || continue
+            n=$((n + 1))
+            states+=("$state"); ips+=("$ip"); tags+=("$tag")
+            if [ "$state" = "bound" ]; then
+                role_line "$n" "$ip" "$tag · $users client(s)"
+            else
+                role_line "$n" "$ip" "free"
+            fi
+        done < <(egress_rows)
+        [ "$n" -eq 0 ] && note "  no addresses found on $(egress_uplink) and none bound"
+        printf '\n'
+        note "  a  add an address by hand"
+        egress_configured && note "  s  sync the host with the panel now"
+        note "  q  back"
+        printf '\n'
+
+        EGRESS_CHOICE=""
+        ask EGRESS_CHOICE "pick an address"
+        line="$EGRESS_CHOICE"
+        case "$line" in
+            q|Q) printf '\n'; return 0 ;;
+            a|A)
+                EGRESS_MANUAL_ONE=""
+                ask EGRESS_MANUAL_ONE "address to add"
+                EGRESS_MANUAL="$EGRESS_MANUAL $EGRESS_MANUAL_ONE"
+                continue
+                ;;
+            s|S) egress_configured && egress_apply; continue ;;
+            ''|*[!0-9]*) warn "pick a number, a, s or q"; continue ;;
+        esac
+        if [ "$line" -lt 1 ] || [ "$line" -gt "$n" ]; then
+            warn "no such entry"
+            continue
+        fi
+
+        idx=$((line - 1))
+        if [ "${states[$idx]}" = "bound" ]; then
+            egress_unbind "${ips[$idx]}" "${tags[$idx]}"
+        else
+            egress_bind "${ips[$idx]}"
+        fi
+    done
+}
+
 find_deployment() {
     local candidate
     for candidate in "${DIR:-}" . ./itg-panel; do
@@ -699,6 +885,7 @@ if [ "$COMMAND_EXPLICIT" -eq 0 ] && [ "$INTERACTIVE" -eq 1 ]; then
         role_line 2 update      "move the image pins forward, pull and restart"
         role_line 3 reconfigure "change this host's domains, keep every secret"
         role_line 4 install     "set up another role, in a different directory"
+        [ "$EXISTING_ROLE" = "node" ] && role_line 5 egress "manage this node's dedicated outgoing IPs"
         printf '\n'
         while :; do
             ask MENU_CHOICE "what would you like to do"
@@ -707,7 +894,11 @@ if [ "$COMMAND_EXPLICIT" -eq 0 ] && [ "$INTERACTIVE" -eq 1 ]; then
                 2|update) COMMAND=update ;;
                 3|reconfig|reconfigure) COMMAND=reconfigure ;;
                 4|install) COMMAND=install ;;
-                *) warn "pick 1-4"; MENU_CHOICE=""; continue ;;
+                5|egress)
+                    [ "$EXISTING_ROLE" = "node" ] || { warn "egress is a node-only menu"; MENU_CHOICE=""; continue; }
+                    COMMAND=egress
+                    ;;
+                *) warn "pick a number from the list"; MENU_CHOICE=""; continue ;;
             esac
             break
         done
@@ -721,6 +912,7 @@ if [ "$COMMAND" != "install" ]; then
         doctor) cmd_doctor ;;
         update) cmd_update ;;
         reconfigure) cmd_reconfigure ;;
+        egress) cmd_egress ;;
     esac
     exit 0
 fi
