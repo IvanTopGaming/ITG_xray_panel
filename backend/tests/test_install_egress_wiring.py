@@ -110,3 +110,78 @@ def test_doctor_reports_egress_when_it_is_configured():
         "still change. Reporting only that the timer is active would call a stalled host healthy."
     )
     assert "is-active" in body
+
+
+def test_doctor_does_not_call_an_unconfigured_host_egress_free():
+    body = INSTALL.split("check_egress()")[1].split("\n}")[0]
+    unconfigured = body.split("egress_configured")[1].split("return 0")[0]
+    assert "install.sh egress" in unconfigured, (
+        "an operator can create an egress outbound from the panel's Routing page, which "
+        "configures the panel and applies nothing to this host. Reporting 'no dedicated "
+        "egress addresses' there states the opposite of the truth — the exact silent failure "
+        "this branch exists to end."
+    )
+
+
+def test_no_panel_call_can_kill_the_menu_through_set_e():
+    body = INSTALL.split("api_token()")[1].split("\ncmd_update()")[0]
+    assert "|| true" in body, (
+        'the script runs under `set -euo pipefail`, so `X="$(curl -fsS … | jq …)"` exits the '
+        "whole installer on any non-2xx: curl exits 22, pipefail promotes it, and an "
+        "assignment-only command carries the substitution's status. That silently kills the "
+        "menu before the 401 branch below can print anything, making every panel-side error "
+        "message unreachable. Verified by repro: the old form exits 7 against a closed port."
+    )
+    for helper in ("api_get()", "api_post()", "api_delete()"):
+        chunk = INSTALL.split(helper)[1].split("\n}")[0]
+        assert "api_token || return 1" in chunk, (
+            f"{helper} must hand a failed login back to its caller instead of letting `set -e` "
+            f"end the process from inside a menu loop."
+        )
+
+
+def test_die_writes_to_stderr():
+    body = INSTALL.split("die()")[1].split("\n}")[0]
+    assert body.count(">&2") >= 2, (
+        "api_url used to call die inside a command substitution, so the message was captured "
+        "into the URL instead of shown and the operator got a bare non-zero exit."
+    )
+
+
+def test_the_client_count_reads_where_the_api_actually_puts_clients():
+    body = INSTALL.split("egress_load()")[1].split("\n}")[0]
+    assert ".settings.clients" in body, (
+        "GET /api/inbounds nests clients under settings.clients (api/inbound.py). Reading "
+        "`.clients[]?` yields an empty array on every inbound, so every bound address reports "
+        "0 client(s) and unbind never names anyone — and that after-the-fact report is the "
+        "only safeguard left by the decision to delete without confirmation."
+    )
+
+
+def test_the_backend_address_comes_from_panel_net():
+    assert "panel-net" in INSTALL.split("backend_addr()")[1].split("\n}")[0], (
+        "a node's backend joins panel-net, redis-net and dockersock-net; Go templates iterate "
+        "maps in sorted key order, so an unfiltered range yields dockersock-net first. Both "
+        "of the other two are `internal: true`, so the plan fetch would ride a network that "
+        "exists to be unreachable."
+    )
+
+
+def test_the_marker_file_is_written_after_what_it_certifies():
+    body = INSTALL.split("egress_enable()")[1].split("\negress_write_units()")[0]
+    assert body.index("fetch ") < body.index("egress.conf"), (
+        "egress.conf is what egress_configured tests, and what makes compose pass --profile "
+        "egress. Writing it before the fetch and the units leaves a failed enable looking "
+        "complete forever: bind never retries it, and the only way out is deleting the file "
+        "by hand."
+    )
+
+
+def test_update_refreshes_the_host_side_too():
+    assert "egress_refresh_host_side" in INSTALL
+    body = INSTALL.split("cmd_update()")[1].split("\n}")[0]
+    assert "egress_refresh_host_side" in body, (
+        "egress-sync.sh and the units are the only host-side pieces that are not images: they "
+        "carry no version and no pin, so without this a fix to the synchroniser could never "
+        "reach an installed node."
+    )

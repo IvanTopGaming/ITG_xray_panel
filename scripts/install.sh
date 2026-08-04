@@ -68,8 +68,8 @@ role_line() {
 
 die() {
     spinner_stop
-    printf '\n%b\n\n' "  ${C_ERR}✗${C_RESET} ${C_BOLD}$1${C_RESET}"
-    [ $# -gt 1 ] && { printf '%b\n\n' "    ${C_DIM}$2${C_RESET}"; }
+    printf '\n%b\n\n' "  ${C_ERR}✗${C_RESET} ${C_BOLD}$1${C_RESET}" >&2
+    [ $# -gt 1 ] && { printf '%b\n\n' "    ${C_DIM}$2${C_RESET}" >&2; }
     exit 1
 }
 
@@ -452,7 +452,9 @@ cmd_doctor() {
 check_egress() {
     local pending
     if ! egress_configured; then
-        note "  no dedicated egress addresses on this node"
+        note "  the host side is not installed here"
+        note "  An egress outbound created in the panel's Routing page is NOT applied to"
+        note "  this host until you run: install.sh egress --dir $DIR"
         return 0
     fi
     ok "uplink    ${C_DIM}$(egress_uplink)${C_RESET}"
@@ -529,13 +531,19 @@ egress_enable() {
     iface="$(ip route show default | awk '/default/ {print $5; exit}')"
     [ -n "$iface" ] || die "no default route on this machine" "Set EGRESS_UPLINK_IFACE by hand."
 
-    printf 'EGRESS_UPLINK_IFACE=%s\n' "$iface" > "$DIR/egress.conf"
-    ok "uplink ${C_BOLD}${iface}${C_RESET} ${C_DIM}(override in $DIR/egress.conf)${C_RESET}"
-
     fetch "scripts/egress-sync.sh" "$DIR/egress-sync.sh"
     chmod +x "$DIR/egress-sync.sh"
     ok "egress-sync.sh"
 
+    egress_write_units "$iface"
+
+    printf 'EGRESS_UPLINK_IFACE=%s\n' "$iface" > "$DIR/egress.conf"
+    ok "uplink ${C_BOLD}${iface}${C_RESET} ${C_DIM}(override in $DIR/egress.conf)${C_RESET}"
+
+    compose_show up -d xray-egress
+}
+
+egress_write_units() {
     cat > "$EGRESS_UNIT" <<EOF
 [Unit]
 Description=ITG panel egress address synchroniser
@@ -544,7 +552,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=$DIR/egress-sync.sh --dir $DIR
+ExecStart="$DIR/egress-sync.sh" --dir "$DIR"
 EOF
 
     cat > "$EGRESS_TIMER" <<EOF
@@ -560,11 +568,14 @@ AccuracySec=5s
 WantedBy=timers.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable --now panel-egress-sync.timer >/dev/null 2>&1
-    ok "panel-egress-sync.timer ${C_DIM}(every 30s, and once at boot)${C_RESET}"
-
-    compose_show up -d xray-egress
+    systemctl daemon-reload ||
+        die "systemctl daemon-reload failed" "The synchroniser needs systemd to run on a timer."
+    if systemctl enable --now panel-egress-sync.timer >/dev/null 2>&1; then
+        ok "panel-egress-sync.timer ${C_DIM}(every 30s, and once at boot)${C_RESET}"
+    else
+        die "could not enable panel-egress-sync.timer" \
+            "Without it nothing restores the addresses after a reboot."
+    fi
 }
 
 egress_apply() {
@@ -578,50 +589,88 @@ egress_apply() {
     return 1
 }
 
+backend_addr() {
+    docker inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{if eq $name "panel-net"}}{{$net.IPAddress}}{{end}}{{end}}' \
+        panel-backend 2>/dev/null
+}
+
 api_url() {
     local addr
-    addr="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' panel-backend 2>/dev/null | awk '{print $1}')"
-    [ -n "$addr" ] || die "panel-backend is not running" "Start the stack first: install.sh doctor"
+    addr="$(backend_addr)"
+    [ -n "$addr" ] || return 1
     printf 'http://%s:5000/api' "$addr"
 }
 
 API_TOKEN=""
+API_URL=""
+api_ready() {
+    [ -n "$API_URL" ] && return 0
+    API_URL="$(api_url)" || true
+    if [ -z "$API_URL" ]; then
+        warn "panel-backend is not on panel-net — is the stack up?"
+        note "  check with: install.sh doctor --dir $DIR"
+        return 1
+    fi
+    return 0
+}
+
 api_token() {
     [ -n "$API_TOKEN" ] && return 0
-    local user pass body
+    api_ready || return 1
+    local user pass body reply
     user="$(env_get "$ENV_FILE" PANEL_ADMIN_USER)"
     user="${user:-admin}"
     pass="$(env_get "$ENV_FILE" PANEL_ADMIN_PASSWORD)"
     while :; do
         body="$(jq -n --arg u "$user" --arg p "$pass" '{username:$u,password:$p}')"
-        API_TOKEN="$(curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
-            -d "$body" "$(api_url)/auth/login" 2>/dev/null | jq -r '.token // empty')"
+        reply="$(curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
+            -d "$body" "$API_URL/auth/login" 2>/dev/null || true)"
+        API_TOKEN="$(printf '%s' "$reply" | jq -r '.token // empty' 2>/dev/null || true)"
         [ -n "$API_TOKEN" ] && return 0
-        [ "$INTERACTIVE" -eq 1 ] || die "the admin password in .env was refused"
-        warn "the panel refused the password in .env — it was changed in the UI"
+        if [ "$INTERACTIVE" -eq 0 ]; then
+            warn "the panel refused the admin password from .env"
+            return 1
+        fi
+        warn "the panel refused the password in .env — was it changed in the UI?"
         printf '%b' "    ${C_ACCENT}▸${C_RESET} admin password: "
         read -rs pass
         printf '\n'
+        [ -n "$pass" ] || { warn "giving up on the panel"; return 1; }
     done
 }
 
 api_get() {
-    api_token
-    curl -fsS --max-time 20 -H "Authorization: Bearer $API_TOKEN" "$(api_url)$1"
+    api_token || return 1
+    curl -fsS --max-time 20 -H "Authorization: Bearer $API_TOKEN" "$API_URL$1"
 }
 
 api_post() {
-    api_token
+    api_token || return 1
     curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $API_TOKEN" \
-        -H 'Content-Type: application/json' -d "$2" "$(api_url)$1"
+        -H 'Content-Type: application/json' -d "$2" "$API_URL$1"
 }
 
 api_delete() {
-    api_token
-    curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $API_TOKEN" "$(api_url)$1"
+    api_token || return 1
+    curl -fsS --max-time 30 -X DELETE -H "Authorization: Bearer $API_TOKEN" "$API_URL$1"
+}
+
+egress_refresh_host_side() {
+    egress_configured || return 0
+    rule "Egress host side"
+    fetch "scripts/egress-sync.sh" "$DIR/egress-sync.sh"
+    chmod +x "$DIR/egress-sync.sh"
+    ok "egress-sync.sh"
+    if [ "$(id -u)" = "0" ]; then
+        egress_write_units "$(egress_uplink)"
+    else
+        warn "not root: the systemd units were left as they are"
+    fi
 }
 
 cmd_update() {
+    egress_refresh_host_side
+
     rule "Image pins"
     PIN_UPDATES=()
     if check_pins report; then
@@ -710,8 +759,14 @@ EGRESS_OUTBOUNDS=""
 EGRESS_CLIENTS=""
 
 egress_load() {
-    EGRESS_OUTBOUNDS="$(api_get /outbounds | jq -c '[.[] | select(.public_ip != "" and .public_ip != null)]')"
-    EGRESS_CLIENTS="$(api_get /inbounds | jq -c '[.[].clients[]? | select(.preferred_outbound != "" and .preferred_outbound != null) | .preferred_outbound]')"
+    local outbounds inbounds
+    outbounds="$(api_get /outbounds)" || return 1
+    inbounds="$(api_get /inbounds)" || return 1
+    EGRESS_OUTBOUNDS="$(printf '%s' "$outbounds" |
+        jq -c '[.[] | select(.public_ip != "" and .public_ip != null)]')" || return 1
+    EGRESS_CLIENTS="$(printf '%s' "$inbounds" |
+        jq -c '[.[].settings.clients[] | select(.preferred_outbound != "" and .preferred_outbound != null) | .preferred_outbound]')" ||
+        return 1
 }
 
 egress_rows() {
@@ -811,7 +866,10 @@ cmd_egress() {
     EGRESS_MANUAL="${EGRESS_MANUAL:-}"
     while :; do
         rule "Dedicated egress IP"
-        egress_load
+        if ! egress_load; then
+            printf '\n'
+            return 1
+        fi
         ips=(); tags=(); states=(); n=0
         while IFS=$'\t' read -r state ip tag users; do
             [ -n "$ip" ] || continue
@@ -841,7 +899,14 @@ cmd_egress() {
                 EGRESS_MANUAL="$EGRESS_MANUAL $EGRESS_MANUAL_ONE"
                 continue
                 ;;
-            s|S) egress_configured && egress_apply; continue ;;
+            s|S)
+                if egress_configured; then
+                    egress_apply || true
+                else
+                    warn "the host side is not installed here yet — bind an address first"
+                fi
+                continue
+                ;;
             ''|*[!0-9]*) warn "pick a number, a, s or q"; continue ;;
         esac
         if [ "$line" -lt 1 ] || [ "$line" -gt "$n" ]; then
@@ -851,9 +916,9 @@ cmd_egress() {
 
         idx=$((line - 1))
         if [ "${states[$idx]}" = "bound" ]; then
-            egress_unbind "${ips[$idx]}" "${tags[$idx]}"
+            egress_unbind "${ips[$idx]}" "${tags[$idx]}" || true
         else
-            egress_bind "${ips[$idx]}"
+            egress_bind "${ips[$idx]}" || true
         fi
     done
 }
