@@ -348,6 +348,55 @@ def test_the_endpoint_accepts_an_absolute_expiry_without_a_key(node_app):
     assert _node_expiry(node_app, 791) == target
 
 
+def test_the_endpoint_preserves_zero_as_an_open_ended_expiry(node_app):
+    _seed_node(node_app, telegram_id=792, expiry_ms=None)
+
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        resp = _post_provision(
+            node_app,
+            {"telegram_id": 792, "inbound_tag": "DE-vless", "limit_bytes": 0, "expiry_ms": 0},
+        )
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert resp.get_json()["expires_at_ms"] == 0
+    assert _node_expiry(node_app, 792) == 0
+
+
+def test_a_grant_does_not_shorten_or_take_over_another_tariffs_key(node_app):
+    now_ms = int(time.time() * 1000)
+    paid_until = now_ms + 23 * _DAY_MS
+    _seed_node(node_app, telegram_id=793, expiry_ms=paid_until)
+    with node_app.app_context():
+        from panel_core.extensions import db
+        from panel_core.models import Client
+
+        client = Client.query.filter_by(telegram_id=793).one()
+        client.tariff_id = 99
+        client.limit_bytes = 300
+        db.session.commit()
+
+    with patch("panel_core.services.provisioning._sync_after_provision"):
+        resp = _post_provision(
+            node_app,
+            {
+                "telegram_id": 793,
+                "inbound_tag": "DE-vless",
+                "limit_bytes": 1,
+                "tariff_id": 7,
+                "expiry_ms": now_ms + 7 * _DAY_MS,
+            },
+        )
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    with node_app.app_context():
+        from panel_core.models import Client
+
+        client = Client.query.filter_by(telegram_id=793).one()
+        assert client.expiry_time == paid_until
+        assert client.tariff_id == 99
+        assert client.limit_bytes == 300
+
+
 def test_backfill_still_sends_an_absolute_expiry(app, db):
     from panel_core.models import Client, Inbound, LinkedPanel, Tariff, TariffItem
     from panel_core.services.provisioning import backfill_tariff

@@ -2,77 +2,66 @@ import logging
 from datetime import datetime, timedelta
 
 from panel_core.extensions import db
-from panel_core.models import Tariff, TelegramUser, UserTariffAccess
-from panel_core.services import bot_events
-from panel_core.services.provisioning import apply_tariff_for_user
+from panel_core.models import Tariff, UserTariffAccess
+from panel_core.services.panel_proxy import proxy_bulk_reset_traffic
+from panel_core.services.remote_clients_cached import remote_clients_by_telegram_id
 
 logger = logging.getLogger(__name__)
 
 
-def auto_renew_free_users() -> None:
+def reset_grant_traffic_cycles() -> None:
 
     now = datetime.utcnow()
     due = (
         UserTariffAccess.query.filter(UserTariffAccess.billing == "free")
+        .filter(UserTariffAccess.next_renewal_at.isnot(None))
         .filter(UserTariffAccess.next_renewal_at <= now)
+        .filter((UserTariffAccess.access_until.is_(None)) | (UserTariffAccess.access_until > now))
         .limit(500)
         .all()
     )
+    if not due:
+        return
+
+    by_telegram_id = remote_clients_by_telegram_id()
+    reset_by_panel: dict[int, dict[tuple[str, str], dict]] = {}
+
     for grant in due:
         tariff = db.session.get(Tariff, grant.tariff_id)
-        if tariff is None or tariff.visibility == "archived" or not tariff.enabled:
+        if tariff is None:
             grant.next_renewal_at = None
             db.session.commit()
-            reason = "missing" if tariff is None else "archived" if tariff.visibility == "archived" else "disabled"
-            logger.info(
-                "auto_renew: pausing tg=%s tariff=%s (%s)",
-                grant.telegram_id,
-                grant.tariff_id,
-                reason,
-            )
-            user = db.session.get(TelegramUser, grant.telegram_id)
-            tariff_name = tariff.name if tariff is not None else f"#{grant.tariff_id}"
-            try:
-                bot_events.publish(
-                    "access_paused",
-                    telegram_id=grant.telegram_id,
-                    payload={
-                        "tariff_id": grant.tariff_id,
-                        "tariff_name": tariff_name,
-                        "reason": reason,
-                        "lang": (user.language if user else "ru"),
-                    },
-                )
-            except Exception as exc:
-                logger.info("auto_renew: access_paused publish failed: %s", exc)
+            logger.info("traffic reset: grant %s names no tariff, unscheduled", grant.id)
             continue
+
+        owned = {(item.panel_id, item.inbound_tag) for item in tariff.items if item.panel_id is not None}
+        per_panel: dict[int, list[dict]] = {}
+        for record in by_telegram_id.get(grant.telegram_id, []):
+            if (
+                record.get("tariff_id") == grant.tariff_id
+                and (record.get("panel_id"), record.get("inbound_tag")) in owned
+            ):
+                per_panel.setdefault(record["panel_id"], []).append(
+                    {"tag": record["inbound_tag"], "email": record["email"], "reenable": True}
+                )
+
+        for panel_id, users in per_panel.items():
+            bucket = reset_by_panel.setdefault(panel_id, {})
+            for user in users:
+                bucket[(user["tag"], user["email"])] = user
+
+        grant.next_renewal_at = now + timedelta(days=tariff.period_days)
+        db.session.commit()
+        logger.info(
+            "traffic reset: tg=%s tariff=%s panels=%d next=%s",
+            grant.telegram_id,
+            grant.tariff_id,
+            len(per_panel),
+            grant.next_renewal_at,
+        )
+
+    for panel_id, users_by_key in reset_by_panel.items():
         try:
-            due_at = grant.next_renewal_at
-            result = apply_tariff_for_user(
-                grant.telegram_id,
-                tariff,
-                source="auto_renew",
-                operation_id=f"renew:{grant.id}:{int(due_at.timestamp())}",
-            )
-            grant.next_renewal_at = now + timedelta(days=tariff.period_days)
-            db.session.commit()
-            logger.info("auto_renew: renewed tg=%s tariff=%s", grant.telegram_id, grant.tariff_id)
-            user = db.session.get(TelegramUser, grant.telegram_id)
-            bot_events.publish(
-                "access_renewed",
-                telegram_id=grant.telegram_id,
-                payload={
-                    "tariff_id": tariff.id,
-                    "tariff_name": tariff.name,
-                    "expires_at_ms": result["expires_at_ms"],
-                    "lang": (user.language if user else "ru"),
-                },
-            )
+            proxy_bulk_reset_traffic(panel_id, list(users_by_key.values()))
         except Exception as exc:
-            db.session.rollback()
-            logger.error(
-                "auto_renew failed for tg=%s tariff=%s: %s",
-                grant.telegram_id,
-                grant.tariff_id,
-                exc,
-            )
+            logger.error("traffic reset failed for panel=%s: %s", panel_id, exc)

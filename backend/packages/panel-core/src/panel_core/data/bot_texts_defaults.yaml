@@ -106,6 +106,9 @@ catalog.button.buy_inline:
 catalog.button.active_marker:
   ru: "✅ [Активен]"
   en: "✅ [Active]"
+catalog.open_ended:
+  ru: "♾️ У тебя постоянный доступ — покупать ничего не нужно.\nЕсли что-то не работает, напиши в поддержку."
+  en: "♾️ Your access is permanent — there is nothing to buy.\nIf something is not working, contact support."
 catalog.empty:
   ru: "ℹ️ Сейчас нет доступных тарифов. Загляни немного позже."
   en: "ℹ️ No tariffs available right now. Please check back later."
@@ -169,21 +172,12 @@ notification.payment_failed:
 notification.payment_refunded:
   ru: "↩️ <b>Платёж возвращён.</b>\nДоступ по этой подписке отключён. Если что-то не так — напиши в поддержку."
   en: "↩️ <b>Payment refunded.</b>\nAccess for this subscription has been disabled. If something's off, contact support."
-notification.access_renewed:
-  ru: "🔓 <b>Доступ продлён!</b>\nСпасибо, что остаёшься с нами."
-  en: "🔓 <b>Access renewed!</b>\nThanks for staying with us."
 notification.sub_link_reset:
   ru: "🔑 <b>Ссылка на подписку обновлена.</b>\nСтарая больше не работает — открой «Моя подписка» и добавь новую в приложение."
   en: "🔑 <b>Your subscription link has been reset.</b>\nThe old one no longer works — open \"My subscription\" and add the new one to your app."
-notification.access_paused:
-  ru: "ℹ️ Автоматическое продление тарифа <b>{tariff_name}</b> остановлено. Текущий доступ работает до его истечения. Свяжись с поддержкой для продления вручную."
-  en: "ℹ️ Auto-renewal of <b>{tariff_name}</b> has been paused. Your current access stays active until expiry. Contact support to renew manually."
 notification.access_granted:
-  ru: "🎁 Администратор выдал тебе <b>пожизненный доступ</b> к <b>{tariff_name}</b>!\nПодписка активна до {expires} и продлевается автоматически.\n👇 Жми «Моя подписка», чтобы получить ключи."
-  en: "🎁 Admin granted you <b>lifetime access</b> to <b>{tariff_name}</b>!\nSubscription active until {expires} and renews automatically.\n👇 Tap «My subscription» to get your keys."
-notification.access_granted_once:
-  ru: "🎁 Администратор подарил тебе доступ к <b>{tariff_name}</b> до {expires}!\n👇 Жми «Моя подписка», чтобы забрать ключи."
-  en: "🎁 Admin gifted you access to <b>{tariff_name}</b> until {expires}!\n👇 Tap «My subscription» to get your keys."
+  ru: "🎁 Администратор выдал тебе доступ к <b>{tariff_name}</b>.\n👇 Жми «Моя подписка», чтобы получить ключи."
+  en: "🎁 Admin granted you access to <b>{tariff_name}</b>.\n👇 Tap «My subscription» to get your keys."
 notification.access_offered:
   ru: "🎁 Администратор открыл для тебя персональный доступ к тарифу <b>{tariff_name}</b>.\nЗайди в «Тарифы», чтобы подключиться."
   en: "🎁 Admin granted you personal access to <b>{tariff_name}</b>.\nOpen «Tariffs» to subscribe."
@@ -253,4 +247,3 @@ stats.expiry.hours_left:
 stats.expiry.days_left:
   ru: "{indicator} {date} (осталось {days} дн.)"
   en: "{indicator} {date} ({days}d left)"
-

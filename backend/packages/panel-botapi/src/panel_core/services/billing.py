@@ -12,6 +12,7 @@ from yookassa import Configuration
 
 from panel_core.extensions import db
 from panel_core.models import Payment, SystemSetting, Tariff, UserTariffAccess
+from panel_core.services.open_access import has_open_ended_access
 from panel_core.services import bot_events, provisioning, tariff_delivery
 from panel_core.xray.gateway import LocalXrayUnavailable
 
@@ -53,9 +54,17 @@ def _build_snapshot(tariff: Tariff) -> Dict[str, Any]:
     }
 
 
-def _ensure_tariff_available(tariff: Tariff | None, telegram_id: int, *, where: str = "billing") -> None:
+def _ensure_tariff_available(
+    tariff: Tariff | None,
+    telegram_id: int,
+    *,
+    where: str = "billing",
+    check_open_ended: bool = True,
+) -> None:
     if tariff is None:
         raise ValueError("tariff_not_available")
+    if check_open_ended and has_open_ended_access(telegram_id):
+        raise ValueError("open_ended_access")
     if not tariff.enabled or tariff.visibility == "archived" or tariff.is_trial:
         raise ValueError("tariff_not_available")
     if tariff.visibility == "private":
@@ -249,7 +258,12 @@ def apply_payment(payment: Payment) -> None:
         rejected = True
     else:
         try:
-            _ensure_tariff_available(tariff, payment.telegram_id, where="billing.apply_payment")
+            _ensure_tariff_available(
+                tariff,
+                payment.telegram_id,
+                where="billing.apply_payment",
+                check_open_ended=False,
+            )
         except ValueError:
             rejected = True
 

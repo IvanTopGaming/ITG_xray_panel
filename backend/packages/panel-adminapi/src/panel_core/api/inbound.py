@@ -942,7 +942,7 @@ def reset_user_traffic_route():
             for panel_id, group in remote.items():
                 proxy_bulk_reset_traffic(panel_id, group)
             for u in local:
-                reset_user_traffic(u["tag"], u["email"])
+                reset_user_traffic(u["tag"], u["email"], reenable=bool(u.get("reenable")))
         else:
             panel_id = request.args.get("panel_id", type=int)
             tag = normalize_tag(data.get("tag"))

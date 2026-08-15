@@ -177,7 +177,15 @@ def test_grant_paid_rejects_public_tariff(app_with_admin, db, client, admin_head
     assert UserTariffAccess.query.filter_by(telegram_id=42).count() == 0
 
 
-def test_grant_gift_provisions_once(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+def test_grant_with_a_term_provisions_and_announces_access(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
+):
+    """What `gift` used to be: access that ends on a date and is not renewed.
+
+    It differed from `free` only in which machine kept it alive -- the cron renewed one and left the
+    other to lapse -- so it is now the same grant with a date in `access_until`, and it announces
+    itself with the same `access_granted` every other issued access uses.
+    """
 
     tariff = two_inbounds_and_tariff
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
@@ -190,23 +198,32 @@ def test_grant_gift_provisions_once(app_with_admin, db, client, admin_headers, t
         resp = client.post(
             "/api/bot/users/42/grants",
             headers=admin_headers,
-            json={"tariff_id": tariff.id, "billing": "gift", "note": "Compensation"},
+            json={
+                "tariff_id": tariff.id,
+                "billing": "free",
+                "access_until": "2027-03-01T00:00:00",
+                "note": "Compensation",
+            },
         )
     assert resp.status_code == 201, resp.get_data(as_text=True)
     body = resp.get_json()
-    assert body["billing"] == "gift"
-    assert body["next_renewal_at"] is None
+    assert body["billing"] == "free"
+    assert body["access_until"].startswith("2027-03-01"), (
+        f"the term the admin typed is the grant's own state, not a side effect of the key; got {body!r}"
+    )
     assert Client.query.filter_by(telegram_id=42).count() == 2
 
-    once_calls = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "access_granted_once"]
-    assert len(once_calls) == 1
-    event_type, tg_id, payload = once_calls[0].args
+    granted = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "access_granted"]
+    assert len(granted) == 1, f"issued access announces itself exactly once; got {mock_publish.call_args_list!r}"
+    _event_type, tg_id, payload = granted[0].args
     assert tg_id == 42
     assert payload["tariff_name"] == tariff.name
     assert payload["lang"] == "ru"
-    assert isinstance(payload["expires_at_ms"], int) and payload["expires_at_ms"] > 0
 
-    assert not any(call.args and call.args[0] == "access_granted" for call in mock_publish.call_args_list)
+    assert not any(call.args and call.args[0] == "access_granted_once" for call in mock_publish.call_args_list), (
+        "'access_granted_once' belonged to the gift kind and has no publisher left; the bot branch "
+        "that consumed it is gone with it"
+    )
     assert not any(call.args and call.args[0] == "access_offered" for call in mock_publish.call_args_list)
 
 
@@ -228,7 +245,11 @@ def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_hea
     assert resp.status_code == 201, resp.get_data(as_text=True)
     body = resp.get_json()
     assert body["billing"] == "free"
-    assert body["next_renewal_at"] is not None
+    assert body["access_until"] is None, f"a grant issued with no term is open-ended; got {body!r}"
+    assert body["next_renewal_at"] is not None, (
+        "this tariff limits traffic on one of its inbounds, so the counter still has to be zeroed "
+        f"once a period; got {body!r}"
+    )
     assert Client.query.filter_by(telegram_id=42).count() == 2
 
     grant_calls = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "access_granted"]
@@ -237,7 +258,10 @@ def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_hea
     assert tg_id == 42
     assert payload["tariff_name"] == tariff.name
     assert payload["lang"] == "en"
-    assert isinstance(payload["expires_at_ms"], int) and payload["expires_at_ms"] > 0
+    assert payload["expires_at_ms"] == 0, (
+        "0 is what every layer reads as 'never', and it is what the bot renders as permanent -- a "
+        f"date here would promise the holder an end that no longer exists; got {payload!r}"
+    )
     assert not any(call.args and call.args[0] == "access_offered" for call in mock_publish.call_args_list)
 
 
@@ -1028,7 +1052,12 @@ def test_revoke_tariff_disables_remote_clients_for_that_tariff(
     body = resp.get_json()
     assert body["remote_disabled"] == 1
     assert body["panel_failures"] == []
-    prox.assert_called_once_with(7, "FR", {"old_email": "tg42_FR", "enable": False})
+    prox.assert_called_once()
+    panel_id, inbound_tag, payload = prox.call_args.args
+    assert (panel_id, inbound_tag) == (7, "FR")
+    assert payload["old_email"] == "tg42_FR"
+    assert payload["enable"] is False
+    assert payload["expiry_time"] < int(time.time() * 1000)
 
 
 def test_revoke_tariff_remote_failure_is_best_effort(

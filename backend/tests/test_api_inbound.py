@@ -1143,7 +1143,7 @@ class TestBulkCrossPanelRouting:
             )
 
         assert resp.status_code == 200
-        mock_local.assert_called_once_with("xp-rst", "rs1")
+        mock_local.assert_called_once_with("xp-rst", "rs1", reenable=False)
         mock_remote.assert_called_once_with(3, [{"tag": "rem-in", "email": "r1"}])
 
     @patch("panel_core.api.inbound.reset_user_traffic")

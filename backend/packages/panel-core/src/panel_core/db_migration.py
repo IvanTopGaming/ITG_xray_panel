@@ -4,8 +4,8 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 26
-CURRENT_BOT_TEXTS_VERSION = 18
+CURRENT_DB_VERSION = 27
+CURRENT_BOT_TEXTS_VERSION = 20
 
 
 _REMOVED_BOT_TEXT_KEYS = (
@@ -15,6 +15,9 @@ _REMOVED_BOT_TEXT_KEYS = (
     "checkout.success",
     "common.back",
     "errors.access_denied",
+    "notification.access_granted_once",
+    "notification.access_paused",
+    "notification.access_renewed",
     "errors.payment_failed",
     "errors.tariff_not_available",
     "home.menu_header",
@@ -674,6 +677,7 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("payment", "message_id", "INTEGER"),
         ("tariff_item", "panel_id", "INTEGER REFERENCES linked_panel(id)"),
         ("telegram_user", "sub_token", "VARCHAR(36)"),
+        ("user_tariff_access", "access_until", "TIMESTAMP"),
     ]
 
     for table_name, column_name, spec in schema_patches:

@@ -86,16 +86,15 @@ def master_headers(master_app):
     return {"Authorization": f"Bearer {jwt_lib.encode(payload, SECRET_KEY, algorithm='HS256')}"}
 
 
-@pytest.mark.parametrize("billing", ["free", "gift"])
-def test_granting_an_undeliverable_tariff_says_why(master, master_headers, master_app, billing):
+def test_granting_an_undeliverable_tariff_says_why(master, master_headers, master_app):
     resp = master.post(
         "/api/bot/users/55/grants",
         headers=master_headers,
-        json={"tariff_id": master_app.config["ORPHAN_TARIFF_ID"], "billing": billing},
+        json={"tariff_id": master_app.config["ORPHAN_TARIFF_ID"], "billing": "free"},
     )
 
     assert resp.status_code == 400, (
-        f"a {billing} grant of a tariff whose item names no node answered {resp.status_code}. It used "
+        f"granting a tariff whose item names no node answered {resp.status_code}. It used "
         f"to be 500 'Internal server error', which tells the only person who can fix it nothing at "
         f"all.\n\n{resp.get_data(as_text=True)}"
     )
@@ -105,12 +104,11 @@ def test_granting_an_undeliverable_tariff_says_why(master, master_headers, maste
     assert "node" in message.lower()
 
 
-@pytest.mark.parametrize("billing", ["free", "gift"])
-def test_a_refused_grant_leaves_nothing_behind(master, master_headers, master_app, billing):
+def test_a_refused_grant_leaves_nothing_behind(master, master_headers, master_app):
     master.post(
         "/api/bot/users/55/grants",
         headers=master_headers,
-        json={"tariff_id": master_app.config["ORPHAN_TARIFF_ID"], "billing": billing},
+        json={"tariff_id": master_app.config["ORPHAN_TARIFF_ID"], "billing": "free"},
     )
     with master_app.app_context():
         assert UserTariffAccess.query.count() == 0, (
@@ -130,7 +128,7 @@ def test_a_tariff_routed_to_a_node_still_grants(master, master_headers, master_a
     resp = master.post(
         "/api/bot/users/55/grants",
         headers=master_headers,
-        json={"tariff_id": master_app.config["ROUTED_TARIFF_ID"], "billing": "gift"},
+        json={"tariff_id": master_app.config["ROUTED_TARIFF_ID"], "billing": "free"},
     )
     assert resp.status_code == 201, resp.get_data(as_text=True)
     with master_app.app_context():

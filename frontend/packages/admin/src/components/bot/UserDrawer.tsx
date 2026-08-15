@@ -11,6 +11,7 @@ import {
   blockBotUser,
   unblockBotUser,
   resetSubToken,
+  updateGrantTerm,
 } from '@/lib/bot';
 import type { PanelFailure } from '@/lib/bot';
 import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
@@ -20,8 +21,48 @@ import type { BotUserDetail, GrantBilling, Tariff, UserTariffGrant, Client } fro
 
 function billingChipClass(billing: GrantBilling): string {
   if (billing === 'paid') return 'border-violet-500/30 bg-violet-500/10 text-violet-300';
-  if (billing === 'gift') return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
   return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+}
+
+function billingLabel(billing: GrantBilling): string {
+  return billing === 'paid' ? 'right to buy' : 'granted';
+}
+
+function termLabel(accessUntil: string | null): string {
+  return accessUntil ? `until ${_formatDay(accessUntil)}` : 'forever';
+}
+
+function tariffAvailability(
+  tariff: Tariff | undefined
+): { label: string; className: string } | null {
+  if (!tariff) return null;
+  if (tariff.visibility === 'archived') {
+    return {
+      label: 'archived tariff',
+      className: 'border-amber-500/35 bg-amber-500/10 text-amber-200',
+    };
+  }
+  if (!tariff.enabled) {
+    return {
+      label: 'disabled tariff',
+      className: 'border-rose-500/35 bg-rose-500/10 text-rose-200',
+    };
+  }
+  return null;
+}
+
+function toIsoOrNull(localValue: string): string | null {
+  if (!localValue) return null;
+  const parsed = new Date(localValue);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function toLocalInputValue(iso: string | null): string {
+  if (!iso) return '';
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
 }
 
 type ActiveTariffGroup = {
@@ -59,7 +100,12 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
   const [showGrantForm, setShowGrantForm] = useState(false);
   const [grantTariffId, setGrantTariffId] = useState<number | null>(null);
   const [grantBilling, setGrantBilling] = useState<GrantBilling>('paid');
+  const [grantOpenEnded, setGrantOpenEnded] = useState(true);
+  const [grantUntil, setGrantUntil] = useState('');
   const [grantNote, setGrantNote] = useState('');
+  const [editingTermFor, setEditingTermFor] = useState<number | null>(null);
+  const [editOpenEnded, setEditOpenEnded] = useState(true);
+  const [editUntil, setEditUntil] = useState('');
 
   const userQuery = useQuery({
     queryKey: ['bot', 'user', telegramId],
@@ -78,10 +124,21 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
       setShowGrantForm(false);
       setGrantTariffId(null);
       setGrantBilling('paid');
+      setGrantOpenEnded(true);
+      setGrantUntil('');
       setGrantNote('');
+      setEditingTermFor(null);
+      setEditOpenEnded(true);
+      setEditUntil('');
       setConfirmRevokeTariffId(null);
     }
   }, [open]);
+
+  useEffect(() => {
+    setEditingTermFor(null);
+    setEditOpenEnded(true);
+    setEditUntil('');
+  }, [telegramId]);
 
   useEffect(() => {
     if (!open) return;
@@ -93,8 +150,12 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
   }, [open, onClose]);
 
   const grantMutation = useMutation({
-    mutationFn: (args: { tariff_id: number; billing: GrantBilling; note?: string }) =>
-      createGrant(telegramId!, args),
+    mutationFn: (args: {
+      tariff_id: number;
+      billing: GrantBilling;
+      access_until?: string | null;
+      note?: string;
+    }) => createGrant(telegramId!, args),
     onSuccess: () => {
       toast.success('Grant created');
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
@@ -181,10 +242,49 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
       toast.error('Pick a tariff first');
       return;
     }
+    if (grantBilling === 'free' && !grantOpenEnded && !toIsoOrNull(grantUntil)) {
+      toast.error('Pick the date the access ends, or switch to Forever');
+      return;
+    }
     grantMutation.mutate({
       tariff_id: grantTariffId,
       billing: grantBilling,
+      access_until: grantBilling === 'free' && !grantOpenEnded ? toIsoOrNull(grantUntil) : null,
       note: grantNote || undefined,
+    });
+  };
+
+  const termMutation = useMutation({
+    mutationFn: (args: { tariff_id: number; access_until: string | null }) =>
+      updateGrantTerm(telegramId!, args.tariff_id, { access_until: args.access_until }),
+    onSuccess: () => {
+      toast.success('Term updated');
+      queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
+      queryClient.invalidateQueries({ queryKey: ['bot', 'grants'] });
+      setEditingTermFor(null);
+    },
+    onError: (e: unknown) => {
+      const msg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        'Could not update the term';
+      toast.error(msg);
+    },
+  });
+
+  const openTermEditor = (grant: UserTariffGrant) => {
+    setEditingTermFor(grant.tariff_id);
+    setEditOpenEnded(grant.access_until === null);
+    setEditUntil(toLocalInputValue(grant.access_until));
+  };
+
+  const submitTerm = (tariffId: number) => {
+    if (!editOpenEnded && !toIsoOrNull(editUntil)) {
+      toast.error('Pick the date the access ends, or switch to Forever');
+      return;
+    }
+    termMutation.mutate({
+      tariff_id: tariffId,
+      access_until: editOpenEnded ? null : toIsoOrNull(editUntil),
     });
   };
 
@@ -495,18 +595,6 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setGrantBilling('gift')}
-                            className={cn(
-                              'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
-                              grantBilling === 'gift'
-                                ? 'border border-amber-500/40 bg-gradient-to-br from-amber-500/30 to-amber-600/20 text-white shadow-[0_0_10px_rgba(251,191,36,0.15)]'
-                                : 'border border-transparent text-white/55 hover:text-white/80'
-                            )}
-                          >
-                            Gift
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => setGrantBilling('free')}
                             className={cn(
                               'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
@@ -515,17 +603,62 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                                 : 'border border-transparent text-white/55 hover:text-white/80'
                             )}
                           >
-                            Free
+                            Granted access
                           </button>
                         </div>
                         <p className="text-xs text-white/45">
                           {grantBilling === 'paid'
                             ? 'Unlocks a private tariff for purchase. User still pays themselves.'
-                            : grantBilling === 'gift'
-                              ? 'One free period of access as a gift. No auto-renewal — expires naturally.'
-                              : 'Lifetime access — auto-renewed by the system without payment.'}
+                            : 'Issues keys straight away. Traffic is still reset once per tariff period.'}
                         </p>
                       </div>
+
+                      {grantBilling === 'free' && (
+                        <div className="flex flex-col gap-2">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-white/55">
+                            Access lasts
+                          </span>
+                          <div className="inline-flex rounded-xl border border-white/[0.08] bg-black/30 p-1">
+                            <button
+                              type="button"
+                              onClick={() => setGrantOpenEnded(true)}
+                              className={cn(
+                                'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
+                                grantOpenEnded
+                                  ? 'border border-emerald-500/40 bg-gradient-to-br from-emerald-500/30 to-emerald-600/20 text-white shadow-[0_0_10px_rgba(110,231,183,0.15)]'
+                                  : 'border border-transparent text-white/55 hover:text-white/80'
+                              )}
+                            >
+                              Forever
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setGrantOpenEnded(false)}
+                              className={cn(
+                                'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
+                                !grantOpenEnded
+                                  ? 'border border-violet-500/40 bg-gradient-to-br from-violet-500/30 to-violet-600/20 text-white shadow-[0_0_10px_rgba(208,188,255,0.15)]'
+                                  : 'border border-transparent text-white/55 hover:text-white/80'
+                              )}
+                            >
+                              Until a date
+                            </button>
+                          </div>
+                          {!grantOpenEnded && (
+                            <input
+                              type="datetime-local"
+                              value={grantUntil}
+                              onChange={(e) => setGrantUntil(e.target.value)}
+                              className="rounded-xl border border-white/[0.08] bg-black/40 px-3.5 py-3 text-base text-white transition-colors focus:border-violet-500/40 focus:outline-none"
+                            />
+                          )}
+                          <p className="text-xs text-white/45">
+                            {grantOpenEnded
+                              ? 'No end date. The user gets no expiry warnings, and access stops only when this grant is revoked.'
+                              : 'Access ends on that date, with the usual warnings 3 days, 1 day and 1 hour before.'}
+                          </p>
+                        </div>
+                      )}
 
                       <label className="flex flex-col gap-2">
                         <span className="text-xs font-semibold uppercase tracking-wider text-white/55">
@@ -566,10 +699,16 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                     <div className="flex flex-col gap-2">
                       {detail.grants.map((g: UserTariffGrant) => {
                         const t = tariffs.find((x) => x.id === g.tariff_id);
+                        const availability = tariffAvailability(t);
                         return (
                           <div
                             key={g.id}
-                            className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.05] bg-white/[0.03] px-4 py-3"
+                            className={cn(
+                              'flex items-center justify-between gap-3 rounded-xl border px-4 py-3',
+                              availability
+                                ? 'border-amber-500/25 bg-amber-500/[0.06]'
+                                : 'border-white/[0.05] bg-white/[0.03]'
+                            )}
                           >
                             <div className="flex min-w-0 flex-col gap-0.5">
                               <span className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -580,24 +719,105 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                                     billingChipClass(g.billing)
                                   )}
                                 >
-                                  {g.billing}
+                                  {billingLabel(g.billing)}
                                 </span>
+                                {g.billing === 'free' && (
+                                  <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white/70">
+                                    {termLabel(g.access_until)}
+                                  </span>
+                                )}
+                                {availability && (
+                                  <span
+                                    className={cn(
+                                      'rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider',
+                                      availability.className
+                                    )}
+                                  >
+                                    {availability.label}
+                                  </span>
+                                )}
                               </span>
                               <span className="text-xs text-white/50">
                                 {g.next_renewal_at
-                                  ? `Renews ${formatDate(g.next_renewal_at)}`
-                                  : 'No renewal date'}
+                                  ? `Traffic resets ${formatDate(g.next_renewal_at)}`
+                                  : 'No traffic reset'}
                                 {g.note && <> · {g.note}</>}
                               </span>
+                              {editingTermFor === g.tariff_id && (
+                                <div className="mt-2 flex flex-col gap-2">
+                                  <div className="inline-flex rounded-lg border border-white/[0.08] bg-black/30 p-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditOpenEnded(true)}
+                                      className={cn(
+                                        'flex-1 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-all',
+                                        editOpenEnded
+                                          ? 'border border-emerald-500/40 bg-emerald-500/20 text-white'
+                                          : 'border border-transparent text-white/55 hover:text-white/80'
+                                      )}
+                                    >
+                                      Forever
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditOpenEnded(false)}
+                                      className={cn(
+                                        'flex-1 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-all',
+                                        !editOpenEnded
+                                          ? 'border border-violet-500/40 bg-violet-500/20 text-white'
+                                          : 'border border-transparent text-white/55 hover:text-white/80'
+                                      )}
+                                    >
+                                      Until a date
+                                    </button>
+                                  </div>
+                                  {!editOpenEnded && (
+                                    <input
+                                      type="datetime-local"
+                                      value={editUntil}
+                                      onChange={(e) => setEditUntil(e.target.value)}
+                                      className="rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white focus:border-violet-500/40 focus:outline-none"
+                                    />
+                                  )}
+                                  <div className="flex gap-2">
+                                    <button
+                                      type="button"
+                                      disabled={termMutation.isPending}
+                                      onClick={() => submitTerm(g.tariff_id)}
+                                      className="rounded-lg border border-violet-500/30 bg-violet-500/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-500/25 disabled:opacity-50"
+                                    >
+                                      {termMutation.isPending ? 'Saving…' : 'Save term'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingTermFor(null)}
+                                      className="rounded-lg border border-white/[0.06] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-white/70 hover:text-white"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => setConfirmRevokeTariffId(g.tariff_id)}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/25 bg-rose-500/10 px-2.5 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:border-rose-500/40 hover:bg-rose-500/20 hover:text-rose-200"
-                            >
-                              <Trash2 size={13} />
-                              Revoke
-                            </button>
+                            <div className="flex shrink-0 items-center gap-2">
+                              {g.billing === 'free' && editingTermFor !== g.tariff_id && (
+                                <button
+                                  type="button"
+                                  onClick={() => openTermEditor(g)}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 text-xs font-semibold text-white/75 transition-colors hover:bg-white/[0.08] hover:text-white"
+                                >
+                                  Edit term
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setConfirmRevokeTariffId(g.tariff_id)}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/25 bg-rose-500/10 px-2.5 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:border-rose-500/40 hover:bg-rose-500/20 hover:text-rose-200"
+                              >
+                                <Trash2 size={13} />
+                                Revoke
+                              </button>
+                            </div>
                           </div>
                         );
                       })}

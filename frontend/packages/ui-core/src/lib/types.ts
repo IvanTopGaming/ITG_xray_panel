@@ -234,7 +234,7 @@ export interface BotTextKeyMeta {
   default_en: string;
 }
 
-export type GrantBilling = 'paid' | 'gift' | 'free';
+export type GrantBilling = 'paid' | 'free';
 
 export interface BotUser {
   telegram_id: number;
@@ -253,6 +253,7 @@ export interface UserTariffGrant {
   telegram_id: number;
   tariff_id: number;
   billing: GrantBilling;
+  access_until: string | null;
   next_renewal_at: string | null;
   note: string | null;
 }
@@ -280,6 +281,7 @@ export interface GrantRow {
   tariff_id: number;
   tariff_name: string;
   billing: GrantBilling;
+  access_until: string | null;
   next_renewal_at: string | null;
   note: string | null;
 }

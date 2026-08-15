@@ -278,6 +278,7 @@ class UserTariffAccess(db.Model):
     )
     billing = db.Column(db.String(8), nullable=False)
     next_renewal_at = db.Column(db.DateTime, nullable=True)
+    access_until = db.Column(db.DateTime, nullable=True)
     note = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 

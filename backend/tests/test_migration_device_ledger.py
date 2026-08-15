@@ -25,8 +25,11 @@ import pytest
 from panel_core.db_migration import CURRENT_DB_VERSION, RETIRED_TABLES, migrate_sqlite_db
 
 
-def test_current_db_version_is_26():
-    assert CURRENT_DB_VERSION == 26
+def test_current_db_version_is_27():
+    assert CURRENT_DB_VERSION == 27, (
+        "27 adds user_tariff_access.access_until -- the grant's own end date. Bumping the number "
+        f"without adding a matching schema patch leaves live databases behind; got {CURRENT_DB_VERSION}"
+    )
 
 
 def test_the_ledger_does_not_depend_on_a_client_row():

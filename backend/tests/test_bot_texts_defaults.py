@@ -41,10 +41,15 @@ def test_new_subscription_page_keys_present_both_langs():
         assert data[key].get("en"), f"{key} missing en"
 
 
-def test_bot_texts_version_bumped_to_18():
+def test_bot_texts_version_bumped_to_20():
     from panel_core.db_migration import CURRENT_BOT_TEXTS_VERSION
 
-    assert CURRENT_BOT_TEXTS_VERSION == 18
+    assert CURRENT_BOT_TEXTS_VERSION == 20, (
+        "20 retires notification.access_paused and notification.access_renewed, which belonged to "
+        "the removed automatic grant renewal. A key "
+        "dropped from the YAML is purged only while stored < CURRENT, so removing one without "
+        f"bumping this leaves an orphan row on every live database; got {CURRENT_BOT_TEXTS_VERSION}"
+    )
 
 
 def test_every_key_dropped_from_the_yaml_is_listed_as_retired():

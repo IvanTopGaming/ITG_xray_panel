@@ -89,9 +89,14 @@ async def show_catalog(
         await callback.answer("Service temporarily unavailable.", show_alert=True)
         return
     if not tariffs:
+        open_ended = False
+        try:
+            open_ended = bool((await backend.get_user_state(callback.from_user.id)).get("open_ended_access"))
+        except Exception:
+            logger.exception("catalog: user state lookup failed")
         back = await i18n.t("common.back_to_main", lang)
         await callback.message.edit_text(
-            await i18n.t("catalog.empty", lang),
+            await i18n.t("catalog.open_ended" if open_ended else "catalog.empty", lang),
             reply_markup=types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text=back, callback_data="user_home")],

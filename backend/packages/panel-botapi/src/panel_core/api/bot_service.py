@@ -19,6 +19,7 @@ from panel_core.models import (
 )
 from panel_core.services import bot_events, tariff_delivery
 from panel_core.services.bot_status import record_bot_username, record_bot_version
+from panel_core.services.open_access import has_open_ended_access
 from panel_core.services.provisioning import apply_tariff_for_user
 from panel_core.utils import bot_service_token_required
 
@@ -171,6 +172,9 @@ def activate_trial():
     if user.trial_used_at is not None:
         return jsonify({"error": "trial already used"}), 409
 
+    if has_open_ended_access(tg_id):
+        return jsonify({"error": "open_ended_access"}), 409
+
     trial_tariff = _deliverable_trial_tariff()
     if trial_tariff is None:
         return jsonify({"error": "no trial tariff configured"}), 404
@@ -205,7 +209,11 @@ def activate_trial():
 def get_user_state(tg_id):
 
     user = db.session.get(TelegramUser, tg_id)
-    trial_available = (user is None or user.trial_used_at is None) and _deliverable_trial_tariff() is not None
+    trial_available = (
+        (user is None or user.trial_used_at is None)
+        and _deliverable_trial_tariff() is not None
+        and not has_open_ended_access(tg_id)
+    )
 
     clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
     clients_data = [{**c.to_dict(), "links": []} for c in clients]
@@ -258,6 +266,7 @@ def get_user_state(tg_id):
             "telegram_id": tg_id,
             "language": user.language if user else "ru",
             "language_chosen": user.language_chosen if user else False,
+            "open_ended_access": has_open_ended_access(tg_id),
             "trial_available": trial_available,
             "trial_used_at": user.trial_used_at.isoformat() if user and user.trial_used_at else None,
             "blocked": user.blocked if user else False,
@@ -306,6 +315,9 @@ def list_tariffs_for_bot():
         telegram_id = int(tg_id_raw) if tg_id_raw else None
     except ValueError:
         telegram_id = None
+
+    if has_open_ended_access(telegram_id):
+        return jsonify([])
 
     public = Tariff.query.filter(
         Tariff.enabled.is_(True),

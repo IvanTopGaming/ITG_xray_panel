@@ -84,7 +84,7 @@ def cleanup_stats_job():
         cleanup_old_domain_stats()
 
 
-def reset_user_traffic(tag, email):
+def reset_user_traffic(tag, email, *, reenable=False):
     client = Client.query.filter_by(inbound_tag=tag, email=email).first()
     if not client:
         raise ValueError("User not found")
@@ -92,9 +92,23 @@ def reset_user_traffic(tag, email):
     gateway = get_xray_gateway()
     if gateway.has_local_xray():
         gateway.reset_user_counters(tag, email, runtime_email)
+    reenable = (
+        reenable
+        and not client.enable
+        and (client.expiry_time == 0 or client.expiry_time > int(datetime.now().timestamp() * 1000))
+    )
     client.up = 0
     client.down = 0
+    if reenable:
+        client.enable = True
     db.session.commit()
+    if reenable:
+        from panel_core.xray.facade import _api_add_user_grpc, generate_config_file, restart_xray_container
+
+        inbound = Inbound.query.filter_by(tag=tag).first()
+        generate_config_file()
+        if not inbound or inbound.protocol not in ("vless", "vmess") or not _api_add_user_grpc(tag, client):
+            restart_xray_container()
 
 
 def reset_inbound_traffic(tag):

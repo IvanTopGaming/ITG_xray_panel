@@ -5,7 +5,8 @@ from panel_core.app_base import (
     migrate_schema,
     start_scheduler,
 )
-from panel_core.jobs.billing import auto_renew_free_users
+from panel_core.jobs.billing import reset_grant_traffic_cycles
+from panel_core.jobs.grant_backfill import backfill_open_ended_grants
 from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered_bot_events
 from panel_core.jobs.panels import poll_linked_panels, run_refresh_listener
 from panel_core.panel_role import ROLE_CRON
@@ -22,9 +23,15 @@ def create_app():
 
     migrate_schema(app, sqlite_path, drop_dead_tables=True)
 
+    with app.app_context():
+        try:
+            backfill_open_ended_grants()
+        except Exception:
+            app.logger.warning("open-ended grant backfill did not complete", exc_info=True)
+
     ensure_scheduler_job("poll_linked_panels", poll_linked_panels, 10)
     ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
-    ensure_scheduler_job("auto_renew_free_users", auto_renew_free_users, 900)
+    ensure_scheduler_job("reset_grant_traffic_cycles", reset_grant_traffic_cycles, 900)
     ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     ensure_scheduler_job("check_latest_version", fetch_latest, 21600)
     start_scheduler()

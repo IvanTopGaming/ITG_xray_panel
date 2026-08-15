@@ -14,7 +14,6 @@ from panel_core.models import (
     BotText,
     Client,
     Inbound,
-    LinkedPanel,
     Payment,
     SystemSetting,
     Tariff,
@@ -23,11 +22,13 @@ from panel_core.models import (
     UserTariffAccess,
 )
 from panel_core.services import bot_events
-from panel_core.services.panel_proxy import RemotePanelError, get_panel_snapshot, proxy_update_user
+from panel_core.services.panel_proxy import RemotePanelError, proxy_update_user
 from panel_core.services.provisioning import apply_tariff_for_user, backfill_tariff
 from panel_core.services.remote_clients import (
-    _bucket_panel_clients,
     remote_clients_by_telegram_id_live as _remote_clients_by_telegram_id_live,
+)
+from panel_core.services.remote_clients_cached import (
+    remote_clients_by_telegram_id as _remote_clients_by_telegram_id,
 )
 from panel_core.xray.facade import (
     generate_config_file,
@@ -87,7 +88,8 @@ def tariffs_stats():
 
     active_rows = (
         db.session.query(UserTariffAccess.tariff_id, func.count(UserTariffAccess.id))
-        .filter((UserTariffAccess.next_renewal_at.is_(None)) | (UserTariffAccess.next_renewal_at > now))
+        .filter(UserTariffAccess.billing == "free")
+        .filter((UserTariffAccess.access_until.is_(None)) | (UserTariffAccess.access_until > now))
         .group_by(UserTariffAccess.tariff_id)
         .all()
     )
@@ -303,6 +305,22 @@ def delete_tariff_permanent(tariff_id):
             ),
             409,
         )
+    grant_count = UserTariffAccess.query.filter_by(tariff_id=tariff_id).count()
+    if grant_count > 0:
+        return (
+            jsonify(
+                {
+                    "error": "tariff has active grants",
+                    "grant_count": grant_count,
+                    "hint": (
+                        "revoke the grants or archive the tariff instead — deleting it would leave "
+                        "working keys on the nodes with nothing left in the panel to revoke them with"
+                    ),
+                }
+            ),
+            409,
+        )
+
     db.session.delete(t)
     db.session.commit()
     return jsonify({"ok": True})
@@ -452,7 +470,20 @@ def delete_text(key):
     return jsonify({"ok": True})
 
 
-_VALID_BILLING = frozenset({"free", "paid", "gift"})
+_VALID_BILLING = frozenset({"free", "paid"})
+
+
+def _parse_access_until(raw):
+    if raw in (None, ""):
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        raise ValueError("access_until must be an ISO-8601 date-time or null")
+
+
+def _tariff_limits_traffic(tariff) -> bool:
+    return any((item.traffic_gb or 0) > 0 for item in tariff.items)
 
 
 def _serialize_grant(g):
@@ -461,20 +492,10 @@ def _serialize_grant(g):
         "telegram_id": g.telegram_id,
         "tariff_id": g.tariff_id,
         "billing": g.billing,
+        "access_until": g.access_until.isoformat() if g.access_until else None,
         "next_renewal_at": g.next_renewal_at.isoformat() if g.next_renewal_at else None,
         "note": g.note,
     }
-
-
-def _remote_clients_by_telegram_id() -> dict[int, list[dict]]:
-
-    bucket: dict[int, list[dict]] = {}
-    for panel in LinkedPanel.query.filter_by(enable=True).all():
-        snapshot = get_panel_snapshot(panel.id)
-        if not snapshot:
-            continue
-        _bucket_panel_clients(bucket, snapshot, panel)
-    return bucket
 
 
 def _serialize_user_summary(u, remote_clients_by_tg: dict[int, list[dict]] | None = None):
@@ -550,6 +571,11 @@ def create_grant(tg_id):
     if billing not in _VALID_BILLING:
         return jsonify({"error": f"billing must be one of {sorted(_VALID_BILLING)}"}), 400
 
+    try:
+        access_until = _parse_access_until(payload.get("access_until"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     tariff = db.session.get(Tariff, tariff_id)
     if tariff is None:
         return jsonify({"error": "tariff not found"}), 404
@@ -580,15 +606,20 @@ def create_grant(tg_id):
 
     try:
         if billing == "free":
+            grant.access_until = access_until
             result = apply_tariff_for_user(
-                tg_id, tariff, source="admin_grant", operation_id=f"grant:{uuid.uuid4().hex}"
+                tg_id,
+                tariff,
+                source="admin_grant",
+                operation_id=f"grant:{uuid.uuid4().hex}",
+                expiry_ms=int(access_until.timestamp() * 1000) if access_until else 0,
             )
-            grant.next_renewal_at = datetime.utcnow() + timedelta(days=tariff.period_days)
-        elif billing == "gift":
-            result = apply_tariff_for_user(tg_id, tariff, source="admin_gift", operation_id=f"gift:{uuid.uuid4().hex}")
-            grant.next_renewal_at = None
+            grant.next_renewal_at = (
+                datetime.utcnow() + timedelta(days=tariff.period_days) if _tariff_limits_traffic(tariff) else None
+            )
         else:
             result = None
+            grant.access_until = None
             grant.next_renewal_at = None
     except RemotePanelError as exc:
         db.session.rollback()
@@ -627,16 +658,6 @@ def create_grant(tg_id):
                     "lang": user.language or "ru",
                 },
             )
-        elif billing == "gift" and result is not None:
-            bot_events.publish(
-                "access_granted_once",
-                tg_id,
-                {
-                    "tariff_name": tariff.name,
-                    "expires_at_ms": result["expires_at_ms"],
-                    "lang": user.language or "ru",
-                },
-            )
         elif billing == "paid":
             bot_events.publish(
                 "access_offered",
@@ -648,6 +669,61 @@ def create_grant(tg_id):
             )
 
     return jsonify(_serialize_grant(grant)), 201
+
+
+@bp.route("/bot/users/<int:tg_id>/grants/<int:tariff_id>", methods=["PATCH"])
+@token_required
+def update_grant_term(tg_id, tariff_id):
+    grant = UserTariffAccess.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id).first()
+    if grant is None:
+        return jsonify({"error": "grant not found"}), 404
+    if grant.billing != "free":
+        return jsonify({"error": "only a granted access has a term; a 'paid' grant provisions nothing"}), 400
+
+    tariff = db.session.get(Tariff, tariff_id)
+    if tariff is None:
+        return jsonify({"error": "tariff not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        access_until = _parse_access_until(payload.get("access_until"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if "note" in payload:
+        grant.note = payload.get("note") or None
+    grant.access_until = access_until
+
+    try:
+        apply_tariff_for_user(
+            tg_id,
+            tariff,
+            source="admin_grant_edit",
+            operation_id=f"grant:{uuid.uuid4().hex}",
+            expiry_ms=int(access_until.timestamp() * 1000) if access_until else 0,
+        )
+    except RemotePanelError as exc:
+        db.session.rollback()
+        logger.warning("term edit of tariff %r for tg=%s failed: %s", tariff.name, tg_id, exc.message)
+        return remote_panel_failure(exc)
+    except LocalXrayUnavailable as exc:
+        db.session.rollback()
+        orphans = sorted(repr(item.inbound_tag) for item in tariff.items if item.panel_id is None)
+        return jsonify(
+            {
+                "error": (
+                    f"Tariff {tariff.name!r} cannot be granted: its item(s) for inbound "
+                    f"{', '.join(orphans) or '(none)'} name no node, and this panel runs no Xray of its "
+                    f"own. Open Bot -> Tariffs and pick a linked panel for every item."
+                ),
+                "detail": str(exc),
+            }
+        ), 400
+
+    if _tariff_limits_traffic(tariff) and grant.next_renewal_at is None:
+        grant.next_renewal_at = datetime.utcnow() + timedelta(days=tariff.period_days)
+    db.session.commit()
+    return jsonify(_serialize_grant(grant)), 200
 
 
 @bp.route("/bot/users/<int:tg_id>/reset-sub-token", methods=["POST"])
@@ -869,7 +945,15 @@ def revoke_tariff_from_user(tg_id, tariff_id):
             if (rc.get("panel_id"), rc.get("inbound_tag")) not in wanted or not rc.get("enable", True):
                 continue
             try:
-                proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": False})
+                proxy_update_user(
+                    rc["panel_id"],
+                    rc["inbound_tag"],
+                    {
+                        "old_email": rc["email"],
+                        "enable": False,
+                        "expiry_time": int(time.time() * 1000) - 1,
+                    },
+                )
                 remote_disabled += 1
             except Exception as exc:
                 logger.warning(
@@ -884,6 +968,7 @@ def revoke_tariff_from_user(tg_id, tariff_id):
 
     for c in active_clients:
         c.enable = False
+        c.expiry_time = int(time.time() * 1000) - 1
         c.tariff_id = None
     revoked_grants = UserTariffAccess.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id).delete(
         synchronize_session=False
@@ -928,6 +1013,7 @@ def list_grants():
                     "tariff_id": tariff.id,
                     "tariff_name": tariff.name,
                     "billing": uta.billing,
+                    "access_until": uta.access_until.isoformat() if uta.access_until else None,
                     "next_renewal_at": uta.next_renewal_at.isoformat() if uta.next_renewal_at else None,
                     "note": uta.note,
                 }

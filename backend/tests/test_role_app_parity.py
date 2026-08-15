@@ -41,7 +41,7 @@ MASTER_JOBS = set()
 CRON_JOBS = {
     ("poll_linked_panels", 10),
     ("replay_undelivered_bot_events", 60),
-    ("auto_renew_free_users", 900),
+    ("reset_grant_traffic_cycles", 900),
     ("cleanup_bot_events", 86400),
     ("check_latest_version", 21600),
 }

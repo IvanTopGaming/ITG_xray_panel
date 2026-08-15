@@ -2,7 +2,7 @@ DATA_PLANE = {"sync_traffic", "check_limits", "parse_logs"}
 WORKER_ONLY_MAINTENANCE = {"cleanup_stats"}
 EVENT_BUS = {"cleanup_bot_events", "replay_undelivered_bot_events"}
 CRON_ONLY = {
-    "auto_renew_free_users",
+    "reset_grant_traffic_cycles",
     "poll_linked_panels",
     "check_latest_version",
 }

@@ -5,7 +5,7 @@
 ### A self-hosted [Xray-core](https://github.com/XTLS/Xray-core) manager — with a Telegram billing bot built in
 
 Run a complete VPN service from one place: manage inbounds, users, traffic limits,
-routing and live statistics from a modern web UI — and **sell, gift, or auto-renew
+routing and live statistics from a modern web UI — and **sell, grant, or issue
 subscriptions** straight inside Telegram, with YooKassa payments.
 
 <br/>
@@ -23,7 +23,7 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 ## Why ITG Xray Panel
 
 - **One stack, end to end** — proxy engine, admin panel, subscription delivery and a paid Telegram bot, wired together and deployed as one Docker Compose file per role.
-- **Sell access without glue code** — tariffs, trials, grants, auto-renewal, expiry/traffic notifications and YooKassa checkout are first-class, not bolted on.
+- **Sell access without glue code** — tariffs, trials, grants, expiry/traffic notifications and YooKassa checkout are first-class, not bolted on.
 - **Scales horizontally** — a master panel federates any number of nodes, routing users to specific regions; each role runs on its own host, so a node lives in an untrusted segment with a publish-only credential and no access to the shared database.
 - **Built to hide** — the panel lives behind a secret URL, the public domain masquerades as a decoy site, and the Docker socket is locked down to the exact ops the backend needs.
 
@@ -79,14 +79,14 @@ subscriptions** straight inside Telegram, with YooKassa payments.
 
 - **YooKassa payments** — full checkout inside the chat. The unsigned webhook is only a trigger: the handler re-fetches the authoritative status from YooKassa before provisioning, backed by a 30-second poll fallback and atomic double-provision protection.
 - **Tariffs** — flexible plans with multiple inbound items (e.g. _"EU 100 GB + RU 50 GB / 30 days"_), `public` / `private` / `archived` visibility, optional per-item panel routing.
-- **Grants & lifecycle** — admin grants (paid · gift · free), one-time trials, free-tier auto-renewal, and revocation that propagates to linked panels.
+- **Grants & lifecycle** — admin grants carry their own term: `free` is issued access (open-ended, or ending on a date you can edit), `paid` is the right to buy a private tariff, one-time trials, and revocation that propagates to linked panels.
 - **Smart notifications** — 3-day / 1-day / 1-hour / expired warnings and 80% / 95% / exhausted traffic warnings, deduplicated per cycle and re-armed on monthly reset or renewal.
 - **Fully editable copy** — every user-visible string lives in an admin-editable table (RU + EN seeded, add any language by adding rows).
 - **Resilient by design** — events are dual-written to Redis pub/sub **and** a recovery table, so a transient Redis outage can't lose a notification. Change the bot token or proxy from the panel and the aiogram session rebuilds in place — no restart.
 
 ### 🛡️ Operations & security
 
-- **TLS via Let's Encrypt** — a one-command script issues a SAN certificate for your panel (and subscription) domain; Caddy serves it and redirects `:80 → :443`.
+- **TLS via Let's Encrypt** — Caddy obtains and renews certificates itself over ACME for each host's own domain and serves them, redirecting `:80 → :443`.
 - **Hidden behind a secret path** — everything outside `/<PANEL_SECRET_PATH>/` returns `404`; the bare domain serves a decoy.
 - **Instant session kill** — changing the admin password immediately invalidates every active JWT.
 - **Locked-down Docker socket** — only the exact container ops the backend needs are exposed, via `tecnativa/docker-socket-proxy`.
@@ -269,9 +269,10 @@ surface, and cron owns every background job and the shared schema.
         └──────────────┬──────────────┴──────────────┘
                        ▼
               ┌──────────────────┐        ┌────────┐
-              │    data tier     │◄───────┤  cron  │  polls nodes · renews ·
-              │ Postgres + Redis │        └────────┘  replays · migrates
-              └──────────────────┘
+              │    data tier     │◄───────┤  cron  │  polls nodes ·
+              │ Postgres + Redis │        └────────┘  resets grant traffic
+              └──────────────────┘                    cycles · replays ·
+                                                      migrates
 ```
 
 A node holds **no** database credential and its Redis credential is publish-only into one channel —
@@ -306,7 +307,7 @@ Within a host, networks are split for isolation: `panel-net` (the only segment w
 | `parse_logs`                    | node      | 15s      | Streams Xray access logs into `domain_stat` (top-sites tab)                |
 | `cleanup_stats`                 | node      | 24h      | Prunes `domain_stat` to 90 days                                            |
 | `poll_linked_panels`            | cron      | 10s      | Health-polls every node; its snapshot is what sub and the bot serve from   |
-| `auto_renew_free_users`         | cron      | 15m      | Re-provisions due free grants; pauses + notifies on tariff archive/disable |
+| `reset_grant_traffic_cycles`    | cron      | 15m      | Zeroes a granted user's `up`/`down` once per tariff period; provisions nothing, touches no expiry |
 | `replay_undelivered_bot_events` | cron + node | 60s    | Re-publishes any event Redis didn't deliver                                |
 | `cleanup_bot_events`            | cron + node | 24h    | Prunes delivered events > 7d, undelivered > 30d, claims/receipts > 90d     |
 | `check_latest_version`          | cron      | 6h       | Powers the "update available" indicator on **System → About**              |

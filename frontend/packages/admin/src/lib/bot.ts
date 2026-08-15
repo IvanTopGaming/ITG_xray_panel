@@ -145,9 +145,27 @@ export async function getBotUser(tgId: number): Promise<BotUserDetail> {
 
 export async function createGrant(
   tgId: number,
-  payload: { tariff_id: number; billing: GrantBilling; note?: string; silent?: boolean }
+  payload: {
+    tariff_id: number;
+    billing: GrantBilling;
+    access_until?: string | null;
+    note?: string;
+    silent?: boolean;
+  }
 ): Promise<UserTariffGrant> {
   const { data } = await api.post<UserTariffGrant>(`/bot/users/${tgId}/grants`, payload);
+  return data;
+}
+
+export async function updateGrantTerm(
+  tgId: number,
+  tariffId: number,
+  payload: { access_until: string | null }
+): Promise<UserTariffGrant> {
+  const { data } = await api.patch<UserTariffGrant>(
+    `/bot/users/${tgId}/grants/${tariffId}`,
+    payload
+  );
   return data;
 }
 

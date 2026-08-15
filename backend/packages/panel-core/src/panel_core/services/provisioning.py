@@ -196,6 +196,12 @@ def _target_expiry_ms(
     return max(now_ms, current or 0) + period_ms
 
 
+def _preserve_foreign_expiry(current: int | None, requested: int) -> int:
+    if current == 0 or requested == 0:
+        return 0
+    return max(current or 0, requested)
+
+
 def provision_single_item(
     *,
     telegram_id: int,
@@ -242,6 +248,15 @@ def provision_single_item(
 
     client = Client.query.filter_by(telegram_id=telegram_id, inbound_tag=inbound_tag).first()
     expiry_ms = _target_expiry_ms(client, now_ms=now_ms, expiry_ms=expiry_ms, period_ms=period_ms)
+    preserves_foreign_tariff = (
+        period_ms is None
+        and client is not None
+        and tariff_id is not None
+        and client.tariff_id is not None
+        and client.tariff_id != tariff_id
+    )
+    if preserves_foreign_tariff:
+        expiry_ms = _preserve_foreign_expiry(client.expiry_time, expiry_ms)
 
     new_clients: list[Client] = []
     extended_clients_with_state: list[tuple[Client, bool]] = []
@@ -249,12 +264,13 @@ def provision_single_item(
     if client is not None:
         was_enabled = bool(client.enable)
         client.expiry_time = expiry_ms
-        client.limit_bytes = limit_bytes
-        client.up = 0
-        client.down = 0
-        client.last_reset_time = now_ms
+        if not preserves_foreign_tariff:
+            client.limit_bytes = limit_bytes
+            client.up = 0
+            client.down = 0
+            client.last_reset_time = now_ms
         client.enable = True
-        if tariff_id is not None:
+        if tariff_id is not None and not preserves_foreign_tariff:
             client.tariff_id = tariff_id
         NotificationLog.query.filter(
             NotificationLog.client_id == client.id,
@@ -354,6 +370,7 @@ def apply_tariff_for_user(
     *,
     source: str,
     operation_id: str,
+    expiry_ms: int | None = None,
 ) -> dict:
 
     if not operation_id:
@@ -365,7 +382,8 @@ def apply_tariff_for_user(
     existing = list(Client.query.filter_by(telegram_id=telegram_id).all())
     existing_max_expiry = max((c.expiry_time or 0 for c in existing), default=0)
 
-    new_expiry_ms = max(now_ms, existing_max_expiry) + period_ms
+    assign_absolute = expiry_ms is not None
+    new_expiry_ms = expiry_ms if assign_absolute else max(now_ms, existing_max_expiry) + period_ms
 
     remote_items = [item for item in tariff.items if item.panel_id is not None]
     local_items = [item for item in tariff.items if item.panel_id is None]
@@ -379,18 +397,14 @@ def apply_tariff_for_user(
         from panel_core.services.panel_proxy import proxy_provision
 
         limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
+        payload = {"limit_bytes": limit_bytes, "tariff_id": tariff.id}
+        if assign_absolute:
+            payload["expiry_ms"] = new_expiry_ms
+        else:
+            payload["period_ms"] = period_ms
+            payload["idempotency_key"] = operation_id
         try:
-            remote = proxy_provision(
-                item.panel_id,
-                telegram_id,
-                item.inbound_tag,
-                {
-                    "period_ms": period_ms,
-                    "limit_bytes": limit_bytes,
-                    "tariff_id": tariff.id,
-                    "idempotency_key": operation_id,
-                },
-            )
+            remote = proxy_provision(item.panel_id, telegram_id, item.inbound_tag, payload)
             remote_expiries.append(int(remote["expires_at_ms"]))
         except Exception as exc:
             logger.error("proxy_provision failed for panel=%s tag=%s: %s", item.panel_id, item.inbound_tag, exc)
@@ -407,14 +421,21 @@ def apply_tariff_for_user(
         )
         if client is not None:
             was_enabled = bool(client.enable)
-            if client.expiry_time != 0:
+            preserves_foreign_tariff = (
+                assign_absolute and client.tariff_id is not None and client.tariff_id != tariff.id
+            )
+            if preserves_foreign_tariff:
+                client.expiry_time = _preserve_foreign_expiry(client.expiry_time, new_expiry_ms)
+            elif assign_absolute or client.expiry_time != 0:
                 client.expiry_time = new_expiry_ms
-            client.limit_bytes = limit_bytes
-            client.up = 0
-            client.down = 0
-            client.last_reset_time = now_ms
+            if not preserves_foreign_tariff:
+                client.limit_bytes = limit_bytes
+                client.up = 0
+                client.down = 0
+                client.last_reset_time = now_ms
             client.enable = True
-            client.tariff_id = tariff.id
+            if not preserves_foreign_tariff:
+                client.tariff_id = tariff.id
 
             NotificationLog.query.filter(
                 NotificationLog.client_id == client.id,

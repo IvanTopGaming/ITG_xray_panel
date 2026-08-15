@@ -27,7 +27,7 @@ def _i18n():
     return i18n
 
 
-@pytest.mark.parametrize("etype", ["payment_succeeded", "access_granted", "access_granted_once"])
+@pytest.mark.parametrize("etype", ["payment_succeeded", "access_granted"])
 async def test_zero_reads_as_permanent_not_as_a_question_mark(etype):
     bot = AsyncMock()
     i18n = _i18n()

@@ -13,8 +13,30 @@ import type { GrantRow, Tariff, BotUser, GrantBilling } from '@ui/lib/types';
 
 function billingChipClass(billing: GrantBilling): string {
   if (billing === 'paid') return 'border-violet-500/30 bg-violet-500/10 text-violet-300';
-  if (billing === 'gift') return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
   return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+}
+
+function billingLabel(billing: GrantBilling): string {
+  return billing === 'paid' ? 'right to buy' : 'granted';
+}
+
+function tariffAvailability(
+  tariff: Tariff | undefined
+): { label: string; className: string } | null {
+  if (!tariff) return null;
+  if (tariff.visibility === 'archived') {
+    return {
+      label: 'archived',
+      className: 'border-amber-500/35 bg-amber-500/10 text-amber-200',
+    };
+  }
+  if (!tariff.enabled) {
+    return {
+      label: 'disabled',
+      className: 'border-rose-500/35 bg-rose-500/10 text-rose-200',
+    };
+  }
+  return null;
 }
 
 import { formatDateTime as formatDate } from '@ui/lib/datetime';
@@ -108,18 +130,6 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
             </button>
             <button
               type="button"
-              onClick={() => setBilling('gift')}
-              className={cn(
-                'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
-                billing === 'gift'
-                  ? 'border border-amber-500/40 bg-gradient-to-br from-amber-500/30 to-amber-600/20 text-white shadow-[0_0_10px_rgba(251,191,36,0.15)]'
-                  : 'border border-transparent text-white/55 hover:text-white/80'
-              )}
-            >
-              Gift
-            </button>
-            <button
-              type="button"
               onClick={() => setBilling('free')}
               className={cn(
                 'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
@@ -128,15 +138,13 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
                   : 'border border-transparent text-white/55 hover:text-white/80'
               )}
             >
-              Free
+              Granted access
             </button>
           </div>
           <p className="text-xs text-white/45">
             {billing === 'paid'
               ? 'Unlocks a private tariff for purchase. User still pays themselves.'
-              : billing === 'gift'
-                ? 'One free period of access as a gift. No auto-renewal — expires naturally.'
-                : 'Lifetime access — auto-renewed by the system without payment.'}
+              : 'Issues keys straight away, with no end date. Set a term on the user’s card.'}
           </p>
         </div>
 
@@ -210,12 +218,7 @@ export function GrantsTab() {
         silent: args.silent || undefined,
       }),
     onSuccess: (_data, vars) => {
-      const label =
-        vars.billing === 'free'
-          ? 'Lifetime grant created'
-          : vars.billing === 'gift'
-            ? 'One-period gift granted'
-            : 'Private-tariff access granted';
+      const label = vars.billing === 'free' ? 'Access granted' : 'Private-tariff access granted';
       toast.success(label);
       queryClient.invalidateQueries({ queryKey: ['bot', 'grants'] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
@@ -260,6 +263,7 @@ export function GrantsTab() {
   const rows = grantsQuery.data || [];
   const tariffs = tariffsQuery.data || [];
   const botUsers = botUsersQuery.data || [];
+  const tariffsById = new Map(tariffs.map((tariff) => [tariff.id, tariff]));
 
   return (
     <div className="flex flex-col gap-4">
@@ -286,42 +290,73 @@ export function GrantsTab() {
                 <th className="px-4 py-3 font-medium">TG ID</th>
                 <th className="px-4 py-3 font-medium">Username</th>
                 <th className="px-4 py-3 font-medium">Tariff</th>
-                <th className="px-4 py-3 font-medium">Billing</th>
-                <th className="px-4 py-3 font-medium">Renews</th>
+                <th className="px-4 py-3 font-medium">Kind</th>
+                <th className="px-4 py-3 font-medium">Access</th>
+                <th className="px-4 py-3 font-medium">Traffic resets</th>
                 <th className="px-4 py-3 font-medium">Note</th>
                 <th className="w-24 px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.04]">
-              {rows.map((r) => (
-                <tr key={r.id} className="transition-colors hover:bg-white/[0.04]">
-                  <td className="px-4 py-3 font-mono text-white/90">{r.telegram_id}</td>
-                  <td className="px-4 py-3 text-white/90">{r.username || '—'}</td>
-                  <td className="px-4 py-3 text-white/90">{r.tariff_name}</td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider',
-                        billingChipClass(r.billing)
-                      )}
-                    >
-                      {r.billing}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-white/60">{formatDate(r.next_renewal_at)}</td>
-                  <td className="px-4 py-3 text-white/60">{r.note || '—'}</td>
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => setConfirmRow(r)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 shadow-[0_0_12px_rgba(244,63,94,0.15)] transition-all hover:border-rose-400/70 hover:bg-rose-500/25 hover:text-rose-100 hover:shadow-[0_0_18px_rgba(244,63,94,0.35)] active:scale-95"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      Revoke
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                const availability = tariffAvailability(tariffsById.get(r.tariff_id));
+                return (
+                  <tr
+                    key={r.id}
+                    className={cn(
+                      'transition-colors hover:bg-white/[0.04]',
+                      availability && 'bg-amber-500/[0.04] hover:bg-amber-500/[0.08]'
+                    )}
+                  >
+                    <td className="px-4 py-3 font-mono text-white/90">{r.telegram_id}</td>
+                    <td className="px-4 py-3 text-white/90">{r.username || '—'}</td>
+                    <td className="px-4 py-3 text-white/90">
+                      <span className="flex items-center gap-2">
+                        {r.tariff_name}
+                        {availability && (
+                          <span
+                            className={cn(
+                              'rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider',
+                              availability.className
+                            )}
+                          >
+                            {availability.label}
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={cn(
+                          'rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider',
+                          billingChipClass(r.billing)
+                        )}
+                      >
+                        {billingLabel(r.billing)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-white/60">
+                      {r.billing !== 'free'
+                        ? '—'
+                        : r.access_until
+                          ? formatDate(r.access_until)
+                          : 'Forever'}
+                    </td>
+                    <td className="px-4 py-3 text-white/60">{formatDate(r.next_renewal_at)}</td>
+                    <td className="px-4 py-3 text-white/60">{r.note || '—'}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRow(r)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 shadow-[0_0_12px_rgba(244,63,94,0.15)] transition-all hover:border-rose-400/70 hover:bg-rose-500/25 hover:text-rose-100 hover:shadow-[0_0_18px_rgba(244,63,94,0.35)] active:scale-95"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

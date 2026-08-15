@@ -329,7 +329,11 @@ async def user_sub(
         return
 
     await state.clear()
-    renew_tariff_id = next((c.get("tariff_id") for c in clients if c.get("tariff_id")), None)
+    open_ended_access = bool((state_data or {}).get("open_ended_access"))
+    await state.update_data(open_ended_access=open_ended_access)
+    renew_tariff_id = (
+        None if open_ended_access else next((c.get("tariff_id") for c in clients if c.get("tariff_id")), None)
+    )
     renew_label = await i18n.t("notification.button.renew", lang) if renew_tariff_id else None
     title = await i18n.t("sub.page.title", lang)
     open_label = await i18n.t("sub.actions.open_page", lang)
@@ -536,7 +540,8 @@ async def show_key_details(
 
     final_text = f"{header}\n\n" + "\n\n".join(link_lines) + f"\n\n{self_destruct}"
 
-    renew_tariff_id = record.get("tariff_id")
+    cached = await state.get_data()
+    renew_tariff_id = None if cached.get("open_ended_access") else record.get("tariff_id")
     renew_label = None
     if renew_tariff_id:
         renew_label = await i18n.t("notification.button.renew", lang)
@@ -564,7 +569,8 @@ async def _show_single_link(callback, state, link, record, *, i18n, lang, back_l
     self_destruct = await i18n.t("keys.details.self_destruct", lang)
     final_text = f"{header}\n\n<code>{h(link)}</code>\n\n{self_destruct}"
 
-    renew_tariff_id = record.get("tariff_id")
+    cached = await state.get_data()
+    renew_tariff_id = None if cached.get("open_ended_access") else record.get("tariff_id")
     renew_label = None
     if renew_tariff_id:
         renew_label = await i18n.t("notification.button.renew", lang)

@@ -86,7 +86,7 @@ def test_a_grant_to_an_unreachable_node_names_the_node(master, headers, monkeypa
     monkeypatch.setattr("panel_core.api.bot_admin.apply_tariff_for_user", refuse)
 
     response = master.test_client().post(
-        "/api/bot/users/555001/grants", json={"tariff_id": 1, "billing": "gift"}, headers=headers
+        "/api/bot/users/555001/grants", json={"tariff_id": 1, "billing": "free"}, headers=headers
     )
 
     assert response.status_code == 502, (
@@ -104,7 +104,7 @@ def test_a_grant_that_fails_leaves_no_phantom_access(master, headers, monkeypatc
         raise RemotePanelError(502, "Panel 'Amsterdam': Panel answered HTTP 502")
 
     monkeypatch.setattr("panel_core.api.bot_admin.apply_tariff_for_user", refuse)
-    master.test_client().post("/api/bot/users/555001/grants", json={"tariff_id": 1, "billing": "gift"}, headers=headers)
+    master.test_client().post("/api/bot/users/555001/grants", json={"tariff_id": 1, "billing": "free"}, headers=headers)
 
     with master.app_context():
         from panel_core.models import UserTariffAccess
@@ -122,7 +122,7 @@ def test_a_revoked_token_is_reported_as_a_relink_instruction(master, headers, mo
     monkeypatch.setattr("panel_core.api.bot_admin.apply_tariff_for_user", refuse)
 
     response = master.test_client().post(
-        "/api/bot/users/555002/grants", json={"tariff_id": 1, "billing": "gift"}, headers=headers
+        "/api/bot/users/555002/grants", json={"tariff_id": 1, "billing": "free"}, headers=headers
     )
     assert response.status_code == 401
     assert "relink" in response.get_json()["error"].lower(), (
