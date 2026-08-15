@@ -50,16 +50,25 @@ interface AddDialogProps {
     tg_id: number;
     tariff_id: number;
     billing: GrantBilling;
+    access_until?: string | null;
     note: string;
     silent: boolean;
   }) => void;
   submitting: boolean;
 }
 
+function toIsoOrNull(localValue: string): string | null {
+  if (!localValue) return null;
+  const parsed = new Date(localValue);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
 function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: AddDialogProps) {
   const [tgIdStr, setTgIdStr] = useState('');
   const [tariffId, setTariffId] = useState<number | null>(null);
   const [billing, setBilling] = useState<GrantBilling>('paid');
+  const [accessOpenEnded, setAccessOpenEnded] = useState(true);
+  const [accessUntil, setAccessUntil] = useState('');
   const [note, setNote] = useState('');
   const [silent, setSilent] = useState(false);
 
@@ -68,6 +77,8 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
       setTgIdStr('');
       setTariffId(null);
       setBilling('paid');
+      setAccessOpenEnded(true);
+      setAccessUntil('');
       setNote('');
       setSilent(false);
     }
@@ -79,7 +90,18 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
       toast.error('Telegram ID and tariff are required');
       return;
     }
-    onSubmit({ tg_id: tgId, tariff_id: tariffId, billing, note, silent });
+    if (billing === 'free' && !accessOpenEnded && !toIsoOrNull(accessUntil)) {
+      toast.error('Pick the date the access ends, or switch to Forever');
+      return;
+    }
+    onSubmit({
+      tg_id: tgId,
+      tariff_id: tariffId,
+      billing,
+      access_until: billing === 'free' && !accessOpenEnded ? toIsoOrNull(accessUntil) : null,
+      note,
+      silent,
+    });
   };
 
   const tariffOptions = [
@@ -144,9 +166,56 @@ function AddDialog({ open, tariffs, botUsers, onClose, onSubmit, submitting }: A
           <p className="text-xs text-white/45">
             {billing === 'paid'
               ? 'Unlocks a private tariff for purchase. User still pays themselves.'
-              : 'Issues keys straight away, with no end date. Set a term on the user’s card.'}
+              : 'Issues keys straight away. Pick whether the access is forever or ends on a date.'}
           </p>
         </div>
+
+        {billing === 'free' && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wider text-white/55">
+              Access lasts
+            </span>
+            <div className="inline-flex rounded-xl border border-white/[0.08] bg-black/30 p-1">
+              <button
+                type="button"
+                onClick={() => setAccessOpenEnded(true)}
+                className={cn(
+                  'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
+                  accessOpenEnded
+                    ? 'border border-emerald-500/40 bg-gradient-to-br from-emerald-500/30 to-emerald-600/20 text-white shadow-[0_0_10px_rgba(110,231,183,0.15)]'
+                    : 'border border-transparent text-white/55 hover:text-white/80'
+                )}
+              >
+                Forever
+              </button>
+              <button
+                type="button"
+                onClick={() => setAccessOpenEnded(false)}
+                className={cn(
+                  'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-all duration-200',
+                  !accessOpenEnded
+                    ? 'border border-violet-500/40 bg-gradient-to-br from-violet-500/30 to-violet-600/20 text-white shadow-[0_0_10px_rgba(208,188,255,0.15)]'
+                    : 'border border-transparent text-white/55 hover:text-white/80'
+                )}
+              >
+                Until a date
+              </button>
+            </div>
+            {!accessOpenEnded && (
+              <input
+                type="datetime-local"
+                value={accessUntil}
+                onChange={(e) => setAccessUntil(e.target.value)}
+                className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50"
+              />
+            )}
+            <p className="text-xs text-white/45">
+              {accessOpenEnded
+                ? 'No end date. The user gets no expiry warnings, and access stops only when this grant is revoked.'
+                : 'Access ends on that date, with the usual warnings 3 days, 1 day and 1 hour before.'}
+            </p>
+          </div>
+        )}
 
         <label className="flex flex-col gap-1.5">
           <span className="text-xs font-semibold uppercase tracking-wider text-white/55">
@@ -208,12 +277,14 @@ export function GrantsTab() {
       tg_id: number;
       tariff_id: number;
       billing: GrantBilling;
+      access_until?: string | null;
       note: string;
       silent: boolean;
     }) =>
       createGrant(args.tg_id, {
         tariff_id: args.tariff_id,
         billing: args.billing,
+        access_until: args.access_until,
         note: args.note || undefined,
         silent: args.silent || undefined,
       }),
