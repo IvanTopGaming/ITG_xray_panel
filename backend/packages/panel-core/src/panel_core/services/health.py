@@ -29,7 +29,7 @@ import logging
 
 from sqlalchemy import text
 
-from panel_core.extensions import db, get_shared_redis
+from panel_core.extensions import db, get_shared_redis, redis_answered
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,10 @@ def _data_tier():
             client.ping()
             shared_redis = "ok"
         except Exception as exc:
-            logger.debug("health: shared Redis probe failed: %s", exc)
+            if redis_answered(exc):
+                shared_redis = "ok"
+            else:
+                logger.debug("health: shared Redis probe failed: %s", exc)
     else:
         shared_redis = "not configured"
 
