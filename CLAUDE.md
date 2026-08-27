@@ -19,7 +19,7 @@ React + TypeScript + Vite · Aiogram 3 · Redis · Caddy (caddy-l4 SNI routing) 
 There is no default `docker-compose.yml`; every command needs `-f`. Bring them up in this order:
 
 ```bash
-docker compose -f docker-compose.postgres.yml up -d   # data tier — Postgres + Redis + pg-backup
+docker compose -f docker-compose.postgres.yml up -d   # data tier — Postgres + Redis + pg-backup (+ offsite-backup under COMPOSE_PROFILES=offsite)
 docker compose -f docker-compose.cron.yml     up -d   # cron — owns the shared schema, must migrate first
 docker compose -f docker-compose.master.yml   up -d   # master, sub, bot in any order after cron
 docker compose -f docker-compose.sub.yml      up -d
@@ -45,6 +45,7 @@ docker buildx build --build-context project=. --build-arg UI_PACKAGE=admin \
   --tag panel-frontend-admin:local --load ./frontend
 docker buildx build --build-context project=. --build-arg UI_PACKAGE=node \
   --tag panel-frontend-node:local --load ./frontend
+docker buildx build --tag panel-offsite:local --load ./offsite
 ```
 
 `--build-context project=.` is the repo root; the Dockerfiles read `versions.json` from it.
@@ -106,7 +107,7 @@ expectation `bind_role()` refuses to boot against a mismatch.
 | `sub` | `/api/sub/*` and the subscription page | the only role serving subscriptions; a **writer** of the shared Postgres (device ledger) |
 | `bot` (bot-api) | `/bot-service/*` + the whole billing surface | the three payment crons live here |
 | `cron` | nothing (no ports, no blueprints) | polls nodes, replays bot events, resets grant cycles, checks releases, **owns the shared Postgres schema** |
-| data tier | Postgres + Redis + `pg-backup` | outside Caddy, ports bound to a private address, own long-lived CA |
+| data tier | Postgres + Redis + `pg-backup` | outside Caddy, ports bound to a private address, own long-lived CA. Optional `offsite-backup` under the `offsite` profile — **the only thing on this host that reaches the internet** |
 
 Also on the node: `xray-core`, `socket-proxy` (narrowed Docker socket), optional `xray-egress`.
 Master/node/sub/bot each run their own `caddy`.
@@ -635,6 +636,34 @@ merely omits `DATABASE_URL` rather than forbidding it. **The shared database is 
 `pg-backup` container, never through the panel.** A node is backed up from its card on Panels, which
 streams through the master straight into the browser and stores nothing.
 
+**Off-site copies are a profile, not a service.** `offsite-backup` exists only when
+`COMPOSE_PROFILES=offsite`, and turning it on is the one thing that gives the data tier outbound
+network access. It loops `scripts/offsite_backup.sh` out of `panel-offsite` (Alpine + a pinned rclone
+binary + `psql`): `rclone copy` the new dumps, `rclone delete --min-age ${OFFSITE_KEEP_DAYS}d` for a
+remote rotation that is **independent of the local one** (90 days local, 365 remote), then an upsert
+of three `system_setting` rows. Three things are load-bearing and none of them is visible in the
+container's logs:
+
+- **`copy`, never `sync`.** `sync` would delete on the far side everything local rotation has
+  pruned, silently collapsing remote depth to local depth.
+- **`./rclone` is mounted writable.** rclone writes the refreshed OAuth token back into its own
+  config; a read-only mount works until the access token finally expires, and then the uploads stop
+  with nothing reporting a fault. `./pg_backups` is mounted `:ro` for the mirror reason.
+- **A failed pass must not kill the container.** The loop carries `|| true`. Diagnosis is the age of
+  the mark, shown on the master's System → About card and red after three intervals — never a
+  restart loop, which is a symptom rather than a diagnosis.
+
+The panel's whole knowledge of it is `services/offsite.read_status()` reading
+`offsite_backup_last_success_ms`, `offsite_backup_interval_seconds` and `offsite_backup_remote`.
+Those three strings cross a container boundary that nothing else connects: rename one on either side
+and the card reports "never recorded" forever while the uploads carry on fine.
+`test_a_backup_that_stopped_leaving_becomes_visible.py` is the only guard on that seam. The reading
+answers `applicable: False` on a role whose database is not the shared Postgres, and the line is
+gated on `!isWorker` in the bundle — a node runs no such container and its absence means nothing
+there. The dump is worth more than `.env` (bot token, YooKassa credentials, every node's federation
+token, every `sub_token`), so the installer offers a `crypt` wrapper; the passphrase is printed once
+and stored nowhere.
+
 ### Odds and ends
 
 - **Error handling:** raise `ValueError` for anything the user can fix — it becomes a 400 with the
@@ -705,6 +734,15 @@ resolves each service to its image's dependency closure and fails on a variable 
   credential), mapped into its `SHARED_REDIS_URI`.
 - `POSTGRES_BIND` / `REDIS_BIND` — data tier; both default to `127.0.0.1` so an unset value cannot
   publish the tier to the internet.
+- `OFFSITE_IMAGE` selects the container; `OFFSITE_REMOTE`, `OFFSITE_INTERVAL_SECONDS` (1800) and
+  `OFFSITE_KEEP_DAYS` (365) are read by `scripts/offsite_backup.sh` — all four data tier only.
+  `COMPOSE_PROFILES=offsite` is what turns the service on and is read by the **compose CLI**, not by
+  the YAML — which is why `test_env_examples.py` exempts it by name. None of the four may use
+  `${VAR:?}`: compose interpolates the whole file before it filters by profile, so a required
+  reference inside a profiled service refuses the `up` on every data tier that never wanted off-site
+  copies.
+- `BACKUP_INTERVAL_SECONDS` (7200) / `BACKUP_KEEP` (1080) — the local dump cadence and depth. The
+  interval is substituted host-side in the entrypoint; only `BACKUP_KEEP` reaches the container.
 - `FEDERATION_ALLOW_PRIVATE_URLS` — master only, off by default. Only `1`/`true`/`yes`/`on` count.
 - `BACKEND_LOG_LEVEL` (default INFO), `BACKEND_SLOW_SQL_MS` (200), `BACKEND_SLOW_REQUEST_MS` (1000).
   `DEBUG` additionally echoes every SQL statement. Containers rotate json-file logs at 50 MB × 5.
@@ -734,7 +772,10 @@ real domain all three are enforced at start-up and the app refuses to boot.
   jump into `EGRESS_SNAT` is re-asserted as **first** in `POSTROUTING`, because Docker rewrites that
   chain and its MASQUERADE landing ahead of ours silently sends every dedicated address out on the
   primary IP.
-- `scripts/pg_backup.sh` — what the `pg-backup` container runs every 6h, keeping 14 dumps.
+- `scripts/pg_backup.sh` — what the `pg-backup` container runs on `BACKUP_INTERVAL_SECONDS`, keeping
+  `BACKUP_KEEP` dumps.
+- `scripts/offsite_backup.sh` — one off-site pass, POSIX `sh` (the image is Alpine). Copies, rotates
+  the remote by age, records the success. Bind-mounted rather than baked in, like `pg_backup.sh`.
 
 ## CI
 
@@ -797,6 +838,13 @@ Avoid force-pushing `main`: CI then cannot diff against the old SHA and falls ba
 (bump `sub`). A change to `ui-core/fonts.css` or the `.woff2` files is a **three-image** release
 (`sub` + both frontends) — that one file is sub-page's only edge into `ui-core`; any other `ui-core`
 change rebuilds the two frontend images alone.
+
+`offsite/**` → `offsite` alone. That image carries no panel code, so nothing else rebuilds with it.
+`scripts/offsite_backup.sh` is bind-mounted, not baked in, so a change to it alone needs **no** image
+bump — but it also ships through **no** automated path: `install.sh update` only moves image pins and
+does not re-fetch bind-mounted scripts. A script-only fix reaches a live data tier only by fetching the
+file by hand (or a fresh `install.sh install` into a new directory) — do not assume `install.sh update`
+picks it up.
 
 **When `CURRENT_DB_VERSION` changes, deploy the master and every linked panel in one wave.** Back up
 first — the data tier with `pg-backup`, each node from its card on Panels. Backwards compatibility is

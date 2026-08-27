@@ -146,7 +146,7 @@ shared between them — a variable that does not belong on a host is simply abse
 
 | Host          | Compose file                 | `.env` from             | Runs                                                     |
 | ------------- | ---------------------------- | ----------------------- | -------------------------------------------------------- |
-| **data tier** | `docker-compose.postgres.yml` | `.env.data.example`     | Postgres + Redis + `pg-backup`. No outbound connections   |
+| **data tier** | `docker-compose.postgres.yml` | `.env.data.example`     | Postgres + Redis + `pg-backup`, plus `offsite-backup` if you turn it on. No outbound connections unless you do |
 | **cron**      | `docker-compose.cron.yml`     | `.env.cron.example`     | Every background job; **owns the shared schema**          |
 | **master**    | `docker-compose.master.yml`   | `.env.master.example`   | Admin API + admin SPA. No Xray, no billing                |
 | **node**      | `docker-compose.node.yml`     | `.env.node.example`     | Xray + node SPA. One per location, any number of them     |
@@ -284,7 +284,7 @@ cache, migrated by itself, because nothing central can reach a file on its disk.
 
 | Host          | Services                                            | Notes                                                                     |
 | ------------- | --------------------------------------------------- | ------------------------------------------------------------------------- |
-| **data tier** | `postgres`, `redis`, `pg-backup`                    | No outbound connections at all. Ports default to `127.0.0.1` — narrow them to the private network |
+| **data tier** | `postgres`, `redis`, `pg-backup` (`offsite-backup` under the `offsite` profile) | No outbound connections at all — until off-site copies are switched on, which is the point of them. Ports default to `127.0.0.1` — narrow them to the private network |
 | **cron**      | `cron`                                              | Publishes no ports, registers no blueprint. **Only service that migrates the shared schema** |
 | **master**    | `backend`, `frontend`, `caddy`, `redis`             | Admin API + admin SPA. No Xray, no billing, no scheduler                  |
 | **node**      | `xray`, `backend`, `frontend`, `caddy`, `redis`, `socket-proxy`, `xray-egress` | The only role with a local Xray. `xray-egress` is opt-in via `--profile egress` |
@@ -325,6 +325,13 @@ Within a host, networks are split for isolation: `panel-net` (the only segment w
 Both run the same custom schema-versioned migration system (`panel_core.db_migration`, standalone entrypoint `backend/migrate_db.py`), idempotent on every startup. Storage stays small: `traffic_snapshot` is ~100 bytes per entity per hour, `domain_stat` is capped at 90 days, bot events at 7d/30d.
 
 Backups are per-tier: the data tier is dumped by the `pg-backup` container on the interval `BACKUP_INTERVAL_SECONDS` sets (2 hours by default, `BACKUP_KEEP` dumps retained — 90 days), **never through the panel**; a node is backed up from its card on the master's **Panels** page, which streams that node's SQLite file straight into your browser.
+
+The installer offers to copy every dump to external storage — Google Drive, S3-compatible, SFTP, or
+any of rclone's other backends via a pasted config block — with its own schedule and its own
+retention, optionally encrypted before it leaves the machine. Say yes and the data tier gains
+outbound network access, which it otherwise has none of. The master shows how long ago the last copy
+landed on **System → About**, in red once it has been too long; that age is the only sign there is,
+because the container survives every failure on purpose rather than restart-looping.
 
 </details>
 
