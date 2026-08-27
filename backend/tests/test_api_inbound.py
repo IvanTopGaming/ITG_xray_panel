@@ -397,17 +397,17 @@ class TestDeleteInbound:
         assert resp.status_code == 404
 
     def test_delete_local_inbound_purges_local_tariff_items_only(self, app, client, auth_headers):
-        _make_inbound(tag="okins", port=5002)
+        _make_inbound(tag="bravo", port=5002)
         tariff = Tariff(name="Mix", price_rub=100, period_days=30)
         db.session.add(tariff)
         db.session.commit()
-        local_item = TariffItem(tariff_id=tariff.id, inbound_tag="okins", traffic_gb=0, panel_id=None, sort_order=0)
-        remote_same_tag = TariffItem(tariff_id=tariff.id, inbound_tag="okins", traffic_gb=0, panel_id=5, sort_order=1)
+        local_item = TariffItem(tariff_id=tariff.id, inbound_tag="bravo", traffic_gb=0, panel_id=None, sort_order=0)
+        remote_same_tag = TariffItem(tariff_id=tariff.id, inbound_tag="bravo", traffic_gb=0, panel_id=5, sort_order=1)
         db.session.add_all([local_item, remote_same_tag])
         db.session.commit()
         local_id, remote_id = local_item.id, remote_same_tag.id
 
-        resp = client.delete("/api/inbounds/okins", headers=auth_headers)
+        resp = client.delete("/api/inbounds/bravo", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.get_json()["removed_tariff_items"] == 1
         assert TariffItem.query.filter_by(id=local_id).count() == 0
@@ -419,15 +419,15 @@ class TestDeleteInbound:
         tariff = Tariff(name="Rem", price_rub=100, period_days=30)
         db.session.add(tariff)
         db.session.commit()
-        remote_item = TariffItem(tariff_id=tariff.id, inbound_tag="hiks", traffic_gb=0, panel_id=5, sort_order=0)
-        other_panel = TariffItem(tariff_id=tariff.id, inbound_tag="hiks", traffic_gb=0, panel_id=9, sort_order=1)
+        remote_item = TariffItem(tariff_id=tariff.id, inbound_tag="alpha", traffic_gb=0, panel_id=5, sort_order=0)
+        other_panel = TariffItem(tariff_id=tariff.id, inbound_tag="alpha", traffic_gb=0, panel_id=9, sort_order=1)
         db.session.add_all([remote_item, other_panel])
         db.session.commit()
         remote_id, other_id = remote_item.id, other_panel.id
 
-        resp = client.delete("/api/inbounds/hiks?panel_id=5", headers=auth_headers)
+        resp = client.delete("/api/inbounds/alpha?panel_id=5", headers=auth_headers)
         assert resp.status_code == 200
-        mock_proxy.assert_called_once_with(5, "hiks")
+        mock_proxy.assert_called_once_with(5, "alpha")
         assert TariffItem.query.filter_by(id=remote_id).count() == 0
         assert TariffItem.query.filter_by(id=other_id).count() == 1
 

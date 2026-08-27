@@ -54,8 +54,8 @@ def master_app(monkeypatch, tmp_path):
         limited = Tariff(name="Basic", price_rub=125, period_days=30, enabled=True)
         db.session.add_all([unlimited, limited])
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=unlimited.id, inbound_tag="hiks", traffic_gb=0, panel_id=2))
-        db.session.add(TariffItem(tariff_id=limited.id, inbound_tag="hiks", traffic_gb=300, panel_id=2))
+        db.session.add(TariffItem(tariff_id=unlimited.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
+        db.session.add(TariffItem(tariff_id=limited.id, inbound_tag="alpha", traffic_gb=300, panel_id=2))
         db.session.add(TelegramUser(telegram_id=55, language="ru"))
         db.session.commit()
         app.config["UNLIMITED_TARIFF_ID"] = unlimited.id
@@ -197,7 +197,7 @@ def test_a_paid_grant_records_no_term(master, master_headers, master_app):
         private = Tariff(name="Private", price_rub=300, period_days=30, enabled=True, visibility="private")
         db.session.add(private)
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=private.id, inbound_tag="hiks", traffic_gb=0, panel_id=2))
+        db.session.add(TariffItem(tariff_id=private.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
         db.session.commit()
         private_id = private.id
 

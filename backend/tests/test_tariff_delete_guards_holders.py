@@ -54,7 +54,7 @@ def tariff(app_with_bot_api, db):
     t = Tariff(name="Premium", price_rub=0, period_days=30, enabled=True)
     db.session.add(t)
     db.session.flush()
-    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="hiks", traffic_gb=0, panel_id=2))
+    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
     db.session.commit()
     return t
 

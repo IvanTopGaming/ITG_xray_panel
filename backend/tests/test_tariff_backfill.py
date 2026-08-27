@@ -30,7 +30,7 @@ def fed_tariff(app, db):
     db.session.add_all(
         [
             LinkedPanel(id=1, name="gateway", url="https://gw", federation_token="t", status="online", created_at=1),
-            LinkedPanel(id=2, name="hiks", url="https://hk", federation_token="t", status="online", created_at=1),
+            LinkedPanel(id=2, name="alpha", url="https://hk", federation_token="t", status="online", created_at=1),
         ]
     )
     t = Tariff(name="Базовый", price_rub=150, period_days=30)
@@ -39,7 +39,7 @@ def fed_tariff(app, db):
     db.session.add_all(
         [
             TariffItem(tariff_id=t.id, inbound_tag="gateway", traffic_gb=0, panel_id=1, sort_order=0),
-            TariffItem(tariff_id=t.id, inbound_tag="hiks", traffic_gb=70, panel_id=2, sort_order=1),
+            TariffItem(tariff_id=t.id, inbound_tag="alpha", traffic_gb=70, panel_id=2, sort_order=1),
         ]
     )
     db.session.commit()
@@ -51,7 +51,7 @@ def test_federation_holder_without_local_client_gets_remote_key(app, db, fed_tar
     expiry = now_ms + 10 * 86400_000
     snaps = {
         1: _snap({"gateway": [_cl(42, fed_tariff.id, expiry_time=expiry)]}),
-        2: _snap({"hiks": []}),
+        2: _snap({"alpha": []}),
     }
 
     with (
@@ -66,7 +66,7 @@ def test_federation_holder_without_local_client_gets_remote_key(app, db, fed_tar
     assert summary["panels_unreachable"] == []
     pp.assert_called_once()
     args, _ = pp.call_args
-    assert args[0] == 2 and args[1] == 42 and args[2] == "hiks"
+    assert args[0] == 2 and args[1] == 42 and args[2] == "alpha"
     assert args[3]["expiry_ms"] == expiry
     assert args[3]["limit_bytes"] == 70 * _GB
     assert args[3]["tariff_id"] == fed_tariff.id
@@ -75,7 +75,7 @@ def test_federation_holder_without_local_client_gets_remote_key(app, db, fed_tar
 def test_idempotent_skips_holders_who_already_have_remote_key(app, db, fed_tariff, now_ms):
     snaps = {
         1: _snap({"gateway": [_cl(42, fed_tariff.id, expiry_time=now_ms + 86400_000)]}),
-        2: _snap({"hiks": [_cl(42, fed_tariff.id, expiry_time=now_ms + 86400_000)]}),
+        2: _snap({"alpha": [_cl(42, fed_tariff.id, expiry_time=now_ms + 86400_000)]}),
     }
     with (
         patch("panel_core.services.provisioning._sync_after_provision"),
@@ -99,7 +99,7 @@ def test_skips_expired_and_disabled_remote_holders(app, db, fed_tariff, now_ms):
                 ]
             }
         ),
-        2: _snap({"hiks": []}),
+        2: _snap({"alpha": []}),
     }
     with (
         patch("panel_core.services.provisioning._sync_after_provision"),
@@ -118,7 +118,7 @@ def test_unreachable_panel_reported_and_others_processed(app, db, fed_tariff, no
     def _fetch(pid):
         if pid == 1:
             raise RuntimeError("connection refused")
-        return _snap({"hiks": [_cl(99, fed_tariff.id, expiry_time=expiry)]})
+        return _snap({"alpha": [_cl(99, fed_tariff.id, expiry_time=expiry)]})
 
     with (
         patch("panel_core.services.provisioning._sync_after_provision"),
@@ -136,7 +136,7 @@ def test_inherits_max_expiry_across_panels_and_unlimited_wins(app, db, fed_tarif
     earlier = now_ms + 3 * 86400_000
     snaps = {
         1: _snap({"gateway": [_cl(7, fed_tariff.id, expiry_time=earlier)]}),
-        2: _snap({"hiks": []}),
+        2: _snap({"alpha": []}),
     }
     with (
         patch("panel_core.services.provisioning._sync_after_provision"),
@@ -159,24 +159,24 @@ def test_inherits_max_expiry_across_panels_and_unlimited_wins(app, db, fed_tarif
 def test_local_holder_gets_local_key(app, db, now_ms):
 
     db.session.add(
-        LinkedPanel(id=2, name="hiks", url="https://hk", federation_token="t", status="online", created_at=1)
+        LinkedPanel(id=2, name="alpha", url="https://hk", federation_token="t", status="online", created_at=1)
     )
-    db.session.add(Inbound(tag="okins", protocol="vless", port=30001, stream_settings="{}"))
+    db.session.add(Inbound(tag="bravo", protocol="vless", port=30001, stream_settings="{}"))
     t = Tariff(name="Премиум", price_rub=300, period_days=30)
     db.session.add(t)
     db.session.flush()
     db.session.add_all(
         [
-            TariffItem(tariff_id=t.id, inbound_tag="okins", traffic_gb=0, panel_id=None, sort_order=0),
-            TariffItem(tariff_id=t.id, inbound_tag="hiks", traffic_gb=0, panel_id=2, sort_order=1),
+            TariffItem(tariff_id=t.id, inbound_tag="bravo", traffic_gb=0, panel_id=None, sort_order=0),
+            TariffItem(tariff_id=t.id, inbound_tag="alpha", traffic_gb=0, panel_id=2, sort_order=1),
         ]
     )
     expiry = now_ms + 10 * 86400_000
     db.session.add(
         Client(
             id=str(_uuid.uuid4()),
-            email="local_okins",
-            inbound_tag="okins",
+            email="local_bravo",
+            inbound_tag="bravo",
             telegram_id=55,
             tariff_id=t.id,
             limit_bytes=0,
@@ -186,7 +186,7 @@ def test_local_holder_gets_local_key(app, db, now_ms):
     )
     db.session.commit()
 
-    snaps = {2: _snap({"hiks": []})}
+    snaps = {2: _snap({"alpha": []})}
     with (
         patch("panel_core.services.provisioning._sync_after_provision"),
         patch("panel_core.services.provisioning.fetch_panel_snapshot_live", side_effect=lambda pid: snaps[pid]),
@@ -196,7 +196,7 @@ def test_local_holder_gets_local_key(app, db, now_ms):
 
     assert summary["skipped_existing"] >= 1
     pp.assert_called_once()
-    assert pp.call_args[0][2] == "hiks"
+    assert pp.call_args[0][2] == "alpha"
     assert summary["created_local"] == 0
 
 
@@ -205,7 +205,7 @@ def test_provision_failure_counted_and_does_not_abort(app, db, fed_tariff, now_m
     expiry = now_ms + 5 * 86400_000
     snaps = {
         1: _snap({"gateway": [_cl(42, fed_tariff.id, expiry_time=expiry)]}),
-        2: _snap({"hiks": []}),
+        2: _snap({"alpha": []}),
     }
     with (
         patch("panel_core.services.provisioning._sync_after_provision"),
