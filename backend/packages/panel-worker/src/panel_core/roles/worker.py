@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 
 from grpc.experimental import gevent as grpc_gevent
 
@@ -11,6 +12,7 @@ from panel_core.app_base import (
     start_scheduler,
 )
 from panel_core.jobs.notifications import cleanup_bot_events, replay_undelivered_bot_events
+from panel_core.jobs.transfer import claim_state_job, supersede_check_job
 from panel_core.panel_role import ROLE_WORKER
 from panel_core.services.stats import (
     check_limits_job,
@@ -37,6 +39,8 @@ def create_app():
     ensure_scheduler_job("cleanup_stats", cleanup_stats_job, 86400)
     ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
     ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
+    ensure_scheduler_job("claim_state", claim_state_job, 30)
+    ensure_scheduler_job("supersede_check", supersede_check_job, 300, next_run_time=datetime.now(timezone.utc))
     start_scheduler()
 
     from panel_core.api import (
