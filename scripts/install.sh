@@ -426,8 +426,12 @@ offsite_write_target() {
             OFFSITE_PATH="offsite-target:${OFFSITE_S3_BUCKET}"
             ;;
         sftp)
-            printf '[offsite-target]\ntype = sftp\nhost = %s\nuser = %s\nkey_file = %s\n\n' \
-                "$OFFSITE_SFTP_HOST" "$OFFSITE_SFTP_USER" "$OFFSITE_SFTP_KEY" \
+            [ -r "$OFFSITE_SFTP_KEY" ] || die "cannot read the private key at '$OFFSITE_SFTP_KEY'" \
+                "Check the path and that this installer can read it."
+            cp "$OFFSITE_SFTP_KEY" "$DIR/rclone/sftp_key"
+            chmod 600 "$DIR/rclone/sftp_key"
+            printf '[offsite-target]\ntype = sftp\nhost = %s\nuser = %s\nkey_file = /config/rclone/sftp_key\n\n' \
+                "$OFFSITE_SFTP_HOST" "$OFFSITE_SFTP_USER" \
                 > "$DIR/rclone/rclone.conf"
             OFFSITE_PATH="offsite-target:${OFFSITE_SFTP_PATH}"
             ;;
@@ -533,7 +537,8 @@ offsite_setup() {
     offsite_write_target "$OFFSITE_KIND"
 
     if [ "$OFFSITE_KIND" = "sftp" ]; then
-        note "  Mount that key into the container yourself; the compose file does not."
+        note "  The key is copied to ./rclone/sftp_key (0600) so the upload container can read"
+        note "  it — it lives in the deployment directory alongside .env and the CA key."
     fi
 
     rule "Encryption"
@@ -572,7 +577,7 @@ offsite_setup() {
         ok "the remote answered"
     else
         spinner_stop
-        rm -f "$DIR/rclone/rclone.conf"
+        rm -f "$DIR/rclone/rclone.conf" "$DIR/rclone/sftp_key"
         die "the remote did not answer" \
             "The configuration was not saved and off-site upload stays off. Check the credentials, the endpoint and this machine's outbound network, then re-run the installer."
     fi

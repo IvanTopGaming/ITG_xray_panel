@@ -120,6 +120,39 @@ def test_the_connection_is_tested_before_the_profile_is_turned_on():
     )
 
 
+def test_the_sftp_key_is_reachable_from_inside_the_connection_test_container():
+    """`offsite_rclone()` -- used for both the encryption passphrase and this connection test --
+
+    bind-mounts only $DIR/rclone into the container. A `key_file` written as the literal host path
+    the deployer typed at the prompt (e.g. /root/.ssh/id_ed25519) is invisible in there, so `rclone
+    lsd` fails for every correctly configured SFTP remote, not just a misconfigured one: right host,
+    right user, right key, right path, and it still dies as "the remote did not answer" -- which was
+    never true. The key has to be copied into the bind-mounted directory and referenced by its
+    container path instead.
+    """
+
+    body = INSTALLER.read_text()
+
+    assert "key_file = /config/rclone/sftp_key" in body, (
+        "the sftp stanza's key_file is not pointed inside the bind-mounted rclone directory -- the "
+        "connection-test container cannot see an arbitrary host path, so a perfectly valid key "
+        "still fails to connect"
+    )
+    assert "key_file = %s" not in body, (
+        "the sftp stanza still interpolates the host key path straight into rclone.conf instead of "
+        "copying the key into $DIR/rclone first"
+    )
+    assert re.search(r'cp\s+"\$OFFSITE_SFTP_KEY"\s+"\$DIR/rclone/sftp_key"', body), (
+        "the private key is no longer copied into the deployment directory, so the container the "
+        "installer tests with -- and the offsite-backup service that later uploads for real -- has "
+        "nothing to authenticate with"
+    )
+    assert re.search(r'die\s+"[^"]*private key[^"]*"', body), (
+        "a missing or unreadable SFTP key path should die with a clear message naming the path, not "
+        "fail on a bare cp error the deployer has to decode themselves"
+    )
+
+
 def test_the_passphrase_is_shown_once_and_confirmed():
     """Losing it is irreversible, and the installer already has this exact ceremony for the bundle."""
 
