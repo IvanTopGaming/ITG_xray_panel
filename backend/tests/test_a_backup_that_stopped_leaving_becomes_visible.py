@@ -201,6 +201,32 @@ def test_the_three_tones_are_three_different_facts():
     assert "return reading.stale ? 'bad' : 'ok';" in body, "a stale mark must be red"
 
 
+def test_the_hint_checks_availability_before_it_checks_the_mark():
+    """The `hint` prop is a separate branch from `value` and `offsiteTone` and can drift from them.
+
+    A `system_setting` read failing is exactly the kind of data-tier hiccup an admin is looking at
+    this card *for*. If the hint tests the mark before it tests availability, an unreadable reading
+    still gets told to the admin as "no off-site upload has ever been recorded" -- which can be
+    flatly false: uploads may have been succeeding for months while the panel simply cannot read the
+    row right now. A row whose value says "unknown" while its tooltip states a fact about history is
+    the feature lying to the admin about their own backups.
+    """
+
+    body = SYSTEM_PAGE.read_text(encoding="utf-8")
+    start = body.index('key="offsite"')
+    hint_start = body.index("hint={", start)
+    hint_block = body[hint_start : body.index("/>", hint_start)]
+
+    assert "!offsite.available" in hint_block, (
+        "the hint never distinguishes an unreadable reading (muted) from one that found no mark "
+        "at all (warn); it must give the muted state its own honest text"
+    )
+    assert hint_block.index("!offsite.available") < hint_block.index("last == null"), (
+        "the hint tests the mark before it tests availability, so an unreadable reading is still "
+        "reported to the admin as 'never recorded' -- a false claim about their backup history"
+    )
+
+
 def test_the_frontend_type_matches_what_the_reading_returns():
     body = VERSION_LIB.read_text(encoding="utf-8")
 

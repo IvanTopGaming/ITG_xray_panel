@@ -1042,7 +1042,7 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
   const offsite = health.offsite_backup;
   if (!isWorker && offsite.applicable) {
     const last = offsite.last_success_at_ms ?? null;
-    const window = Math.round((offsite.stale_after_seconds ?? 0) / 60);
+    const windowMinutes = Math.round((offsite.stale_after_seconds ?? 0) / 60);
     lines.push(
       <HealthLine
         key="offsite"
@@ -1052,9 +1052,11 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
         }
         tone={offsiteTone(offsite)}
         hint={
-          last == null
-            ? 'No off-site upload has ever been recorded. Either the offsite profile is not running on the data tier, or it has never once succeeded. The dump carries every bot token, YooKassa key and federation token in the deployment.'
-            : `Last dump copied to ${offsite.remote || 'the configured remote'}. Turns red once nothing has landed for ${window} minutes.`
+          !offsite.available
+            ? "The reading could not be taken right now. This says nothing about whether off-site copies have actually been happening -- check the data tier line above and the offsite-backup container's own logs."
+            : last == null
+              ? 'No off-site upload has ever been recorded. Either the offsite profile is not running on the data tier, or it has never once succeeded. The dump carries every bot token, YooKassa key and federation token in the deployment.'
+              : `Last dump copied to ${offsite.remote || 'the configured remote'}. Turns red once nothing has landed for ${windowMinutes} minutes.`
         }
       />
     );
