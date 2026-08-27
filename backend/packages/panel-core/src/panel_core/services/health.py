@@ -9,7 +9,10 @@ answers". Everything between those and a real outage is invisible:
   against the bot being down (deliberately);
 * **payments stuck in `processing`** -- money taken, access not granted, and no UI filter that shows
   them (§23);
-* **the data tier itself** -- nobody knows it is unwell until a request fails.
+* **the data tier itself** -- nobody knows it is unwell until a request fails;
+* **the off-site copy** -- the dumps leaving the machine that holds them. The container that copies
+  them keeps its loop alive through every failure on purpose, so a revoked token or a full remote
+  looks healthy from the outside and the age of its success mark is the only signal there is.
 
 The certificate used to be the first entry on that list, and the strongest: four-plus hosts, one
 hand-issued pair each, nothing renewing them, and no date shown anywhere. Caddy issues and renews
@@ -30,6 +33,7 @@ import logging
 from sqlalchemy import text
 
 from panel_core.extensions import db, get_shared_redis, redis_answered
+from panel_core.services.offsite import read_status as read_offsite_status
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +104,19 @@ def _data_tier():
     return {"database": database, "shared_redis": shared_redis}
 
 
+def _offsite_backup():
+    try:
+        return read_offsite_status()
+    except Exception as exc:
+        logger.debug("health: offsite reading failed: %s", exc)
+        db.session.rollback()
+        return {"applicable": True, "available": False}
+
+
 def collect():
     return {
         "undelivered_events": _undelivered_events(),
         "stuck_payments": _stuck_payments(),
         "data_tier": _data_tier(),
+        "offsite_backup": _offsite_backup(),
     }

@@ -328,7 +328,7 @@ def test_serving_a_request_stamps_this_role(master, headers, shared):
 def test_health_answers_with_every_reading(master, headers, shared):
     body = master.test_client().get("/api/system/health", headers=headers).get_json()
 
-    assert set(body) == {"undelivered_events", "stuck_payments", "data_tier"}
+    assert set(body) == {"undelivered_events", "stuck_payments", "data_tier", "offsite_backup"}
 
 
 def test_health_no_longer_reports_a_certificate(master, headers, shared):

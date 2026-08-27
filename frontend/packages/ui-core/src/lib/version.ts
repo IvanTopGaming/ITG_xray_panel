@@ -20,10 +20,22 @@ export interface VersionInfo {
   latest_checked_at: number | null;
 }
 
+export interface OffsiteBackupReading {
+  applicable: boolean;
+  available?: boolean;
+  last_success_at_ms?: number | null;
+  age_seconds?: number | null;
+  interval_seconds?: number | null;
+  stale_after_seconds?: number;
+  remote?: string | null;
+  stale?: boolean;
+}
+
 export interface SystemHealth {
   undelivered_events: { available: boolean; count?: number };
   stuck_payments: { available: boolean; processing?: number; pending_over_a_day?: number };
   data_tier: { database: string; shared_redis: string };
+  offsite_backup: OffsiteBackupReading;
 }
 
 export async function getVersionInfo(): Promise<VersionInfo> {

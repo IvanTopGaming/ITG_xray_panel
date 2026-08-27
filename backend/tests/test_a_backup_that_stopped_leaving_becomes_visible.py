@@ -26,8 +26,12 @@ from panel_core.services.offsite import (
     read_status,
 )
 
+from tests.frontend_import_graph import PACKAGE_ROOTS
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "offsite_backup.sh"
+SYSTEM_PAGE = PACKAGE_ROOTS["ui-core"] / "pages" / "System.tsx"
+VERSION_LIB = PACKAGE_ROOTS["ui-core"] / "lib" / "version.ts"
 
 PG_URI = "postgresql+psycopg2://panel:pw@data:5432/panel"
 
@@ -142,3 +146,66 @@ def test_a_damaged_mark_does_not_take_the_card_down(app, db):
 
     assert reading["last_success_at_ms"] is None
     assert reading["stale"] is False
+
+
+def test_the_health_card_carries_the_reading(app, db):
+    from panel_core.services.health import collect
+
+    _as_shared_postgres(app)
+    _mark(db, last_ms=int(time.time() * 1000), interval=1800)
+
+    assert collect()["offsite_backup"]["stale"] is False
+
+
+def test_one_unreadable_reading_does_not_take_the_others_with_it(app, db, monkeypatch):
+    """services/health.py's contract, applied to the new reading.
+
+    A card that cannot render because one of its four readings failed tells an admin less than a
+    card that says which one failed.
+    """
+
+    from panel_core.services import health
+
+    monkeypatch.setattr(health, "read_offsite_status", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    collected = health.collect()
+
+    assert collected["offsite_backup"] == {"applicable": True, "available": False}
+    assert collected["data_tier"]["database"] == "ok"
+
+
+def test_the_line_is_gated_to_the_master_in_the_bundle():
+    """ui-core ships into both frontend images, so the role gate is what keeps this off a node.
+
+    The backend half already answers `applicable: false` on a node's SQLite; this is the second
+    level, and it is the one that decides whether the line is drawn at all. `test_a_role_on_its_own_
+    sqlite_is_not_asked_the_question` above holds the other end.
+    """
+
+    body = SYSTEM_PAGE.read_text(encoding="utf-8")
+
+    assert "health.offsite_backup" in body, "the health card never reads the offsite reading"
+    assert "if (!isWorker && offsite.applicable) {" in body, (
+        "the off-site line is not gated on the role. A node runs no offsite container and its "
+        "SQLite never receives a mark, so the line would read 'never recorded' on every node in "
+        "the fleet -- a permanent red warning about a machine that has nothing to do with it."
+    )
+
+
+def test_the_three_tones_are_three_different_facts():
+    body = SYSTEM_PAGE.read_text(encoding="utf-8")
+
+    assert "'never recorded'" in body, (
+        "no mark at all must say so rather than showing an age; it is what a data tier that never "
+        "wanted off-site copies looks like, and colouring it like a failure makes the card noise"
+    )
+    assert "return reading.stale ? 'bad' : 'ok';" in body, "a stale mark must be red"
+
+
+def test_the_frontend_type_matches_what_the_reading_returns():
+    body = VERSION_LIB.read_text(encoding="utf-8")
+
+    for field in ("applicable", "last_success_at_ms", "stale_after_seconds", "stale", "remote"):
+        assert field in body, (
+            f"SystemHealth does not declare {field!r}. The type is the only check on this "
+            f"boundary -- the endpoint returns a plain dict and TypeScript never sees the Python."
+        )
