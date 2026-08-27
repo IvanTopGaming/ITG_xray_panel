@@ -177,3 +177,113 @@ def test_ci_installs_what_these_tests_drive():
         "the backend-tests job does not install rclone, so every execution test in this file is "
         "skipped in CI and the off-site pass is covered by nothing at all."
     )
+
+
+DSN = os.getenv("DATABASE_URL_TEST", "").strip()
+pg_only = pytest.mark.skipif(
+    not DSN or shutil.which("psql") is None,
+    reason="DATABASE_URL_TEST unset or psql missing; CI provides both",
+)
+
+
+def _connection_parts():
+    from urllib.parse import urlparse
+
+    parsed = urlparse(DSN.replace("postgresql+psycopg2://", "postgresql://"))
+    return {
+        "host": parsed.hostname or "localhost",
+        "port": str(parsed.port or 5432),
+        "user": parsed.username or "postgres",
+        "database": (parsed.path or "/postgres").lstrip("/"),
+        "password": parsed.password or "",
+    }
+
+
+def _script_environment():
+    """What the CONTAINER is handed: the compose file's own names, plus PGPORT.
+
+    The script passes psql `-h`, `-U` and `-d` explicitly but never `-p`, because in the container
+    the server is on the default port. Here it may not be, so the port arrives the way libpq reads
+    it anyway.
+    """
+
+    parts = _connection_parts()
+    return {
+        "POSTGRES_HOST": parts["host"],
+        "POSTGRES_USER": parts["user"],
+        "POSTGRES_DB": parts["database"],
+        "PGPASSWORD": parts["password"],
+        "PGPORT": parts["port"],
+    }
+
+
+def _psql(sql, capture=False):
+    """What THIS test drives psql with: libpq's own names, which are a different set.
+
+    `POSTGRES_HOST` means nothing to psql. Setting up the fixture with the script's variable names
+    would silently fall back to a unix socket as the OS user and the assertions would be reading a
+    different database than the script wrote to.
+    """
+
+    parts = _connection_parts()
+    result = subprocess.run(
+        ["psql", "-v", "ON_ERROR_STOP=1", "-tAq", "-c", sql],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PGHOST": parts["host"],
+            "PGPORT": parts["port"],
+            "PGUSER": parts["user"],
+            "PGDATABASE": parts["database"],
+            "PGPASSWORD": parts["password"],
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip() if capture else None
+
+
+@needs_rclone
+@pg_only
+def test_a_completed_pass_records_itself_where_the_master_reads(workspace):
+    """The return channel, driven end to end: rclone binary, psql binary, real table.
+
+    Everything else about this mark is checked by reading two files and hoping they agree. This is
+    the one test that puts a row in a Postgres table by running the script the container runs.
+    """
+
+    source, destination, config = workspace
+    _dump(source, "panel-20260101-000000.sql.gz", b"payload")
+
+    _psql("CREATE TABLE IF NOT EXISTS system_setting (key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL DEFAULT '')")
+    _psql("DELETE FROM system_setting WHERE key LIKE 'offsite_backup_%'")
+
+    env = dict(os.environ)
+    env.update(_script_environment())
+    env.update(
+        {
+            "BACKUP_DIR": str(source),
+            "OFFSITE_REMOTE": _remote(config, destination),
+            "OFFSITE_KEEP_DAYS": "365",
+            "OFFSITE_INTERVAL_SECONDS": "1800",
+            "RCLONE_CONFIG": str(config),
+        }
+    )
+    result = subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+    recorded = _psql(
+        "SELECT value FROM system_setting WHERE key = 'offsite_backup_last_success_ms'",
+        capture=True,
+    )
+    assert recorded, "the pass finished but wrote no success mark, so the master sees nothing"
+    assert abs(int(recorded) / 1000 - time.time()) < 120
+    assert (
+        _psql(
+            "SELECT value FROM system_setting WHERE key = 'offsite_backup_interval_seconds'",
+            capture=True,
+        )
+        == "1800"
+    )
+
+    _psql("DELETE FROM system_setting WHERE key LIKE 'offsite_backup_%'")
