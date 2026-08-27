@@ -21,14 +21,16 @@ if [ ! -f "$RCLONE_CONFIG" ]; then
 fi
 
 case "${OFFSITE_KEEP_DAYS}" in
-    *[!0-9]*|'') ;;
-    *)
-        if [ "${OFFSITE_KEEP_DAYS}" -lt 1 ]; then
-            echo "offsite: OFFSITE_KEEP_DAYS must be at least 1; OFFSITE_KEEP_DAYS=0 makes 'rclone delete --min-age 0d' match every dump on the remote, including the one this pass just uploaded, refusing" >&2
-            exit 1
-        fi
+    ''|*[!0-9]*)
+        echo "offsite: OFFSITE_KEEP_DAYS must be a whole number of days, at least 1 (got '${OFFSITE_KEEP_DAYS}'); refusing rather than pass a value rclone's --min-age cannot be trusted with" >&2
+        exit 1
         ;;
 esac
+
+if [ "${OFFSITE_KEEP_DAYS}" -lt 1 ]; then
+    echo "offsite: OFFSITE_KEEP_DAYS must be at least 1; OFFSITE_KEEP_DAYS=0 makes 'rclone delete --min-age 0d' match every dump on the remote, including the one this pass just uploaded, refusing" >&2
+    exit 1
+fi
 
 case "$OFFSITE_REMOTE" in
     *,*) offsite_remote_safe="<redacted: remote carries inline rclone parameters>" ;;

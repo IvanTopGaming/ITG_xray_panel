@@ -16,6 +16,8 @@ import re
 import subprocess
 import time
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "pg_backup.sh"
 COMPOSE = REPO / "docker-compose.postgres.yml"
@@ -91,14 +93,26 @@ def test_the_newest_dumps_are_the_ones_that_survive(tmp_path):
     )
 
 
-def test_a_backup_keep_of_zero_refuses_instead_of_emptying_the_directory(tmp_path):
-    """`BACKUP_KEEP=0` must never reach `tail -n +$((BACKUP_KEEP + 1))`.
+@pytest.mark.parametrize(
+    "bad_keep",
+    ["0", "-1", "abc"],
+    ids=["zero", "negative", "non-numeric"],
+)
+def test_a_dangerous_backup_keep_refuses_instead_of_emptying_the_directory(tmp_path, bad_keep):
+    """`BACKUP_KEEP` must never reach `tail -n +$((BACKUP_KEEP + 1))` unless it is a plain
+    positive whole number.
 
-    `+$((0 + 1))` is `+1`, which keeps nothing at all -- including the dump this very pass just
-    wrote. `0` is not "unlimited" here even though that is this project's own convention
-    elsewhere (CLAUDE.md: `expiry_time == 0` means never); on a knob named "keep days" it is the
-    one value that empties the archive it was meant to protect, and before this fix it did so
-    while the container still logged `backup written: ...` and exited 0.
+    `0` makes that `+$((0 + 1))` collapse to `+1`, which keeps nothing at all -- including the
+    dump this very pass just wrote. `0` is not "unlimited" here even though that is this
+    project's own convention elsewhere (CLAUDE.md: `expiry_time == 0` means never); on a knob
+    named "keep days" it is the one value that empties the archive it was meant to protect, and
+    before this fix it did so while the container still logged `backup written: ...` and exited
+    0. `-1` reproduced the exact same wipe through a case-glob that treated the leading `-` as
+    "not a digit" and skipped the check instead of rejecting it -- `*[!0-9]*` must not wave a
+    negative number through to the numeric comparison it was meant to gate. And an unset bash
+    arithmetic *name* (what `abc` becomes inside `$((BACKUP_KEEP + 1))`) evaluates as 0 too, so
+    non-numeric input needs the same digits-only gate rather than a hope that some other command
+    downstream fails first.
     """
 
     backups = tmp_path / "backups"
@@ -106,21 +120,22 @@ def test_a_backup_keep_of_zero_refuses_instead_of_emptying_the_directory(tmp_pat
     bin_dir = _stub_pg_dump(tmp_path / "bin")
 
     survivors = _aged_dumps(backups, 3)
-    result = _run(backups, bin_dir, keep=0, expect=1)
+    result = _run(backups, bin_dir, keep=bad_keep, expect=1)
 
     assert "BACKUP_KEEP" in (result.stdout + result.stderr), (
         "the refusal does not name the variable a deployer needs to change"
     )
     assert survivors, "the fixture wrote no pre-existing dumps, so 'they survived' proves nothing"
     assert all(dump.exists() for dump in survivors), (
-        "BACKUP_KEEP=0 deleted dumps that existed before this pass ran. The guard must refuse "
-        "before pg_dump or the rotation ever runs, not empty the directory and then report success."
+        f"BACKUP_KEEP={bad_keep!r} deleted dumps that existed before this pass ran. The guard "
+        f"must refuse before pg_dump or the rotation ever runs, not empty the directory and then "
+        f"report success."
     )
     fresh = [p for p in backups.glob("panel-*.sql.gz") if p.stat().st_mtime > time.time() - 60]
     assert not fresh, (
-        "a new dump was written even though the pass refused -- the guard runs after pg_dump "
-        "instead of before it, so a live run would still create the file that BACKUP_KEEP=0 "
-        "would then be free to delete on the very next pass"
+        f"a new dump was written even though the pass refused on BACKUP_KEEP={bad_keep!r} -- the "
+        f"guard runs after pg_dump instead of before it, so a live run would still create the "
+        f"file a still-dangerous value would then be free to delete on the very next pass"
     )
 
 

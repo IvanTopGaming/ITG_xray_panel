@@ -215,35 +215,49 @@ def test_a_pass_with_no_rclone_config_fails_loudly(workspace):
 
 
 @needs_rclone
-def test_a_keep_days_of_zero_refuses_instead_of_wiping_the_remote(workspace):
-    """`OFFSITE_KEEP_DAYS=0` must never reach `rclone delete --min-age 0d`.
+@pytest.mark.parametrize(
+    "bad_keep_days",
+    ["0", "-1", "abc"],
+    ids=["zero", "negative", "non-numeric"],
+)
+def test_a_dangerous_keep_days_refuses_instead_of_wiping_the_remote(workspace, bad_keep_days):
+    """`OFFSITE_KEEP_DAYS` must never reach `rclone delete --min-age <value>d` unless it is a
+    plain positive whole number.
 
-    That flag matches every object on the remote -- including the one this very pass just
-    uploaded -- so `0` here does not mean "keep forever", which is this project's own convention
-    everywhere else (CLAUDE.md: `expiry_time == 0` means never). It means "delete the whole
-    archive and still exit 0", which is exactly what happened when the reviewer tried it. The
-    pass must refuse before it touches the remote at all, not after copying up and then deleting
-    what it just sent.
+    `0` matches every object on the remote -- including the one this very pass just uploaded --
+    so it does not mean "keep forever", which is this project's own convention everywhere else
+    (CLAUDE.md: `expiry_time == 0` means never). It means "delete the whole archive and still
+    exit 0", which is exactly what happened when the reviewer first tried it. `-1` reproduced the
+    same wipe through a case-glob that treated the leading `-` as "not a digit" and skipped the
+    check entirely instead of rejecting it -- `*[!0-9]*` matches a negative number and a garbage
+    string identically, and it must reject both, not silently wave either through to `-lt 1`.
+    Non-numeric input must refuse for the same reason rather than rely on `rclone` to fail loudly
+    downstream, because a downstream failure only fires after `rclone copy` already ran.
+
+    The pass must refuse before it touches the remote at all, not after copying up and then
+    deleting what it just sent.
     """
 
     source, destination, config = workspace
     already_there = _dump(destination, "panel-20260101-000000.sql.gz", b"already uploaded", age_days=1)
     _dump(source, "panel-20260201-000000.sql.gz", b"about to upload")
 
-    result = _run(source, _remote(config, destination), config, keep_days=0, expect=1)
+    result = _run(source, _remote(config, destination), config, keep_days=bad_keep_days, expect=1)
 
     assert "OFFSITE_KEEP_DAYS" in (result.stdout + result.stderr), (
         "the refusal does not name the variable a deployer needs to change"
     )
     assert already_there.exists(), (
-        "OFFSITE_KEEP_DAYS=0 deleted a dump that was already on the remote from an earlier pass. "
-        "The whole point of this guard is that 0 refuses before any `rclone delete` runs -- not "
-        "that it runs one with --min-age 0d and empties the archive it was meant to protect."
+        f"OFFSITE_KEEP_DAYS={bad_keep_days!r} deleted a dump that was already on the remote from "
+        f"an earlier pass. The whole point of this guard is that a dangerous value refuses before "
+        f"any `rclone delete` runs -- not that it runs one and empties the archive it was meant "
+        f"to protect."
     )
     assert not (destination / "panel-20260201-000000.sql.gz").exists(), (
-        "the pass uploaded the new dump before refusing on OFFSITE_KEEP_DAYS=0. A pass that fails "
-        "after copying is still a pass where the next rclone delete -- run by hand, or on a config "
-        "fixed to a still-dangerous value -- would delete the copy it just made."
+        f"the pass uploaded the new dump before refusing on OFFSITE_KEEP_DAYS={bad_keep_days!r}. "
+        f"A pass that fails after copying is still a pass where the next rclone delete -- run by "
+        f"hand, or on a config fixed to a still-dangerous value -- would delete the copy it just "
+        f"made."
     )
 
 
