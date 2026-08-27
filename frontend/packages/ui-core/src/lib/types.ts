@@ -140,6 +140,19 @@ export interface LinkedPanel {
   last_error: string | null;
   enable: boolean;
   created_at: number;
+  transfer_state: string;
+  current_instance_id: string | null;
+  superseded_at: number | null;
+}
+
+export interface TransferTokenResult {
+  token: string;
+  expires_at: number;
+  state_freshness: {
+    ok: boolean;
+    taken_at: number | null;
+    error: string | null;
+  };
 }
 
 export interface FederationConfig {

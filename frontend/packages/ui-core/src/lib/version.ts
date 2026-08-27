@@ -14,6 +14,7 @@ export interface VersionInfo {
     bot_reported_at: number | null;
     bot_state?: 'reporting' | 'silent' | null;
     roles?: Record<string, RoleReport>;
+    superseded_at?: number | null;
   };
   latest: Record<string, string> | null;
   latest_checked_at: number | null;

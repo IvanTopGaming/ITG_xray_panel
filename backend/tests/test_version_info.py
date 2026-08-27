@@ -261,6 +261,38 @@ def test_version_endpoint_shape(client, auth_headers, monkeypatch):
     assert body["running"]["bot"] is None
     assert body["latest"]["backend"] == "2.1.11"
     assert body["latest_checked_at"] == 4242.0
+    assert body["running"]["superseded_at"] is None
+
+
+def test_get_own_superseded_at_is_none_on_a_master(app):
+    from panel_core.services.role_status import get_own_superseded_at
+
+    assert get_own_superseded_at() is None
+
+
+def test_get_own_superseded_at_reads_the_local_marker(app, monkeypatch):
+    from panel_core.services.role_status import get_own_superseded_at
+    from panel_core.services.supersede import mark_superseded
+
+    monkeypatch.setenv("PANEL_ROLE", "worker")
+    mark_superseded(1_700_000_000_000)
+
+    assert get_own_superseded_at() == 1_700_000_000_000
+
+
+def test_version_endpoint_reports_a_superseded_node(client, auth_headers, monkeypatch):
+    from panel_core.services import bot_status, version_check
+    from panel_core.services.supersede import mark_superseded
+
+    monkeypatch.setenv("PANEL_ROLE", "worker")
+    monkeypatch.setattr(bot_status, "get_shared_redis", lambda: None)
+    version_check._CACHE["latest"] = None
+    version_check._CACHE["checked_at"] = None
+    mark_superseded(1_700_000_000_000)
+
+    resp = client.get("/api/system/version", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.get_json()["running"]["superseded_at"] == 1_700_000_000_000
 
 
 def test_the_fetched_versions_survive_the_process_that_fetched_them(app, monkeypatch):
