@@ -71,10 +71,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
     volumes:
       - ./pg_backups:/backups
       - ./scripts/pg_backup.sh:/usr/local/bin/pg_backup.sh:ro
     entrypoint:
       - "bash"
       - "-c"
-      - "while true; do /usr/local/bin/pg_backup.sh || true; sleep 21600; done"
+      - "while true; do /usr/local/bin/pg_backup.sh || true; sleep ${BACKUP_INTERVAL_SECONDS:-21600}; done"

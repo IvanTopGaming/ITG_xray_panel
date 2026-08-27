@@ -324,7 +324,7 @@ Within a host, networks are split for isolation: `panel-net` (the only segment w
 
 Both run the same custom schema-versioned migration system (`panel_core.db_migration`, standalone entrypoint `backend/migrate_db.py`), idempotent on every startup. Storage stays small: `traffic_snapshot` is ~100 bytes per entity per hour, `domain_stat` is capped at 90 days, bot events at 7d/30d.
 
-Backups are per-tier: the data tier is dumped by the `pg-backup` container every 6 hours (14 kept), **never through the panel**; a node is backed up from its card on the master's **Panels** page, which streams that node's SQLite file straight into your browser.
+Backups are per-tier: the data tier is dumped by the `pg-backup` container on the interval `BACKUP_INTERVAL_SECONDS` sets (2 hours by default, `BACKUP_KEEP` dumps retained — 90 days), **never through the panel**; a node is backed up from its card on the master's **Panels** page, which streams that node's SQLite file straight into your browser.
 
 </details>
 
