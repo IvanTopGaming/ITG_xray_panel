@@ -108,3 +108,47 @@ def test_a_healthy_tier_is_not_slowed_down_by_the_breaker(monkeypatch):
     for _ in range(10):
         assert client.get("k") == b"ok"
     assert healthy.get.call_count == 10, "the breaker swallowed calls while the tier was answering"
+
+
+def test_a_refused_permission_does_not_take_the_publisher_down(monkeypatch):
+    """A node's credential is publish-only, so half of what the code tries is refused by design.
+
+    `-@all +publish +select &bot:events` (wave 2) is the whole of what a node may do. Two callers on
+    that box ask for more anyway, and both are supposed to be harmless: `sub_cache._delete` tries to
+    evict the sub host's cache — the comment in `_warn_once` says the refusal is expected — and
+    `health._data_tier` probes with `ping`. Neither can succeed and neither needs to.
+
+    But NOPERM arrived through the same `except Exception` as a dead socket, so each refusal opened
+    the breaker for ten seconds and took `bot:events` down with it. `sync_traffic` runs every 10 s
+    and `replay_undelivered_bot_events` every 60, so the replay almost always landed inside a window
+    a refusal had just opened: measured on a live node, 89 openings against 1 recovery in 20 minutes,
+    and expiry warnings that reached nobody.
+
+    A refusal is proof of the opposite of an outage. The server accepted the connection, finished the
+    TLS handshake, authenticated the credential and answered — it is up. Only a connection that never
+    produced an answer may open the breaker.
+    """
+    import redis
+
+    monkeypatch.setenv(extensions.SHARED_REDIS_URI_ENV, "redis://data-tier:6379/0")
+
+    node = MagicMock()
+    node.delete.side_effect = redis.exceptions.NoPermissionError(
+        "this user has no permissions to run the 'del' command"
+    )
+    node.publish.return_value = 1
+    with patch("redis.Redis.from_url", return_value=node):
+        client = extensions.get_shared_redis()
+
+    with pytest.raises(redis.exceptions.NoPermissionError):
+        client.delete("sub:v2ray:whatever")
+
+    assert client.publish("bot:events", b"{}") == 1, (
+        "the cache eviction the node is not allowed to make took bot:events down with it. Every "
+        "expiry and traffic warning raised in the next ten seconds is dropped, and the node retries "
+        "them on a 60-second job that keeps landing in the same window."
+    )
+    assert node.publish.call_count == 1, (
+        f"the publish never reached Redis: the breaker answered it from the open circuit "
+        f"({node.publish.call_count} calls made)"
+    )

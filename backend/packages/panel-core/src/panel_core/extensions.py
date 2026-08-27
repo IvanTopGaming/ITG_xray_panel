@@ -76,6 +76,27 @@ _shared_redis_client = None
 CIRCUIT_OPEN_SECONDS = 10
 
 
+def redis_answered(exc):
+    """Did Redis answer, or did the call never reach it?
+
+    A node's credential is `-@all +publish +select &bot:events`, so `sub_cache._delete` and
+    `health._data_tier`'s `ping` are refused on every node, by design, several times a minute.
+    NOPERM used to arrive through the same `except Exception` as a dead socket and opened the
+    breaker for ten seconds, which took `bot:events` down with it — the replay job runs every 60 s
+    and kept landing inside a window a refusal had just opened.
+
+    A `ResponseError` is the opposite of an outage: the connection was accepted, TLS completed, the
+    credential authenticated and the server replied. Only a call that produced no answer at all may
+    open the circuit.
+    """
+
+    try:
+        import redis  # type: ignore
+    except Exception:
+        return False
+    return isinstance(exc, redis.exceptions.ResponseError)
+
+
 class _CircuitBreakerRedis:
     """Stops a request paying the socket timeout again once the tier is known to be down.
 
@@ -120,8 +141,9 @@ class _CircuitBreakerRedis:
                 )
             try:
                 result = attr(*args, **kwargs)
-            except Exception:
-                self._open()
+            except Exception as exc:
+                if not redis_answered(exc):
+                    self._open()
                 raise
             self._close()
             return result
