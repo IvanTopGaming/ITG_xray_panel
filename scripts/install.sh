@@ -332,6 +332,60 @@ json_field() {
     sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
 }
 
+valid_node_kind() {
+    case "$1" in
+        new|replace) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+fetch_transfer_identity() {
+    local raw="$1" padded decoded master_url secret reply status body errmsg
+    case $(( ${#raw} % 4 )) in
+        2) padded="${raw}==" ;;
+        3) padded="${raw}=" ;;
+        *) padded="$raw" ;;
+    esac
+    decoded="$(printf '%s' "$padded" | tr '_-' '/+' | base64 -d 2>/dev/null)" ||
+        die "that is not a transfer string" "Copy the whole single line the master printed, with nothing around it."
+    master_url="${decoded%%|*}"
+    secret="${decoded#*|}"
+    [ -n "$master_url" ] && [ "$master_url" != "$decoded" ] ||
+        die "that transfer string carries no master address" "Issue a fresh one from the node's card on the master."
+
+    reply="$(printf '{"transfer_token":"%s"}' "$secret" | curl -sS --max-time 15 -w '\n%{http_code}' \
+        -X POST "${master_url}/api/panels/transfer/identity" \
+        -H 'Content-Type: application/json' -d @- 2>&1 || true)"
+
+    status="${reply##*$'\n'}"
+    body="${reply%$'\n'*}"
+
+    case "$status" in
+        000|'')
+            die "the master at ${master_url} did not answer" \
+                "${body:-Check that it is reachable from this machine and that the transfer string has not expired.}"
+            ;;
+    esac
+
+    printf '%s' "$body" > "$WORK/transfer.json"
+
+    if [ "$status" != "200" ]; then
+        errmsg="$(json_field "$WORK/transfer.json" error)"
+        die "the master refused that transfer string" "${errmsg:-HTTP $status from ${master_url}}"
+    fi
+
+    TRANSFER_PANEL_NAME="$(json_field "$WORK/transfer.json" panel_name)"
+    TRANSFER_PANEL_DOMAIN="$(json_field "$WORK/transfer.json" panel_domain)"
+    TRANSFER_PROXY_DOMAIN="$(json_field "$WORK/transfer.json" proxy_domain)"
+    TRANSFER_SECRET_PATH="$(json_field "$WORK/transfer.json" secret_path)"
+
+    [ -n "$TRANSFER_PANEL_DOMAIN" ] && [ -n "$TRANSFER_SECRET_PATH" ] ||
+        die "the master answered without a domain or a secret path" \
+            "The node it describes has never been polled, so there is nothing to restore yet."
+    [ -n "$TRANSFER_PROXY_DOMAIN" ] ||
+        warn "the master reports no decoy domain for this node — set PROXY_DOMAIN in .env by hand before starting; the stack refuses to start without it"
+}
+
 declare -A VALUES=()
 
 egress_configured() { [ -n "${DIR:-}" ] && [ -f "$DIR/egress.conf" ]; }
@@ -1297,17 +1351,41 @@ else
             ;;
         node)
             rule "This host"
-            note "PROXY_DOMAIN is the decoy this node masquerades as. It must equal the"
-            note "REALITY inbound's SNI, or every client is handed to the panel instead."
+            note "A brand-new node asks for its own domains. A REPLACEMENT takes them from the"
+            note "master, together with the secret path — generating a fresh one would leave the"
+            note "master polling the old path and getting 404."
             printf '\n'
-            ask PANEL_DOMAIN "this node's own domain" "" valid_hostname
-            ask PROXY_DOMAIN "decoy domain" "www.google.com" valid_hostname
-            ask SUB_DOMAIN "the subscription host's domain" "" valid_hostname
-            VALUES[PANEL_DOMAIN]="$PANEL_DOMAIN"
-            VALUES[PROXY_DOMAIN]="$PROXY_DOMAIN"
-            VALUES[SUB_DOMAIN]="$SUB_DOMAIN"
-            VALUES[CORS_ORIGINS]="https://$PANEL_DOMAIN"
-            VALUES[PANEL_SECRET_PATH]="$(gen_secret 12)"
+            ask NODE_KIND "new node or replacement? [new/replace]" "new" valid_node_kind
+            if [ "$NODE_KIND" = "replace" ]; then
+                ask NODE_TRANSFER_TOKEN_IN "transfer string from the master's panel card"
+                fetch_transfer_identity "$NODE_TRANSFER_TOKEN_IN"
+                VALUES[PANEL_DOMAIN]="$TRANSFER_PANEL_DOMAIN"
+                VALUES[PROXY_DOMAIN]="$TRANSFER_PROXY_DOMAIN"
+                VALUES[PANEL_SECRET_PATH]="$TRANSFER_SECRET_PATH"
+                VALUES[NODE_TRANSFER_TOKEN]="$NODE_TRANSFER_TOKEN_IN"
+                if [ -n "$TRANSFER_PROXY_DOMAIN" ]; then
+                    ok "replacing ${C_BOLD}${TRANSFER_PANEL_NAME}${C_RESET} ${C_DIM}· domain, decoy and secret path taken from the master${C_RESET}"
+                else
+                    ok "replacing ${C_BOLD}${TRANSFER_PANEL_NAME}${C_RESET} ${C_DIM}· domain and secret path taken from the master, decoy still missing${C_RESET}"
+                fi
+                ask SUB_DOMAIN "the subscription host's domain" "" valid_hostname
+                VALUES[SUB_DOMAIN]="$SUB_DOMAIN"
+            elif [ "$NODE_KIND" = "new" ]; then
+                note "PROXY_DOMAIN is the decoy this node masquerades as. It must equal the"
+                note "REALITY inbound's SNI, or every client is handed to the panel instead."
+                printf '\n'
+                ask PANEL_DOMAIN "this node's own domain" "" valid_hostname
+                ask PROXY_DOMAIN "decoy domain" "www.google.com" valid_hostname
+                ask SUB_DOMAIN "the subscription host's domain" "" valid_hostname
+                VALUES[PANEL_DOMAIN]="$PANEL_DOMAIN"
+                VALUES[PROXY_DOMAIN]="$PROXY_DOMAIN"
+                VALUES[SUB_DOMAIN]="$SUB_DOMAIN"
+                VALUES[PANEL_SECRET_PATH]="$(gen_secret 12)"
+                VALUES[NODE_TRANSFER_TOKEN]=""
+            else
+                die "unknown node kind '$NODE_KIND'" "Expected 'new' or 'replace'."
+            fi
+            VALUES[CORS_ORIGINS]="https://${VALUES[PANEL_DOMAIN]}"
             VALUES[PANEL_ADMIN_PASSWORD]="$(gen_secret 15)"
             VALUES[EGRESS_INTERNAL_TOKEN]="$(gen_secret 24)"
             ;;
@@ -1363,6 +1441,12 @@ else
             panel_line "    https://${VALUES[PANEL_DOMAIN]}/${VALUES[PANEL_SECRET_PATH]}/"
             panel_line ""
             panel_line "  Everything outside that path answers 404."
+            if [ "$ROLE" = "node" ] && [ "${NODE_KIND:-}" = "replace" ]; then
+                panel_line ""
+                panel_line "  If the transfer carried the dead node's admin account across, this"
+                panel_line "  password is replaced the moment this host claims that state -- log"
+                panel_line "  in with the account the dead node used instead."
+            fi
             panel_line ""
             panel_bot
             ;;
@@ -1410,7 +1494,15 @@ next_steps() {
         data) note "Next: run this installer on the cron host and paste the bundle above." ;;
         cron) note "Next: the master, the sub host and the bot host, in any order." ;;
         master) note "Next: bring up your nodes, then link them from Panels → Add panel." ;;
-        node) note "Next: on this node open System → Link, then paste the token into the master." ;;
+        node)
+            if [ "${NODE_KIND:-}" = "replace" ]; then
+                note "Next: start this host -- it claims the dead node's state on its own."
+                note "  Do not open System → Link: that mints a second panel and the master"
+                note "  already purges a panel's tariffs the moment one is deleted or replaced."
+            else
+                note "Next: on this node open System → Link, then paste the token into the master."
+            fi
+            ;;
         sub|bot) note "Next: whichever of the six hosts you have not installed yet." ;;
     esac
 }
