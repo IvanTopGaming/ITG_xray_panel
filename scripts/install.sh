@@ -438,7 +438,8 @@ offsite_write_target() {
             OFFSITE_PATH="offsite-target:${OFFSITE_SFTP_PATH}"
             ;;
         own)
-            cp "$WORK/rclone.block" "$DIR/rclone/rclone.conf"
+            cp "$WORK/rclone.block" "$DIR/rclone/rclone.conf" || die "could not write '$DIR/rclone/rclone.conf'" \
+                "Check that this installer can write there and the disk has room."
             printf '\n' >> "$DIR/rclone/rclone.conf"
             OFFSITE_PATH="$OFFSITE_OWN_REMOTE"
             ;;

@@ -413,3 +413,72 @@ def test_a_completed_pass_records_itself_where_the_master_reads(workspace):
     )
 
     _psql("DELETE FROM system_setting WHERE key LIKE 'offsite_backup_%'")
+
+
+@needs_rclone
+@pg_only
+def test_a_quote_in_the_remote_round_trips_through_the_success_mark(workspace):
+    """The `sed "s/'/''/g"` escaping in offsite_backup.sh, driven end to end rather than by
+    inspection.
+
+    An apostrophe reaches `OFFSITE_REMOTE` easily -- a Drive folder or an S3 bucket path a deployer
+    named "o'brien" is not exotic. Without the escaping, the INSERT this script builds is not merely
+    wrong, it does not parse: `VALUES ('offsite_backup_remote', 'offsite:/tmp/.../o'brien')` breaks
+    at the unescaped quote with a plain Postgres syntax error, `ON_ERROR_STOP=1` aborts the whole
+    heredoc, and the mark -- interval and timestamp included, not just the remote -- is never written
+    at all. `read_status()` then has nothing to read, which looks identical to a container that has
+    never run rather than one whose remote name it could not record.
+
+    A `local` rclone remote makes the quote reach a real destination path with no network and no
+    credentials, exactly like the rest of this file; only the psql half needs the real thing, which
+    is why this is `pg_only` alongside `test_a_completed_pass_records_itself_where_the_master_reads`.
+    """
+
+    source, destination, config = workspace
+    quoted_destination = destination.parent / "o'brien's remote"
+    quoted_destination.mkdir()
+    _dump(source, "panel-20260101-000000.sql.gz", b"payload")
+
+    _psql("CREATE TABLE IF NOT EXISTS system_setting (key VARCHAR(100) PRIMARY KEY, value TEXT NOT NULL DEFAULT '')")
+    _psql("DELETE FROM system_setting WHERE key LIKE 'offsite_backup_%'")
+
+    remote = _remote(config, quoted_destination)
+    env = dict(os.environ)
+    env.update(_script_environment())
+    env.update(
+        {
+            "BACKUP_DIR": str(source),
+            "OFFSITE_REMOTE": remote,
+            "OFFSITE_KEEP_DAYS": "365",
+            "OFFSITE_INTERVAL_SECONDS": "1800",
+            "RCLONE_CONFIG": str(config),
+        }
+    )
+    result = subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, (
+        f"a quoted remote made the pass itself fail, not just the mark -- "
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert (quoted_destination / "panel-20260101-000000.sql.gz").exists(), (
+        "the dump never reached the quoted remote, so the mark below would prove nothing about the "
+        "SQL escaping specifically"
+    )
+
+    recorded = _psql(
+        "SELECT value FROM system_setting WHERE key = 'offsite_backup_remote'",
+        capture=True,
+    )
+    assert recorded == remote, (
+        f"the recorded remote {recorded!r} does not match what the pass was given {remote!r} -- "
+        f"the quote was dropped, doubled or otherwise mangled crossing into Postgres instead of "
+        f"round-tripping intact"
+    )
+    assert _psql(
+        "SELECT value FROM system_setting WHERE key = 'offsite_backup_last_success_ms'",
+        capture=True,
+    ), (
+        "the quoted remote broke the INSERT for the whole row, not just its own column -- the "
+        "timestamp never got written either"
+    )
+
+    _psql("DELETE FROM system_setting WHERE key LIKE 'offsite_backup_%'")

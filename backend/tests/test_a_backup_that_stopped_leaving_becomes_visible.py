@@ -113,6 +113,31 @@ def test_a_mark_two_intervals_old_is_still_given_the_benefit_of_the_doubt(app, d
     )
 
 
+def test_a_mark_from_the_future_clamps_its_age_to_zero(app, db):
+    """`age = None if last is None else max(0, int(time.time()) - last // 1000)` -- the `max(0, ...)`
+    half, never exercised anywhere in this file.
+
+    A mark timestamped ahead of this read is not exotic: a moment of clock skew between the data
+    tier and whichever role is asking, or a read landing the same second a pass finishes and writes
+    its timestamp a beat after `int(time.time())` was captured here. Without the clamp the
+    subtraction goes negative -- and a negative age compares `False` against `stale_after_seconds`
+    for the same reason a healthy age does, so `stale` alone would not tell the two apart.
+    `age_seconds` landing at exactly `0` is what proves the clamp fired rather than the subtraction
+    merely staying small.
+    """
+
+    _as_shared_postgres(app)
+    _mark(db, last_ms=int((time.time() + 6 * 3600) * 1000), interval=1800)
+
+    reading = read_status()
+
+    assert reading["age_seconds"] == 0, (
+        "a mark timestamped in the future produced a negative age instead of clamping to zero -- "
+        "the max(0, ...) guard in read_status() is what this test exists to catch losing"
+    )
+    assert reading["stale"] is False, "age 0 must never read as stale, however it got there"
+
+
 def test_an_unrecorded_interval_falls_back_rather_than_dividing_by_nothing(app, db):
     _as_shared_postgres(app)
     _mark(db, last_ms=int(time.time() * 1000))
@@ -155,6 +180,37 @@ def test_the_health_card_carries_the_reading(app, db):
     _mark(db, last_ms=int(time.time() * 1000), interval=1800)
 
     assert collect()["offsite_backup"]["stale"] is False
+
+
+def test_a_query_that_raises_reports_unavailable_without_propagating(app, db, monkeypatch):
+    """`read_status()`'s own `except Exception` branch -- not `health.py`'s wrapper around it.
+
+    `test_one_unreadable_reading_does_not_take_the_others_with_it` below proves `collect()` survives
+    `read_offsite_status` raising, but it does that by monkeypatching `read_offsite_status` itself,
+    so it never runs this module's own `except` clause at all. A revoked grant, a dropped connection
+    or a table that migrated away from under a running process makes the `SELECT` itself raise, and
+    this is the only test that drives that path.
+
+    The exact shape of the return matters as much as the fact that nothing propagates: the frontend
+    reads `available` before any other key (`test_the_hint_checks_availability_before_it_checks_the_
+    mark` above), so a change here that returned a partial dict of a different shape -- an extra key,
+    a missing one, `available` set to something truthy -- would surface as a card rendering wrong
+    rather than as a raised exception anywhere in this suite.
+    """
+
+    from panel_core.services import offsite
+
+    _as_shared_postgres(app)
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(offsite.db.session, "execute", _raise)
+
+    assert offsite.read_status() == {"applicable": True, "available": False}, (
+        "the except branch in read_status() either propagated the exception or returned something "
+        "other than the exact {'applicable': True, 'available': False} the frontend depends on"
+    )
 
 
 def test_one_unreadable_reading_does_not_take_the_others_with_it(app, db, monkeypatch):
