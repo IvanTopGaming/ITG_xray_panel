@@ -159,9 +159,16 @@ jobs:
       # The off-site backup pass is a shell script driving the real rclone binary against a `local`
       # remote, and its success mark is a psql upsert into the shared Postgres. Both tests skip when
       # the binary is missing, so without this step they are silently skipped in CI -- which is what
-      # a passing summary line looks like when nothing ran.
+      # a passing summary line looks like when nothing ran. The version is read out of
+      # offsite/Dockerfile so CI can never drift from what panel-offsite actually ships.
       - name: Install rclone and the Postgres client
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rclone postgresql-client
+        run: |
+          RCLONE_VERSION="$(grep -m1 -oE 'rclone/rclone:[0-9.]+' ../offsite/Dockerfile | cut -d: -f2)"
+          curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip
+          unzip -q /tmp/rclone.zip -d /tmp/rclone-unpack
+          sudo install -m 755 "/tmp/rclone-unpack/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rm -rf /tmp/rclone.zip /tmp/rclone-unpack
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0

@@ -741,8 +741,10 @@ resolves each service to its image's dependency closure and fails on a variable 
   `${VAR:?}`: compose interpolates the whole file before it filters by profile, so a required
   reference inside a profiled service refuses the `up` on every data tier that never wanted off-site
   copies.
-- `BACKUP_INTERVAL_SECONDS` (7200) / `BACKUP_KEEP` (1080) — the local dump cadence and depth. The
-  interval is substituted host-side in the entrypoint; only `BACKUP_KEEP` reaches the container.
+- `BACKUP_INTERVAL_SECONDS` (7200) / `BACKUP_KEEP` (1080) — the local dump cadence and depth, per
+  `.env.data.example`; compose's own fallback for an existing `.env` that predates the two
+  variables is 21600 / 14. The interval is substituted host-side in the entrypoint; only
+  `BACKUP_KEEP` reaches the container.
 - `FEDERATION_ALLOW_PRIVATE_URLS` — master only, off by default. Only `1`/`true`/`yes`/`on` count.
 - `BACKEND_LOG_LEVEL` (default INFO), `BACKEND_SLOW_SQL_MS` (200), `BACKEND_SLOW_REQUEST_MS` (1000).
   `DEBUG` additionally echoes every SQL statement. Containers rotate json-file logs at 50 MB × 5.
@@ -834,7 +836,16 @@ Avoid force-pushing `main`: CI then cannot diff against the old SHA and falls ba
 
 **Rebuild fan-out.** `panel-core` → all five backend images. `panel-adminapi` → master + worker.
 `panel-links` → sub + bot-api. `panel-sub`, `panel-master`, `panel-worker`, `panel-botapi`,
-`panel-cron` → one each. A change confined to `frontend/packages/sub-page/**` is a **backend** release
+`panel-cron` → one each. That fan-out is the blast radius — what depends on the distribution, not a
+mandate that every release touching it bumps every image on the list. Narrow the bump to the role(s)
+where a `panel-core` change is actually observable: `services/offsite.py` and its use in
+`services/health.py` are reached only through `/system/health`, which `panel-adminapi` — and only
+`panel-adminapi` — registers, so `sub`, `bot-api` and `cron` never execute either module at all; and
+on `worker` the read short-circuits on `is_postgres()` before doing anything a SQLite-backed role
+could observe. Nothing changes for four of the five images, which is why the 3.1.1 release bumped
+`master` alone.
+
+A change confined to `frontend/packages/sub-page/**` is a **backend** release
 (bump `sub`). A change to `ui-core/fonts.css` or the `.woff2` files is a **three-image** release
 (`sub` + both frontends) — that one file is sub-page's only edge into `ui-core`; any other `ui-core`
 change rebuilds the two frontend images alone.

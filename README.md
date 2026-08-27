@@ -324,7 +324,7 @@ Within a host, networks are split for isolation: `panel-net` (the only segment w
 
 Both run the same custom schema-versioned migration system (`panel_core.db_migration`, standalone entrypoint `backend/migrate_db.py`), idempotent on every startup. Storage stays small: `traffic_snapshot` is ~100 bytes per entity per hour, `domain_stat` is capped at 90 days, bot events at 7d/30d.
 
-Backups are per-tier: the data tier is dumped by the `pg-backup` container on the interval `BACKUP_INTERVAL_SECONDS` sets (2 hours by default, `BACKUP_KEEP` dumps retained — 90 days), **never through the panel**; a node is backed up from its card on the master's **Panels** page, which streams that node's SQLite file straight into your browser.
+Backups are per-tier: the data tier is dumped by the `pg-backup` container on the interval `BACKUP_INTERVAL_SECONDS` sets and keeps `BACKUP_KEEP` dumps — 2 hours / 1080 dumps (90 days) in `.env.data.example`; an existing `.env` that predates those two variables falls back to compose's own defaults instead, 6 hours / 14 dumps — **never through the panel**; a node is backed up from its card on the master's **Panels** page, which streams that node's SQLite file straight into your browser.
 
 The installer offers to copy every dump to external storage — Google Drive, S3-compatible, SFTP, or
 any of rclone's other backends via a pasted config block — with its own schedule and its own
@@ -332,6 +332,26 @@ retention, optionally encrypted before it leaves the machine. Say yes and the da
 outbound network access, which it otherwise has none of. The master shows how long ago the last copy
 landed on **System → About**, in red once it has been too long; that age is the only sign there is,
 because the container survives every failure on purpose rather than restart-looping.
+
+**Turning it on against a data tier that is already running** is not yet an installer subcommand —
+`install.sh` only writes the off-site block during a fresh `install`, and neither `update` nor
+`reconfigure` touches it on an existing deployment. Do it by hand:
+
+1. Fetch `scripts/offsite_backup.sh` into the deployment directory (next to
+   `docker-compose.postgres.yml`) and `chmod +x` it.
+2. Write `./rclone/rclone.conf` yourself, mode `600`. This is exactly the file the installer's
+   off-site dialogue would have written on a fresh install — one `[remote]` stanza for your storage
+   (Drive/S3/SFTP credentials, or your own pasted rclone config block) and, for encryption, a
+   `[offsite]` stanza of `type = crypt` wrapping it.
+3. Add `OFFSITE_IMAGE` to `.env`, pinned to the current tag (see `versions.json` / the offsite line
+   in `.env.data.example`). **This one is not optional**: `COMPOSE_PROFILES=offsite` with no
+   `OFFSITE_IMAGE` set makes the whole compose project invalid, not just the `offsite-backup`
+   service — every `docker compose` command on that host breaks, including `ps`, `down` and `logs`.
+4. Add `OFFSITE_REMOTE`, the rclone destination to copy dumps to (e.g. `offsite:panel-backups`).
+5. Set `COMPOSE_PROFILES=offsite`.
+6. Optionally set `OFFSITE_INTERVAL_SECONDS` (default 1800) and `OFFSITE_KEEP_DAYS` (default 365).
+
+Then `docker compose -f docker-compose.postgres.yml up -d` picks up the new service.
 
 </details>
 

@@ -20,6 +20,7 @@ mocks -- the same binary, the same two commands, a directory standing in for the
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import time
@@ -149,6 +150,57 @@ def test_a_foreign_object_in_the_remote_is_never_deleted(workspace):
 
 
 @needs_rclone
+def test_a_remote_with_inline_parameters_is_redacted_before_it_is_logged(workspace):
+    """rclone reads a *connection string* as a remote -- `name,param=value,...:path`, or a leading
+    `:backend,param=value:path` with no configured remote at all. That syntax exists so a deployer
+    never has to edit `rclone.conf` for a one-off override, but it is also exactly how an S3 access
+    key or secret would end up typed straight into `OFFSITE_REMOTE`. The recorded and logged value
+    must never carry that, even though the actual `rclone copy`/`delete` calls still need the raw
+    one to reach the real destination.
+    """
+
+    source, destination, config = workspace
+    _dump(source, "panel-20260101-000000.sql.gz", b"payload")
+    config.write_text("[offsite]\ntype = local\n")
+    remote = f"offsite,case_insensitive=true:{destination}"
+
+    result = _run(source, remote, config)
+    combined = result.stdout + result.stderr
+
+    assert (destination / "panel-20260101-000000.sql.gz").exists(), (
+        "redacting the logged value broke the ordinary upload -- the raw OFFSITE_REMOTE must still "
+        "reach rclone copy/delete unchanged"
+    )
+    assert "case_insensitive" not in combined, (
+        "the inline connection-string parameter reached the log untouched -- this is exactly the "
+        "syntax rclone uses to carry a secret inline, and it must never be echoed"
+    )
+    assert "redacted" in combined.lower(), (
+        "a comma-bearing remote produced no redaction marker, so the raw value likely reached the log unchanged"
+    )
+
+
+@needs_rclone
+def test_an_ordinary_remote_is_still_shown_in_full(workspace):
+    """The redaction in the test above must not swallow the common case.
+
+    `offsite:panel-backups` has no comma, so it must reach the log exactly as configured -- an
+    admin reading the System → About tooltip needs to recognise which remote is in use.
+    """
+
+    source, destination, config = workspace
+    _dump(source, "panel-20260101-000000.sql.gz", b"payload")
+    remote = _remote(config, destination)
+
+    result = _run(source, remote, config)
+
+    assert remote in (result.stdout + result.stderr), (
+        f"an ordinary remote {remote!r} with no inline parameters was altered before logging -- "
+        f"the redaction is over-eager"
+    )
+
+
+@needs_rclone
 def test_a_pass_with_no_remote_configured_fails_loudly(workspace):
     source, _destination, config = workspace
     config.write_text("[offsite]\ntype = local\n")
@@ -160,6 +212,39 @@ def test_a_pass_with_no_rclone_config_fails_loudly(workspace):
     source, destination, config = workspace
     result = _run(source, f"offsite:{destination}", config, expect=1)
     assert "rclone" in (result.stdout + result.stderr).lower()
+
+
+@needs_rclone
+def test_a_keep_days_of_zero_refuses_instead_of_wiping_the_remote(workspace):
+    """`OFFSITE_KEEP_DAYS=0` must never reach `rclone delete --min-age 0d`.
+
+    That flag matches every object on the remote -- including the one this very pass just
+    uploaded -- so `0` here does not mean "keep forever", which is this project's own convention
+    everywhere else (CLAUDE.md: `expiry_time == 0` means never). It means "delete the whole
+    archive and still exit 0", which is exactly what happened when the reviewer tried it. The
+    pass must refuse before it touches the remote at all, not after copying up and then deleting
+    what it just sent.
+    """
+
+    source, destination, config = workspace
+    already_there = _dump(destination, "panel-20260101-000000.sql.gz", b"already uploaded", age_days=1)
+    _dump(source, "panel-20260201-000000.sql.gz", b"about to upload")
+
+    result = _run(source, _remote(config, destination), config, keep_days=0, expect=1)
+
+    assert "OFFSITE_KEEP_DAYS" in (result.stdout + result.stderr), (
+        "the refusal does not name the variable a deployer needs to change"
+    )
+    assert already_there.exists(), (
+        "OFFSITE_KEEP_DAYS=0 deleted a dump that was already on the remote from an earlier pass. "
+        "The whole point of this guard is that 0 refuses before any `rclone delete` runs -- not "
+        "that it runs one with --min-age 0d and empties the archive it was meant to protect."
+    )
+    assert not (destination / "panel-20260201-000000.sql.gz").exists(), (
+        "the pass uploaded the new dump before refusing on OFFSITE_KEEP_DAYS=0. A pass that fails "
+        "after copying is still a pass where the next rclone delete -- run by hand, or on a config "
+        "fixed to a still-dangerous value -- would delete the copy it just made."
+    )
 
 
 def test_ci_installs_what_these_tests_drive():
@@ -176,6 +261,33 @@ def test_ci_installs_what_these_tests_drive():
     assert "rclone" in job, (
         "the backend-tests job does not install rclone, so every execution test in this file is "
         "skipped in CI and the off-site pass is covered by nothing at all."
+    )
+
+
+def test_ci_pins_the_same_rclone_the_image_ships():
+    """ "the same binary" up top is only true if these two pins cannot drift apart.
+
+    `offsite/Dockerfile` pins rclone via `FROM rclone/rclone:<version> AS rclone`. CI installing
+    whatever the distro repository happens to carry that day means this file's execution tests
+    exercise a different rclone than the one `panel-offsite` actually ships -- a version-specific
+    behaviour change would show up in neither. The job is expected to read the pin out of the
+    Dockerfile at run time rather than carry a second, independently-editable copy of the version
+    number, which is the coupling this test can actually check for.
+    """
+
+    dockerfile_text = (REPO / "offsite" / "Dockerfile").read_text()
+    assert re.search(r"rclone/rclone:[0-9.]+", dockerfile_text), (
+        "offsite/Dockerfile no longer pins rclone/rclone:<version> -- this guard is stale"
+    )
+
+    job = CI.read_text().split("backend-tests:", 1)[1].split("\n  bot-tests:", 1)[0]
+    assert "offsite/Dockerfile" in job, (
+        "the backend-tests job no longer reads the rclone version out of offsite/Dockerfile, so "
+        "nothing stops it drifting from the version panel-offsite actually ships."
+    )
+    assert "downloads.rclone.org" in job, (
+        "the backend-tests job no longer downloads the pinned rclone release archive -- if it "
+        "fell back to a distro package, the version pin from offsite/Dockerfile would go unread."
     )
 
 

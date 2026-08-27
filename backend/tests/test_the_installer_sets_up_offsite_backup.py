@@ -170,15 +170,19 @@ def test_the_passphrase_is_shown_once_and_confirmed():
     [
         "drive.file",
         "rclone obscure",
+        "IRREVERSIBLE",
+        "new folder",
     ],
 )
 def test_the_installer_explains_the_traps_the_spec_names(trap):
-    """Spec, *Ловушки, которые установщик обязан объяснить или обойти*.
+    """Spec, *Ловушки, которые установщик обязан объяснить или обойти* -- all four of them.
 
     `drive.file` scopes a token to the OAuth client that issued it, so a deployer who later adds
-    their own client_id stops seeing every backup already uploaded -- not deleted, invisible. And a
+    their own client_id stops seeing every backup already uploaded -- not deleted, invisible. A
     WebDAV or SFTP `pass` is the output of `rclone obscure`, not the password: pasted as-is it
-    simply never connects.
+    simply never connects. Losing the encryption passphrase is IRREVERSIBLE -- no copy of it exists
+    anywhere else. And turning encryption on for a remote that already holds unencrypted dumps is a
+    new folder: those dumps are not deleted, but the encrypted remote cannot see them.
     """
 
     assert trap in INSTALLER.read_text(), (

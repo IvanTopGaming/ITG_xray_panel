@@ -29,7 +29,7 @@ def _stub_pg_dump(directory):
     return directory
 
 
-def _run(backup_dir, bin_dir, keep):
+def _run(backup_dir, bin_dir, keep, expect=0):
     env = dict(os.environ)
     env.update(
         {
@@ -43,7 +43,9 @@ def _run(backup_dir, bin_dir, keep):
         }
     )
     result = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env)
-    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert result.returncode == expect, (
+        f"expected exit {expect}, got {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     return result
 
 
@@ -81,11 +83,44 @@ def test_the_newest_dumps_are_the_ones_that_survive(tmp_path):
     oldest, *_ = _aged_dumps(backups, 5)
     _run(backups, bin_dir, keep=2)
 
-    assert not oldest.exists(), "rotation deleted by name rather than by age"
+    assert not oldest.exists(), "rotation dropped the newest dump instead of the oldest"
     fresh = [p for p in backups.glob("panel-*.sql.gz") if p.stat().st_mtime > time.time() - 60]
     assert fresh, (
         "the run wrote no new dump at all, so 'the old one is gone' proves nothing -- the stub "
         "pg_dump never ran and this guard is vacuous."
+    )
+
+
+def test_a_backup_keep_of_zero_refuses_instead_of_emptying_the_directory(tmp_path):
+    """`BACKUP_KEEP=0` must never reach `tail -n +$((BACKUP_KEEP + 1))`.
+
+    `+$((0 + 1))` is `+1`, which keeps nothing at all -- including the dump this very pass just
+    wrote. `0` is not "unlimited" here even though that is this project's own convention
+    elsewhere (CLAUDE.md: `expiry_time == 0` means never); on a knob named "keep days" it is the
+    one value that empties the archive it was meant to protect, and before this fix it did so
+    while the container still logged `backup written: ...` and exited 0.
+    """
+
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    bin_dir = _stub_pg_dump(tmp_path / "bin")
+
+    survivors = _aged_dumps(backups, 3)
+    result = _run(backups, bin_dir, keep=0, expect=1)
+
+    assert "BACKUP_KEEP" in (result.stdout + result.stderr), (
+        "the refusal does not name the variable a deployer needs to change"
+    )
+    assert survivors, "the fixture wrote no pre-existing dumps, so 'they survived' proves nothing"
+    assert all(dump.exists() for dump in survivors), (
+        "BACKUP_KEEP=0 deleted dumps that existed before this pass ran. The guard must refuse "
+        "before pg_dump or the rotation ever runs, not empty the directory and then report success."
+    )
+    fresh = [p for p in backups.glob("panel-*.sql.gz") if p.stat().st_mtime > time.time() - 60]
+    assert not fresh, (
+        "a new dump was written even though the pass refused -- the guard runs after pg_dump "
+        "instead of before it, so a live run would still create the file that BACKUP_KEEP=0 "
+        "would then be free to delete on the very next pass"
     )
 
 

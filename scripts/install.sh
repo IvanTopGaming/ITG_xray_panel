@@ -411,7 +411,9 @@ offsite_paste_block() {
 }
 
 offsite_write_target() {
-    local kind="$1"
+    local kind="$1" old_umask
+    old_umask="$(umask)"
+    umask 077
     mkdir -p "$DIR/rclone"
     case "$kind" in
         drive)
@@ -426,7 +428,7 @@ offsite_write_target() {
             OFFSITE_PATH="offsite-target:${OFFSITE_S3_BUCKET}"
             ;;
         sftp)
-            [ -r "$OFFSITE_SFTP_KEY" ] || die "cannot read the private key at '$OFFSITE_SFTP_KEY'" \
+            [ -f "$OFFSITE_SFTP_KEY" ] && [ -r "$OFFSITE_SFTP_KEY" ] || die "cannot read the private key at '$OFFSITE_SFTP_KEY'" \
                 "Check the path and that this installer can read it."
             cp "$OFFSITE_SFTP_KEY" "$DIR/rclone/sftp_key"
             chmod 600 "$DIR/rclone/sftp_key"
@@ -442,16 +444,20 @@ offsite_write_target() {
             ;;
     esac
     chmod 600 "$DIR/rclone/rclone.conf"
+    umask "$old_umask"
 }
 
 offsite_wrap_in_crypt() {
-    local obscured
+    local obscured old_umask
+    old_umask="$(umask)"
+    umask 077
     obscured="$(offsite_rclone obscure "$OFFSITE_PASSPHRASE" 2>/dev/null | tr -d '\r\n' || true)"
     [ -n "$obscured" ] || die "rclone could not obscure the passphrase" \
         "The ${VALUES[OFFSITE_IMAGE]} image did not answer. Check that docker can pull it."
     printf '[offsite]\ntype = crypt\nremote = %s\npassword = %s\n' "$OFFSITE_PATH" "$obscured" \
         >> "$DIR/rclone/rclone.conf"
     chmod 600 "$DIR/rclone/rclone.conf"
+    umask "$old_umask"
     OFFSITE_PATH="offsite:"
 }
 
@@ -550,6 +556,11 @@ offsite_setup() {
     note "Encrypting it here means the storage provider never sees any of that. It also"
     note "means losing the passphrase is IRREVERSIBLE: no copy exists anywhere else and"
     note "every uploaded dump becomes permanently unreadable."
+    note ""
+    note "One more trap, if this is not a first install: turning encryption on for a remote"
+    note "that already holds unencrypted dumps is effectively a new folder. Nothing already"
+    note "uploaded is deleted, but the encrypted remote cannot see it -- from here on those"
+    note "dumps are invisible to this deployment."
     printf '\n'
     ask OFFSITE_ENCRYPT "encrypt the dumps before upload? (Y/n)" "Y"
     case "$OFFSITE_ENCRYPT" in
