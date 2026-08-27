@@ -1,10 +1,10 @@
 {
-  "master": "3.1.1",
+  "master": "3.1.0",
   "worker": "3.1.0",
   "sub": "3.1.0",
   "bot_api": "3.1.0",
   "cron": "3.1.0",
-  "frontend_admin": "3.1.2",
+  "frontend_admin": "3.1.1",
   "frontend_node": "3.1.0",
   "caddy": "3.0.1",
   "bot": "3.1.0",

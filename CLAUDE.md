@@ -842,8 +842,8 @@ where a `panel-core` change is actually observable: `services/offsite.py` and it
 `services/health.py` are reached only through `/system/health`, which `panel-adminapi` — and only
 `panel-adminapi` — registers, so `sub`, `bot-api` and `cron` never execute either module at all; and
 on `worker` the read short-circuits on `is_postgres()` before doing anything a SQLite-backed role
-could observe. Nothing changes for four of the five images, which is why the 3.1.1 release bumped
-`master` alone.
+could observe. Nothing changes for four of the five images, so `master` is the only one whose
+bump this work requires.
 
 A change confined to `frontend/packages/sub-page/**` is a **backend** release
 (bump `sub`). A change to `ui-core/fonts.css` or the `.woff2` files is a **three-image** release
