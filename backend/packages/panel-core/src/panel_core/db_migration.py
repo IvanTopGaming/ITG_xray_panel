@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 27
+CURRENT_DB_VERSION = 28
 CURRENT_BOT_TEXTS_VERSION = 20
 
 
@@ -294,6 +294,34 @@ def _ensure_linked_panel_table(cursor: sqlite3.Cursor) -> int:
             created_at       BIGINT  NOT NULL
         )
     """)
+    return 1
+
+
+def _ensure_panel_state_mirror_table(cursor: sqlite3.Cursor) -> int:
+    if _table_exists(cursor, "panel_state_mirror"):
+        return 0
+    cursor.execute(
+        """
+        CREATE TABLE panel_state_mirror (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            panel_id          INTEGER NOT NULL,
+            kind              VARCHAR(10) NOT NULL DEFAULT 'current',
+            taken_at          BIGINT  NOT NULL DEFAULT 0,
+            hot_state         TEXT    NOT NULL DEFAULT '',
+            hot_updated_at    BIGINT,
+            cold_state        TEXT    NOT NULL DEFAULT '',
+            cold_fingerprint  VARCHAR(64),
+            cold_updated_at   BIGINT,
+            node_app_version  VARCHAR(20),
+            node_instance_id  VARCHAR(64),
+            shrink_flagged    BOOLEAN NOT NULL DEFAULT 0
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS ix_psm_panel_kind ON panel_state_mirror (panel_id, kind, taken_at)")
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_psm_panel_current ON panel_state_mirror (panel_id) WHERE kind = 'current'"
+    )
     return 1
 
 
@@ -678,6 +706,16 @@ def _ensure_schema_columns(cursor: sqlite3.Cursor) -> int:
         ("tariff_item", "panel_id", "INTEGER REFERENCES linked_panel(id)"),
         ("telegram_user", "sub_token", "VARCHAR(36)"),
         ("user_tariff_access", "access_until", "TIMESTAMP"),
+        ("linked_panel", "current_instance_id", "VARCHAR(64)"),
+        ("linked_panel", "superseded_instance_id", "VARCHAR(64)"),
+        ("linked_panel", "superseded_token", "VARCHAR(255)"),
+        ("linked_panel", "superseded_at", "BIGINT"),
+        ("linked_panel", "transfer_token", "VARCHAR(255)"),
+        ("linked_panel", "transfer_token_expires_at", "BIGINT"),
+        ("linked_panel", "transfer_token_used", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("linked_panel", "transfer_claimed_instance_id", "VARCHAR(64)"),
+        ("linked_panel", "transfer_state", "VARCHAR(20) NOT NULL DEFAULT ''"),
+        ("linked_panel", "transfer_carry_admin", "BOOLEAN NOT NULL DEFAULT 1"),
     ]
 
     for table_name, column_name, spec in schema_patches:
@@ -843,6 +881,7 @@ def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True)
         stats_indexes = _ensure_stats_indexes(cursor)
         stats_cover_indexes = _ensure_stats_cover_indexes(cursor)
         linked_panel_table = _ensure_linked_panel_table(cursor)
+        panel_state_mirror_table = _ensure_panel_state_mirror_table(cursor)
         federation_config_table = _ensure_federation_config_table(cursor)
         user_device_table = _ensure_user_device_table(cursor)
         billing_tables = _ensure_billing_tables(cursor)
@@ -870,6 +909,7 @@ def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True)
             "stats_indexes_created": stats_indexes,
             "stats_cover_indexes_created": stats_cover_indexes,
             "linked_panel_table_created": linked_panel_table,
+            "panel_state_mirror_table_created": panel_state_mirror_table,
             "federation_config_table_created": federation_config_table,
             "user_device_table_created": user_device_table,
             "billing_tables_created": billing_tables,
@@ -891,6 +931,7 @@ def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True)
             or stats_indexes > 0
             or stats_cover_indexes > 0
             or linked_panel_table > 0
+            or panel_state_mirror_table > 0
             or federation_config_table > 0
             or user_device_table > 0
             or billing_tables > 0
