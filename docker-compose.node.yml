@@ -87,6 +87,7 @@ services:
       - DOCKER_HOST=tcp://socket-proxy:2375
       - BACKEND_LOG_LEVEL=${BACKEND_LOG_LEVEL:-INFO}
       - EGRESS_INTERNAL_TOKEN=${EGRESS_INTERNAL_TOKEN:-}
+      - NODE_TRANSFER_TOKEN=${NODE_TRANSFER_TOKEN:-}
       - PANEL_ROLE=worker
     env_file:
       - .env

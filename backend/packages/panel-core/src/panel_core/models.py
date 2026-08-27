@@ -142,6 +142,16 @@ class LinkedPanel(db.Model):
     last_error = db.Column(db.Text, nullable=True)
     enable = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.BigInteger, nullable=False)
+    current_instance_id = db.Column(db.String(64), nullable=True)
+    superseded_instance_id = db.Column(db.String(64), nullable=True)
+    superseded_token = db.Column(db.String(255), nullable=True)
+    superseded_at = db.Column(db.BigInteger, nullable=True)
+    transfer_token = db.Column(db.String(255), nullable=True)
+    transfer_token_expires_at = db.Column(db.BigInteger, nullable=True)
+    transfer_token_used = db.Column(db.Boolean, nullable=False, default=False, server_default=db.text("false"))
+    transfer_claimed_instance_id = db.Column(db.String(64), nullable=True)
+    transfer_state = db.Column(db.String(20), nullable=False, default="", server_default=db.text("''"))
+    transfer_carry_admin = db.Column(db.Boolean, nullable=False, default=True, server_default=db.text("true"))
 
     def to_dict(self, mask_token=True):
         return {
@@ -154,7 +164,37 @@ class LinkedPanel(db.Model):
             "last_error": self.last_error,
             "enable": bool(self.enable),
             "created_at": self.created_at,
+            "transfer_state": self.transfer_state or "",
+            "current_instance_id": self.current_instance_id,
+            "superseded_at": self.superseded_at,
         }
+
+
+class PanelStateMirror(db.Model):
+    __tablename__ = "panel_state_mirror"
+    id = db.Column(db.Integer, primary_key=True)
+    panel_id = db.Column(db.Integer, nullable=False, index=True)
+    kind = db.Column(db.String(10), nullable=False, server_default=db.text("'current'"))
+    taken_at = db.Column(db.BigInteger, nullable=False, server_default="0")
+    hot_state = db.Column(db.Text, nullable=False, server_default=db.text("''"))
+    hot_updated_at = db.Column(db.BigInteger, nullable=True)
+    cold_state = db.Column(db.Text, nullable=False, server_default=db.text("''"))
+    cold_fingerprint = db.Column(db.String(64), nullable=True)
+    cold_updated_at = db.Column(db.BigInteger, nullable=True)
+    node_app_version = db.Column(db.String(20), nullable=True)
+    node_instance_id = db.Column(db.String(64), nullable=True)
+    shrink_flagged = db.Column(db.Boolean, nullable=False, server_default=db.text("false"))
+
+    __table_args__ = (
+        db.Index("ix_psm_panel_kind", "panel_id", "kind", "taken_at"),
+        db.Index(
+            "uq_psm_panel_current",
+            "panel_id",
+            unique=True,
+            postgresql_where=db.text("kind = 'current'"),
+            sqlite_where=db.text("kind = 'current'"),
+        ),
+    )
 
 
 class FederationConfig(db.Model):

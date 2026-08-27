@@ -15,11 +15,14 @@ you install from a clone.
 from __future__ import annotations
 
 import base64
+import http.server
 import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
+import threading
 
 import pytest
 
@@ -360,6 +363,188 @@ def test_reconfigure_keeps_the_secrets_and_takes_new_domains(tmp_path):
     assert after["SUB_DOMAIN"] == "moved.example.com", "reconfigure did not take the new domain"
     assert after["SECRET_KEY"] == before["SECRET_KEY"], "reconfigure rotated SECRET_KEY"
     assert after["DATABASE_URL"] == before["DATABASE_URL"], "reconfigure rewrote the data-tier URI"
+
+
+class _TransferIdentityStub(http.server.BaseHTTPRequestHandler):
+    identity = b""
+    status = 200
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        if self.path != "/api/panels/transfer/identity":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(self.status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(self.identity)
+
+    def log_message(self, *args):
+        pass
+
+
+def _run_stubbed_transfer(tmp_path, tag, status, identity, *, extra_len=0):
+    handler = type("_Handler", (_TransferIdentityStub,), {"identity": json.dumps(identity).encode(), "status": status})
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        master_url = f"http://127.0.0.1:{server.server_address[1]}"
+        raw_token = "raw-token-for-installer-test" + "x" * extra_len
+        composite = base64.urlsafe_b64encode(f"{master_url}|{raw_token}".encode()).decode().rstrip("=")
+
+        target = tmp_path / "node"
+        target.mkdir()
+        bundle = _fresh_bundle(tmp_path, tag)
+        result = subprocess.run(
+            [
+                "bash",
+                str(INSTALLER),
+                "--role",
+                "node",
+                "--dir",
+                str(target),
+                "--source",
+                str(REPO),
+                "--non-interactive",
+                "--no-start",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(target),
+            env={
+                **os.environ,
+                "NO_COLOR": "1",
+                "BUNDLE": bundle,
+                "NODE_KIND": "replace",
+                "NODE_TRANSFER_TOKEN_IN": composite,
+                "SUB_DOMAIN": "sub.example.com",
+                "PATH": _strict_base64_path(tmp_path),
+            },
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+    return target, composite, result
+
+
+_STRICT_BASE64_SHIM = """#!/bin/sh
+if [ "$1" = "-d" ]; then
+    data="$(cat)"
+    len=${{#data}}
+    if [ $((len % 4)) -ne 0 ]; then
+        echo "base64: invalid input" >&2
+        exit 1
+    fi
+    printf '%s' "$data" | "{real_base64}" -d
+else
+    exec "{real_base64}" "$@"
+fi
+"""
+
+
+def _strict_base64_path(tmp_path):
+    """A `base64 -d` that rejects unpadded input, the way GNU coreutils behaved before 9.5
+
+    (March 2024) -- Ubuntu 22.04 ships 8.32, Ubuntu 24.04 ships 9.4, Debian 12 ships 9.1, all of
+    them older. The installer's own base64 is always this lenient one, so a padding bug there is
+    invisible on the machine running the suite and only shows up on a real target. Prepending this
+    shim to PATH makes the padding requirement real for whatever runs the installer next.
+    """
+
+    real_base64 = shutil.which("base64")
+    assert real_base64, "base64 is not on PATH -- cannot build the strict-decode shim this test needs"
+    shim_dir = tmp_path / "strict-base64"
+    shim_dir.mkdir()
+    shim = shim_dir / "base64"
+    shim.write_text(_STRICT_BASE64_SHIM.format(real_base64=real_base64))
+    shim.chmod(0o755)
+    return f"{shim_dir}{os.pathsep}{os.environ['PATH']}"
+
+
+@pytest.mark.parametrize("extra_len", [0, 1, 2])
+def test_replace_takes_domain_decoy_and_secret_path_from_the_master_not_freshly_generated(extra_len, tmp_path):
+    """The grabля the owner hit restoring on 2026-08-23: a REPLACEMENT node must reuse the dead
+
+    node's secret path, not mint its own. The master's `LinkedPanel.url` still carries the old path,
+    so a freshly generated one leaves the master polling a path that now 404s. A stub stands in for
+    the master's `/api/panels/transfer/identity` -- no Postgres, no Flask app, just the one route the
+    installer calls -- and the property under test is what lands in `.env`, not what the installer
+    printed.
+
+    `extra_len` shifts the byte length of `master_url|raw_token` by one across the three parametrized
+    cases, which cycles the base64 remainder through all three padding classes (0, 2 and 3 -- 1 is
+    not a valid base64 length) regardless of which class the unparametrized length happens to land
+    on. Combined with the strict-decode shim on PATH, every case must survive a `base64 -d` that
+    demands exactly the padding it is due.
+    """
+
+    identity = {
+        "panel_name": "alpha",
+        "panel_domain": "alpha.example.com",
+        "proxy_domain": "www.google.com",
+        "secret_path": "oldsecretpath123",
+    }
+    target, composite, result = _run_stubbed_transfer(
+        tmp_path, f"replace{extra_len}", 200, identity, extra_len=extra_len
+    )
+    assert result.returncode == 0, (
+        f"installer failed for role node:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+    values = _env_values(target / ".env")
+    assert values["PANEL_DOMAIN"] == identity["panel_domain"]
+    assert values["PROXY_DOMAIN"] == identity["proxy_domain"]
+    assert values["PANEL_SECRET_PATH"] == identity["secret_path"], (
+        "the installer wrote a PANEL_SECRET_PATH other than the one the master answered with -- if "
+        "this generates its own instead of reusing the dead node's, the master keeps polling the old "
+        "path and gets 404, exactly what happened restoring on 2026-08-23"
+    )
+    assert values["NODE_TRANSFER_TOKEN"] == composite, (
+        "the transfer string the operator pasted must reach .env byte-for-byte -- the node claims "
+        "its state with it on first boot"
+    )
+
+
+def test_replace_refuses_and_shows_the_masters_own_reason_when_the_transfer_string_is_rejected(tmp_path):
+    """A transfer token lives an hour and is burned by the first `/claim` -- an operator retrying an
+
+    already-used or expired one is routine, not exotic. The master answers 401 with its own reason;
+    the installer must surface that reason, exit non-zero and leave no `.env` behind, so a retry in
+    the same directory is not blocked by "a deployment already lives here".
+    """
+
+    identity = {"error": "unknown transfer token"}
+    target, _composite, result = _run_stubbed_transfer(tmp_path, "rejected", 401, identity)
+
+    assert result.returncode != 0, "the installer must not exit 0 when the master rejects the transfer string"
+    assert "unknown transfer token" in result.stderr, (
+        f"the master's own reason did not reach the operator:\n{result.stderr}"
+    )
+    assert not (target / ".env").exists(), (
+        "a rejected transfer string must not leave a half-written .env behind -- that would block a "
+        "retry in the same directory with 'a deployment already lives here'"
+    )
+
+
+def test_new_node_still_generates_its_own_secret_path_and_carries_no_transfer_token(tmp_path):
+    """`NODE_KIND` defaults to `new`, and that path must keep behaving exactly as it did before
+
+    replace mode existed: a freshly generated `PANEL_SECRET_PATH` and an empty `NODE_TRANSFER_TOKEN`.
+    Nothing else in the suite pins this down -- the role-parametrized tests only check that every
+    required variable is non-empty, not that a fresh install never reuses a stale-looking value.
+    """
+
+    target = tmp_path / "node"
+    target.mkdir()
+    bundle = _fresh_bundle(tmp_path, "newkind")
+    _run("node", target, bundle=bundle)
+
+    values = _env_values(target / ".env")
+    assert values["NODE_TRANSFER_TOKEN"] == "", "a brand-new node install must not carry a transfer token"
+    assert values["PANEL_SECRET_PATH"], "a brand-new node needs a secret path of its own"
 
 
 def _file_shaped_bind_mounts(compose):

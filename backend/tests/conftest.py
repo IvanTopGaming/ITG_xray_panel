@@ -151,3 +151,104 @@ def app():
 def db(app):
 
     return _db
+
+
+def _seed_everything(db):
+    import json
+
+    from panel_core.models import (
+        Balancer,
+        Client,
+        Inbound,
+        NotificationLog,
+        Outbound,
+        ProvisionReceipt,
+        RoutingProfile,
+        SystemSetting,
+    )
+
+    profile = RoutingProfile(name="ru", rules='[{"type":"field","outboundTag":"egress-1"}]', enable=True)
+    db.session.add(profile)
+    db.session.flush()
+
+    db.session.add_all(
+        [
+            Outbound(tag="direct", protocol="freedom", settings="{}", enable=True),
+            Outbound(tag="block", protocol="blackhole", settings="{}", enable=True),
+            Outbound(
+                tag="egress-1",
+                protocol="freedom",
+                settings="{}",
+                enable=True,
+                send_through="172.28.0.130",
+                public_ip="203.0.113.7",
+                gateway="203.0.113.1",
+            ),
+            Balancer(tag="bal", enable=True, selector='["direct"]', strategy="random", fallback_tag="direct"),
+            Inbound(
+                tag="in-reality",
+                port=443,
+                protocol="vless",
+                stream_settings=json.dumps({"security": "reality", "realitySettings": {"privateKey": "SECRET-KEY"}}),
+                routing_profile_id=profile.id,
+                label="основной",
+                up=111,
+                down=222,
+            ),
+            Inbound(tag="in-ws", port=8443, protocol="vmess", stream_settings=json.dumps({"network": "ws"})),
+            SystemSetting(key="xray_log_level", value="warning"),
+        ]
+    )
+    db.session.flush()
+
+    db.session.add_all(
+        [
+            Client(
+                id="uuid-1",
+                email="a@b",
+                inbound_tag="in-reality",
+                up=10,
+                down=20,
+                limit_bytes=1024,
+                expiry_time=0,
+                last_reset_time=1750000000000,
+                source_ips='["1.2.3.4"]',
+                telegram_id=777,
+                tariff_id=3,
+                preferred_outbound="egress-1",
+                flow="xtls-rprx-vision",
+                enable=True,
+            ),
+            Client(
+                id="uuid-2",
+                email="c@d",
+                inbound_tag="in-ws",
+                up=0,
+                down=0,
+                expiry_time=1790000000000,
+                telegram_id=888,
+                enable=False,
+            ),
+        ]
+    )
+    db.session.flush()
+
+    db.session.add_all(
+        [
+            ProvisionReceipt(
+                idempotency_key="pay:1",
+                inbound_tag="in-reality",
+                telegram_id=777,
+                response_json='{"expires_at_ms":0}',
+                materialized=True,
+            ),
+            NotificationLog(telegram_id=777, client_id="uuid-1", kind="traffic_80"),
+        ]
+    )
+    db.session.commit()
+
+
+@pytest.fixture
+def rich_node(app, db):
+    _seed_everything(db)
+    return db

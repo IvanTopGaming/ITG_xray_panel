@@ -5,6 +5,7 @@ from typing import Optional
 
 from panel_core.extensions import db, get_shared_redis
 from panel_core.models import BotEvent
+from panel_core.services.supersede import is_superseded
 
 logger = logging.getLogger(__name__)
 _REDIS_CHANNEL = "bot:events"
@@ -20,6 +21,10 @@ def publish(event_type: str, telegram_id: Optional[int], payload: dict) -> None:
     event = BotEvent(type=event_type, telegram_id=telegram_id, payload=payload)
     db.session.add(event)
     db.session.commit()
+
+    if is_superseded():
+        logger.info("event %s stored but not published: this installation has been superseded", event_type)
+        return
 
     redis_client = _get_redis()
     if redis_client is None:

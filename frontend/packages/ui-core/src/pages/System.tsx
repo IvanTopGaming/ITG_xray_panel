@@ -23,6 +23,8 @@ import {
   Radar,
   Link2,
   RefreshCw,
+  AlertTriangle,
+  Globe,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -35,7 +37,7 @@ import { useVersionStatus } from '@ui/hooks/useVersionStatus';
 import { getSystemHealth, type SystemHealth } from '@ui/lib/version';
 import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
 import { hasLocalXray, isWorker } from '@ui/lib/panelRole';
-import { FederationConfig } from '@ui/lib/types';
+import { FederationConfig, Outbound } from '@ui/lib/types';
 
 const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_RESTORE_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
@@ -57,7 +59,8 @@ export default function System() {
   const { logs, isStreaming, toggleStream } = useLogStore();
   const { logout } = useAuthStore();
   const queryClient = useQueryClient();
-  const { services, hasUpdates } = useVersionStatus();
+  const { services, hasUpdates, query: versionQuery } = useVersionStatus();
+  const supersededAt = hasLocalXray ? (versionQuery.data?.running.superseded_at ?? null) : null;
 
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState(false);
@@ -103,6 +106,16 @@ export default function System() {
   const xrayTargetName = hasLocalXray
     ? 'this panel'
     : selectablePanels.find((p) => p.id === panelId)?.name || 'the selected node';
+
+  const { data: egressOutbounds = [] } = useQuery<Outbound[]>({
+    queryKey: ['outbounds', 'egress-check', panelId],
+    queryFn: async () => (await api.get<Outbound[]>(`/outbounds${xrayScope}`)).data,
+    enabled: xrayScopeResolved,
+  });
+  const strandedEgress = egressOutbounds.filter(
+    (o) => !!o.send_through && !o.public_ip && o.enable === false
+  );
+  const showTransferBanners = supersededAt != null || strandedEgress.length > 0;
 
   const { data: federation } = useQuery<FederationConfig>({
     queryKey: ['federation-config'],
@@ -331,6 +344,43 @@ export default function System() {
         hasLocalXray ? 'lg:grid-cols-3' : 'max-w-xl mx-auto w-full'
       }`}
     >
+      {showTransferBanners && (
+        <div className="col-span-full space-y-3">
+          {supersededAt != null && (
+            <div className="flex items-start gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300/90">
+              <AlertTriangle size={18} className="mt-0.5 shrink-0 text-red-400" />
+              <div>
+                <p className="font-semibold text-red-200">This installation has been replaced</p>
+                <p className="mt-0.5 text-red-300/80">
+                  A transfer moved this node&apos;s identity to a new machine on{' '}
+                  {formatDateTime(supersededAt)}. This is expected, not a fault — traffic still
+                  flows and limits still apply, but user notifications now come from the new machine
+                  instead of this one.
+                </p>
+              </div>
+            </div>
+          )}
+          {strandedEgress.length > 0 && (
+            <div className="flex items-start gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300/90">
+              <Globe size={18} className="mt-0.5 shrink-0 text-amber-400" />
+              <div>
+                <p className="font-semibold text-amber-200">
+                  Dedicated outgoing IPs are waiting for new addresses
+                  {hasLocalXray ? '' : ` on ${xrayTargetName}`}
+                </p>
+                <p className="mt-0.5 text-amber-300/80">
+                  {strandedEgress.length} outbound{strandedEgress.length === 1 ? '' : 's'} (
+                  {strandedEgress.map((o) => o.tag).join(', ')}){' '}
+                  {strandedEgress.length === 1 ? 'is' : 'are'} disabled with no public IP assigned —
+                  this is what a fresh install leaves behind after a transfer. Assign a dedicated
+                  address on the Routing page or the people who had one stay without it.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {hasLocalXray && (
         <div className="lg:col-span-2 relative group self-start order-2 lg:order-1">
           <div className="absolute -inset-0.5 bg-gradient-to-r from-green-500/20 to-emerald-500/20 rounded-2xl blur opacity-75 group-hover:opacity-100 transition duration-1000"></div>

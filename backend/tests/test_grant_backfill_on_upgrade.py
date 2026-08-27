@@ -25,7 +25,7 @@ def tariffs(app, db):
         tariff = Tariff(name=name, price_rub=0, period_days=30, visibility=visibility, enabled=True)
         db.session.add(tariff)
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="hiks", traffic_gb=traffic_gb, panel_id=2))
+        db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="alpha", traffic_gb=traffic_gb, panel_id=2))
         db.session.commit()
         return tariff
 

@@ -25,7 +25,7 @@ def tariffs(app, db):
         tariff = Tariff(name=name, price_rub=0, period_days=30, visibility=visibility, enabled=enabled)
         db.session.add(tariff)
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="hiks", traffic_gb=traffic_gb, panel_id=2))
+        db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="alpha", traffic_gb=traffic_gb, panel_id=2))
         db.session.commit()
         return tariff
 
@@ -47,7 +47,7 @@ def _grant(db, tariff, *, due_minutes_ago: int | None):
     return grant
 
 
-_ONE_REMOTE_CLIENT = {42: [{"panel_id": 2, "inbound_tag": "hiks", "email": "tg42_hiks", "tariff_id": 1}]}
+_ONE_REMOTE_CLIENT = {42: [{"panel_id": 2, "inbound_tag": "alpha", "email": "tg42_alpha", "tariff_id": 1}]}
 
 
 def test_a_due_grant_has_its_counters_zeroed_and_the_date_moved(app, db, tariffs):
@@ -65,7 +65,7 @@ def test_a_due_grant_has_its_counters_zeroed_and_the_date_moved(app, db, tariffs
 
     assert reset.called, "a due grant on a limited tariff must have its counters zeroed"
     panel_id, users = reset.call_args.args
-    assert panel_id == 2 and users == [{"tag": "hiks", "email": "tg42_hiks", "reenable": True}], (
+    assert panel_id == 2 and users == [{"tag": "alpha", "email": "tg42_alpha", "reenable": True}], (
         f"the reset must name the holder's own key on the tariff's own node; got {reset.call_args!r}"
     )
     assert not applied.called, (

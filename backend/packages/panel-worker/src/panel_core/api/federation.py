@@ -1,5 +1,4 @@
 import hmac
-import json
 import logging
 import secrets
 import time
@@ -117,54 +116,11 @@ def handshake():
 @limiter.exempt
 @federation_token_required
 def snapshot():
+    from panel_core.services.node_identity import get_or_create_instance_id
+    from panel_core.services.state_export import export_hot_state
+    from panel_core.services.state_fingerprint import compute_fingerprint
 
-    inbounds = Inbound.query.all()
-    result_inbounds = []
-
-    for ib in inbounds:
-        ss = ib.stream_settings
-        if isinstance(ss, str):
-            try:
-                ss = json.loads(ss)
-            except (json.JSONDecodeError, TypeError):
-                ss = {}
-        if ss is None:
-            ss = {}
-
-        clients_data = []
-        for c in ib.clients:
-            clients_data.append(
-                {
-                    "id": c.id,
-                    "email": c.email,
-                    "enable": bool(c.enable),
-                    "up": c.up or 0,
-                    "down": c.down or 0,
-                    "limit_bytes": c.limit_bytes or 0,
-                    "expiry_time": c.expiry_time or 0,
-                    "reset_day": c.reset_day or 0,
-                    "flow": c.flow or "",
-                    "preferred_outbound": c.preferred_outbound or "",
-                    "last_seen": c.last_seen if c.last_seen else None,
-                    "tariff_id": c.tariff_id,
-                    "telegram_id": c.telegram_id,
-                }
-            )
-
-        result_inbounds.append(
-            {
-                "tag": ib.tag,
-                "port": ib.port,
-                "protocol": ib.protocol,
-                "label": ib.label or "",
-                "stream_settings": ss,
-                "up": ib.up or 0,
-                "down": ib.down or 0,
-                "fallback_address": ib.fallback_address or "",
-                "routing_profile_id": ib.routing_profile_id,
-                "clients": clients_data,
-            }
-        )
+    hot = export_hot_state()
 
     return jsonify(
         {
@@ -172,7 +128,28 @@ def snapshot():
             "status": "ok",
             "timestamp": int(time.time() * 1000),
             "reality_failures": read_failures(),
-            "inbounds": result_inbounds,
+            "inbounds": hot["inbounds"],
+            "cold_fingerprint": compute_fingerprint(),
+            "instance_id": get_or_create_instance_id(),
+        }
+    ), 200
+
+
+@bp.route("/federation/state", methods=["GET"])
+@limiter.exempt
+@federation_token_required
+def full_state():
+    from panel_core.services.node_identity import get_or_create_instance_id
+    from panel_core.services.state_export import export_cold_state, export_hot_state
+    from panel_core.services.state_fingerprint import compute_fingerprint
+
+    return jsonify(
+        {
+            "app_version": get_app_version(),
+            "hot": export_hot_state(),
+            "cold": export_cold_state(),
+            "fingerprint": compute_fingerprint(),
+            "instance_id": get_or_create_instance_id(),
         }
     ), 200
 

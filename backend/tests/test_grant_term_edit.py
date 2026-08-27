@@ -51,8 +51,8 @@ def master_app(monkeypatch, tmp_path):
         private = Tariff(name="Private", price_rub=300, period_days=30, enabled=True, visibility="private")
         db.session.add_all([granted, private])
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=granted.id, inbound_tag="hiks", traffic_gb=0, panel_id=2))
-        db.session.add(TariffItem(tariff_id=private.id, inbound_tag="hiks", traffic_gb=0, panel_id=2))
+        db.session.add(TariffItem(tariff_id=granted.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
+        db.session.add(TariffItem(tariff_id=private.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
         db.session.add_all([TelegramUser(telegram_id=7, language="ru"), TelegramUser(telegram_id=8, language="ru")])
         db.session.add(UserTariffAccess(telegram_id=7, tariff_id=granted.id, billing="free", access_until=None))
         db.session.add(UserTariffAccess(telegram_id=8, tariff_id=private.id, billing="paid"))
@@ -149,7 +149,7 @@ def test_a_node_that_refuses_leaves_the_stored_term_untouched(master, master_hea
     from panel_core.services.panel_proxy import RemotePanelError
 
     def refuse(*_args, **_kwargs):
-        raise RemotePanelError(502, "Panel 'Hiks': Panel answered HTTP 502")
+        raise RemotePanelError(502, "Panel 'Alpha': Panel answered HTTP 502")
 
     with patch("panel_core.api.bot_admin.apply_tariff_for_user", side_effect=refuse):
         resp = _patch_term(

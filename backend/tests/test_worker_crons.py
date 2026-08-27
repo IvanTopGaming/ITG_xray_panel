@@ -5,6 +5,7 @@ CRON_ONLY = {
     "reset_grant_traffic_cycles",
     "poll_linked_panels",
     "check_latest_version",
+    "archive_panel_state",
 }
 BOT_API_ONLY = {
     "poll_pending_payments",

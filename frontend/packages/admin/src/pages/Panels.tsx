@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@ui/lib/api';
-import { LinkedPanel, Inbound } from '@ui/lib/types';
+import { LinkedPanel, Inbound, TransferTokenResult } from '@ui/lib/types';
 import { Button } from '@ui/components/ui/Button';
 import { Modal } from '@ui/components/ui/Modal';
 import { Input } from '@ui/components/ui/Input';
@@ -24,6 +24,9 @@ import {
   Link2,
   Download,
   Upload,
+  ArrowRightLeft,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -32,6 +35,7 @@ const STATUS_ICON: Record<string, { icon: typeof Wifi; color: string; label: str
   online: { icon: Wifi, color: 'text-emerald-400', label: 'Online' },
   offline: { icon: WifiOff, color: 'text-red-400', label: 'Offline' },
   stale: { icon: History, color: 'text-amber-400', label: 'Stale' },
+  transferring: { icon: ArrowRightLeft, color: 'text-amber-400', label: 'Transferring' },
   unknown: { icon: HelpCircle, color: 'text-gray-500', label: 'Unknown' },
 };
 
@@ -72,6 +76,10 @@ export default function Panels() {
   const [unlinkTarget, setUnlinkTarget] = useState<LinkedPanel | null>(null);
   const [relinkTarget, setRelinkTarget] = useState<LinkedPanel | null>(null);
   const [relinkToken, setRelinkToken] = useState('');
+  const [transferTarget, setTransferTarget] = useState<LinkedPanel | null>(null);
+  const [carryAdmin, setCarryAdmin] = useState(true);
+  const [transferResult, setTransferResult] = useState<TransferTokenResult | null>(null);
+  const [isTransferCopied, setIsTransferCopied] = useState(false);
   const [backupBusyId, setBackupBusyId] = useState<number | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<LinkedPanel | null>(null);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
@@ -136,6 +144,18 @@ export default function Panels() {
     },
   });
 
+  const transferMutation = useMutation({
+    mutationFn: (data: { id: number; carry_admin: boolean }) =>
+      api.post(`/panels/${data.id}/transfer-token`, { carry_admin: data.carry_admin }),
+    onSuccess: (res) => {
+      setTransferResult(res.data);
+      queryClient.invalidateQueries({ queryKey: ['panels'] });
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.data?.error || 'Could not issue a transfer key');
+    },
+  });
+
   const deletePanelMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/panels/${id}`),
     onSuccess: () => {
@@ -184,6 +204,26 @@ export default function Panels() {
     setRestoreTarget(null);
     setRestoreFile(null);
     setRestoreConfirmName('');
+  };
+
+  const closeTransfer = () => {
+    if (transferMutation.isPending) return;
+    setTransferTarget(null);
+    setTransferResult(null);
+    setCarryAdmin(true);
+    setIsTransferCopied(false);
+    transferMutation.reset();
+  };
+
+  const copyTransferString = async () => {
+    if (!transferResult?.token) return;
+    try {
+      await navigator.clipboard.writeText(transferResult.token);
+      setIsTransferCopied(true);
+      setTimeout(() => setIsTransferCopied(false), 2000);
+    } catch {
+      toast.error('Could not copy to clipboard');
+    }
   };
 
   const downloadBackup = async (panel: LinkedPanel) => {
@@ -289,7 +329,9 @@ export default function Panels() {
         <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
           <AnimatePresence mode="popLayout">
             {panels.map((panel, i) => {
-              const st = STATUS_ICON[panel.status] || STATUS_ICON.unknown;
+              const effectiveStatus =
+                panel.transfer_state === 'awaiting_dns' ? 'transferring' : panel.status;
+              const st = STATUS_ICON[effectiveStatus] || STATUS_ICON.unknown;
               const StatusIcon = st.icon;
               return (
                 <motion.div
@@ -348,10 +390,17 @@ export default function Panels() {
                     </div>
                   </div>
 
-                  {panel.status === 'stale' && (
+                  {effectiveStatus === 'stale' && (
                     <div className="text-xs text-amber-400/90 bg-amber-500/10 rounded-lg px-3 py-1.5">
                       Nothing is polling this panel. Subscriptions and the bot are being served from
                       the copy taken {formatLastPoll(panel.last_poll)} — check the cron host.
+                    </div>
+                  )}
+
+                  {effectiveStatus === 'transferring' && (
+                    <div className="text-xs text-amber-400/90 bg-amber-500/10 rounded-lg px-3 py-1.5">
+                      Transferring to a new machine — waiting for the domain&apos;s A record to
+                      move. The old address still answers here; that is expected, not an outage.
                     </div>
                   )}
 
@@ -371,7 +420,7 @@ export default function Panels() {
                     </div>
                   )}
 
-                  {panel.last_error && panel.status === 'offline' && (
+                  {panel.last_error && effectiveStatus === 'offline' && (
                     <div
                       className="text-xs text-red-400/80 bg-red-500/10 rounded-lg px-3 py-1.5 truncate"
                       title={panel.last_error}
@@ -425,6 +474,19 @@ export default function Panels() {
                     >
                       <Link2 size={14} />
                       <span className="ml-1">Relink</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setTransferResult(null);
+                        setCarryAdmin(true);
+                        setIsTransferCopied(false);
+                        setTransferTarget(panel);
+                      }}
+                    >
+                      <ArrowRightLeft size={14} />
+                      <span className="ml-1">Transfer</span>
                     </Button>
                     <Button variant="danger" size="sm" onClick={() => setUnlinkTarget(panel)}>
                       <Trash2 size={14} />
@@ -498,6 +560,121 @@ export default function Panels() {
               {relinkPanelMutation.isPending ? 'Relinking...' : 'Relink'}
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!transferTarget}
+        onClose={closeTransfer}
+        title={`Transfer ${transferTarget?.name || ''}`}
+      >
+        <div className="space-y-4">
+          {!transferResult ? (
+            <>
+              <div className="flex items-center justify-between rounded-xl border border-white/5 bg-black/20 px-4 py-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                  Node status right now
+                </span>
+                <span
+                  className={`text-sm font-semibold ${(STATUS_ICON[transferTarget?.status || 'unknown'] || STATUS_ICON.unknown).color}`}
+                >
+                  {(STATUS_ICON[transferTarget?.status || 'unknown'] || STATUS_ICON.unknown).label}
+                </span>
+              </div>
+              <p className="text-xs text-gray-500">
+                Last polled {formatLastPoll(transferTarget?.last_poll ?? null)}. Issuing the key
+                below tries a live check of its own; decide now whether that is fresh enough to act
+                on, since the result of that check arrives together with the key, not before it.
+              </p>
+              <p className="text-sm leading-relaxed text-gray-400">
+                Issues a one-time key for standing up a replacement machine. The new node uses it to
+                pull this node&apos;s inbounds, keys and clients and take over its identity; the old
+                machine keeps answering until the domain&apos;s A record moves to the new one. The
+                key carries the REALITY private key, every client UUID and the node admin&apos;s
+                password hash — it is shown once and expires in an hour.
+              </p>
+              <Switch
+                label="Carry over the node's admin account"
+                checked={carryAdmin}
+                onChange={(e) => setCarryAdmin(e.target.checked)}
+              />
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  variant="secondary"
+                  onClick={closeTransfer}
+                  disabled={transferMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() =>
+                    transferTarget &&
+                    transferMutation.mutate({ id: transferTarget.id, carry_admin: carryAdmin })
+                  }
+                  isLoading={transferMutation.isPending}
+                >
+                  Issue transfer key
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              {transferResult.state_freshness.ok ? (
+                <div className="text-sm text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3">
+                  The node answered just now — the new machine starts from a fresh copy of its
+                  state.
+                </div>
+              ) : transferResult.state_freshness.taken_at != null ? (
+                <div className="text-sm text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3">
+                  The node did not answer
+                  {transferResult.state_freshness.error
+                    ? ` (${transferResult.state_freshness.error})`
+                    : ''}
+                  . The transfer will use the last copy taken{' '}
+                  {formatDateTime(transferResult.state_freshness.taken_at)}.
+                </div>
+              ) : (
+                <div className="text-sm text-red-300/90 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+                  This node has never been mirrored — there is no state to transfer yet. Wait for
+                  the next poll (or run Test on its card), then issue a new key.
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                  Transfer string
+                </div>
+                <div className="max-h-28 overflow-y-auto break-all rounded-xl border border-white/5 bg-black/30 p-3 font-mono text-xs text-gray-300">
+                  {transferResult.token}
+                </div>
+                <Button
+                  variant="secondary"
+                  className={`w-full h-10 ${isTransferCopied ? 'text-green-400 border-green-400/30' : ''}`}
+                  onClick={copyTransferString}
+                >
+                  {isTransferCopied ? (
+                    <Check size={16} className="mr-2" />
+                  ) : (
+                    <Copy size={16} className="mr-2" />
+                  )}
+                  {isTransferCopied ? 'Copied' : 'Copy transfer string'}
+                </Button>
+                <p className="text-xs leading-relaxed text-gray-500">
+                  Paste it into <code className="text-gray-400">install.sh --role node</code> on the
+                  new machine, answering &quot;replace&quot;. It expires{' '}
+                  {formatDateTime(transferResult.expires_at)} and is shown only here — close this
+                  dialog without copying it and it is gone for good.
+                </p>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <Button variant="secondary" onClick={closeTransfer}>
+                  Done
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       </Modal>
 

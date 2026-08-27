@@ -11,13 +11,29 @@ maintenance buttons, the two confirmation modals and the config modal -- and `Da
 more, the Route button and its modal. Wave 4c-2 had three such places and every one had to be found
 separately; §78 is the case where the *missed* one would have turned the wave into a regression.
 
-Two of the nine deliberately stay:
+Three of the nine deliberately stay, in three different syntactic shapes:
 
-- **the log panel and the grid layout it lives in.** `GET /api/logs` is a stream, not a response,
-  and both `FederationClient` methods end in `.json()`; proxying it is a different piece of work
-  (customer decision, wave 5c scope). The panel stays node-only, and it stays honest.
-- **the Maintenance backup card.** That branch is wave 4c-1's: the master's own database is backed
-  up by `pg-backup`, and a node's from its card on the Panels page.
+- **the log panel and the grid layout it lives in** (`{hasLocalXray && (`). `GET /api/logs` is a
+  stream, not a response, and both `FederationClient` methods end in `.json()`; proxying it is a
+  different piece of work (customer decision, wave 5c scope). The panel stays node-only, and it
+  stays honest.
+- **the Maintenance backup card** (`{hasLocalXray ? ( ... ) : ( ... )}`). That branch is wave
+  4c-1's: the master's own database is backed up by `pg-backup`, and a node's from its card on the
+  Panels page.
+- **the node-transfer "superseded" banner** (`const supersededAt = hasLocalXray ? ... : null;`,
+  Task 15). `GET /system/version` never dispatches on `panel_id` -- unlike the egress banner next
+  to it, which reads `/outbounds` and does reach a node picked from the master, this one has no
+  proxy path to add even in principle: `panel_id -> LinkedPanel.url` always addresses whichever
+  machine the domain's A record currently points at, i.e. always the *live* one, and a superseded
+  box is by definition not that one. `LinkedPanel.superseded_at` in `/panels` looks like an
+  alternative source but is a different fact ("this panel was transferred at some point, forever")
+  and showing it as "this installation has been replaced" on a live node would be a new lie in
+  place of the one this file exists to remove.
+
+Neither guard above catches this third shape: it binds to a named variable rather than to a query's
+`enabled:` or to a `{hasLocalXray && (` block, so `TestExhaustiveHasLocalXrayInventory` below
+whitelists every `hasLocalXray ?` ternary in the file by exact text, specifically so the next one
+added anywhere has to be looked at rather than sliding past both existing checks unnoticed.
 
 The other load-bearing property here is the **scope of the picker** (customer decision): it covers
 the Xray half of the page and nothing else. Security is the master's own admin password and About
@@ -227,3 +243,46 @@ class TestTheDashboardCanRouteAUserOnANode:
         body = _flat(_dashboard())
 
         assert body.count("enabled:routingModal") == 2
+
+
+class TestExhaustiveHasLocalXrayInventory:
+    """Guards the third shape a `hasLocalXray` gate can take: a ternary bound to a named variable,
+    rather than a query's `enabled:` (caught above by
+    `test_the_settings_query_waits_for_a_scope_instead_of_a_local_xray`) or a `{hasLocalXray && (`
+    JSX block (caught above by `test_the_modals_are_not_gated_on_a_local_xray`'s count).
+
+    Task 15's `supersededAt` slipped past both of those: it is `const supersededAt = hasLocalXray ?
+    ... : null;`, and the JSX it feeds into opens as `{showTransferBanners && (`, two derived
+    variables away from the literal `hasLocalXray`. Neither existing guard's pattern matches either
+    line. A closed inventory, matched by exact text rather than by line number so an unrelated edit
+    elsewhere in the file cannot silently widen it, is the only thing that would have caught it.
+    """
+
+    def test_every_hasLocalXray_ternary_is_on_the_list(self):
+        body = _system()
+
+        found = sorted(line.strip() for line in body.splitlines() if "hasLocalXray ?" in line)
+
+        expected = sorted(
+            [
+                "const supersededAt = hasLocalXray ? (versionQuery.data?.running.superseded_at ?? null) : null;",
+                "const [activeTab, setActiveTab] = useState<SettingsTab>(hasLocalXray ? 'core' : 'security');",
+                "const xrayScope = hasLocalXray ? '' : panelId != null ? `?panel_id=${panelId}` : '';",
+                "hasLocalXray ? 'lg:grid-cols-3' : 'max-w-xl mx-auto w-full'",
+                "{hasLocalXray ? '' : ` on ${xrayTargetName}`}",
+                "{hasLocalXray ? (",
+                "title={hasLocalXray ? 'Current Xray Config' : `Xray Config — ${xrayTargetName}`}",
+            ]
+        )
+
+        assert found == expected, (
+            "a hasLocalXray ternary appeared that this whitelist does not know about, or one it "
+            "expected is gone. Only one of these is a real capability gate that deliberately stays "
+            "node-only (the supersededAt line -- see the module docstring); the rest are cosmetic "
+            "(default tab, grid column count, banner text, modal title) or are xrayScope itself, "
+            "the scope computation the rest of the page is built on. A new entry here needs the "
+            "same kind of justification as supersededAt got, or it should be switched to "
+            "xrayScope/xrayScopeResolved instead of being added to the list.\n\n"
+            f"found:    {found}\n"
+            f"expected: {expected}"
+        )

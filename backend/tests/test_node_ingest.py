@@ -43,7 +43,7 @@ def test_poll_linked_panels_owns_only_health_fields():
         for target in node.targets
         if isinstance(target, ast.Attribute)
     }
-    assert assigned <= {"status", "last_poll", "last_error"}, (
+    assert assigned <= {"status", "last_poll", "last_error", "transfer_state"}, (
         f"poll_linked_panels should only own LinkedPanel health fields, got {sorted(assigned)}"
     )
 

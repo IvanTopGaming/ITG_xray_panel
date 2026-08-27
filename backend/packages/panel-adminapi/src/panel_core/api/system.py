@@ -117,7 +117,7 @@ def restart():
 @token_required
 def system_version():
     from panel_core.panel_role import is_worker
-    from panel_core.services.role_status import get_role_versions
+    from panel_core.services.role_status import get_own_superseded_at, get_role_versions
 
     roles = {} if is_worker() else get_role_versions()
     bot = get_bot_status()
@@ -132,6 +132,7 @@ def system_version():
                 "bot_state": bot.get("state"),
                 "roles": roles,
                 "roles_visible": not is_worker(),
+                "superseded_at": get_own_superseded_at(),
             },
             "latest": latest["latest"],
             "latest_checked_at": latest["checked_at"],

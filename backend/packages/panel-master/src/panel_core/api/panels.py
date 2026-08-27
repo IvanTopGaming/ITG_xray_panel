@@ -1,10 +1,11 @@
+import logging
 import os
 import time
 
 import requests
 from flask import Blueprint, request, jsonify
 
-from panel_core.extensions import db
+from panel_core.extensions import db, limiter
 from panel_core.models import LinkedPanel, SystemSetting, TariffItem
 from panel_core.services.panel_proxy import (
     FederationClient,
@@ -14,10 +15,12 @@ from panel_core.services.panel_proxy import (
     get_panel_liveness,
     get_panel_snapshot,
 )
+from panel_core.services.state_mirror import forget_mirror
 from panel_core.services.tariffs import purge_tariff_items
 from panel_core.utils import token_required
 
 bp = Blueprint("panels", __name__)
+logger = logging.getLogger(__name__)
 
 
 class _HandshakeError(Exception):
@@ -280,6 +283,10 @@ def delete_panel(panel_id):
         db.session.commit()
 
         forget_panel(panel_id)
+        try:
+            forget_mirror(panel_id)
+        except Exception as exc:
+            logger.warning("panels: mirror cleanup failed for panel %d: %s", panel_id, exc)
 
         return (
             jsonify(
@@ -394,3 +401,97 @@ def test_panel(panel_id):
     result["latency_ms"] = round((time.time() - started) * 1000)
     _nudge_panel_refresh(panel.id)
     return jsonify(result), 200
+
+
+@bp.route("/panels/<int:panel_id>/transfer-token", methods=["POST"])
+@token_required
+def issue_panel_transfer_token(panel_id):
+    from panel_core.services.panel_transfer import issue_transfer_token
+
+    panel = db.session.get(LinkedPanel, panel_id)
+    if not panel:
+        return jsonify({"error": "Panel not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    carry_admin = bool(data.get("carry_admin", True))
+
+    try:
+        result = issue_transfer_token(panel, carry_admin=carry_admin)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    logger.warning(
+        "transfer token issued for panel %s by a panel admin from %s",
+        panel.name,
+        request.remote_addr or "an unknown address",
+    )
+    return jsonify(result), 200
+
+
+@bp.route("/panels/transfer/identity", methods=["POST"])
+@limiter.limit("30 per minute")
+def panel_transfer_identity():
+    from panel_core.services.panel_transfer import TransferError, resolve_identity
+
+    data = request.get_json(silent=True) or {}
+    remote = request.remote_addr or "an unknown address"
+    try:
+        result = resolve_identity(str(data.get("transfer_token") or ""))
+    except TransferError as exc:
+        logger.warning(
+            "panel transfer identity refused (%s) from %s",
+            exc.message,
+            remote,
+        )
+        return jsonify({"error": exc.message}), exc.status
+
+    logger.warning(
+        "panel transfer identity resolved for panel %s from %s",
+        result.get("panel_name"),
+        remote,
+    )
+    return jsonify(result), 200
+
+
+@bp.route("/panels/transfer/instance-check", methods=["POST"])
+@limiter.limit("30 per minute")
+def panel_instance_check():
+    from panel_core.services.panel_transfer import instance_verdict
+
+    data = request.get_json(silent=True) or {}
+    return jsonify(instance_verdict(str(data.get("federation_token") or ""), str(data.get("instance_id") or ""))), 200
+
+
+@bp.route("/panels/transfer/claim", methods=["POST"])
+@limiter.limit("30 per minute")
+def panel_transfer_claim():
+    from panel_core.services.panel_transfer import TransferError, claim_transfer
+
+    data = request.get_json(silent=True) or {}
+    instance_id = str(data.get("instance_id") or "")
+    remote = request.remote_addr or "an unknown address"
+    try:
+        reply = claim_transfer(
+            str(data.get("transfer_token") or ""),
+            instance_id=instance_id,
+            federation_token=str(data.get("federation_token") or ""),
+        )
+    except TransferError as exc:
+        logger.warning(
+            "panel transfer claim refused (%s) for instance %s from %s",
+            exc.message,
+            instance_id or "(unspecified)",
+            remote,
+        )
+        return jsonify({"error": exc.message}), exc.status
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Internal server error"}), 500
+
+    logger.warning(
+        "panel transfer claim accepted for panel %s: instance %s from %s",
+        reply.get("panel_name"),
+        instance_id,
+        remote,
+    )
+    return jsonify(reply), 200

@@ -64,8 +64,9 @@ def _drop_dead_tables(logger=None):
     return dropped, kept
 
 
-def _column_ddl(column) -> tuple[str, bool]:
-    type_sql = column.type.compile(dialect=db.engine.dialect)
+def _column_ddl(column, dialect=None) -> tuple[str, bool]:
+    dialect = dialect or db.engine.dialect
+    type_sql = column.type.compile(dialect=dialect)
     pieces = [f'"{column.name}" {type_sql}']
     server_default = getattr(column, "server_default", None)
     default_sql = ""

@@ -66,8 +66,8 @@ def botapi_app(monkeypatch, tmp_path):
         trial = Tariff(name="Trial", price_rub=0, period_days=1, visibility="public", enabled=True, is_trial=True)
         db.session.add_all([paid, trial])
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=paid.id, inbound_tag="hiks", traffic_gb=300, panel_id=2))
-        db.session.add(TariffItem(tariff_id=trial.id, inbound_tag="hiks", traffic_gb=10, panel_id=2))
+        db.session.add(TariffItem(tariff_id=paid.id, inbound_tag="alpha", traffic_gb=300, panel_id=2))
+        db.session.add(TariffItem(tariff_id=trial.id, inbound_tag="alpha", traffic_gb=10, panel_id=2))
         db.session.add_all([TelegramUser(telegram_id=7, language="ru"), TelegramUser(telegram_id=8, language="ru")])
         db.session.commit()
         app.config["PAID_TARIFF_ID"] = paid.id
@@ -91,7 +91,7 @@ def open_ended_holder(botapi_app):
         granted = Tariff(name="Premium", price_rub=0, period_days=30, visibility="private", enabled=True)
         db.session.add(granted)
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=granted.id, inbound_tag="hiks", traffic_gb=0, panel_id=2))
+        db.session.add(TariffItem(tariff_id=granted.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
         db.session.add(UserTariffAccess(telegram_id=7, tariff_id=granted.id, billing="free", access_until=None))
         db.session.commit()
 
@@ -102,7 +102,7 @@ def dated_holder(botapi_app):
         granted = Tariff(name="Premium", price_rub=0, period_days=30, visibility="private", enabled=True)
         db.session.add(granted)
         db.session.flush()
-        db.session.add(TariffItem(tariff_id=granted.id, inbound_tag="hiks", traffic_gb=0, panel_id=2))
+        db.session.add(TariffItem(tariff_id=granted.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
         db.session.add(
             UserTariffAccess(
                 telegram_id=8,

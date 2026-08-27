@@ -13,6 +13,7 @@ from panel_core.services.notifications import (  # noqa: F401 — re-exported un
     evaluate_expiry,
     evaluate_traffic,
 )
+from panel_core.services.supersede import is_superseded
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,9 @@ def _now_ms() -> int:
 def replay_undelivered_bot_events() -> None:
 
     import json as _json
+
+    if is_superseded():
+        return
 
     redis_client = _get_redis()
     if redis_client is None:

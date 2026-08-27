@@ -128,3 +128,11 @@ def get_role_versions(freshness=DEFAULT_FRESHNESS_S):
         if entry is not None:
             found[role_key] = entry
     return found
+
+
+def get_own_superseded_at():
+    from panel_core.services.supersede import is_superseded, superseded_at
+
+    if not is_superseded():
+        return None
+    return superseded_at() or None
