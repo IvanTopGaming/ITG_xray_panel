@@ -93,14 +93,15 @@ def register_readyz(app):
             return {"status": "unavailable"}, 503
 
 
-def ensure_scheduler_job(job_id, func, seconds):
+def ensure_scheduler_job(job_id, func, seconds, *, start_date=None, next_run_time=None):
     if scheduler.get_job(job_id) is None:
 
         def _wrapped(_func=func, _job_id=job_id, _seconds=seconds):
             with scheduler.app.app_context():
                 run_job_logged(_job_id, _seconds, _func)
 
-        scheduler.add_job(id=job_id, func=_wrapped, trigger="interval", seconds=seconds)
+        extra = {} if next_run_time is None else {"next_run_time": next_run_time}
+        scheduler.add_job(id=job_id, func=_wrapped, trigger="interval", seconds=seconds, start_date=start_date, **extra)
 
 
 def start_scheduler():

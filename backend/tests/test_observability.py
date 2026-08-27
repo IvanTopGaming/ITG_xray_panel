@@ -117,7 +117,12 @@ class TestRunJobLogged:
 
         with caplog.at_level(logging.INFO, logger="app.jobs"):
             run_job_logged("test_job", 0.001, _slow)
-        records = [r for r in caplog.records if r.name == "app.jobs"]
+        records = [r for r in caplog.records if r.name == "app.jobs" and "test_job" in r.getMessage()]
+        assert records, (
+            "no app.jobs record named this job. Filtering by job name is deliberate: any scheduler "
+            "started by a neighbouring test logs into the same logger, and taking records[0] made "
+            "this assertion depend on which job happened to fire first"
+        )
         assert records[0].levelno == logging.WARNING
         assert "overran" in records[0].getMessage()
 

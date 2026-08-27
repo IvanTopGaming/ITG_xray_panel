@@ -30,12 +30,16 @@ EVENT_BUS_JOBS = {
     ("replay_undelivered_bot_events", 60),
     ("cleanup_bot_events", 86400),
 }
+TRANSFER_JOBS = {
+    ("claim_state", 30),
+    ("supersede_check", 300),
+}
 PAYMENT_JOBS = {
     ("poll_pending_payments", 30),
     ("reconcile_refunds", 3600),
     ("cleanup_old_payments", 86400),
 }
-WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS | EVENT_BUS_JOBS
+WORKER_JOBS = DATA_PLANE_JOBS | DB_MAINTENANCE_JOBS | EVENT_BUS_JOBS | TRANSFER_JOBS
 BOT_JOBS = PAYMENT_JOBS
 MASTER_JOBS = set()
 CRON_JOBS = {
@@ -44,6 +48,7 @@ CRON_JOBS = {
     ("reset_grant_traffic_cycles", 900),
     ("cleanup_bot_events", 86400),
     ("check_latest_version", 21600),
+    ("archive_panel_state", 86400),
 }
 CRON_BLUEPRINTS = set()
 
@@ -145,6 +150,43 @@ def test_the_cron_service_serves_no_api(monkeypatch, tmp_path):
 def test_worker_registers_every_data_plane_job(monkeypatch, tmp_path):
     _build("worker", monkeypatch, tmp_path)
     assert DATA_PLANE_JOBS <= _jobs()
+
+
+def test_archive_panel_state_is_anchored_to_calendar_time_not_process_uptime(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from panel_core.extensions import scheduler
+
+    _build("cron", monkeypatch, tmp_path)
+    job = scheduler.get_job("archive_panel_state")
+    assert job.trigger.start_date < datetime(2000, 1, 1, tzinfo=timezone.utc), (
+        "суточный срез не должен отсчитываться от момента старта cron: интервальный триггер по "
+        "умолчанию якорится на «сейчас», и если cron рестартует чаще раза в сутки — а он рестартует — "
+        "первый запуск не наступит никогда. Якорь обязан быть фиксированной точкой в прошлом"
+    )
+
+
+def test_supersede_check_fires_on_this_start_not_after_a_five_minute_wait(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from panel_core.extensions import scheduler
+    from panel_core.roles import worker as worker_role
+
+    monkeypatch.setattr(worker_role, "start_scheduler", lambda: None)
+
+    before = datetime.now(timezone.utc)
+    _build("worker", monkeypatch, tmp_path)
+    after = datetime.now(timezone.utc)
+
+    job = scheduler.get_job("supersede_check")
+    assert before <= job.next_run_time <= after, (
+        "воскресший зомби не должен ждать до пяти минут первой проверки — своя джоба ноды успевает "
+        "разослать волну уведомлений о состоянии на момент аварии до того, как правда станет известна. "
+        "Первая проверка обязана случиться на этом же старте, а не через полный интервал. "
+        "start_date, переданный в триггер, тут ни при чём — IntervalTrigger всё равно округляет "
+        "первый запуск до ближайшего целого интервала вверх, и наблюдаемое поведение решает "
+        "только next_run_time"
+    )
 
 
 def test_role_env_is_read_case_insensitively(monkeypatch, tmp_path):

@@ -86,6 +86,9 @@ class FederationClient:
     def snapshot(self) -> dict:
         return self._call_reporting("get", "/api/federation/snapshot", timeout=(2, 5))
 
+    def state(self) -> dict:
+        return self._call_reporting("get", "/api/federation/state", timeout=(2, 20))
+
     def list_outbounds(self) -> list:
         return self._call_reporting("get", "/api/outbounds", timeout=8)
 
