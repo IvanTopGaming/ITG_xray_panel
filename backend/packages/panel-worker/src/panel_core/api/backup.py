@@ -176,6 +176,10 @@ def restore():
         os.replace(temp_path, db_path)
         replaced = True
 
+        from panel_core.services.node_identity import regenerate_instance_id
+
+        regenerate_instance_id()
+
         generate_config_file()
         restart_xray_container()
         _schedule_worker_restart()
