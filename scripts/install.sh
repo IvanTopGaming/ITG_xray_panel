@@ -205,7 +205,7 @@ load_deployment() {
 
 pins_for_role() {
     case "$ROLE" in
-        data) printf '' ;;
+        data) printf 'OFFSITE_IMAGE:offsite\n' ;;
         cron) printf 'CRON_IMAGE:cron\n' ;;
         master) printf 'MASTER_IMAGE:master\nFRONTEND_ADMIN_IMAGE:frontend_admin\nCADDY_IMAGE:caddy\n' ;;
         node) printf 'WORKER_IMAGE:worker\nFRONTEND_NODE_IMAGE:frontend_node\nCADDY_IMAGE:caddy\nXRAY_EGRESS_IMAGE:xray_egress\n' ;;
@@ -226,6 +226,7 @@ image_for() {
         frontend_node) printf '%s/panel-frontend-node:v%s' "$GHCR" "$1" ;;
         caddy) printf '%s/panel-caddy:v%s' "$GHCR" "$1" ;;
         xray_egress) printf '%s/panel-egress:v%s' "$GHCR" "$1" ;;
+        offsite) printf '%s/panel-offsite:v%s' "$GHCR" "$1" ;;
     esac
 }
 
@@ -389,6 +390,214 @@ fetch_transfer_identity() {
 declare -A VALUES=()
 
 egress_configured() { [ -n "${DIR:-}" ] && [ -f "$DIR/egress.conf" ]; }
+
+offsite_rclone() {
+    docker run --rm \
+        -v "$DIR/rclone:/config/rclone" \
+        -e RCLONE_CONFIG=/config/rclone/rclone.conf \
+        --entrypoint rclone \
+        "${VALUES[OFFSITE_IMAGE]}" "$@"
+}
+
+offsite_paste_block() {
+    local line
+    : > "$WORK/rclone.block"
+    note "  Paste the block now. Finish with a line containing only END."
+    printf '\n'
+    while IFS= read -r line; do
+        [ "$line" = "END" ] && break
+        printf '%s\n' "$line" >> "$WORK/rclone.block"
+    done
+}
+
+offsite_write_target() {
+    local kind="$1" old_umask
+    old_umask="$(umask)"
+    umask 077
+    mkdir -p "$DIR/rclone"
+    case "$kind" in
+        drive)
+            printf '[offsite-target]\ntype = drive\nscope = drive.file\ntoken = %s\n\n' "$OFFSITE_DRIVE_TOKEN" \
+                > "$DIR/rclone/rclone.conf"
+            OFFSITE_PATH="offsite-target:${OFFSITE_FOLDER}"
+            ;;
+        s3)
+            printf '[offsite-target]\ntype = s3\nprovider = Other\nendpoint = %s\nregion = %s\naccess_key_id = %s\nsecret_access_key = %s\n\n' \
+                "$OFFSITE_S3_ENDPOINT" "$OFFSITE_S3_REGION" "$OFFSITE_S3_KEY" "$OFFSITE_S3_SECRET" \
+                > "$DIR/rclone/rclone.conf"
+            OFFSITE_PATH="offsite-target:${OFFSITE_S3_BUCKET}"
+            ;;
+        sftp)
+            [ -f "$OFFSITE_SFTP_KEY" ] && [ -r "$OFFSITE_SFTP_KEY" ] || die "cannot read the private key at '$OFFSITE_SFTP_KEY'" \
+                "Check the path and that this installer can read it."
+            cp "$OFFSITE_SFTP_KEY" "$DIR/rclone/sftp_key"
+            chmod 600 "$DIR/rclone/sftp_key"
+            printf '[offsite-target]\ntype = sftp\nhost = %s\nuser = %s\nkey_file = /config/rclone/sftp_key\n\n' \
+                "$OFFSITE_SFTP_HOST" "$OFFSITE_SFTP_USER" \
+                > "$DIR/rclone/rclone.conf"
+            OFFSITE_PATH="offsite-target:${OFFSITE_SFTP_PATH}"
+            ;;
+        own)
+            cp "$WORK/rclone.block" "$DIR/rclone/rclone.conf" || die "could not write '$DIR/rclone/rclone.conf'" \
+                "Check that this installer can write there and the disk has room."
+            printf '\n' >> "$DIR/rclone/rclone.conf"
+            OFFSITE_PATH="$OFFSITE_OWN_REMOTE"
+            ;;
+    esac
+    chmod 600 "$DIR/rclone/rclone.conf"
+    umask "$old_umask"
+}
+
+offsite_wrap_in_crypt() {
+    local obscured old_umask
+    old_umask="$(umask)"
+    umask 077
+    obscured="$(offsite_rclone obscure "$OFFSITE_PASSPHRASE" 2>/dev/null | tr -d '\r\n' || true)"
+    [ -n "$obscured" ] || die "rclone could not obscure the passphrase" \
+        "The ${VALUES[OFFSITE_IMAGE]} image did not answer. Check that docker can pull it."
+    printf '[offsite]\ntype = crypt\nremote = %s\npassword = %s\n' "$OFFSITE_PATH" "$obscured" \
+        >> "$DIR/rclone/rclone.conf"
+    chmod 600 "$DIR/rclone/rclone.conf"
+    umask "$old_umask"
+    OFFSITE_PATH="offsite:"
+}
+
+offsite_setup() {
+    ask OFFSITE_WANT "copy the backups off this machine? (y/N)" "N"
+    case "$OFFSITE_WANT" in y|Y|yes|Yes) ;; *) return 0 ;; esac
+
+    if ! has_docker; then
+        warn "docker is not available here, so the remote cannot be configured or tested"
+        note "  Off-site upload stays off. Install docker and re-run the installer in a new"
+        note "  directory, or write ./rclone/rclone.conf by hand and set COMPOSE_PROFILES=offsite."
+        return 0
+    fi
+
+    rule "Off-site copies"
+    note "Every dump is copied to external storage on its own schedule and kept for its"
+    note "own depth. This is the only copy that survives this machine being destroyed,"
+    note "seized or blocked. It also gives this VM outbound network access, which is the"
+    note "one thing the rest of its configuration is built to avoid."
+    printf '\n'
+    role_line 1 drive "Google Drive"
+    role_line 2 s3    "S3-compatible: Backblaze B2, Wasabi, MinIO, …"
+    role_line 3 sftp  "SFTP"
+    role_line 4 own   "paste your own rclone.conf block"
+    printf '\n'
+    ask OFFSITE_KIND "storage, by number or name" "1"
+    case "$OFFSITE_KIND" in
+        1|drive) OFFSITE_KIND=drive ;;
+        2|s3) OFFSITE_KIND=s3 ;;
+        3|sftp) OFFSITE_KIND=sftp ;;
+        4|own) OFFSITE_KIND=own ;;
+        *) die "unknown storage '$OFFSITE_KIND'" "Expected drive, s3, sftp or own." ;;
+    esac
+
+    case "$OFFSITE_KIND" in
+        drive)
+            rule "Google Drive"
+            note "This machine has no browser, so the OAuth step happens on yours. Install"
+            note "rclone there and run:"
+            printf '\n'
+            printf '      %b\n\n' "${C_BOLD}rclone authorize \"drive\"${C_RESET}"
+            note "It prints a single line starting with {\"access_token\". Paste that line here."
+            note ""
+            note "The token is scoped to drive.file, so rclone sees only what it uploads"
+            note "itself. That scope is tied to the OAuth CLIENT, not to your account: if"
+            note "you later switch to your own client_id, a fresh token stops seeing every"
+            note "backup uploaded under the old one. They are not deleted — they become"
+            note "invisible to this deployment."
+            printf '\n'
+            ask OFFSITE_DRIVE_TOKEN "the authorize line"
+            ask OFFSITE_FOLDER "folder in Drive" "panel-backups"
+            ;;
+        s3)
+            rule "S3-compatible storage"
+            ask OFFSITE_S3_ENDPOINT "endpoint, e.g. s3.eu-central-003.backblazeb2.com"
+            ask OFFSITE_S3_REGION "region" "us-east-1"
+            ask OFFSITE_S3_KEY "access key id"
+            ask OFFSITE_S3_SECRET "secret access key"
+            ask OFFSITE_S3_BUCKET "bucket and optional path" "panel-backups"
+            ;;
+        sftp)
+            rule "SFTP"
+            note "Key authentication only. A password here would have to be the output of"
+            note "rclone obscure rather than the password itself, which is the trap that"
+            note "silently fails to connect."
+            printf '\n'
+            ask OFFSITE_SFTP_HOST "host"
+            ask OFFSITE_SFTP_USER "user"
+            ask OFFSITE_SFTP_KEY "path to the private key ON THIS MACHINE" "/root/.ssh/id_ed25519"
+            ask OFFSITE_SFTP_PATH "remote path" "panel-backups"
+            ;;
+        own)
+            rule "Your own rclone.conf"
+            note "Any of rclone's 69 backends. Note that a WebDAV or SFTP 'pass' field is"
+            note "the output of rclone obscure, not the password — pasted as-is it simply"
+            note "never connects."
+            printf '\n'
+            offsite_paste_block
+            ask OFFSITE_OWN_REMOTE "remote and path to upload to, e.g. mystore:panel-backups"
+            ;;
+    esac
+
+    offsite_write_target "$OFFSITE_KIND"
+
+    if [ "$OFFSITE_KIND" = "sftp" ]; then
+        note "  The key is copied to ./rclone/sftp_key (0600) so the upload container can read"
+        note "  it — it lives in the deployment directory alongside .env and the CA key."
+    fi
+
+    rule "Encryption"
+    note "The dump is not just clients and payments. system_setting holds the bot token,"
+    note "the admin ids, the bot service token and the YooKassa credentials in clear;"
+    note "linked_panel holds every node's federation token, which reads that node's whole"
+    note "database and rewrites its routing. It is worth more than .env."
+    note ""
+    note "Encrypting it here means the storage provider never sees any of that. It also"
+    note "means losing the passphrase is IRREVERSIBLE: no copy exists anywhere else and"
+    note "every uploaded dump becomes permanently unreadable."
+    note ""
+    note "One more trap, if this is not a first install: turning encryption on for a remote"
+    note "that already holds unencrypted dumps is effectively a new folder. Nothing already"
+    note "uploaded is deleted, but the encrypted remote cannot see it -- from here on those"
+    note "dumps are invisible to this deployment."
+    printf '\n'
+    ask OFFSITE_ENCRYPT "encrypt the dumps before upload? (Y/n)" "Y"
+    case "$OFFSITE_ENCRYPT" in
+        n|N|no|No) ok "uploading unencrypted ${C_DIM}(the storage provider can read every dump)${C_RESET}" ;;
+        *)
+            OFFSITE_PASSPHRASE="$(gen_secret 32)"
+            offsite_wrap_in_crypt
+            panel_top
+            panel_line ""
+            panel_line "  Encryption passphrase — shown once, stored nowhere"
+            panel_line ""
+            panel_line "  Without it every uploaded dump is permanently unreadable."
+            panel_line "  It is not in .env and not in the bundle. Write it down."
+            panel_line ""
+            panel_bot
+            printf '\n%s\n\n' "$OFFSITE_PASSPHRASE"
+            [ "$INTERACTIVE" -eq 1 ] && ask OFFSITE_SAVED "type SAVED once you have stored it" "" ""
+            ;;
+    esac
+
+    rule "Testing the connection"
+    spinner_start "asking ${OFFSITE_PATH} for a directory listing"
+    if offsite_rclone lsd "$OFFSITE_PATH" >/dev/null 2>&1; then
+        spinner_stop
+        ok "the remote answered"
+    else
+        spinner_stop
+        rm -f "$DIR/rclone/rclone.conf" "$DIR/rclone/sftp_key"
+        die "the remote did not answer" \
+            "The configuration was not saved and off-site upload stays off. Check the credentials, the endpoint and this machine's outbound network, then re-run the installer."
+    fi
+
+    VALUES[OFFSITE_REMOTE]="$OFFSITE_PATH"
+    VALUES[COMPOSE_PROFILES]="offsite"
+    ok "off-site copies to ${C_BOLD}${OFFSITE_PATH}${C_RESET}"
+}
 
 compose() {
     local extra=()
@@ -1191,12 +1400,15 @@ fetch ".env.${ROLE}.example" "$WORK/example"
 fetch "versions.json" "$WORK/versions.json"
 case "$ROLE" in
     master|node|sub|bot) fetch "caddy/routes.yaml" "$DIR/caddy/routes.yaml" ;;
-    data) fetch "scripts/pg_backup.sh" "$DIR/scripts/pg_backup.sh"; chmod +x "$DIR/scripts/pg_backup.sh" ;;
+    data)
+        fetch "scripts/pg_backup.sh" "$DIR/scripts/pg_backup.sh"; chmod +x "$DIR/scripts/pg_backup.sh"
+        fetch "scripts/offsite_backup.sh" "$DIR/scripts/offsite_backup.sh"; chmod +x "$DIR/scripts/offsite_backup.sh"
+        ;;
 esac
 spinner_stop
 ok "$COMPOSE_FILE"
 case "$ROLE" in master|node|sub|bot) ok "caddy/routes.yaml" ;; esac
-case "$ROLE" in data) ok "scripts/pg_backup.sh" ;; esac
+case "$ROLE" in data) ok "scripts/pg_backup.sh"; ok "scripts/offsite_backup.sh" ;; esac
 
 V="$WORK/versions.json"
 GHCR="ghcr.io/ivantopgaming"
@@ -1210,6 +1422,7 @@ VALUES[FRONTEND_ADMIN_IMAGE]="$GHCR/panel-frontend-admin:v$(json_field "$V" fron
 VALUES[FRONTEND_NODE_IMAGE]="$GHCR/panel-frontend-node:v$(json_field "$V" frontend_node)"
 VALUES[CADDY_IMAGE]="$GHCR/panel-caddy:v$(json_field "$V" caddy)"
 VALUES[XRAY_EGRESS_IMAGE]="$GHCR/panel-egress:v$(json_field "$V" xray_egress)"
+VALUES[OFFSITE_IMAGE]="$GHCR/panel-offsite:v$(json_field "$V" offsite)"
 ok "image pins from versions.json"
 
 if [ "$ROLE" = "data" ]; then
@@ -1271,6 +1484,8 @@ if [ "$ROLE" = "data" ]; then
     VALUES[REDIS_MONITORING_PASSWORD]="$REDIS_MONITORING_PASSWORD"
     VALUES[POSTGRES_BIND]="$POSTGRES_BIND"
     VALUES[REDIS_BIND]="$REDIS_BIND"
+
+    offsite_setup
 
     render_env "$WORK/example" "$DIR/.env"
     ok "secrets generated ${C_DIM}(1 database, 3 Redis credentials, 1 signing key)${C_RESET}"

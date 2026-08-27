@@ -71,10 +71,37 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
     volumes:
       - ./pg_backups:/backups
       - ./scripts/pg_backup.sh:/usr/local/bin/pg_backup.sh:ro
     entrypoint:
       - "bash"
       - "-c"
-      - "while true; do /usr/local/bin/pg_backup.sh || true; sleep 21600; done"
+      - "while true; do /usr/local/bin/pg_backup.sh || true; sleep ${BACKUP_INTERVAL_SECONDS:-21600}; done"
+
+  offsite-backup:
+    image: ${OFFSITE_IMAGE:-}
+    restart: unless-stopped
+    profiles: ["offsite"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_DIR: /backups
+      RCLONE_CONFIG: /config/rclone/rclone.conf
+      OFFSITE_REMOTE: ${OFFSITE_REMOTE:-}
+      OFFSITE_KEEP_DAYS: ${OFFSITE_KEEP_DAYS:-365}
+      OFFSITE_INTERVAL_SECONDS: ${OFFSITE_INTERVAL_SECONDS:-1800}
+    volumes:
+      - ./pg_backups:/backups:ro
+      - ./rclone:/config/rclone
+      - ./scripts/offsite_backup.sh:/usr/local/bin/offsite_backup.sh:ro
+    entrypoint:
+      - "sh"
+      - "-c"
+      - "while true; do /usr/local/bin/offsite_backup.sh || true; sleep ${OFFSITE_INTERVAL_SECONDS:-1800}; done"

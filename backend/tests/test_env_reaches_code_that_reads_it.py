@@ -71,6 +71,8 @@ PLAIN_SERVICES = {
     ("docker-compose.node.yml", "caddy"): [REPO_ROOT / "caddy"],
     ("docker-compose.sub.yml", "caddy"): [REPO_ROOT / "caddy"],
     ("docker-compose.bot.yml", "caddy"): [REPO_ROOT / "caddy"],
+    ("docker-compose.postgres.yml", "pg-backup"): [REPO_ROOT / "scripts" / "pg_backup.sh"],
+    ("docker-compose.postgres.yml", "offsite-backup"): [REPO_ROOT / "scripts" / "offsite_backup.sh"],
 }
 
 RUNTIME_VARIABLES = {
@@ -84,6 +86,7 @@ _SKIPPED_DIRECTORIES = {"__pycache__", "node_modules", "tests", "test"}
 
 SERVICE_RE = re.compile(r"^  ([A-Za-z0-9_-]+):$")
 ENV_ENTRY_RE = re.compile(r"^\s*-\s*([A-Za-z_][A-Za-z0-9_]*)=")
+ENV_MAPPING_RE = re.compile(r"^\s{6,}([A-Za-z_][A-Za-z0-9_]*):\s")
 
 
 def _service_blocks(compose_name):
@@ -108,19 +111,26 @@ def _environment_variables(block):
 
     Not the `${...}` on the right: `docker-compose.master.yml` deliberately renames some on the way in
     (`PANEL_USER=${PANEL_ADMIN_USER}`), and it is the left-hand name the code looks up. `image:`,
-    `ports:`, volume paths and `healthcheck:` are substituted on the host, so a variable used only
-    there is compose plumbing and makes no claim about the code.
+    `ports:`, volume paths, `entrypoint:` and `healthcheck:` are substituted on the host, so a
+    variable used only there is compose plumbing and makes no claim about the code.
+
+    Both YAML forms count. `docker-compose.postgres.yml` writes its blocks as a mapping
+    (`POSTGRES_HOST: postgres`) while every other file uses the list form; a parser that knew only
+    the list form returned an empty set for the data tier's two backup services, which the caller
+    reads as "the file changed shape" rather than as "this service is unchecked".
     """
 
-    wanted, inside = set(), False
+    wanted, inside, indent = set(), False, None
     for line in block.splitlines():
         stripped = line.strip()
         if stripped.startswith("environment:"):
-            inside = True
+            inside, indent = True, len(line) - len(line.lstrip())
             continue
-        if inside and stripped and not stripped.startswith(("-", "#")):
+        if not inside or not stripped:
+            continue
+        if not stripped.startswith("#") and (len(line) - len(line.lstrip())) <= indent:
             break
-        match = ENV_ENTRY_RE.match(line) if inside else None
+        match = ENV_ENTRY_RE.match(line) or ENV_MAPPING_RE.match(line)
         if match:
             wanted.add(match.group(1))
     return wanted - RUNTIME_VARIABLES
@@ -225,3 +235,26 @@ def test_the_distribution_closure_is_really_role_specific():
     )
     assert "panel-core" in botapi, "the closure walker stopped following dependencies"
     assert _dependency_closure("panel-master") != botapi, "every role resolved to the same closure"
+
+
+def test_the_parser_reads_both_yaml_shapes_of_an_environment_block():
+    """Mutation insurance for the mapping-style branch.
+
+    `docker-compose.postgres.yml` is the only file that writes `environment:` as a mapping, and both
+    services this guard covers on that host are shell scripts rather than Python packages. If the
+    parser silently stopped matching that shape, `_environment_variables` would return an empty set
+    and the parametrised test above would fail with "the file changed shape" -- a message that
+    points at the compose file rather than at this parser.
+    """
+
+    listed = _environment_variables(_service_blocks("docker-compose.master.yml")["backend"])
+    assert "SECRET_KEY" in listed, "the list-form branch stopped matching"
+
+    mapped = _environment_variables(_service_blocks("docker-compose.postgres.yml")["pg-backup"])
+    assert mapped >= {"POSTGRES_HOST", "PGPASSWORD", "BACKUP_DIR", "BACKUP_KEEP"}, (
+        f"the mapping-form branch stopped matching; parsed {sorted(mapped)}"
+    )
+    assert "BACKUP_INTERVAL_SECONDS" not in mapped, (
+        "the sleep interval is handed to the container again. It is substituted host-side on "
+        "purpose; nothing inside the image reads it."
+    )

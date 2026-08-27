@@ -9,5 +9,6 @@
   "caddy": "3.0.1",
   "bot": "3.1.0",
   "xray_egress": "3.0.0",
+  "offsite": "3.1.0",
   "xray_core_ref": "v26.3.27"
 }

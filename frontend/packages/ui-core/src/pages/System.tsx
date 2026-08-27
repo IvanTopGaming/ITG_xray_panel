@@ -34,7 +34,7 @@ import { Modal } from '@ui/components/ui/Modal';
 import { useLogStore } from '@ui/stores/logStore';
 import { useAuthStore } from '@ui/stores/authStore';
 import { useVersionStatus } from '@ui/hooks/useVersionStatus';
-import { getSystemHealth, type SystemHealth } from '@ui/lib/version';
+import { getSystemHealth, type OffsiteBackupReading, type SystemHealth } from '@ui/lib/version';
 import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
 import { hasLocalXray, isWorker } from '@ui/lib/panelRole';
 import { FederationConfig, Outbound } from '@ui/lib/types';
@@ -987,6 +987,12 @@ function HealthLine({
   );
 }
 
+function offsiteTone(reading: OffsiteBackupReading): 'ok' | 'warn' | 'bad' | 'muted' {
+  if (!reading.available) return 'muted';
+  if (reading.last_success_at_ms == null) return 'warn';
+  return reading.stale ? 'bad' : 'ok';
+}
+
 function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: boolean }) {
   if (isLoading || !health) {
     return (
@@ -1032,6 +1038,29 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
       hint="This host's database and the shared Redis. With the Redis down, subscriptions still serve but node entries do not."
     />
   );
+
+  const offsite = health.offsite_backup;
+  if (!isWorker && offsite.applicable) {
+    const last = offsite.last_success_at_ms ?? null;
+    const windowMinutes = Math.round((offsite.stale_after_seconds ?? 0) / 60);
+    lines.push(
+      <HealthLine
+        key="offsite"
+        label="off-site copy"
+        value={
+          !offsite.available ? 'unknown' : last == null ? 'never recorded' : silentFor(last / 1000)
+        }
+        tone={offsiteTone(offsite)}
+        hint={
+          !offsite.available
+            ? "The reading could not be taken right now. This says nothing about whether off-site copies have actually been happening -- check the data tier line above and the offsite-backup container's own logs."
+            : last == null
+              ? 'No off-site upload has ever been recorded. Either the offsite profile is not running on the data tier, or it has never once succeeded. The dump carries every bot token, YooKassa key and federation token in the deployment.'
+              : `Last dump copied to ${offsite.remote || 'the configured remote'}. Turns red once nothing has landed for ${windowMinutes} minutes.`
+        }
+      />
+    );
+  }
 
   return <div className="w-full grid grid-cols-2 gap-2 text-[11px] font-mono">{lines}</div>;
 }
