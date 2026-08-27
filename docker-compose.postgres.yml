@@ -79,3 +79,25 @@ services:
       - "bash"
       - "-c"
       - "while true; do /usr/local/bin/pg_backup.sh || true; sleep ${BACKUP_INTERVAL_SECONDS:-21600}; done"
+
+  offsite-backup:
+    image: ${OFFSITE_IMAGE:-}
+    restart: unless-stopped
+    profiles: ["offsite"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BACKUP_DIR: /backups
+      RCLONE_CONFIG: /config/rclone/rclone.conf
+      OFFSITE_REMOTE: ${OFFSITE_REMOTE:-}
+      OFFSITE_KEEP_DAYS: ${OFFSITE_KEEP_DAYS:-365}
+      OFFSITE_INTERVAL_SECONDS: ${OFFSITE_INTERVAL_SECONDS:-1800}
+    volumes:
+      - ./pg_backups:/backups:ro
+      - ./rclone:/config/rclone
+      - ./scripts/offsite_backup.sh:/usr/local/bin/offsite_backup.sh:ro
+    entrypoint:
+      - "sh"
+      - "-c"
+      - "while true; do /usr/local/bin/offsite_backup.sh || true; sleep ${OFFSITE_INTERVAL_SECONDS:-1800}; done"

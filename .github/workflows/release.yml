@@ -61,7 +61,7 @@ jobs:
           new = json.load(open("versions.json"))
           changed = [
               svc
-              for svc in ("master", "worker", "sub", "bot_api", "cron", "frontend_admin", "frontend_node", "caddy", "bot", "xray_egress")
+              for svc in ("master", "worker", "sub", "bot_api", "cron", "frontend_admin", "frontend_node", "caddy", "bot", "xray_egress", "offsite")
               if new.get(svc) and new.get(svc) != old.get(svc)
           ]
           print(" ".join(changed))
@@ -146,6 +146,11 @@ jobs:
               xray_egress)
                 CONTEXT="./xray-egress"
                 IMAGE="ghcr.io/ivantopgaming/panel-egress"
+                BUILD_ARGS=""
+                ;;
+              offsite)
+                CONTEXT="./offsite"
+                IMAGE="ghcr.io/ivantopgaming/panel-offsite"
                 BUILD_ARGS=""
                 ;;
               *)

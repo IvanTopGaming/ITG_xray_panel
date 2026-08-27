@@ -35,6 +35,16 @@ SPLIT_WHY = (
     "which is also what makes the host-ingress narrowing unreachable to undo by config alone."
 )
 
+COMPOSE_CLI_VARIABLES = {
+    "COMPOSE_PROFILES": (
+        "read by the compose CLI itself rather than by any file it loads: it decides which "
+        "`profiles:` are active for every command run in that directory. It is how the data tier "
+        "turns the `offsite` profile on for a plain `docker compose -f … up -d`, and there is no "
+        "way to reference it from inside the YAML -- a `${COMPOSE_PROFILES}` somewhere in the file "
+        "would be decoration, not the thing that does the work."
+    ),
+}
+
 
 def _read(relative):
     path = REPO_ROOT / relative
@@ -72,7 +82,7 @@ def test_every_required_variable_is_defined_in_that_hosts_example(compose):
 def test_no_example_defines_a_variable_its_own_compose_never_reads(compose):
     example = HOST_EXAMPLES[compose]
     referenced = set(ANY_REF.findall(_read(compose)))
-    stray = sorted(set(_example_keys(example)) - referenced)
+    stray = sorted(set(_example_keys(example)) - referenced - set(COMPOSE_CLI_VARIABLES))
     assert stray == [], (
         f"{example} defines {stray}, which {compose} never references. Either the compose file should "
         f"pass it through explicitly, or it does not belong on this host. Both matter: a variable that "
@@ -161,4 +171,14 @@ def test_no_empty_value_carries_an_inline_comment(example):
         f"shape was one line away from handing the bot its BOT_SERVICE_TOKEN as a sentence and the "
         f"data tier its Redis ACL passwords as sentences.\n\n"
         f"Put the note on its own line above the assignment instead."
+    )
+
+
+@pytest.mark.parametrize("variable", sorted(COMPOSE_CLI_VARIABLES))
+def test_every_compose_cli_exemption_is_still_used_by_some_host(variable):
+    declaring = [example for example in sorted(set(HOST_EXAMPLES.values())) if variable in _example_keys(example)]
+    assert declaring, (
+        f"no .env.<host>.example defines {variable}, so exempting it from the stray-variable check "
+        f"only widens that check for nothing. Drop it from COMPOSE_CLI_VARIABLES.\n\n"
+        f"{COMPOSE_CLI_VARIABLES[variable]}"
     )

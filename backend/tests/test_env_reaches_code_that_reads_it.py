@@ -72,6 +72,7 @@ PLAIN_SERVICES = {
     ("docker-compose.sub.yml", "caddy"): [REPO_ROOT / "caddy"],
     ("docker-compose.bot.yml", "caddy"): [REPO_ROOT / "caddy"],
     ("docker-compose.postgres.yml", "pg-backup"): [REPO_ROOT / "scripts" / "pg_backup.sh"],
+    ("docker-compose.postgres.yml", "offsite-backup"): [REPO_ROOT / "scripts" / "offsite_backup.sh"],
 }
 
 RUNTIME_VARIABLES = {

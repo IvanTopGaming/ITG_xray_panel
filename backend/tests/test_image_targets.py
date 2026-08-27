@@ -81,6 +81,7 @@ VERSION_PINNED_ENV_VARS = {
     "caddy": "CADDY_IMAGE",
     "bot": "BOT_IMAGE",
     "xray_egress": "XRAY_EGRESS_IMAGE",
+    "offsite": "OFFSITE_IMAGE",
 }
 
 THIRD_PARTY_ENV_VARS_WITHOUT_A_VERSIONS_JSON_ENTRY = {

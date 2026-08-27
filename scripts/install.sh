@@ -1191,12 +1191,15 @@ fetch ".env.${ROLE}.example" "$WORK/example"
 fetch "versions.json" "$WORK/versions.json"
 case "$ROLE" in
     master|node|sub|bot) fetch "caddy/routes.yaml" "$DIR/caddy/routes.yaml" ;;
-    data) fetch "scripts/pg_backup.sh" "$DIR/scripts/pg_backup.sh"; chmod +x "$DIR/scripts/pg_backup.sh" ;;
+    data)
+        fetch "scripts/pg_backup.sh" "$DIR/scripts/pg_backup.sh"; chmod +x "$DIR/scripts/pg_backup.sh"
+        fetch "scripts/offsite_backup.sh" "$DIR/scripts/offsite_backup.sh"; chmod +x "$DIR/scripts/offsite_backup.sh"
+        ;;
 esac
 spinner_stop
 ok "$COMPOSE_FILE"
 case "$ROLE" in master|node|sub|bot) ok "caddy/routes.yaml" ;; esac
-case "$ROLE" in data) ok "scripts/pg_backup.sh" ;; esac
+case "$ROLE" in data) ok "scripts/pg_backup.sh"; ok "scripts/offsite_backup.sh" ;; esac
 
 V="$WORK/versions.json"
 GHCR="ghcr.io/ivantopgaming"
