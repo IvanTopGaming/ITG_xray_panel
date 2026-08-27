@@ -32,6 +32,7 @@ import time
 
 import jwt as jwt_lib
 import pytest
+from redis import exceptions as redis_exceptions
 
 from panel_core.extensions import db, scheduler
 from panel_core.models import Admin, BotEvent, Payment
@@ -50,8 +51,14 @@ def _reset_scheduler():
         pass
 
 
-class NoPermission(Exception):
-    """What a real Redis raises when the ACL forbids a command."""
+class NoPermission(redis_exceptions.NoPermissionError):
+    """What a real Redis raises when the ACL forbids a command.
+
+    It subclasses the real exception rather than `Exception` because the difference is load-bearing
+    now: `ResponseError` is how the code tells "the server answered and said no" from "the server
+    never answered", and a fake that raises a bare `Exception` would let a regression in that
+    distinction pass.
+    """
 
 
 class FakeRedis:
@@ -404,6 +411,29 @@ def test_an_unreachable_shared_redis_is_reported_not_raised(master, headers, mon
 
     assert response.status_code == 200
     assert response.get_json()["data_tier"]["shared_redis"] == "down"
+
+
+def test_a_publish_only_credential_is_not_reported_as_a_dead_tier(master, headers, monkeypatch):
+    """The node card said `db ok · redis down` on every node, permanently, while Redis was fine.
+
+    `_data_tier` probes with `ping`, and a node's credential is `-@all +publish +select &bot:events`
+    — `ping` is not in it. The refusal was read as an outage, so the one card an admin checks to
+    decide whether the data tier is healthy lied on three hosts at once, and kept lying after the
+    real outage it was hiding (an expired CA) had been fixed.
+
+    A server that authenticated the credential and answered NOPERM is up. It also has to say so
+    without a `ping` ever succeeding, because on a node one never will.
+    """
+    from panel_core.services import health as health_module
+
+    monkeypatch.setattr(health_module, "get_shared_redis", lambda: FakeRedis(allow=FakeRedis.NODE))
+    response = master.test_client().get("/api/system/health", headers=headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["data_tier"]["shared_redis"] == "ok", (
+        "a credential that is not allowed to PING is reported as a dead data tier, which is what "
+        "every node's System page showed while the bus was working"
+    )
 
 
 def test_health_needs_an_admin(master):
