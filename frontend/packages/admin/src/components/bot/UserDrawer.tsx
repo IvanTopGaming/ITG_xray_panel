@@ -17,6 +17,8 @@ import type { PanelFailure } from '@/lib/bot';
 import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
 import { Select } from '@ui/components/ui/Select';
 import { cn } from '@ui/lib/utils';
+import { PaymentState } from './PaymentState';
+import { grantProvisioningLabel, notifyGrantResult } from './grantStatus';
 import type { BotUserDetail, GrantBilling, Tariff, UserTariffGrant, Client } from '@ui/lib/types';
 
 function billingChipClass(billing: GrantBilling): string {
@@ -53,16 +55,12 @@ function tariffAvailability(
 
 function toIsoOrNull(localValue: string): string | null {
   if (!localValue) return null;
-  const parsed = new Date(localValue);
+  const parsed = new Date(epochMsFromLocalDateTimeInput(localValue));
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 function toLocalInputValue(iso: string | null): string {
-  if (!iso) return '';
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+  return formatDateTimeForLocalInput(iso);
 }
 
 type ActiveTariffGroup = {
@@ -79,7 +77,13 @@ interface UserDrawerProps {
   onClose: () => void;
 }
 
-import { formatDate as _formatDay, formatDateTime } from '@ui/lib/datetime';
+import {
+  formatDate as _formatDay,
+  formatDateTime,
+  formatDateTimeForLocalInput,
+  epochMsFromLocalDateTimeInput,
+  parseDate,
+} from '@ui/lib/datetime';
 
 function formatDate(iso: string | null): string {
   return formatDateTime(iso);
@@ -106,6 +110,7 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
   const [editingTermFor, setEditingTermFor] = useState<number | null>(null);
   const [editOpenEnded, setEditOpenEnded] = useState(true);
   const [editUntil, setEditUntil] = useState('');
+  const [originalUntil, setOriginalUntil] = useState<string | null>(null);
 
   const userQuery = useQuery({
     queryKey: ['bot', 'user', telegramId],
@@ -156,8 +161,8 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
       access_until?: string | null;
       note?: string;
     }) => createGrant(telegramId!, args),
-    onSuccess: () => {
-      toast.success('Grant created');
+    onSuccess: (data) => {
+      notifyGrantResult(data, 'Grant created');
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
       setShowGrantForm(false);
@@ -175,16 +180,19 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
     if (failures && failures.length) {
       const names = failures.map((f) => f.panel_name || `#${f.panel_id}`).join(', ');
       toast.warning(`Не удалось применить на панелях: ${names}`);
+    } else {
+      toast.warning('Изменение сохранено, применение на панелях ещё не завершено.');
     }
   };
 
   const blockMutation = useMutation({
     mutationFn: () => blockBotUser(telegramId!),
     onSuccess: (data) => {
-      toast.success(
-        `Blocked. Cancelled ${data.cancelled_grants} grant(s), disabled ${data.disabled_clients} client(s).`
-      );
-      warnPanelFailures(data.panel_failures);
+      if (!data.ok || data.panel_failures?.length) warnPanelFailures(data.panel_failures);
+      else
+        toast.success(
+          `Blocked. Cancelled ${data.cancelled_grants} grant(s), disabled ${data.disabled_clients} client(s).`
+        );
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'grants'] });
@@ -195,10 +203,11 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
   const unblockMutation = useMutation({
     mutationFn: () => unblockBotUser(telegramId!),
     onSuccess: (data) => {
-      toast.success(
-        `Разблокирован. Восстановлено клиентов: ${data.re_enabled + data.remote_re_enabled}.`
-      );
-      warnPanelFailures(data.panel_failures);
+      if (!data.ok || data.panel_failures?.length) warnPanelFailures(data.panel_failures);
+      else
+        toast.success(
+          `Разблокирован. Восстановлено клиентов: ${data.re_enabled + data.remote_re_enabled}.`
+        );
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
     },
@@ -222,9 +231,17 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
   const revokeTariffMutation = useMutation({
     mutationFn: (tariffId: number) => revokeTariff(telegramId!, tariffId),
     onSuccess: (data) => {
-      toast.success(
-        `Tariff revoked. Disabled ${data.disabled_clients} client(s), removed ${data.revoked_grants} grant(s).`
-      );
+      const summary = `Disabled ${data.disabled_clients + (data.remote_disabled ?? 0)} client(s), removed ${data.revoked_grants} grant(s).`;
+      if (data.panel_failures?.length) {
+        const nodes = data.panel_failures
+          .map((failure) => failure.panel_name || `#${failure.panel_id}`)
+          .join(', ');
+        toast.warning(
+          `Revoke incomplete. ${summary} Could not apply on: ${nodes}. Retry when the nodes are available.`
+        );
+      } else {
+        toast.success(`Tariff revoked. ${summary}`);
+      }
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
       setConfirmRevokeTariffId(null);
@@ -257,8 +274,8 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
   const termMutation = useMutation({
     mutationFn: (args: { tariff_id: number; access_until: string | null }) =>
       updateGrantTerm(telegramId!, args.tariff_id, { access_until: args.access_until }),
-    onSuccess: () => {
-      toast.success('Term updated');
+    onSuccess: (data) => {
+      notifyGrantResult(data, 'Term updated');
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', telegramId] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'grants'] });
       setEditingTermFor(null);
@@ -272,6 +289,7 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
   });
 
   const openTermEditor = (grant: UserTariffGrant) => {
+    setOriginalUntil(grant.access_until);
     setEditingTermFor(grant.tariff_id);
     setEditOpenEnded(grant.access_until === null);
     setEditUntil(toLocalInputValue(grant.access_until));
@@ -284,7 +302,11 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
     }
     termMutation.mutate({
       tariff_id: tariffId,
-      access_until: editOpenEnded ? null : toIsoOrNull(editUntil),
+      access_until: editOpenEnded
+        ? null
+        : editUntil === toLocalInputValue(originalUntil)
+          ? (parseDate(originalUntil)?.toISOString() ?? null)
+          : toIsoOrNull(editUntil),
     });
   };
 
@@ -371,8 +393,8 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                     <div className="flex-1">
                       <p className="font-semibold">User is blocked</p>
                       <p className="mt-1 text-sm text-rose-300/80">
-                        The bot ignores all their messages. Existing subscriptions have been
-                        cancelled.
+                        The bot ignores all their messages. Access cancellation may still be
+                        applying on unavailable nodes.
                       </p>
                     </div>
                     <button
@@ -719,11 +741,13 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                                     billingChipClass(g.billing)
                                   )}
                                 >
-                                  {billingLabel(g.billing)}
+                                  {grantProvisioningLabel(g) || billingLabel(g.billing)}
                                 </span>
                                 {g.billing === 'free' && (
                                   <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white/70">
-                                    {termLabel(g.access_until)}
+                                    {grantProvisioningLabel(g)
+                                      ? `Requested: ${termLabel(g.access_until)}`
+                                      : termLabel(g.access_until)}
                                   </span>
                                 )}
                                 {availability && (
@@ -846,21 +870,7 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                               {p.amount_rub} ₽
                             </span>
                           </div>
-                          <span
-                            className={cn(
-                              'rounded-md border px-2.5 py-1 text-xs font-bold uppercase tracking-wider',
-                              p.status === 'succeeded' &&
-                                'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
-                              p.status === 'pending' &&
-                                'border-amber-500/30 bg-amber-500/10 text-amber-300',
-                              p.status === 'cancelled' &&
-                                'border-zinc-500/30 bg-zinc-500/10 text-zinc-300',
-                              p.status === 'failed' &&
-                                'border-rose-500/30 bg-rose-500/10 text-rose-300'
-                            )}
-                          >
-                            {p.status}
-                          </span>
+                          <PaymentState payment={p} />
                         </div>
                       ))}
                     </div>

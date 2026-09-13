@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -36,10 +36,15 @@ class _SqlOrderRecorder:
 
     def __enter__(self):
         event.listen(Engine, "before_cursor_execute", self._listener)
+        event.listen(Engine, "commit", self._commit)
         return self
 
     def __exit__(self, *_exc):
         event.remove(Engine, "before_cursor_execute", self._listener)
+        event.remove(Engine, "commit", self._commit)
+
+    def _commit(self, connection):
+        self._order.append("commit")
 
 
 def _make_inbound(db_, *, tag="DE-vless", protocol="vless", port=10001):
@@ -132,8 +137,8 @@ class TestIsIpAddress:
 _GRPC_PATCHES = {
     "get_channel": "panel_core.services.stats.get_channel",
     "remove_grpc": "panel_core.services.stats._api_remove_user_grpc",
-    "gen_config": "panel_core.services.stats.generate_config_file",
-    "restart": "panel_core.services.stats.restart_xray_container",
+    "gen_config": "panel_core.services.runtime_apply.generate_config_file",
+    "restart": "panel_core.services.runtime_apply.restart_xray_container",
 }
 
 
@@ -337,7 +342,7 @@ class TestCheckLimitsMonthlyReset:
         assert client.up == 5_000_000_000
         assert client.down == 3_000_000_000
 
-    def test_does_not_reset_on_wrong_day(self, app, db):
+    def test_catches_up_a_missed_reset_day(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
         current_day = datetime.now().day
         wrong_day = (current_day % 28) + 1
@@ -361,8 +366,8 @@ class TestCheckLimitsMonthlyReset:
             check_limits_and_reset()
 
         db.session.refresh(client)
-        assert client.up == 5_000_000_000
-        assert client.down == 3_000_000_000
+        assert client.up == 0
+        assert client.down == 0
 
 
 class TestCheckLimitsClearsNotifications:
@@ -462,10 +467,7 @@ class TestParseAccessLogs:
 
         with (
             patch("panel_core.services.stats.os.path.exists", return_value=True),
-            patch("panel_core.services.stats.os.path.getsize", return_value=len(log_line)),
-            patch("panel_core.services.stats._read_access_offset", return_value=0),
-            patch("panel_core.services.stats._write_access_offset"),
-            patch("builtins.open", mock_open(read_data=log_line)),
+            patch("panel_core.services.stats._read_log_chunk", return_value=log_line),
         ):
             _parse_access_logs_logic()
 
@@ -494,10 +496,7 @@ class TestParseAccessLogs:
 
         with (
             patch("panel_core.services.stats.os.path.exists", return_value=True),
-            patch("panel_core.services.stats.os.path.getsize", return_value=len(log_line)),
-            patch("panel_core.services.stats._read_access_offset", return_value=0),
-            patch("panel_core.services.stats._write_access_offset"),
-            patch("builtins.open", mock_open(read_data=log_line)),
+            patch("panel_core.services.stats._read_log_chunk", return_value=log_line),
         ):
             _parse_access_logs_logic()
 
@@ -584,10 +583,9 @@ class TestCheckLimitsXrayInteraction:
         ):
             check_limits_and_reset()
 
-        mock_gen.assert_called_once()
-
-        mock_remove.assert_called_once()
-        mock_restart.assert_not_called()
+        assert mock_gen.call_args_list == [call(publish=False), call()]
+        mock_remove.assert_not_called()
+        mock_restart.assert_called_once()
 
     def test_restarts_when_grpc_remove_fails(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
@@ -606,7 +604,7 @@ class TestCheckLimitsXrayInteraction:
         ):
             check_limits_and_reset()
 
-        mock_gen.assert_called_once()
+        assert mock_gen.call_args_list == [call(publish=False), call()]
         mock_restart.assert_called_once()
 
     def test_restarts_for_non_vless_vmess_protocol(self, app, db):
@@ -627,7 +625,7 @@ class TestCheckLimitsXrayInteraction:
         ):
             check_limits_and_reset()
 
-        mock_gen.assert_called_once()
+        assert mock_gen.call_args_list == [call(publish=False), call()]
         mock_remove.assert_not_called()
         mock_restart.assert_called_once()
 
@@ -663,13 +661,24 @@ def _make_stats_stub(per_call_value: int):
 
     def _query(*_args, **_kwargs):
         resp = MagicMock()
-        leaf = MagicMock()
-        leaf.value = per_call_value
-        resp.stat = [leaf]
+        resp.stat = _absolute_stats(per_call_value)
         return resp
 
     stub.QueryStats.side_effect = _query
     return stub
+
+
+def _absolute_stats(value):
+    from types import SimpleNamespace
+    from panel_core.services.runtime_identity import build_runtime_email
+
+    identities = [("user", build_runtime_email(client.inbound_tag, client.email)) for client in Client.query.all()]
+    identities.extend(("inbound", inbound.tag) for inbound in Inbound.query.all())
+    return [
+        SimpleNamespace(name=f"{kind}>>>{identity}>>>traffic>>>{direction}", value=value)
+        for kind, identity in identities
+        for direction in ("uplink", "downlink")
+    ]
 
 
 class TestSyncTrafficTransactionShape:
@@ -684,9 +693,7 @@ class TestSyncTrafficTransactionShape:
         def _on_query(*_a, **_kw):
             call_order.append("grpc")
             resp = MagicMock()
-            leaf = MagicMock()
-            leaf.value = 5_000
-            resp.stat = [leaf]
+            resp.stat = _absolute_stats(5_000)
             return resp
 
         def _on_upsert(*_a, **_kw):
@@ -698,7 +705,7 @@ class TestSyncTrafficTransactionShape:
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
-            patch("panel_core.services.stats._upsert_snapshot", side_effect=_on_upsert),
+            patch("panel_core.services.traffic_store._upsert_snapshot", side_effect=_on_upsert),
         ):
             sync_traffic_stats()
 
@@ -806,8 +813,8 @@ class TestCheckLimitsTransactionShape:
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
             patch("panel_core.services.stats._api_remove_user_grpc", side_effect=_on_grpc_remove),
-            patch("panel_core.services.stats.generate_config_file"),
-            patch("panel_core.services.stats.restart_xray_container"),
+            patch("panel_core.services.runtime_apply.generate_config_file"),
+            patch("panel_core.services.runtime_apply.restart_xray_container"),
         ):
             check_limits_and_reset()
 
@@ -815,10 +822,9 @@ class TestCheckLimitsTransactionShape:
         write_indices = [i for i, op in enumerate(order) if op == "sql_write"]
         assert grpc_indices, f"No gRPC calls recorded — fixture didn't exercise gRPC paths. Order: {order}"
         assert write_indices, f"No SQL writes recorded — check_limits should commit Client.enable=False. Order: {order}"
-        assert max(grpc_indices) < min(write_indices), (
-            f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
-            f"This holds the SQLite write lock across gRPC calls. Order: {order}"
-        )
+        for index in grpc_indices:
+            boundary = max((i for i in range(index) if order[i] == "commit"), default=-1)
+            assert "sql_write" not in order[boundary + 1 : index], f"gRPC ran inside a SQL write transaction: {order}"
 
 
 def test_reset_user_traffic_goes_through_the_gateway(app, db):
@@ -834,10 +840,12 @@ def test_reset_user_traffic_goes_through_the_gateway(app, db):
 
     gateway = MagicMock()
     gateway.has_local_xray.return_value = True
+    gateway.read_traffic_counters.return_value = ("test-epoch", {})
     with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
         reset_user_traffic("DE-vless", "u1")
 
-    gateway.reset_user_counters.assert_called_once()
+    gateway.read_traffic_counters.assert_called_once_with()
+    gateway.reset_user_counters.assert_not_called()
     client = Client.query.filter_by(inbound_tag="DE-vless", email="u1").first()
     assert (client.up, client.down) == (0, 0)
 
@@ -877,10 +885,16 @@ def test_bulk_delete_users_goes_through_the_gateway(app, db):
     gateway = MagicMock()
     gateway.has_local_xray.return_value = True
     gateway.remove_user.return_value = True
-    with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
+    gateway.read_traffic_counters.return_value = ("test-epoch", {})
+    with (
+        patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway),
+        patch("panel_core.services.runtime_apply.generate_config_file", gateway.apply_config),
+        patch("panel_core.services.runtime_apply.restart_xray_container", gateway.restart),
+    ):
         deleted = bulk_delete_users([{"tag": "DE-vless", "email": "u3"}])
 
     assert deleted == 1
-    gateway.apply_config.assert_called_once()
-    gateway.remove_user.assert_called_once_with("DE-vless", "u3")
+    assert gateway.apply_config.call_args_list == [call(publish=False), call()]
+    gateway.restart.assert_called_once()
+    gateway.remove_user.assert_not_called()
     assert Client.query.filter_by(email="u3").first() is None

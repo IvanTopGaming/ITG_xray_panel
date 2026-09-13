@@ -267,6 +267,13 @@ function TariffRow({
               {tariff.visibility === 'archived' && <Badge tone="zinc">archived</Badge>}
               {!tariff.enabled && <Badge tone="rose">disabled</Badge>}
             </span>
+            {tariff.rollout && (
+              <span className="block text-xs text-amber-300" title={tariff.rollout.operation_id}>
+                {tariff.rollout.last_error
+                  ? 'Access update failed; retry pending'
+                  : 'Access update pending'}
+              </span>
+            )}
           </div>
         </div>
       </td>

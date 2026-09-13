@@ -43,7 +43,7 @@ services:
       - "sh"
       - "-c"
       - >
-        printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +select &bot:events\nuser bot on >%s -@all +subscribe +psubscribe +unsubscribe +ping +select &bot:events\nuser monitoring on >%s -@all +info +config|get +client|list +client|setname +latency +slowlog +ping +select\n'
+        printf 'user default off\nuser panel on >%s ~* &* +@all -@dangerous\nuser node on >%s -@all +publish +ping +select &bot:events\nuser bot on >%s -@all +subscribe +psubscribe +unsubscribe +ping +select &bot:events\nuser monitoring on >%s -@all +info +config|get +client|list +client|setname +latency +slowlog +ping +select\n'
         "$$REDIS_PANEL_PASSWORD" "$$REDIS_NODE_PASSWORD" "$$REDIS_BOT_PASSWORD" "$$REDIS_MONITORING_PASSWORD" > /tmp/users.acl &&
         exec redis-server --aclfile /tmp/users.acl --save "" --appendonly no
         --port 0 --tls-port 6379
@@ -72,13 +72,23 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD}
       BACKUP_DIR: /backups
       BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-21600}
+      BACKUP_STALE_AFTER_INTERVALS: ${BACKUP_STALE_AFTER_INTERVALS:-3}
+      BACKUP_SUCCESS_FILE: /backups/.last-success
     volumes:
       - ./pg_backups:/backups
       - ./scripts/pg_backup.sh:/usr/local/bin/pg_backup.sh:ro
+      - ./scripts/pg_backup_health.sh:/usr/local/bin/pg_backup_health.sh:ro
     entrypoint:
       - "bash"
       - "-c"
-      - "while true; do /usr/local/bin/pg_backup.sh || true; sleep ${BACKUP_INTERVAL_SECONDS:-21600}; done"
+      - "while true; do /usr/local/bin/pg_backup.sh || true; sleep $${BACKUP_INTERVAL_SECONDS}; done"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/pg_backup_health.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30m
 
   offsite-backup:
     image: ${OFFSITE_IMAGE:-}

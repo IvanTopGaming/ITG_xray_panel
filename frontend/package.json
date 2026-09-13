@@ -3,7 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "npm run build --workspace @panel/admin && npm run build --workspace @panel/node && npm run build --workspace @panel/sub-page",
     "build:admin": "npm run build --workspace @panel/admin",
@@ -14,6 +16,7 @@
     "dev:node": "npm run dev --workspace @panel/node",
     "dev:sub": "npm run dev --workspace @panel/sub-page",
     "typecheck": "tsc --noEmit -p packages/ui-core && tsc --noEmit -p packages/admin && tsc --noEmit -p packages/node && tsc --noEmit -p packages/sub-page",
+    "test:reliability": "node --test reliability-regressions.test.cjs",
     "lint": "eslint packages",
     "lint:fix": "eslint packages --fix",
     "format": "prettier --write packages",
@@ -45,10 +48,12 @@
     "@vitejs/plugin-react": "^5.1.4",
     "autoprefixer": "^10.4.17",
     "eslint": "^9.0.0",
+    "esbuild": "0.27.3",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "postcss": "^8.4.35",
+    "react-test-renderer": "18.3.1",
     "prettier": "^3.2.5",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.2.2",

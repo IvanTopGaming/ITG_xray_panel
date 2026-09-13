@@ -25,9 +25,9 @@ import pytest
 from panel_core.db_migration import CURRENT_DB_VERSION, RETIRED_TABLES, migrate_sqlite_db
 
 
-def test_current_db_version_is_28():
-    assert CURRENT_DB_VERSION == 28, (
-        "28 adds panel_state_mirror and the linked_panel transfer columns. Bumping the number "
+def test_current_db_version_is_29():
+    assert CURRENT_DB_VERSION == 29, (
+        "29 adds durable lifecycle, runtime, delivery and federation ordering state. Bumping the number "
         f"without adding a matching schema patch leaves live databases behind; got {CURRENT_DB_VERSION}"
     )
 

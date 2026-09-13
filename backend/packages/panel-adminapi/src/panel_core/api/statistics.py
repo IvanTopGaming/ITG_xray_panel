@@ -2,7 +2,7 @@ import json
 
 from flask import Blueprint, jsonify, request
 from sqlalchemy import func, literal_column, text
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from panel_core.extensions import db
 from panel_core.models import Client, Inbound, TrafficSnapshot, DomainStat
@@ -57,7 +57,10 @@ def _resolve_range(args):
         if until_bucket == since_bucket:
             until_bucket += 3600
         since_date = datetime.fromtimestamp(since_bucket).date().isoformat()
-        until_date = datetime.fromtimestamp(until_bucket).date().isoformat()
+        end = datetime.fromtimestamp(until_bucket)
+        until_date = (
+            end.date() + (timedelta(days=1) if end.time() != datetime.min.time() else timedelta())
+        ).isoformat()
         return since_bucket, since_date, until_bucket, until_date
     period = args.get("period", "7d")
     since_bucket, since_date = _since_bucket(period)
@@ -121,7 +124,7 @@ def _top_domains_sql(since_date, until_date, email_filter="", tag_filter=""):
         where.append("date >= :since_date")
         params["since_date"] = since_date
     if until_date:
-        where.append("date <= :until_date")
+        where.append("date < :until_date")
         params["until_date"] = until_date
     if email_filter:
         where.append("client_email = :email")
@@ -165,8 +168,13 @@ def get_overview():
     inbounds = Inbound.query.all()
     ib_protocols = {ib.tag: ib.protocol for ib in inbounds}
 
-    total_up_alltime = sum(c.up for c in clients)
-    total_down_alltime = sum(c.down for c in clients)
+    total_up_alltime, total_down_alltime = (
+        db.session.query(
+            func.coalesce(func.sum(TrafficSnapshot.up), 0), func.coalesce(func.sum(TrafficSnapshot.down), 0)
+        )
+        .filter(TrafficSnapshot.entity_type == "user")
+        .one()
+    )
 
     user_snaps_q = db.session.query(
         TrafficSnapshot.entity_id,
@@ -369,7 +377,7 @@ def get_domain_users():
     if since_date:
         q = q.filter(DomainStat.date >= since_date)
     if until_date:
-        q = q.filter(DomainStat.date <= until_date)
+        q = q.filter(DomainStat.date < until_date)
 
     rows = (
         q.group_by(DomainStat.client_email, DomainStat.inbound_tag)

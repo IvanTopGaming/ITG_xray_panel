@@ -220,7 +220,7 @@ def test_aggregate_header_counts_remote_child_panel_key(client, app, user_with_t
                         "up": 95 * gb,
                         "down": 0,
                         "limit_bytes": 100 * gb,
-                        "expiry_time": 500_000,
+                        "expiry_time": 4_000_000_000_000,
                         "telegram_id": 700,
                     }
                 ],

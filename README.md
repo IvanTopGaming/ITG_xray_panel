@@ -523,7 +523,7 @@ docker buildx build --build-arg UI_PACKAGE=node --build-context project=. \
 
 Every push runs: `ruff check` + `ruff format --check` (backend & bot), `npm run typecheck`, ESLint, Prettier, the frontend build, both test suites, `go vet` + `go test` for caddygen, shellcheck over every tracked `*.sh`, and hadolint. All must pass before code reaches `main`.
 
-Releases are driven entirely by **`versions.json` on `main`**: bump the services you want to ship, mirror the pins in every `.env.<host>.example` that declares them, and merge. CI diffs `versions.json` against the previous commit and builds **only the services whose version changed**. See `CLAUDE.md` for the full workflow, including the federation deploy-ordering rule (deploy the master and every linked panel in the same wave whenever the DB schema version changes).
+Releases are driven entirely by **`versions.json` on `main`**: bump the services you want to ship, mirror the pins in every `.env.<host>.example` that declares them, and merge. CI diffs `versions.json` against the previous commit and builds **only the services whose version changed**. See `AGENTS.md` for the full workflow, including the federation deploy-ordering rule (deploy the master and every linked panel in the same wave whenever the DB schema version changes).
 
 </details>
 

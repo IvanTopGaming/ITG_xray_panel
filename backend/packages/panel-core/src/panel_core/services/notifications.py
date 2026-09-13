@@ -55,7 +55,6 @@ def emit_if_new(event_type, kind, client, extra) -> bool:
     if already is not None:
         return False
     db.session.add(NotificationLog(telegram_id=client.telegram_id, client_id=client.id, kind=kind))
-    db.session.commit()
     payload = {
         "kind": kind,
         "client_id": client.id,
@@ -63,10 +62,14 @@ def emit_if_new(event_type, kind, client, extra) -> bool:
         "inbound_tag": client.inbound_tag,
         "node": _node_id(),
         "cycle": client.last_reset_time or 0,
+        "access_generation": client.access_generation or "",
+        "traffic_generation": client.traffic_generation or "",
         **extra,
         "tariff_id": client.tariff_id,
     }
-    bot_events.publish(event_type, client.telegram_id, payload)
+    event = bot_events.enqueue(event_type, client.telegram_id, payload)
+    db.session.commit()
+    bot_events.publish_stored(event)
     return True
 
 

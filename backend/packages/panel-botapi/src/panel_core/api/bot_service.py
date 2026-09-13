@@ -20,7 +20,6 @@ from panel_core.models import (
 from panel_core.services import bot_events, tariff_delivery
 from panel_core.services.bot_status import record_bot_username, record_bot_version
 from panel_core.services.open_access import has_open_ended_access
-from panel_core.services.provisioning import apply_tariff_for_user
 from panel_core.utils import bot_service_token_required
 
 bp = Blueprint("bot_service", __name__)
@@ -77,7 +76,19 @@ def get_texts():
         )
 
     rows = BotText.query.filter_by(lang=lang).all()
-    texts = {row.key: row.text for row in rows}
+    from panel_core.services.bot_texts import text_defaults, validate_bot_text
+
+    defaults = text_defaults()
+    texts = {}
+    for row in rows:
+        try:
+            validate_bot_text(row.key, row.text, defaults)
+        except ValueError:
+            fallback = (defaults.get(row.key) or {}).get(lang)
+            if fallback is not None:
+                texts[row.key] = fallback
+        else:
+            texts[row.key] = row.text
 
     if rows:
         latest = max((r.updated_at for r in rows if r.updated_at is not None), default=None)
@@ -158,6 +169,9 @@ def _deliverable_trial_tariff():
 @bp.route("/bot-service/trial/activate", methods=["POST"])
 @bot_service_token_required
 def activate_trial():
+    from panel_core.models import ProvisionOperation
+    from panel_core.services.provisioning_operations import queue_grant, run_operation
+
     payload = request.get_json(silent=True) or {}
     tg_id = payload.get("telegram_id")
     if not isinstance(tg_id, int) or isinstance(tg_id, bool):
@@ -169,8 +183,17 @@ def activate_trial():
         db.session.add(user)
         db.session.flush()
 
+    if user.blocked:
+        return jsonify({"error": "account_blocked"}), 403
     if user.trial_used_at is not None:
         return jsonify({"error": "trial already used"}), 409
+
+    if user.trial_operation_id:
+        operation = db.session.get(ProvisionOperation, user.trial_operation_id)
+        if operation is None:
+            return jsonify({"error": "trial_operation_requires_review"}), 409
+        result = run_operation(operation)
+        return jsonify(result), 202 if result["panel_failures"] else 200
 
     if has_open_ended_access(tg_id):
         return jsonify({"error": "open_ended_access"}), 409
@@ -181,78 +204,71 @@ def activate_trial():
 
     claimed = db.session.execute(
         update(TelegramUser)
-        .where(TelegramUser.telegram_id == tg_id, TelegramUser.trial_used_at.is_(None))
-        .values(trial_used_at=datetime.utcnow())
-    )
-    db.session.commit()
-    if claimed.rowcount == 0:
-        return jsonify({"error": "trial already used"}), 409
-
-    try:
-        result = apply_tariff_for_user(
-            tg_id,
-            trial_tariff,
-            source="trial",
-            operation_id=f"trial:{tg_id}:{trial_tariff.id}",
+        .where(
+            TelegramUser.telegram_id == tg_id,
+            TelegramUser.trial_used_at.is_(None),
+            TelegramUser.trial_operation_id.is_(None),
         )
-    except Exception:
+        .values(trial_operation_id=f"trial:{tg_id}:{trial_tariff.id}")
+    )
+    if claimed.rowcount == 0:
         db.session.rollback()
-        db.session.execute(update(TelegramUser).where(TelegramUser.telegram_id == tg_id).values(trial_used_at=None))
-        db.session.commit()
-        raise
-
-    return jsonify(result)
+        return jsonify({"error": "trial already used"}), 409
+    operation = queue_grant(tg_id, trial_tariff, source="trial", operation_id=f"trial:{tg_id}:{trial_tariff.id}")
+    result = run_operation(operation)
+    return jsonify(result), 202 if result["panel_failures"] else 200
 
 
 @bp.route("/bot-service/users/<int:tg_id>/state", methods=["GET"])
 @bot_service_token_required
 def get_user_state(tg_id):
 
-    user = db.session.get(TelegramUser, tg_id)
-    trial_available = (
-        (user is None or user.trial_used_at is None)
-        and _deliverable_trial_tariff() is not None
-        and not has_open_ended_access(tg_id)
+    from panel_core.services.subscription_sources import (
+        SubscriptionUnavailable,
+        access_reason,
+        remote_subscription_clients,
     )
-
-    clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
-    clients_data = [{**c.to_dict(), "links": []} for c in clients]
-
-    from urllib.parse import urlparse
-
-    from panel_core.models import LinkedPanel
-    from panel_core.services.panel_proxy import get_panel_snapshot
     from panel_core.services.share_links import build_remote_link
 
-    for panel in LinkedPanel.query.filter_by(enable=True).all():
-        snapshot = get_panel_snapshot(panel.id)
-        if not snapshot:
-            continue
-        try:
-            panel_host = urlparse(panel.url).hostname or ""
-        except ValueError:
-            panel_host = ""
-        for ib_data in snapshot.get("inbounds", []):
-            for c in ib_data.get("clients", []):
-                if c.get("telegram_id") != tg_id or not c.get("enable", True):
-                    continue
-                clients_data.append(
-                    {
-                        **c,
-                        "inbound_tag": ib_data.get("tag", ""),
-                        "inbound_label": ib_data.get("label") or ib_data.get("tag", ""),
-                        "panel_id": panel.id,
-                        "panel_name": panel.name,
-                        "links": build_remote_link(panel_host, ib_data, c) if panel_host else [],
-                    }
-                )
+    user = db.session.get(TelegramUser, tg_id)
+    blocked = bool(user and user.blocked)
+    open_ended = has_open_ended_access(tg_id)
+    trial_tariff = _deliverable_trial_tariff() if not blocked and not open_ended else None
+    trial_available = (user is None or user.trial_used_at is None) and trial_tariff is not None
+
+    clients = (
+        []
+        if blocked
+        else [client for client in Client.query.filter_by(telegram_id=tg_id).all() if access_reason(client) == "active"]
+    )
+    clients_data = [{**c.to_dict(), "links": []} for c in clients]
+    try:
+        pairs = [] if blocked else remote_subscription_clients(telegram_id=tg_id)
+        panel_names = {} if blocked else dict(db.session.query(LinkedPanel.id, LinkedPanel.name).all())
+        for panel_host, ib_data, remote_client, stream in pairs:
+            links = build_remote_link(panel_host, {**ib_data, "stream_settings": stream}, remote_client)
+            if not links:
+                raise SubscriptionUnavailable("Active protocol has no bot delivery representation")
+            clients_data.append(
+                {
+                    **remote_client,
+                    "inbound_tag": ib_data.get("tag", ""),
+                    "inbound_label": ib_data.get("label") or ib_data.get("tag", ""),
+                    "panel_id": ib_data["panel_id"],
+                    "panel_name": panel_names.get(ib_data["panel_id"], ""),
+                    "links": links,
+                }
+            )
+    except (SubscriptionUnavailable, TypeError, ValueError):
+        current_app.logger.exception("bot user state unavailable: telegram_id=%s", tg_id)
+        return jsonify({"error": "subscription_unavailable"}), 503, {"Cache-Control": "no-store", "Retry-After": "30"}
 
     if clients_data:
         from panel_core.services.expiry import nearest_expiry
 
         expires_at_ms = nearest_expiry(
             [c.get("expiry_time") for c in clients_data],
-            fallback=0,
+            fallback=None,
         )
     else:
         expires_at_ms = None
@@ -266,8 +282,9 @@ def get_user_state(tg_id):
             "telegram_id": tg_id,
             "language": user.language if user else "ru",
             "language_chosen": user.language_chosen if user else False,
-            "open_ended_access": has_open_ended_access(tg_id),
+            "open_ended_access": open_ended,
             "trial_available": trial_available,
+            "trial_days": trial_tariff.period_days if trial_tariff is not None else None,
             "trial_used_at": user.trial_used_at.isoformat() if user and user.trial_used_at else None,
             "blocked": user.blocked if user else False,
             "clients": clients_data,
@@ -363,6 +380,7 @@ def list_tariffs_for_bot():
         active_tariff_ids = {r[0] for r in rows if r[0] is not None}
 
     from panel_core.services.panel_proxy import get_panel_snapshot
+    from panel_core.services.subscription_sources import access_reason
 
     inbound_labels: dict[tuple[int | None, str], str | None] = {
         (None, tag): label for tag, label in db.session.query(Inbound.tag, Inbound.label).all()
@@ -376,6 +394,15 @@ def list_tariffs_for_bot():
             if not tag:
                 continue
             inbound_labels[(panel.id, tag)] = ib_data.get("label")
+            if telegram_id is not None:
+                for remote_client in ib_data.get("clients", []):
+                    if (
+                        remote_client.get("telegram_id") == telegram_id
+                        and remote_client.get("tariff_id") is not None
+                        and remote_client.get("expiry_time") is not None
+                        and access_reason(remote_client) == "active"
+                    ):
+                        active_tariff_ids.add(remote_client["tariff_id"])
 
     return jsonify(
         [_serialize_tariff_for_bot(t, active_ids=active_tariff_ids, inbound_labels=inbound_labels) for t in ordered]
@@ -392,10 +419,11 @@ def cancel_payment_for_bot(payment_id):
     p = Payment.query.filter_by(id=payment_id, telegram_id=tg_id).first()
     if p is None:
         return jsonify({"error": "not_found"}), 404
-    if p.status == "pending":
-        p.status = "cancelled"
-        db.session.commit()
-    return jsonify({"id": p.id, "status": p.status})
+    from panel_core.services import billing
+
+    p.cancel_requested_at = billing._now()
+    db.session.commit()
+    return jsonify({"id": p.id, "status": p.status, "ui_closed": True, **billing.payment_state(p)})
 
 
 @bp.route("/bot-service/payments/<int:payment_id>/chat-coords", methods=["POST"])
@@ -463,6 +491,8 @@ def claim_notification_endpoint():
 
     if telegram_id is None or not kind:
         return jsonify({"error": "telegram_id and kind are required"}), 400
+    if not isinstance(data.get("scope", ""), str) or len(data.get("scope", "")) > 200:
+        return jsonify({"error": "scope must be at most 200 characters"}), 400
 
     from panel_core.services.notifications import claim_notification
 
@@ -473,7 +503,7 @@ def claim_notification_endpoint():
             tariff_id=data.get("tariff_id"),
             scope=str(data.get("scope") or ""),
         )
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception:
         current_app.logger.exception("notification claim failed")

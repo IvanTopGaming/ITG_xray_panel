@@ -6,8 +6,9 @@ def has_local_xray():
     return get_xray_gateway().has_local_xray()
 
 
-def generate_config_file(validate: bool = True):
-    return get_xray_gateway().apply_config(validate=validate)
+def generate_config_file(validate: bool = True, *, publish: bool = True):
+    options = {} if publish else {"publish": False}
+    return get_xray_gateway().apply_config(validate=validate, **options)
 
 
 def restart_xray_container():

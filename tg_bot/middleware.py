@@ -37,7 +37,17 @@ class LangMiddleware(BaseMiddleware):
         blocked = False
         language_chosen = True
         if tg_user is not None:
-            lang, blocked, language_chosen = await self._resolve(tg_user)
+            try:
+                lang, blocked, language_chosen = await self._resolve(tg_user)
+            except Exception as exc:
+                logger.warning("user sync unavailable for %s: %s", tg_user.id, type(exc).__name__)
+                lang = "ru" if (tg_user.language_code or "ru").lower().startswith("ru") else "en"
+                text = await self._i18n.t("errors.service_unavailable", lang)
+                if getattr(event, "data", None) is not None:
+                    await event.answer(text, show_alert=True)
+                else:
+                    await event.answer(text)
+                return None
         if blocked:
             logger.info("ignoring update from blocked user %s", tg_user and tg_user.id)
             return None
@@ -51,23 +61,14 @@ class LangMiddleware(BaseMiddleware):
         cached = self._user_cache.get(user.id)
         if cached is not None and (time.time() - cached[0]) < _USER_CACHE_TTL:
             return cached[1], cached[2], cached[3]
-        try:
-            response = await self._backend.upsert_user(
-                telegram_id=user.id,
-                username=user.username,
-                language_code=user.language_code,
-            )
-            lang = response.get("language", "ru")
-            blocked = bool(response.get("blocked", False))
-
-            language_chosen = bool(response.get("language_chosen", True))
-        except Exception as exc:
-            logger.info("upsert_user failed for %s: %s", user.id, exc)
-            code = (user.language_code or "ru").lower()
-            lang = "ru" if code.startswith("ru") else "en"
-            blocked = False
-
-            language_chosen = True
+        response = await self._backend.upsert_user(
+            telegram_id=user.id,
+            username=user.username,
+            language_code=user.language_code,
+        )
+        lang = response.get("language", "ru")
+        blocked = bool(response.get("blocked", False))
+        language_chosen = bool(response.get("language_chosen", True))
         async with self._lock:
             self._user_cache[user.id] = (time.time(), lang, blocked, language_chosen)
         return lang, blocked, language_chosen

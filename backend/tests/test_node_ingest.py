@@ -28,7 +28,7 @@ def test_node_snapshot_upsert_is_gone():
     assert not hasattr(stats, "_upsert_node_snapshot"), "the worker-side re-export must go too"
 
 
-def test_poll_linked_panels_owns_only_health_fields():
+def test_poll_linked_panels_owns_health_and_identity_fences_not_traffic():
     source = source_path("jobs/panels.py").read_text()
     tree = ast.parse(source)
 
@@ -43,9 +43,14 @@ def test_poll_linked_panels_owns_only_health_fields():
         for target in node.targets
         if isinstance(target, ast.Attribute)
     }
-    assert assigned <= {"status", "last_poll", "last_error", "transfer_state"}, (
-        f"poll_linked_panels should only own LinkedPanel health fields, got {sorted(assigned)}"
-    )
+    assert assigned <= {
+        "status",
+        "last_poll",
+        "last_error",
+        "transfer_state",
+        "current_instance_id",
+        "poll_applied_generation",
+    }, f"poll_linked_panels should only own health and identity fences, got {sorted(assigned)}"
 
 
 def test_poll_linked_panels_still_refreshes_status_and_snapshot_cache(app, db):
@@ -68,6 +73,7 @@ def test_poll_linked_panels_still_refreshes_status_and_snapshot_cache(app, db):
     db.session.commit()
 
     snapshot = {
+        "instance_id": "node",
         "timestamp": int(time.time() * 1000),
         "inbounds": [{"tag": "vless", "up": 1000, "down": 2000, "clients": [{"email": "a"}]}],
     }
@@ -75,8 +81,16 @@ def test_poll_linked_panels_still_refreshes_status_and_snapshot_cache(app, db):
     written = {}
 
     class _FakeRedis:
-        def setex(self, key, ttl, val):
-            written[key] = val
+        def eval(self, script, numkeys, *args):
+            assert numkeys == 6
+            keys, values = args[:numkeys], args[numkeys:]
+            written[keys[0]] = values[1]
+            written[keys[1]] = "online"
+            written[keys[2]] = values[2]
+            written[keys[3]] = values[1]
+            written[keys[4]] = values[2]
+            written[keys[5]] = values[0]
+            return 1
 
     client_mock = MagicMock()
     client_mock.snapshot.return_value = snapshot

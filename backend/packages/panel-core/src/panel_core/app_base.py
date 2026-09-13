@@ -96,9 +96,12 @@ def register_readyz(app):
 def ensure_scheduler_job(job_id, func, seconds, *, start_date=None, next_run_time=None):
     if scheduler.get_job(job_id) is None:
 
-        def _wrapped(_func=func, _job_id=job_id, _seconds=seconds):
-            with scheduler.app.app_context():
-                run_job_logged(_job_id, _seconds, _func)
+        def _wrapped(_func=func, _job_id=job_id, _seconds=seconds, _app=scheduler.app):
+            with _app.app_context():
+                from panel_core.services.maintenance import maintenance_operation
+
+                with maintenance_operation():
+                    run_job_logged(_job_id, _seconds, _func)
 
         extra = {} if next_run_time is None else {"next_run_time": next_run_time}
         scheduler.add_job(id=job_id, func=_wrapped, trigger="interval", seconds=seconds, start_date=start_date, **extra)
@@ -106,6 +109,9 @@ def ensure_scheduler_job(job_id, func, seconds, *, start_date=None, next_run_tim
 
 def start_scheduler():
     if not scheduler.running:
+        from panel_core.services.job_status import register_jobs
+
+        register_jobs(scheduler.app, [(job.id, job.trigger.interval.total_seconds()) for job in scheduler.get_jobs()])
         scheduler.start()
 
 
@@ -158,8 +164,6 @@ def _resolve_admin_bootstrap_credentials(panel_host):
 def run_startup_migration(app, db_path, *, seed_bot_texts=True, drop_dead_tables=False):
     if is_postgres(app.config["SQLALCHEMY_DATABASE_URI"]):
         return migrate_postgres_db(logger=app.logger, drop_dead_tables=drop_dead_tables)
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    db.create_all()
     return migrate_sqlite_db(db_path, logger=app.logger, seed_bot_texts=seed_bot_texts)
 
 
@@ -175,6 +179,7 @@ def build_base_app(role, *, public_surface=True):
     setup_logging()
     bound_role = bind_role(role)
     app = Flask("panel_core", root_path=PACKAGE_ROOT, instance_path=INSTANCE_PATH)
+    app.config["PANEL_ROLE"] = bound_role
     init_request_logging(app)
     app.logger.info("panel role bound (role=%s)", bound_role)
 
@@ -307,10 +312,55 @@ def migrate_schema(app, db_path, *, seed_bot_texts=True, drop_dead_tables=False)
 
 
 def _require_schema():
-    from sqlalchemy import inspect
+    from sqlalchemy import UniqueConstraint, inspect, text
+    from panel_core.db_migration import CURRENT_DB_VERSION
+    from panel_core.pg_migrate import PG_DEAD_TABLES
+    from panel_core.schema_metadata import model_metadata
+    from panel_core.panel_role import is_worker
 
-    if not inspect(db.engine).has_table("admin"):
+    inspector = inspect(db.engine)
+    tables = set(inspector.get_table_names())
+    if "admin" not in tables:
         raise RuntimeError(SCHEMA_MISSING_HINT)
+    if db.engine.dialect.name == "sqlite":
+        version = db.session.execute(text("PRAGMA user_version")).scalar() or 0
+    elif "schema_version" in tables:
+        version = db.session.execute(text("SELECT version FROM schema_version LIMIT 1")).scalar() or 0
+    else:
+        version = 0
+    if version != CURRENT_DB_VERSION:
+        raise RuntimeError(
+            f"Database schema version {version} is incompatible; expected {CURRENT_DB_VERSION}. {SCHEMA_MISSING_HINT}"
+        )
+    missing = []
+    for table in model_metadata().sorted_tables:
+        if db.engine.dialect.name == "postgresql" and not is_worker() and table.name in PG_DEAD_TABLES:
+            continue
+        if table.name not in tables:
+            missing.append(table.name)
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table.name)}
+        missing.extend(f"{table.name}.{column.name}" for column in table.columns if column.name not in columns)
+        indexes = {index["name"] for index in inspector.get_indexes(table.name)}
+        missing.extend(index.name for index in table.indexes if index.name not in indexes)
+        uniques = {tuple(item["column_names"]) for item in inspector.get_unique_constraints(table.name)}
+        uniques.update(tuple(item["column_names"]) for item in inspector.get_indexes(table.name) if item["unique"])
+        if db.engine.dialect.name == "sqlite":
+            quote = db.engine.dialect.identifier_preparer.quote_identifier
+            for index in db.session.execute(text(f"PRAGMA index_list({quote(table.name)})")).all():
+                if index[2] and not index[4]:
+                    unique_columns = db.session.execute(text(f"PRAGMA index_info({quote(index[1])})")).all()
+                    uniques.add(tuple(column[2] for column in unique_columns))
+        for constraint in table.constraints:
+            if isinstance(constraint, UniqueConstraint):
+                columns = tuple(column.name for column in constraint.columns)
+                if columns not in uniques:
+                    missing.append(f"{table.name}: unique({','.join(columns)})")
+        primary = inspector.get_pk_constraint(table.name).get("constrained_columns") or []
+        if tuple(primary) != tuple(column.name for column in table.primary_key):
+            missing.append(f"{table.name}: primary key")
+    if missing:
+        raise RuntimeError(f"Database schema is incomplete: {', '.join(missing)}. {SCHEMA_MISSING_HINT}")
 
 
 SYSTEM_OUTBOUND_TAGS = ("direct", "block")

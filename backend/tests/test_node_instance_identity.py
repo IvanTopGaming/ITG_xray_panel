@@ -89,7 +89,7 @@ def restore_app(tmp_path):
         _db.drop_all()
 
 
-def test_file_restore_mints_a_fresh_instance_id(restore_app, tmp_path, monkeypatch):
+def test_file_restore_keeps_host_identity_instead_of_backup_identity(restore_app, tmp_path, monkeypatch):
     import io
     import sqlite3
 
@@ -106,8 +106,8 @@ def test_file_restore_mints_a_fresh_instance_id(restore_app, tmp_path, monkeypat
 
     from panel_core.api import backup as backup_api
 
-    monkeypatch.setattr(backup_api, "generate_config_file", lambda *a, **k: None)
-    monkeypatch.setattr(backup_api, "restart_xray_container", lambda *a, **k: None)
+    monkeypatch.setattr("panel_core.services.runtime_apply.generate_config_file", lambda *a, **k: None)
+    monkeypatch.setattr("panel_core.services.runtime_apply.restart_xray_container", lambda *a, **k: None)
     monkeypatch.setattr(backup_api, "_schedule_worker_restart", lambda *a, **k: None)
     monkeypatch.setattr(backup_api, "_db_path", lambda: str(tmp_path / "panel.db"))
 
@@ -124,7 +124,5 @@ def test_file_restore_mints_a_fresh_instance_id(restore_app, tmp_path, monkeypat
 
     assert resp.status_code == 200, resp.get_json()
     fresh = get_or_create_instance_id()
-    assert fresh not in (stale, "copied-from-another-box"), (
-        "после заливки чужой базы идентификатор экземпляра обязан быть новым, иначе две машины "
-        "будут честно называться одним экземпляром и проверка замещения перестанет различать их"
-    )
+    assert fresh == stale
+    assert fresh != "copied-from-another-box"

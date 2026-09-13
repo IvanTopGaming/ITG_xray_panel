@@ -64,11 +64,13 @@ def test_reset_inbound_traffic_goes_through_the_gateway(app, db):
 
     gateway = MagicMock()
     gateway.has_local_xray.return_value = True
+    gateway.read_traffic_counters.return_value = ("test-epoch", {})
     with patch("panel_core.services.traffic_store.get_xray_gateway", return_value=gateway):
         reset_inbound_traffic("NL-vless")
 
-    gateway.reset_inbound_counters.assert_called_once_with("NL-vless")
-    gateway.reset_user_counters.assert_called_once()
+    gateway.read_traffic_counters.assert_called_once_with()
+    gateway.reset_inbound_counters.assert_not_called()
+    gateway.reset_user_counters.assert_not_called()
     ib = Inbound.query.filter_by(tag="NL-vless").first()
     client = Client.query.filter_by(inbound_tag="NL-vless", email="n1").first()
     assert (ib.up, ib.down) == (0, 0)

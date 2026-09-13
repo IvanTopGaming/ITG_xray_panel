@@ -87,7 +87,14 @@ class TestBuildStreamSettings:
         from panel_core.xray.protocol import _build_stream_settings
 
         result = _build_stream_settings(
-            {"protocol": "vless", "network": "tcp", "security": "tls", "tlsAlpn": "h2,http/1.1"}
+            {
+                "protocol": "vless",
+                "network": "tcp",
+                "security": "tls",
+                "tlsAlpn": "h2,http/1.1",
+                "tlsCertFile": "/etc/xray/certs/server.pem",
+                "tlsKeyFile": "/etc/xray/certs/server.key",
+            }
         )
         assert result["tlsSettings"]["alpn"] == ["h2", "http/1.1"]
 

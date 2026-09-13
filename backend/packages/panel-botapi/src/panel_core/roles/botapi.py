@@ -16,10 +16,11 @@ def create_app():
     ensure_scheduler_job("cleanup_old_payments", cleanup_old_payments, 86400)
     start_scheduler()
 
-    from panel_core.api import bot_service, billing
+    from panel_core.api import bot_service, billing, bot_delivery
 
     app.register_blueprint(bot_service.bp, url_prefix="/api")
     app.register_blueprint(billing.bp, url_prefix="/api")
+    app.register_blueprint(bot_delivery.bp, url_prefix="/api")
 
     app.logger.info("backend ready (db=%s, scheduler started)", sqlite_path)
     return app

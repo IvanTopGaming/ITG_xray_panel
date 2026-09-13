@@ -16,6 +16,7 @@ def test_a_normal_node_publishes(app, db):
     from panel_core.services import bot_events
 
     redis = MagicMock()
+    redis.publish.return_value = 1
     with patch.object(bot_events, "_get_redis", return_value=redis):
         bot_events.publish("traffic_warning", 777, {"percent": 80})
 
@@ -24,7 +25,11 @@ def test_a_normal_node_publishes(app, db):
         "как заглушённый, и тест без него зеленеет на сломанном коде"
     )
     assert BotEvent.query.count() == 1
-    assert BotEvent.query.one().delivered_at is not None
+    row = BotEvent.query.one()
+    assert row.delivered_at is None
+    published = json.loads(redis.publish.call_args.args[1])
+    assert published["source"] == row.source
+    assert published["id"] == row.origin_event_id
 
 
 def test_a_superseded_node_writes_the_row_but_stays_silent(app, db, monkeypatch):
@@ -99,8 +104,8 @@ def test_check_limits_still_disables_but_the_notification_stays_muted_when_super
     with (
         patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
         patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
-        patch("panel_core.services.stats.generate_config_file"),
-        patch("panel_core.services.stats.restart_xray_container"),
+        patch("panel_core.services.runtime_apply.generate_config_file"),
+        patch("panel_core.services.runtime_apply.restart_xray_container"),
         patch.object(bot_events, "_get_redis", return_value=redis),
     ):
         check_limits_and_reset()

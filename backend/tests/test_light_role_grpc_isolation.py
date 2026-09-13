@@ -149,6 +149,8 @@ def bot_role_app(monkeypatch, tmp_path):
 
     from panel_core.roles import botapi
 
+    monkeypatch.setattr(botapi, "start_scheduler", lambda: None)
+
     app = botapi.create_app()
     app.xray_gateway_spy = gateway
     assert gateway.apply_config_calls == 0, (
@@ -211,10 +213,17 @@ def _local_client_count(app):
         return Client.query.count()
 
 
-def test_bot_role_trial_activate_provisions_on_a_node(bot_role_app, bot_role_client):
+def test_bot_role_trial_activate_provisions_on_a_node(bot_role_app, bot_role_client, monkeypatch):
+    monkeypatch.setattr(
+        "panel_core.services.tariff_targets.get_panel_snapshot",
+        lambda _: {"inbounds": [{"tag": "vless-reality", "protocol": "vless"}]},
+    )
     _seed_trial_tariff(bot_role_app, panel_id=7)
 
-    with patch("panel_core.services.panel_proxy.proxy_provision") as m_provision:
+    with patch(
+        "panel_core.services.provisioning_operations.proxy_provision",
+        return_value={"expires_at_ms": 1900000000000, "client": {}},
+    ) as m_provision:
         resp = bot_role_client.post(
             "/api/bot-service/trial/activate",
             json={"telegram_id": 4242},
@@ -227,8 +236,8 @@ def test_bot_role_trial_activate_provisions_on_a_node(bot_role_app, bot_role_cli
     assert (panel_id, telegram_id, inbound_tag) == (7, 4242, "vless-reality")
     assert payload["limit_bytes"] == 10 * 1024**3
     assert _local_client_count(bot_role_app) == 0
-    assert bot_role_app.xray_gateway_spy.apply_config_calls == 1, (
-        f"expected exactly one apply_config() from _sync_after_provision, observed "
+    assert bot_role_app.xray_gateway_spy.apply_config_calls == 0, (
+        f"remote-only provisioning must not apply local config, observed "
         f"{bot_role_app.xray_gateway_spy.apply_config_calls}. {APPLY_CONFIG_HINT}"
     )
 
@@ -307,11 +316,12 @@ def test_bot_role_checkout_is_handled_locally(bot_role_client):
     assert m_checkout.call_args.kwargs == {"telegram_id": 4242, "tariff_id": 1, "lang": "ru"}
 
 
-def test_bot_role_yookassa_webhook_is_served(bot_role_client):
+def test_bot_role_yookassa_webhook_is_served(bot_role_client, monkeypatch):
+    monkeypatch.setattr("panel_core.services.billing.fetch_remote_payment", lambda _: None)
     resp = bot_role_client.post(
         "/api/billing/yookassa/webhook",
         json={"event": "refund.succeeded", "object": {"payment_id": "yk-unknown"}},
     )
 
-    assert resp.status_code == 200
-    assert resp.get_json() == {"ok": True}
+    assert resp.status_code == 503
+    assert resp.get_json()["error"] == "provider_unavailable"

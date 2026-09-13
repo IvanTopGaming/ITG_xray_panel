@@ -77,7 +77,7 @@ def seed_outbounds(app):
 @pytest.fixture(autouse=True)
 def _mock_xray():
     with (
-        patch("panel_core.api.outbound.generate_config_file"),
+        patch("panel_core.services.runtime_apply.generate_config_file"),
         patch("panel_core.api.outbound.restart_xray_container"),
     ):
         yield
@@ -310,7 +310,7 @@ class TestCreateOutbound:
 class TestCreateOutboundValidationGate:
     def test_rejected_config_does_not_persist(self, client, auth_headers, admin):
         with patch(
-            "panel_core.api.outbound.generate_config_file",
+            "panel_core.services.runtime_apply.generate_config_file",
             side_effect=ValueError("Xray rejected the config: boom"),
         ):
             resp = client.post(
@@ -327,7 +327,7 @@ class TestCreateOutboundValidationGate:
         assert Outbound.query.filter_by(tag="test-reject").first() is None
 
     def test_accepted_config_persists(self, client, auth_headers, admin):
-        with patch("panel_core.api.outbound.generate_config_file"):
+        with patch("panel_core.services.runtime_apply.generate_config_file"):
             resp = client.post(
                 "/api/outbounds",
                 headers=auth_headers,

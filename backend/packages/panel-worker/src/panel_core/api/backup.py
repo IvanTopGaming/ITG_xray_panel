@@ -1,18 +1,20 @@
 import datetime
 import logging
 import os
-import shutil
 import signal
 import sqlite3
 import threading
 import time
+import tempfile
+from contextlib import closing
 
 from flask import Blueprint, after_this_request, current_app, g, jsonify, request, send_file
 
 from panel_core.db_config import is_postgres
 from panel_core.extensions import db, limiter
 from panel_core.utils import admin_or_federation_token_required
-from panel_core.xray.facade import generate_config_file, restart_xray_container
+from panel_core.services.maintenance import maintenance_operation
+from panel_core.services.runtime_apply import mark_runtime_dirty, synchronize_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,14 @@ ALLOWED_BACKUP_EXTENSIONS = (".db", ".sqlite", ".sqlite3")
 SQLITE_HEADER = b"SQLite format 3\x00"
 DB_FILENAME = "panel.db"
 DB_BACKUP_SUFFIX = ".bak"
+HOST_SETTING_KEYS = (
+    "node_instance_id",
+    "node_superseded_at",
+    "node_superseded_local_clock_ms",
+    "node_transfer_claimed",
+    "node_transfer_pending_federation_token",
+    "node_transfer_resync_pending",
+)
 POSTGRES_BACKUP_UNSUPPORTED = (
     "This panel keeps its data in Postgres, and the panel backup reads a SQLite file. "
     "Back the data tier up with the pg-backup container from docker-compose.postgres.yml instead."
@@ -54,7 +64,7 @@ def _validate_sqlite_backup(path):
         return "Failed to read uploaded backup"
 
     try:
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn:
             row = conn.execute("PRAGMA integrity_check;").fetchone()
             status = str(row[0]).strip().lower() if row else ""
             if status != "ok":
@@ -85,6 +95,64 @@ def _audit(action):
         logger.warning("%s over the federation token from %s", action, source)
     else:
         logger.info("%s by a panel admin from %s", action, source)
+
+
+def _copy_database(source, target):
+    with closing(sqlite3.connect(source, timeout=10)) as src, closing(sqlite3.connect(target, timeout=10)) as dst:
+        src.backup(dst)
+        dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def _restore_database(candidate, database, backup_path):
+    with maintenance_operation(exclusive=True):
+        from panel_core.db_migration import migrate_sqlite_db
+        from panel_core.models import FederationConfig, SystemSetting, TrafficCounterBaseline, LogCheckpoint
+        from panel_core.services.node_identity import get_or_create_instance_id
+
+        get_or_create_instance_id()
+        host_settings = {
+            row.key: row.value for row in SystemSetting.query.filter(SystemSetting.key.in_(HOST_SETTING_KEYS)).all()
+        }
+        config = db.session.get(FederationConfig, 1)
+        current_link = (
+            {column.name: getattr(config, column.name) for column in FederationConfig.__table__.columns}
+            if config is not None
+            else None
+        )
+        db.session.remove()
+        db.engine.dispose()
+        _copy_database(database, backup_path)
+        replaced = False
+        try:
+            migrate_sqlite_db(candidate, logger=logger, seed_bot_texts=False)
+            replaced = True
+            _copy_database(candidate, database)
+            FederationConfig.query.delete()
+            if current_link is not None:
+                db.session.add(FederationConfig(**current_link))
+            SystemSetting.query.filter(SystemSetting.key.in_(HOST_SETTING_KEYS)).delete(synchronize_session=False)
+            for key, value in host_settings.items():
+                db.session.add(SystemSetting(key=key, value=value))
+            TrafficCounterBaseline.query.delete()
+            LogCheckpoint.query.delete()
+            mark_runtime_dirty()
+            db.session.commit()
+            synchronize_runtime()
+        except Exception:
+            db.session.remove()
+            db.engine.dispose()
+            if replaced:
+                _copy_database(backup_path, database)
+                try:
+                    mark_runtime_dirty()
+                    db.session.commit()
+                    synchronize_runtime()
+                except Exception:
+                    logger.exception("database restore rolled back, but restoring the original Xray runtime failed")
+            raise
+        finally:
+            db.session.remove()
+            db.engine.dispose()
 
 
 @bp.route("/backup", methods=["GET"])
@@ -155,12 +223,12 @@ def restore():
     _audit("database restore requested")
 
     temp_path = ""
-    replaced = False
     try:
         db_folder = _ensure_db_folder()
         db_path = _db_path()
         backup_path = f"{db_path}{DB_BACKUP_SUFFIX}"
-        temp_path = os.path.join(db_folder, f".restore-{int(time.time() * 1000)}.tmp")
+        descriptor, temp_path = tempfile.mkstemp(prefix=".restore-", suffix=".tmp", dir=db_folder)
+        os.close(descriptor)
 
         file.save(temp_path)
         validation_error = _validate_sqlite_backup(temp_path)
@@ -168,31 +236,12 @@ def restore():
             return jsonify({"error": validation_error}), 400
 
         db.session.remove()
-        db.engine.dispose()
-
-        if os.path.exists(db_path):
-            shutil.copy2(db_path, backup_path)
-
-        os.replace(temp_path, db_path)
-        replaced = True
-
-        from panel_core.services.node_identity import regenerate_instance_id
-
-        regenerate_instance_id()
-
-        generate_config_file()
-        restart_xray_container()
+        _restore_database(temp_path, db_path, backup_path)
         _schedule_worker_restart()
 
         return jsonify({"status": "restored"}), 200
     except Exception:
-        if replaced:
-            backup_path = f"{_db_path()}{DB_BACKUP_SUFFIX}"
-            if os.path.exists(backup_path):
-                try:
-                    os.replace(backup_path, _db_path())
-                except OSError:
-                    pass
+        logger.exception("database restore failed")
         return jsonify({"error": "Internal server error"}), 500
     finally:
         if temp_path and os.path.exists(temp_path):

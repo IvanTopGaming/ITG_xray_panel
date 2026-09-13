@@ -45,14 +45,15 @@ def test_publish_when_redis_unavailable_returns_none(app, db):
     assert BotEvent.query.count() == 1
 
 
-def test_publish_marks_delivered_at_on_successful_redis_publish(app, db):
+def test_publish_waits_for_inbox_ack_with_a_subscriber(app, db):
 
     with patch("panel_core.services.bot_events._get_redis") as mock_get_redis:
         fake_redis = MagicMock()
+        fake_redis.publish.return_value = 1
         mock_get_redis.return_value = fake_redis
         publish("payment_succeeded", telegram_id=42, payload={})
     row = BotEvent.query.one()
-    assert row.delivered_at is not None
+    assert row.delivered_at is None
 
 
 def test_publish_leaves_delivered_at_null_when_redis_publish_fails(app, db):

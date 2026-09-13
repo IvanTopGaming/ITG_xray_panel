@@ -18,7 +18,6 @@ from panel_core.xray.facade import (
     restart_xray_container,
     update_geo_db,
     stream_xray_logs,
-    generate_config_file,
 )
 from panel_core.xray.gateway import LocalXrayUnavailable
 from panel_core.xray.settings import get_system_settings
@@ -29,6 +28,12 @@ from panel_core.xray.protocol import (
 from panel_core.version import get_app_version, app_version_key
 from panel_core.services.bot_status import get_bot_status
 from panel_core.services.version_check import get_latest
+from panel_core.services.runtime_apply import (
+    RuntimeApplyError,
+    mark_runtime_dirty,
+    runtime_mutation,
+    synchronize_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +103,7 @@ def get_system_stats():
 @bp.route("/restart", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("5 per minute")
+@runtime_mutation
 def restart():
     panel_id = _requested_panel_id()
     if panel_id:
@@ -107,8 +113,12 @@ def restart():
         return jsonify({"error": XRAY_RESTART_UNSUPPORTED}), 501
     try:
         audit_privileged_change(logger, "Xray restarted")
-        restart_xray_container()
+        revision = mark_runtime_dirty()
+        db.session.commit()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         return jsonify({"status": "restarted"}), 200
+    except RuntimeApplyError as exc:
+        return jsonify({"error": str(exc), "status": "pending", "saved": True}), 503
     except Exception:
         return jsonify({"error": "Internal server error"}), 500
 
@@ -199,6 +209,7 @@ def system_settings_get():
 @bp.route("/system/settings", methods=["PUT"])
 @admin_or_federation_token_required
 @limiter.limit("20 per minute")
+@runtime_mutation
 def system_settings_update():
     panel_id = _requested_panel_id()
     if panel_id:
@@ -228,13 +239,14 @@ def system_settings_update():
         audit_privileged_change(logger, f"Xray settings changed ({', '.join(sorted(updates))})")
         for key, value in updates.items():
             _set_system_setting(key, value)
+        revision = mark_runtime_dirty() if should_restart else None
         db.session.commit()
 
-        if should_restart:
-            generate_config_file()
-            restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
 
         return jsonify(get_system_settings()), 200
+    except RuntimeApplyError as exc:
+        return jsonify({"error": str(exc), "status": "pending", "saved": True}), 503
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:

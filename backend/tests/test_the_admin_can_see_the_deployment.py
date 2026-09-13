@@ -76,7 +76,7 @@ class FakeRedis:
     """
 
     PANEL = frozenset({"setex", "set", "get", "ping", "publish", "delete"})
-    NODE = frozenset({"publish", "select"})
+    NODE = frozenset({"publish", "ping", "select"})
 
     def __init__(self, allow=PANEL):
         self.values = {}
@@ -328,7 +328,14 @@ def test_serving_a_request_stamps_this_role(master, headers, shared):
 def test_health_answers_with_every_reading(master, headers, shared):
     body = master.test_client().get("/api/system/health", headers=headers).get_json()
 
-    assert set(body) == {"undelivered_events", "stuck_payments", "data_tier", "offsite_backup"}
+    assert set(body) == {
+        "undelivered_events",
+        "stuck_payments",
+        "data_tier",
+        "offsite_backup",
+        "jobs",
+        "event_delivery",
+    }
 
 
 def test_health_no_longer_reports_a_certificate(master, headers, shared):
@@ -413,27 +420,27 @@ def test_an_unreachable_shared_redis_is_reported_not_raised(master, headers, mon
     assert response.get_json()["data_tier"]["shared_redis"] == "down"
 
 
-def test_a_publish_only_credential_is_not_reported_as_a_dead_tier(master, headers, monkeypatch):
-    """The node card said `db ok · redis down` on every node, permanently, while Redis was fine.
-
-    `_data_tier` probes with `ping`, and a node's credential is `-@all +publish +select &bot:events`
-    — `ping` is not in it. The refusal was read as an outage, so the one card an admin checks to
-    decide whether the data tier is healthy lied on three hosts at once, and kept lying after the
-    real outage it was hiding (an expired CA) had been fixed.
-
-    A server that authenticated the credential and answered NOPERM is up. It also has to say so
-    without a `ping` ever succeeding, because on a node one never will.
-    """
+def test_the_nodes_health_credential_can_probe_the_shared_tier(master, headers, monkeypatch):
     from panel_core.services import health as health_module
 
-    monkeypatch.setattr(health_module, "get_shared_redis", lambda: FakeRedis(allow=FakeRedis.NODE))
+    shared = FakeRedis(allow=FakeRedis.NODE)
+    monkeypatch.setattr(health_module, "get_shared_redis", lambda: shared)
     response = master.test_client().get("/api/system/health", headers=headers)
 
     assert response.status_code == 200
-    assert response.get_json()["data_tier"]["shared_redis"] == "ok", (
-        "a credential that is not allowed to PING is reported as a dead data tier, which is what "
-        "every node's System page showed while the bus was working"
-    )
+    assert response.get_json()["data_tier"]["shared_redis"] == "ok"
+    assert shared.pings == 1
+
+
+def test_an_acl_refusal_of_the_health_probe_is_not_reported_as_healthy(master, headers, monkeypatch):
+    from panel_core.services import health as health_module
+
+    denied = FakeRedis(allow=frozenset({"publish", "select"}))
+    monkeypatch.setattr(health_module, "get_shared_redis", lambda: denied)
+    response = master.test_client().get("/api/system/health", headers=headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["data_tier"]["shared_redis"] == "down"
 
 
 def test_health_needs_an_admin(master):

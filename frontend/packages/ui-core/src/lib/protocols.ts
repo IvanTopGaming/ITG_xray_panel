@@ -98,11 +98,14 @@ export function generateLink(
         net: type,
         type: 'none',
         host: wsHost,
-        path: path,
+        path: type === 'grpc' ? serviceName : path,
         tls: security,
       };
       if (security === 'tls' && tlsSni) (vmessConfig as any).sni = tlsSni;
-      return `vmess://${btoa(JSON.stringify(vmessConfig))}`;
+      const encoded = Array.from(new TextEncoder().encode(JSON.stringify(vmessConfig)), (byte) =>
+        String.fromCharCode(byte)
+      ).join('');
+      return `vmess://${btoa(encoded)}`;
     }
 
     const params = new URLSearchParams({
@@ -176,9 +179,10 @@ export function generateLink(
   }
 
   if (protocol === 'wireguard') {
+    if (!client.wg_address || !streamSettings.wgPublicKey) return '';
     const mtu = Number(streamSettings.wgMTU || 0);
     const mtuLine = mtu > 0 ? `\nMTU = ${mtu}` : '';
-    return `[Interface]\nPrivateKey = ${uuid}\nAddress = 172.19.0.x/32\nDNS = 1.1.1.1${mtuLine}\n\n[Peer]\nPublicKey = ${streamSettings.wgPublicKey || 'SERVER_PUB_KEY'}\nEndpoint = ${host}:${port}\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25`;
+    return `[Interface]\nPrivateKey = ${uuid}\nAddress = ${client.wg_address}\nDNS = 1.1.1.1${mtuLine}\n\n[Peer]\nPublicKey = ${streamSettings.wgPublicKey}\nEndpoint = ${host}:${port}\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25`;
   }
 
   return '';

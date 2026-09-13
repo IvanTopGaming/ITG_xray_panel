@@ -9,6 +9,7 @@ from app.stats.command import (
 from common.protocol import user_pb2
 from common.serial import typed_message_pb2
 from proxy.vless import account_pb2
+from panel_core.models import Inbound
 from panel_core.services.runtime_identity import build_runtime_email
 
 XRAY_API_HOST = os.getenv("XRAY_API_HOST", "xray-core:10085")
@@ -42,7 +43,15 @@ def get_channel():
 
 def _api_add_user_grpc(inbound_tag, client_obj):
     try:
-        account = account_pb2.Account(id=client_obj.id, flow=client_obj.flow or "", encryption="none")
+        inbound = Inbound.query.filter_by(tag=inbound_tag).first()
+        if inbound is None or inbound.protocol not in {"vless", "vmess"}:
+            return False
+        if inbound.protocol == "vmess":
+            from proxy.vmess import account_pb2 as vmess_account_pb2
+
+            account = vmess_account_pb2.Account(id=client_obj.id)
+        else:
+            account = account_pb2.Account(id=client_obj.id, flow=client_obj.flow or "", encryption="none")
         typed_acc = typed_message_pb2.TypedMessage(type=account.DESCRIPTOR.full_name, value=account.SerializeToString())
         user = user_pb2.User(
             level=0,
@@ -64,8 +73,10 @@ def _api_add_user_grpc(inbound_tag, client_obj):
     except grpc.RpcError as e:
         err_msg = str(e).lower()
         if "already exists" in err_msg:
-            logger.info("gRPC add user skipped for %s/%s (already exists)", inbound_tag, client_obj.email)
-            return True
+            logger.info(
+                "gRPC account requires reconciliation for %s/%s (already exists)", inbound_tag, client_obj.email
+            )
+            return False
         logger.info("gRPC add user failed for %s/%s: %s", inbound_tag, client_obj.email, e)
         return False
 
@@ -118,3 +129,32 @@ def reset_inbound_counters(tag):
         )
     except grpc.RpcError as e:
         logger.debug("Failed to reset inbound traffic counters for %s: %s", tag, e)
+
+
+def _runtime_epoch():
+    import docker
+
+    client = docker.from_env(timeout=2)
+    try:
+        container = client.containers.get("xray-core")
+        state = container.attrs.get("State", {})
+        epoch = state.get("StartedAt")
+        if not state.get("Running") or not epoch or epoch.startswith("0001-"):
+            raise RuntimeError("Xray runtime epoch is unavailable")
+        return epoch
+    finally:
+        client.close()
+
+
+def read_traffic_counters(pattern=""):
+    epoch = _runtime_epoch()
+    stub = stats_command_pb2_grpc.StatsServiceStub(get_channel())
+    response = stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=pattern, reset=False), timeout=3)
+    if _runtime_epoch() != epoch:
+        raise RuntimeError("Xray restarted during traffic collection; retry the sample")
+    values = {}
+    for stat in response.stat:
+        if stat.value < 0:
+            raise RuntimeError("Xray returned a negative traffic counter")
+        values[stat.name] = int(stat.value)
+    return epoch, values

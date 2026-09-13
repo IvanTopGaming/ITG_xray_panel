@@ -22,7 +22,8 @@ export default function App() {
   }, [data, lang]);
 
   if (loading) return <Loading lang={lang} />;
-  if (error || !data) return <ErrorState lang={lang} onRetry={reload} />;
+  if (error || !data)
+    return <ErrorState lang={lang} error={error ?? 'unavailable'} onRetry={reload} />;
 
   return (
     <div className="mx-auto max-w-3xl px-4 pb-16 pt-8">

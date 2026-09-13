@@ -31,7 +31,8 @@ def _reset_scheduler():
 
 
 @pytest.fixture(autouse=True)
-def _scheduler_teardown():
+def _scheduler_teardown(monkeypatch):
+    monkeypatch.setattr("panel_core.services.runtime_apply.generate_config_file", lambda **kwargs: None)
     yield
     _reset_scheduler()
 
@@ -94,6 +95,7 @@ def _seed_node(node_app, *, telegram_id, expiry_ms):
                     email="tg%s_DE-vless" % telegram_id,
                     inbound_tag="DE-vless",
                     telegram_id=telegram_id,
+                    tariff_id=1,
                     expiry_time=expiry_ms,
                     limit_bytes=0,
                     enable=True,
@@ -391,10 +393,13 @@ def test_a_grant_does_not_shorten_or_take_over_another_tariffs_key(node_app):
     with node_app.app_context():
         from panel_core.models import Client
 
-        client = Client.query.filter_by(telegram_id=793).one()
+        client = Client.query.filter_by(telegram_id=793, tariff_id=99).one()
         assert client.expiry_time == paid_until
         assert client.tariff_id == 99
         assert client.limit_bytes == 300
+        granted = Client.query.filter_by(telegram_id=793, tariff_id=7).one()
+        assert granted.id != client.id
+        assert granted.limit_bytes == 1
 
 
 def test_backfill_still_sends_an_absolute_expiry(app, db):
@@ -437,7 +442,7 @@ def test_backfill_still_sends_an_absolute_expiry(app, db):
         return {"client": {}, "expires_at_ms": params.get("expiry_ms")}
 
     with (
-        patch("panel_core.services.panel_proxy.proxy_provision", side_effect=_spy),
+        patch("panel_core.services.provisioning_operations.proxy_provision", side_effect=_spy),
         patch("panel_core.services.provisioning.fetch_panel_snapshot_live", return_value={"inbounds": []}),
         patch("panel_core.services.provisioning._sync_after_provision"),
     ):

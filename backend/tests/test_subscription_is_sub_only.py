@@ -194,7 +194,7 @@ def test_an_unknown_uuid_is_404_not_an_empty_config(sub_app):
     assert resp.status_code == 404
 
 
-def test_a_disabled_node_client_is_404(sub_app, monkeypatch):
+def test_a_disabled_node_client_has_an_explicit_notice(sub_app, monkeypatch):
     import copy
 
     disabled = copy.deepcopy(SNAPSHOT)
@@ -202,7 +202,9 @@ def test_a_disabled_node_client_is_404(sub_app, monkeypatch):
     monkeypatch.setattr("panel_core.services.panel_proxy.get_panel_snapshot", lambda panel_id: disabled)
 
     resp = sub_app.test_client().get(f"/api/sub/{NODE_UUID}")
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert NODE_UUID not in base64.b64decode(resp.data).decode()
+    assert "127.0.0.1:1" in base64.b64decode(resp.data).decode()
 
 
 def test_the_aggregate_url_has_no_panel_domain_fallback(monkeypatch):

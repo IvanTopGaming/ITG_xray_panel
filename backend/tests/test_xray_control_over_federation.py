@@ -165,11 +165,11 @@ def node_app(monkeypatch, tmp_path):
         lambda p, *a, **k: real_open(str(config), *a, **k) if p == NODE_CONFIG_PATH else real_open(p, *a, **k),
     )
     for target in (
-        "panel_core.api.system.generate_config_file",
+        "panel_core.services.runtime_apply.generate_config_file",
         "panel_core.api.system.restart_xray_container",
         "panel_core.api.system.update_geo_db",
-        "panel_core.api.auth.generate_config_file",
-        "panel_core.api.auth.restart_xray_container",
+        "panel_core.services.runtime_apply.generate_config_file",
+        "panel_core.services.runtime_apply.restart_xray_container",
     ):
         monkeypatch.setattr(target, lambda *a, **k: None)
 

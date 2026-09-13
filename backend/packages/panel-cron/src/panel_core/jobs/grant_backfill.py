@@ -15,43 +15,55 @@ def backfill_open_ended_grants() -> int:
     if SystemSetting.query.filter_by(key=_FLAG).first() is not None:
         return 0
 
-    legacy_gifts = UserTariffAccess.query.filter(UserTariffAccess.billing == "gift").all()
+    failed = 0
+    legacy_gifts = UserTariffAccess.query.filter(
+        UserTariffAccess.billing == "gift", UserTariffAccess.legacy_migration_version == 0
+    ).all()
     paused = (
         UserTariffAccess.query.filter(UserTariffAccess.billing == "free")
         .filter(UserTariffAccess.next_renewal_at.is_(None))
         .filter(UserTariffAccess.access_until.is_(None))
+        .filter(UserTariffAccess.legacy_migration_version == 0)
         .all()
     )
     for grant in legacy_gifts:
         tariff = db.session.get(Tariff, grant.tariff_id)
         if tariff is None:
+            failed += 1
+            logger.error("legacy gift backfill: missing tariff=%s grant=%s", grant.tariff_id, grant.id)
             continue
         grant.billing = "free"
         grant.access_until = (grant.created_at or datetime.utcnow()) + timedelta(days=tariff.period_days)
+        grant.legacy_migration_version = 1
     for grant in paused:
         grant.access_until = grant.created_at or datetime.utcnow()
+        grant.legacy_migration_version = 1
     if legacy_gifts or paused:
         db.session.commit()
 
     live = (
         UserTariffAccess.query.filter(UserTariffAccess.billing == "free")
         .filter(UserTariffAccess.next_renewal_at.isnot(None))
+        .filter(UserTariffAccess.legacy_migration_version == 0)
         .all()
     )
 
     converted = 0
-    failed = 0
     for grant in live:
         tariff = db.session.get(Tariff, grant.tariff_id)
         if tariff is None:
+            failed += 1
+            logger.error("open-ended backfill: missing tariff=%s grant=%s", grant.tariff_id, grant.id)
             continue
         limits_traffic = any((item.traffic_gb or 0) > 0 for item in tariff.items)
         try:
             apply_tariff_for_user(
                 grant.telegram_id,
                 tariff,
-                source="backfill",
+                source="grant_backfill",
                 operation_id=f"backfill:{grant.id}",
+                source_id=f"grant:{grant.id}",
+                source_revision=grant.provisioning_revision,
                 expiry_ms=0,
             )
         except Exception as exc:
@@ -66,6 +78,7 @@ def backfill_open_ended_grants() -> int:
             continue
 
         grant.access_until = None
+        grant.legacy_migration_version = 1
         if not limits_traffic:
             grant.next_renewal_at = None
         db.session.commit()

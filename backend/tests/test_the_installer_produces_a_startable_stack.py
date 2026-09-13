@@ -258,7 +258,7 @@ def test_doctor_reports_on_an_installed_host(tmp_path):
     bundle = _fresh_bundle(tmp_path, "d")
     _run("master", target, bundle=bundle)
 
-    out = _cmd("doctor", target).stdout
+    out = _cmd("doctor", target, expect_ok=False).stdout
 
     assert "master" in out, f"doctor does not name the role it inspected:\n{out}"
     assert "data tier" in out.lower(), f"doctor says nothing about the data tier:\n{out}"

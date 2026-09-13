@@ -19,7 +19,26 @@ def app_with_bot_api(app):
 
 
 @pytest.fixture
-def auth_headers(app_with_bot_api, db):
+def auth_headers(app_with_bot_api, db, monkeypatch):
+    from panel_core.models import LinkedPanel
+    from panel_core.services import tariff_targets
+
+    db.session.add_all(
+        [
+            LinkedPanel(id=1, name="node-1", url="https://node1.example", federation_token="fixture", created_at=1),
+            LinkedPanel(id=2, name="node-2", url="https://node2.example", federation_token="fixture", created_at=1),
+        ]
+    )
+    monkeypatch.setattr(
+        tariff_targets,
+        "get_panel_snapshot",
+        lambda _: {
+            "inbounds": [
+                {"tag": tag, "protocol": "vless"}
+                for tag in ("DE-vless", "MSK-vless", "NEW1", "NEW2", "alpha", "a", "X")
+            ]
+        },
+    )
 
     pwd_version = int(time.time())
     admin = Admin(
@@ -202,7 +221,7 @@ def test_create_tariff_rejects_duplicate_item_inbound(app_with_bot_api, db, clie
         },
     )
     assert resp.status_code == 400
-    assert "inbound_tag" in resp.get_data(as_text=True).lower()
+    assert "duplicate panel/inbound target" in resp.get_data(as_text=True).lower()
 
 
 def test_create_trial_when_none_exists(app_with_bot_api, db, client, auth_headers):
@@ -431,18 +450,12 @@ def _seed_holder(db, tariff, expiry):
 
 
 def test_update_tariff_returns_backfill_summary_and_backfills_remote_holder(app_with_bot_api, db, client, auth_headers):
-    from panel_core.models import Inbound, LinkedPanel
+    from panel_core.models import Inbound, ProvisionOperation
+    from panel_core.services.provisioning_operations import run_operation
 
     db.session.add_all(
         [
             Inbound(tag="DE-vless", protocol="vless", port=20001, stream_settings="{}"),
-            LinkedPanel(
-                id=1,
-                name="node-1",
-                url="https://node1.example",
-                federation_token="tok",
-                created_at=int(time.time()),
-            ),
         ]
     )
     db.session.flush()
@@ -465,15 +478,23 @@ def test_update_tariff_returns_backfill_summary_and_backfills_remote_holder(app_
     with (
         patch("panel_core.services.provisioning._sync_after_provision"),
         patch("panel_core.services.provisioning.fetch_panel_snapshot_live", return_value={"inbounds": []}),
-        patch("panel_core.services.panel_proxy.proxy_provision") as proxy,
+        patch(
+            "panel_core.services.provisioning_operations.proxy_provision",
+            return_value={"expires_at_ms": expiry, "client": {"id": "fixture"}},
+        ) as proxy,
     ):
         resp = client.put(f"/api/bot/tariffs/{t.id}", json=payload, headers=auth_headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["backfill"]["status"] == "pending"
+        proxy.assert_not_called()
+        summary = run_operation(db.session.get(ProvisionOperation, body["backfill"]["operation_id"]))
 
     assert resp.status_code == 200
     body = resp.get_json()
     assert "backfill" in body
-    assert body["backfill"]["created_remote"] == 1
-    assert body["backfill"]["panels_unreachable"] == []
+    assert summary["created_remote"] == 1
+    assert summary["panels_unreachable"] == []
     assert proxy.call_args.args[0] == 1
     assert proxy.call_args.args[1] == 42
     assert proxy.call_args.args[2] == "MSK-vless"

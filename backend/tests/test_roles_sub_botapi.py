@@ -1,5 +1,7 @@
 import pytest
 
+from tests.schema import ensure_schema
+
 BOT_API_JOBS = {
     ("poll_pending_payments", 30),
     ("reconcile_refunds", 3600),
@@ -36,14 +38,14 @@ def test_sub_role_registers_only_subscription(monkeypatch, tmp_path):
 
 def test_botapi_role_registers_bot_service_and_billing(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "bot")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/bot.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/bot.db"))
     monkeypatch.chdir(tmp_path)
     _clear_jobs()
 
     from panel_core.roles import botapi
 
     app = botapi.create_app()
-    assert set(app.blueprints) == {"bot_service", "billing"}
+    assert set(app.blueprints) == {"bot_service", "billing", "bot_delivery"}
 
 
 def test_sub_role_registers_no_jobs(monkeypatch, tmp_path):
@@ -63,7 +65,7 @@ def test_sub_role_registers_no_jobs(monkeypatch, tmp_path):
 
 def test_botapi_role_registers_payment_jobs_and_starts_the_scheduler(monkeypatch, tmp_path):
     monkeypatch.setenv("PANEL_ROLE", "bot")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/botapi-jobs.db")
+    monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/botapi-jobs.db"))
     monkeypatch.chdir(tmp_path)
     _clear_jobs()
 

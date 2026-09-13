@@ -131,15 +131,15 @@ def test_linked_panel_has_the_transfer_columns(app, db):
     )
 
 
-def test_sqlite_migration_reaches_28(tmp_path):
+def test_sqlite_migration_reaches_29(tmp_path):
     from panel_core.db_migration import CURRENT_DB_VERSION, migrate_sqlite_db
 
     report = migrate_sqlite_db(str(tmp_path / "db" / "panel.db"), seed_bot_texts=False)
 
-    assert CURRENT_DB_VERSION == 28
-    assert report["new_version"] == 28
+    assert CURRENT_DB_VERSION == 29
+    assert report["new_version"] == 29
     report_again = migrate_sqlite_db(str(tmp_path / "db" / "panel.db"), seed_bot_texts=False)
-    assert report_again["new_version"] == 28, "миграция обязана быть идемпотентной"
+    assert report_again["new_version"] == 29, "миграция обязана быть идемпотентной"
 
 
 def test_deleting_a_panel_forgets_its_mirror(client, admin_token, db):

@@ -84,9 +84,18 @@ def master_headers(master_app):
 
 @pytest.fixture
 def botapi_app(monkeypatch, tmp_path):
+    from panel_core.models import LinkedPanel
+    from panel_core.services import tariff_targets
+
+    monkeypatch.setattr(
+        tariff_targets, "get_panel_snapshot", lambda _: {"inbounds": [{"tag": "ams-reality", "protocol": "vless"}]}
+    )
     app = _build("panel_core.roles.botapi", "bot", monkeypatch, tmp_path, "botapi")
     with app.app_context():
         db.session.add(SystemSetting(key="bot_service_token", value=BOT_TOKEN))
+        db.session.add(
+            LinkedPanel(id=5, name="edge", url="https://edge.example", federation_token="fixture", created_at=1)
+        )
         trial = Tariff(name="Trial", price_rub=0, period_days=3, is_trial=True, enabled=True)
         db.session.add(trial)
         db.session.flush()
@@ -135,7 +144,7 @@ def test_saving_bot_settings_writes_no_event(master_app, master_headers):
 
 def test_claiming_the_trial_writes_no_event(botapi_app, monkeypatch):
     monkeypatch.setattr(
-        "panel_core.services.panel_proxy.proxy_provision",
+        "panel_core.services.provisioning_operations.proxy_provision",
         lambda panel_id, tg, tag, payload: {"expires_at_ms": 1_800_000_000_000, "client": {}},
     )
     resp = botapi_app.test_client().post(

@@ -6,7 +6,10 @@ from sqlalchemy import update
 from panel_core.extensions import db
 from panel_core.models import (
     Admin,
+    AccessEntitlement,
+    AccountAccessState,
     Balancer,
+    BotEvent,
     Client,
     Inbound,
     NotificationLog,
@@ -14,6 +17,8 @@ from panel_core.models import (
     ProvisionReceipt,
     RoutingProfile,
     SystemSetting,
+    TrafficCounterBaseline,
+    LogCheckpoint,
 )
 from panel_core.services.state_fingerprint import MIRRORED_SETTING_KEYS
 
@@ -66,7 +71,29 @@ def _apply_outbounds(rows):
 
 
 def apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
-    for model in (NotificationLog, ProvisionReceipt, Client, Inbound, Balancer, RoutingProfile):
+    from panel_core.services.runtime_apply import runtime_lock
+
+    with runtime_lock():
+        return _apply_state(hot, cold, carry_admin=carry_admin)
+
+
+def _apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
+    from panel_core.services.state_mirror import validate_state
+    from panel_core.services.runtime_apply import mark_runtime_dirty
+
+    validate_state(hot, cold)
+    for model in (
+        TrafficCounterBaseline,
+        LogCheckpoint,
+        AccessEntitlement,
+        AccountAccessState,
+        NotificationLog,
+        ProvisionReceipt,
+        Client,
+        Inbound,
+        Balancer,
+        RoutingProfile,
+    ):
         model.query.delete()
     db.session.flush()
 
@@ -138,6 +165,13 @@ def apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
                     preferred_outbound=c.get("preferred_outbound") or None,
                     telegram_id=c.get("telegram_id"),
                     tariff_id=c.get("tariff_id"),
+                    wg_address=c.get("wg_address"),
+                    access_generation=c.get("access_generation") or "",
+                    traffic_generation=c.get("traffic_generation") or "",
+                    provisioning_key=c.get("provisioning_key"),
+                    active_entitlement_source=c.get("active_entitlement_source"),
+                    manual_disabled=bool(c.get("manual_disabled", False)),
+                    disable_reason=c.get("disable_reason") or "",
                 )
             )
             client_count += 1
@@ -152,7 +186,8 @@ def apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
                 inbound_tag=row["inbound_tag"],
                 telegram_id=row["telegram_id"],
                 response_json=row["response_json"],
-                materialized=bool(row.get("materialized")),
+                request_json=row.get("request_json"),
+                materialized=False,
             )
         )
 
@@ -166,7 +201,27 @@ def apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
             )
         )
 
+    for model, key in ((AccessEntitlement, "entitlements"), (AccountAccessState, "account_access")):
+        for row in cold[key]:
+            values = {column.name: row[column.name] for column in model.__table__.columns if column.name in row}
+            if "created_at" in values:
+                values["created_at"] = _parse_sent_at(values["created_at"])
+            db.session.add(model(**values))
+
     admin_row = cold.get("admin")
+    for row in cold["events"]:
+        existing = BotEvent.query.filter_by(source=row["source"], origin_event_id=row["origin_event_id"]).first()
+        if existing is None:
+            db.session.add(
+                BotEvent(
+                    source=row["source"],
+                    origin_event_id=row["origin_event_id"],
+                    type=row["type"],
+                    telegram_id=row.get("telegram_id"),
+                    payload=row.get("payload") or {},
+                    created_at=_parse_sent_at(row.get("created_at")),
+                )
+            )
     if carry_admin and admin_row:
         Admin.query.delete()
         db.session.flush()
@@ -178,6 +233,7 @@ def apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
             )
         )
 
+    mark_runtime_dirty()
     db.session.commit()
     return {
         "inbounds": inbound_count,

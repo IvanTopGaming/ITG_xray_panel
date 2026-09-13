@@ -116,7 +116,8 @@ def test_info_reports_disabled_with_no_nodes_at_all(app, client):
 
     assert body["status"] == "disabled"
     assert body["nodes"] == []
-    assert body["expiry_at"] == 0
+    assert body["expiry_at"] is None
+    assert body["reason"] == "not_configured"
 
 
 def test_info_keeps_an_unlimited_node_as_a_zero_limit(app, client):
@@ -142,12 +143,14 @@ def test_info_404s_on_an_unknown_token(app, client):
     assert client.get("/api/sub/u/nope/info").status_code == 404
 
 
-def test_info_404s_on_a_blocked_user_without_leaking_a_body(app, client):
+def test_info_identifies_a_blocked_user_without_leaking_nodes(app, client):
     _seed(app, blocked=True, clients=[{"email": "tg777_vless"}])
 
     response = client.get("/api/sub/u/tok777/info")
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert response.json["reason"] == "blocked"
+    assert response.json["nodes"] == []
     assert b"\xd0\x9d\xd0\xb8\xd0\xb4\xd0\xb5\xd1\x80\xd0\xbb\xd0\xb0\xd0\xbd\xd0\xb4\xd1\x8b" not in response.data
     assert b"vless-reality" not in response.data
 

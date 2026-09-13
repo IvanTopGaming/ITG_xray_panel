@@ -173,7 +173,7 @@ WORKER_MODULES = (
     "roles/worker.py",
 )
 
-WORKER_ONLY_DEPENDENCIES = ("docker", "filelock", "grpcio", "grpcio-tools", "protobuf")
+WORKER_ONLY_DEPENDENCIES = ("docker", "grpcio", "grpcio-tools", "protobuf")
 
 
 def test_panel_worker_ships_the_local_xray_stack():
@@ -195,7 +195,7 @@ def test_the_heavy_stack_is_declared_only_by_panel_worker():
         if dependency in entry and name != "panel-worker"
     )
     assert offenders == [], (
-        f"the gRPC/docker/filelock stack must be declared by panel-worker alone: {offenders}. Leaving any "
+        f"the gRPC/docker stack must be declared by panel-worker alone: {offenders}. Leaving any "
         "of it in panel-core's dependency list puts the whole Xray runtime into every image, which is the "
         "thing this cut exists to prevent."
     )

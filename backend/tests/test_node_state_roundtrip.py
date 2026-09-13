@@ -20,6 +20,8 @@ def _dump(model):
     from panel_core.services.state_export import MIRROR_EXCLUDED_COLUMNS
 
     skip = MIRROR_EXCLUDED_COLUMNS.get(model.__name__, frozenset())
+    if model is ProvisionReceipt:
+        skip = skip | {"materialized"}
     columns = [c.name for c in model.__table__.columns if c.name not in skip]
     rows = [tuple(getattr(row, name) for name in columns) for row in model.query.all()]
     return sorted(rows, key=lambda r: tuple(str(x) for x in r))
@@ -39,6 +41,7 @@ def test_state_survives_a_round_trip(app, db, rich_node):
     apply_state(hot, cold, carry_admin=False)
 
     after = {model.__name__: _dump(model) for model in MIRRORED_TABLES}
+    assert all(not receipt.materialized for receipt in ProvisionReceipt.query.all())
 
     for name in before:
         if name == "Outbound":
@@ -230,7 +233,7 @@ def test_a_stale_outbound_does_not_survive_the_repair(app, db, rich_node):
     )
 
 
-def test_a_missing_cold_outbounds_key_leaves_the_bootstrap_defaults_alone(app, db):
+def test_an_incomplete_state_is_refused_and_leaves_bootstrap_defaults_alone(app, db):
     from panel_core.services.state_apply import apply_state
 
     db.session.add_all(
@@ -241,7 +244,8 @@ def test_a_missing_cold_outbounds_key_leaves_the_bootstrap_defaults_alone(app, d
     )
     db.session.commit()
 
-    apply_state({}, {}, carry_admin=False)
+    with pytest.raises(ValueError):
+        apply_state({}, {}, carry_admin=False)
 
     assert {o.tag for o in Outbound.query.all()} == {"direct", "block"}, (
         "нода старого релиза без cold_fingerprint никогда не попадала в зеркало: claim приносит "

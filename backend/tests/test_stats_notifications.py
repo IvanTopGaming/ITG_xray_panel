@@ -17,9 +17,17 @@ def _stub(value):
 
     def _q(*_a, **_k):
         resp = MagicMock()
-        leaf = MagicMock()
-        leaf.value = value
-        resp.stat = [leaf]
+        from types import SimpleNamespace
+        from panel_core.services.runtime_identity import build_runtime_email
+
+        resp.stat = [
+            SimpleNamespace(
+                name=f"user>>>{build_runtime_email(client.inbound_tag, client.email)}>>>traffic>>>{direction}",
+                value=value,
+            )
+            for client in Client.query.all()
+            for direction in ("uplink", "downlink")
+        ]
         return resp
 
     stub.QueryStats.side_effect = _q
@@ -45,12 +53,13 @@ def test_sync_traffic_emits_notification_at_80pct(app):
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
-            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,
         ):
             sync_traffic_stats()
 
         assert mock_publish.call_count == 1
-        event_type, tg_id, payload = mock_publish.call_args.args
+        event = mock_publish.call_args.args[0]
+        event_type, tg_id, payload = event.type, event.telegram_id, event.payload
         assert event_type == "traffic_notification"
         assert tg_id == 55
         assert payload["kind"] == "traffic_80"
@@ -77,7 +86,7 @@ def test_sync_traffic_no_notification_below_threshold(app):
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(10)),
-            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,
         ):
             sync_traffic_stats()
         mock_publish.assert_not_called()
@@ -102,7 +111,7 @@ def test_sync_traffic_notification_failure_does_not_break_accounting(app):
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
-            patch("panel_core.jobs.notifications.bot_events.publish", side_effect=RuntimeError("redis down")),
+            patch("panel_core.jobs.notifications.bot_events.publish_stored", side_effect=RuntimeError("redis down")),
         ):
             sync_traffic_stats()
         db.session.expire_all()
@@ -131,16 +140,16 @@ def test_check_limits_emits_expired_and_disables(app):
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
-            patch("panel_core.services.stats.generate_config_file"),
-            patch("panel_core.services.stats.restart_xray_container"),
-            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.services.runtime_apply.generate_config_file"),
+            patch("panel_core.services.runtime_apply.restart_xray_container"),
+            patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,
         ):
             check_limits_and_reset()
         db.session.expire_all()
         assert db.session.get(Client, "cli-exp").enable is False
-        kinds = [call.args[2]["kind"] for call in mock_publish.call_args_list]
+        kinds = [call.args[0].payload["kind"] for call in mock_publish.call_args_list]
         assert "expired" in kinds
-        assert mock_publish.call_args_list[0].args[0] == "expiry_notification"
+        assert mock_publish.call_args_list[0].args[0].type == "expiry_notification"
 
 
 def test_check_limits_emits_3d_warning_without_disabling(app):
@@ -164,15 +173,15 @@ def test_check_limits_emits_3d_warning_without_disabling(app):
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
-            patch("panel_core.services.stats.generate_config_file"),
-            patch("panel_core.services.stats.restart_xray_container"),
-            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.services.runtime_apply.generate_config_file"),
+            patch("panel_core.services.runtime_apply.restart_xray_container"),
+            patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,
         ):
             check_limits_and_reset()
         db.session.expire_all()
         assert db.session.get(Client, "cli-3d").enable is True
         assert mock_publish.call_count == 1
-        assert mock_publish.call_args.args[2]["kind"] == "expiry_3d"
+        assert mock_publish.call_args.args[0].payload["kind"] == "expiry_3d"
 
 
 def test_traffic_payload_carries_no_presentation_fields(app, monkeypatch):
@@ -195,11 +204,11 @@ def test_traffic_payload_carries_no_presentation_fields(app, monkeypatch):
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
-            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,
         ):
             sync_traffic_stats()
 
-    _event_type, _tg_id, payload = mock_publish.call_args.args
+        payload = mock_publish.call_args.args[0].payload
     assert "lang" not in payload
     assert "renewable" not in payload
     assert payload["node"] == "de1.example.com"
@@ -223,10 +232,10 @@ def test_expiry_payload_carries_node_and_no_presentation_fields(app, monkeypatch
         )
         db.session.add(c)
         db.session.commit()
-        with patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish:
+        with patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish:
             check_limits_and_reset()
 
-    _event_type, _tg_id, payload = mock_publish.call_args.args
+        payload = mock_publish.call_args.args[0].payload
     assert "lang" not in payload
     assert "renewable" not in payload
     assert payload["node"] == "nl1.example.com"
@@ -254,9 +263,9 @@ def test_traffic_payload_carries_the_billing_cycle_marker(app, monkeypatch):
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=_stub(40)),
-            patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish,
+            patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,
         ):
             sync_traffic_stats()
 
-    _event_type, _tg_id, payload = mock_publish.call_args.args
+        payload = mock_publish.call_args.args[0].payload
     assert payload["cycle"] == 1753000000000

@@ -88,29 +88,18 @@ def _check_identity_matches(cold: dict, master_url: str) -> None:
 
 
 def _resync_xray(master_url: str) -> None:
-    from panel_core.xray.facade import generate_config_file, restart_xray_container
+    from panel_core.services.runtime_apply import RuntimeApplyError, synchronize_runtime
 
     ok = True
     try:
-        generate_config_file()
-    except Exception as exc:
+        synchronize_runtime()
+    except RuntimeApplyError as exc:
         ok = False
         logger.error(
-            "state claimed from %s but the Xray config could not be regenerated (%s); it will retry next tick",
+            "state claimed from %s but the Xray config could not be regenerated or activated (%s); it will retry next tick",
             master_url,
             exc,
         )
-
-    if ok:
-        try:
-            restart_xray_container()
-        except Exception as exc:
-            ok = False
-            logger.error(
-                "state claimed from %s but Xray could not be restarted (%s); it will retry next tick",
-                master_url,
-                exc,
-            )
 
     _set_setting(RESYNC_PENDING_SETTING_KEY, "0" if ok else "1")
 
@@ -176,8 +165,9 @@ def supersede_check_job():
         return
 
     instance_id = get_or_create_instance_id()
+    master_url, token = cfg.master_url, cfg.federation_token
     try:
-        reply = MasterClient(cfg.master_url).instance_check(cfg.federation_token, instance_id)
+        reply = MasterClient(master_url).instance_check(token, instance_id)
     except Exception as exc:
         logger.debug("instance check against %s failed (%s); carrying on as usual", cfg.master_url, exc)
         if cfg.master_url not in _check_failure_warned:
@@ -195,6 +185,16 @@ def supersede_check_job():
     if not isinstance(reply, dict):
         return
 
+    current = FederationConfig.query.filter(
+        FederationConfig.id == 1,
+        FederationConfig.master_url == master_url,
+        FederationConfig.federation_token == token,
+    ).update({"master_url": FederationConfig.master_url}, synchronize_session=False)
+    db.session.expire_all()
+    if current != 1 or get_or_create_instance_id() != instance_id:
+        db.session.rollback()
+        return
+
     verdict = reply.get("verdict")
 
     if verdict == "superseded":
@@ -209,6 +209,7 @@ def supersede_check_job():
                 "background jobs that emit them are stopped. Traffic keeps flowing for whoever still reaches "
                 "this machine — shut it down once the A record has settled"
             )
+        db.session.commit()
         return
 
     if verdict == "current" and is_superseded():
@@ -216,3 +217,4 @@ def supersede_check_job():
         logger.warning(
             "this installation is current on the master again; resuming as usual after having been superseded"
         )
+    db.session.commit()

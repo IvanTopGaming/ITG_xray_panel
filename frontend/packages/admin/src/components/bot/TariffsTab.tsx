@@ -122,17 +122,30 @@ export function TariffsTab() {
   const closeDrawer = () => setDrawerOpen(false);
 
   const saveMutation = useMutation({
-    mutationFn: async (payload: TariffWritePayload) => {
-      if (editingTariff) {
-        return await updateTariff(editingTariff.id, payload);
+    mutationFn: async ({
+      payload,
+      tariffId,
+    }: {
+      payload: TariffWritePayload;
+      tariffId: number | null;
+    }) => {
+      if (tariffId !== null) {
+        return await updateTariff(tariffId, payload);
       }
       await createTariff(payload);
       return null;
     },
-    onSuccess: (result) => {
+    onSuccess: (result, variables) => {
       qc.invalidateQueries({ queryKey: ['bot', 'tariffs'] });
       const backfill = result?.backfill;
-      if (backfill && (backfill.panels_unreachable.length > 0 || backfill.provision_failures > 0)) {
+      if (backfill?.status === 'pending') {
+        toast.warn(
+          'Tariff saved. Updating existing access in the background; delivery is still pending.'
+        );
+      } else if (
+        backfill &&
+        (backfill.panels_unreachable.length > 0 || backfill.provision_failures > 0)
+      ) {
         toast.warn(
           `Tariff saved. Keys created: ${backfill.created_local + backfill.created_remote}. ` +
             (backfill.panels_unreachable.length > 0
@@ -145,7 +158,7 @@ export function TariffsTab() {
           `Tariff updated. Backfilled ${backfill.created_local + backfill.created_remote} key(s).`
         );
       } else {
-        toast.success(editingTariff ? 'Tariff updated' : 'Tariff created');
+        toast.success(variables.tariffId !== null ? 'Tariff updated' : 'Tariff created');
       }
     },
   });
@@ -297,11 +310,12 @@ export function TariffsTab() {
         inbounds={inbounds}
         panels={panels}
         saving={saveMutation.isPending}
+        isTrial={drawerSeed.is_trial}
         onClose={closeDrawer}
         onSave={async (payload) => {
           await saveMutation.mutateAsync({
-            ...payload,
-            is_trial: drawerSeed.is_trial || payload.is_trial,
+            tariffId: editingTariff?.id ?? null,
+            payload: { ...payload, is_trial: drawerSeed.is_trial || payload.is_trial },
           });
         }}
       />

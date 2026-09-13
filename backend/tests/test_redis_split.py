@@ -1,4 +1,6 @@
 import ast
+import pathlib
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +9,7 @@ from tests.import_graph import source_path
 
 LOCAL_URI = "redis://local-box:6379/0"
 SHARED_URI = "redis://data-tier:6379/0"
+REPO = pathlib.Path(__file__).resolve().parents[2]
 
 WHY = (
     "Wave 2 split the two Redis instances by WHO NEEDS THE DATA rather than who asked first. The local "
@@ -91,6 +94,17 @@ def test_only_the_limiter_and_the_startup_check_read_the_rate_limit_uri():
         f"thing only — where THIS role's rate limits and its own subscription cache live. Reading it for "
         f"anything else re-creates the ambiguity the rename was for.\n\n{WHY}"
     )
+
+
+def test_the_node_acl_can_run_the_health_probe_without_gaining_key_access():
+    compose = (REPO / "docker-compose.postgres.yml").read_text()
+    match = re.search(r"user node on >%s (.*?)\\nuser bot", compose)
+
+    assert match is not None
+    acl = match.group(0)
+    assert "+ping" in acl
+    assert "~*" not in acl
+    assert "+get" not in acl and "+set" not in acl and "+del" not in acl
 
 
 def _redis_calls(monkeypatch, action):

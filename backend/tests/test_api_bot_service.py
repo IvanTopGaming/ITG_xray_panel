@@ -19,9 +19,59 @@ def service_headers():
     return {"Authorization": "Bearer test-token"}
 
 
+@pytest.mark.parametrize(
+    "expiry,enabled,expected",
+    [(4102444800000, True, True), (0, True, True), (1, True, False), (4102444800000, False, False)],
+)
+def test_catalog_marks_remote_owned_tariff(
+    app_with_service_api, db, service_headers, monkeypatch, expiry, enabled, expected
+):
+    from panel_core.models import LinkedPanel
+    from panel_core.services import panel_proxy, tariff_targets
+
+    tariff = Tariff(name="Remote", price_rub=10, period_days=30)
+    db.session.add(tariff)
+    db.session.add(LinkedPanel(id=1, name="edge", url="https://edge.example", federation_token="fixture", created_at=1))
+    db.session.flush()
+    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="edge", panel_id=1, traffic_gb=1))
+    db.session.commit()
+    monkeypatch.setattr(
+        panel_proxy,
+        "get_panel_snapshot",
+        lambda _: {
+            "inbounds": [
+                {
+                    "tag": "edge",
+                    "protocol": "vless",
+                    "clients": [
+                        {
+                            "telegram_id": 42,
+                            "tariff_id": tariff.id,
+                            "enable": enabled,
+                            "expiry_time": expiry,
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(tariff_targets, "get_panel_snapshot", panel_proxy.get_panel_snapshot)
+    response = app_with_service_api.test_client().get("/api/bot-service/tariffs?for=42", headers=service_headers)
+    assert response.status_code == 200
+    assert response.get_json()[0]["is_active"] is expected
+
+
 @pytest.fixture
 def client(app_with_service_api):
     return app_with_service_api.test_client()
+
+
+@pytest.fixture
+def deliverable_inbound(db):
+    from panel_core.models import Inbound
+
+    db.session.add(Inbound(tag="vless-de", protocol="vless", port=10001, stream_settings="{}"))
+    db.session.commit()
 
 
 def test_get_texts_empty(app_with_service_api, db, client, service_headers):
@@ -48,6 +98,18 @@ def test_get_texts_returns_only_requested_lang(app_with_service_api, db, client,
 def test_get_texts_requires_token(app_with_service_api, db, client):
     resp = client.get("/api/bot-service/texts?lang=ru")
     assert resp.status_code == 401
+
+
+@pytest.mark.parametrize("broken", ["<b>oops", "{unknown}", "<![bad]>"])
+def test_get_texts_falls_back_for_legacy_broken_override(app_with_service_api, db, client, service_headers, broken):
+    from panel_core.services.bot_texts import text_defaults
+
+    db.session.add(BotText(key="welcome.title", lang="ru", text=broken, customized=True))
+    db.session.commit()
+    response = client.get("/api/bot-service/texts?lang=ru", headers=service_headers)
+    assert response.status_code == 200
+    assert response.get_json()["texts"]["welcome.title"] == text_defaults()["welcome.title"]["ru"]
+    assert db.session.get(BotText, ("welcome.title", "ru")).text == broken
 
 
 def test_get_texts_rejects_invalid_lang(app_with_service_api, db, client, service_headers):
@@ -131,8 +193,15 @@ def test_upsert_user_requires_token(app_with_service_api, db, client):
     assert resp.status_code == 401
 
 
-def test_get_user_state_brand_new_user(app_with_service_api, db, client, service_headers):
+def test_get_user_state_brand_new_user(app_with_service_api, db, client, service_headers, monkeypatch):
+    from panel_core.models import LinkedPanel
 
+    db.session.add(
+        LinkedPanel(id=7, name="Trial", url="https://trial.example", federation_token="test", enable=True, created_at=1)
+    )
+    snapshot = {"inbounds": [{"tag": "vless-reality", "protocol": "vless", "clients": [], "stream_settings": {}}]}
+    monkeypatch.setattr("panel_core.services.tariff_targets.get_panel_snapshot", lambda panel_id: snapshot)
+    monkeypatch.setattr("panel_core.services.panel_proxy.get_panel_snapshot", lambda panel_id: snapshot)
     trial = Tariff(name="Trial", is_trial=True, enabled=True, price_rub=0, period_days=1)
     trial.items = [TariffItem(inbound_tag="vless-reality", traffic_gb=1, panel_id=7)]
     db.session.add(trial)
@@ -201,7 +270,7 @@ def test_get_user_state_requires_token(app_with_service_api, db, client):
     assert resp.status_code == 401
 
 
-def test_bot_service_lists_tariffs_filtered(app_with_service_api, db, client, service_headers):
+def test_bot_service_lists_tariffs_filtered(app_with_service_api, db, client, service_headers, deliverable_inbound):
     from panel_core.models import Tariff, TariffItem, UserTariffAccess
 
     with app_with_service_api.app_context():
@@ -262,7 +331,9 @@ def test_bot_service_lists_tariffs_filtered(app_with_service_api, db, client, se
     assert other_names == ["Pub"]
 
 
-def test_bot_service_tariffs_no_for_param_all_inactive(app_with_service_api, db, client, service_headers):
+def test_bot_service_tariffs_no_for_param_all_inactive(
+    app_with_service_api, db, client, service_headers, deliverable_inbound
+):
     from panel_core.models import Tariff, TariffItem
 
     with app_with_service_api.app_context():
@@ -286,7 +357,9 @@ def test_bot_service_tariffs_no_for_param_all_inactive(app_with_service_api, db,
     assert body[0]["is_active"] is False
 
 
-def test_bot_service_tariffs_user_with_no_clients_all_inactive(app_with_service_api, db, client, service_headers):
+def test_bot_service_tariffs_user_with_no_clients_all_inactive(
+    app_with_service_api, db, client, service_headers, deliverable_inbound
+):
     from panel_core.models import Tariff, TariffItem, TelegramUser
 
     with app_with_service_api.app_context():
@@ -517,6 +590,7 @@ def test_bot_service_tariffs_item_includes_inbound_label_fallback(app_with_servi
     with app_with_service_api.app_context():
         db.session.add(Inbound(tag="de-vless", protocol="vless", port=20001, stream_settings="{}", label="Germany"))
         db.session.add(Inbound(tag="nl-vless", protocol="vless", port=20002, stream_settings="{}", label=None))
+        db.session.add(Inbound(tag="unknown-tag", protocol="vless", port=20003, stream_settings="{}", label=None))
         t = Tariff(
             name="Combo",
             price_rub=200,
@@ -579,10 +653,15 @@ def test_bot_service_tariffs_inbound_label_resolves_from_linked_panel(
 
     def fake_snapshot(pid):
         if pid == panel_id:
-            return {"inbounds": [{"tag": "gateway", "label": "🇩🇪 Gateway"}]}
+            return {
+                "inbounds": [
+                    {"tag": "gateway", "label": "🇩🇪 Gateway", "protocol": "vless", "clients": [], "stream_settings": {}}
+                ]
+            }
         return None
 
     monkeypatch.setattr("panel_core.services.panel_proxy.get_panel_snapshot", fake_snapshot)
+    monkeypatch.setattr("panel_core.services.tariff_targets.get_panel_snapshot", fake_snapshot)
 
     resp = client.get("/api/bot-service/tariffs", headers=service_headers)
     assert resp.status_code == 200

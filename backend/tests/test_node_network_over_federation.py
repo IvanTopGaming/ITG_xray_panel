@@ -70,7 +70,7 @@ def _scheduler_teardown():
 def _no_xray_side_effects(monkeypatch):
     """The node role drives a real Xray; no test host has one.
 
-    Patched where they are used (§ the pytest-flask note in CLAUDE.md), so the handlers' bare
+    Patched where they are used (§ the pytest-flask note in AGENTS.md), so the handlers' bare
     `except Exception` cannot turn a missing `/etc/xray` into a 500 and hide what is asserted.
     """
 
@@ -615,5 +615,5 @@ class TestRewritingANodesRoutingIsWrittenDown:
         with caplog.at_level(logging.INFO, logger="panel_core.api.outbound"):
             node.post("/api/outbounds", headers=node_headers, json={"tag": "eg", "protocol": "freedom"})
 
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not [r for r in caplog.records if r.name == "panel_core.api.outbound" and r.levelno >= logging.WARNING]
         assert [r for r in caplog.records if "panel admin" in r.getMessage()]

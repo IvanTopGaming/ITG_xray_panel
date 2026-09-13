@@ -92,6 +92,7 @@ class BackendClient:
         resp = await c.post(
             "/billing/checkout",
             json={"telegram_id": telegram_id, "tariff_id": tariff_id, "lang": lang},
+            timeout=httpx.Timeout(10.0, read=25.0),
         )
         resp.raise_for_status()
         return resp.json()
@@ -124,6 +125,26 @@ class BackendClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    async def claim_event(self, event: dict) -> dict:
+        response = await self._ensure_client().post(
+            "/bot-service/events/claim", json=event, timeout=httpx.Timeout(10.0, read=30.0)
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def ack_event(self, source: str, event_id: int, lease_token: str, outcome: str) -> dict:
+        response = await self._ensure_client().post(
+            "/bot-service/events/ack",
+            json={"source": source, "id": event_id, "lease_token": lease_token, "outcome": outcome},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def pending_events(self) -> list[dict]:
+        response = await self._ensure_client().get("/bot-service/events/pending")
+        response.raise_for_status()
+        return response.json()["events"]
 
     async def set_payment_chat_coords(
         self,

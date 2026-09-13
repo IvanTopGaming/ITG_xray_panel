@@ -122,13 +122,12 @@ def test_a_node_the_poller_calls_offline_reads_as_down(sub_app, monkeypatch):
 def test_a_dead_poller_does_not_turn_into_a_promise_about_the_node(sub_app, monkeypatch):
     """`stale` means "nobody is polling", not "the node is down" — the user is not shown a guess as fact."""
 
-    assert _nodes(sub_app, monkeypatch, ("stale", 1))[0]["online"] is True
+    assert _nodes(sub_app, monkeypatch, ("stale", 1))[0]["online"] is False
 
 
-def test_the_postgres_row_is_only_the_fallback(sub_app, monkeypatch):
-    """A panel never polled, or a shared tier that cannot answer: fall back rather than invent."""
+def test_the_postgres_row_does_not_claim_online_without_current_liveness(sub_app, monkeypatch):
 
-    assert _nodes(sub_app, monkeypatch, (None, None))[0]["online"] is True
+    assert _nodes(sub_app, monkeypatch, (None, None))[0]["online"] is False
 
     with sub_app.app_context():
         LinkedPanel.query.first().status = "offline"

@@ -142,3 +142,51 @@ def test_put_text_publishes_event(app_with_admin, db, client, admin_headers):
     mock_publish.assert_called_once()
     args = mock_publish.call_args
     assert args.args[0] == "texts_changed"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "Hi {user_name",
+        "Hi {unknown}",
+        "{user_name.__class__}",
+        "{user_name:900000}",
+        "<b>Unclosed",
+        "<script>bad</script>",
+        "x" * 4097,
+    ],
+    ids=[
+        "unclosed-field",
+        "unknown-field",
+        "attribute",
+        "format-width",
+        "unclosed-html",
+        "unsupported-html",
+        "too-long",
+    ],
+)
+def test_invalid_template_is_rejected_before_storage(app_with_admin, db, client, admin_headers, template):
+    response = client.put("/api/bot/texts/welcome.title", headers=admin_headers, json={"lang": "en", "text": template})
+    assert response.status_code == 400
+    assert db.session.get(BotText, ("welcome.title", "en")) is None
+
+
+def test_template_variables_come_from_current_defaults(app_with_admin, db, client, admin_headers):
+    response = client.get("/api/bot/texts/keys", headers=admin_headers)
+    welcome = next(entry for entry in response.get_json()["keys"] if entry["key"] == "welcome.title")
+    assert welcome["variables"] == ["user_name"]
+
+
+def test_all_packaged_defaults_are_valid():
+    from panel_core.services.bot_texts import text_defaults, validate_bot_text
+
+    for key, translations in text_defaults().items():
+        for template in translations.values():
+            validate_bot_text(key, template)
+
+
+def test_valid_custom_html_and_variables_are_saved(app_with_admin, db, client, admin_headers):
+    template = '<b>Hello {user_name}</b> &amp; <a href="https://example.com">help</a>'
+    response = client.put("/api/bot/texts/welcome.title", headers=admin_headers, json={"lang": "en", "text": template})
+    assert response.status_code == 200
+    assert db.session.get(BotText, ("welcome.title", "en")).text == template

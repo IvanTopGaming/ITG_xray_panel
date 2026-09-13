@@ -252,7 +252,13 @@ export default function Dashboard() {
     []
   );
 
-  const clearSelection = useCallback(() => setSelectedUsers(new Set()), []);
+  const clearSelection = useCallback(
+    (completed?: Set<string>) =>
+      setSelectedUsers((current) =>
+        completed ? new Set([...current].filter((key) => !completed.has(key))) : new Set()
+      ),
+    []
+  );
 
   const selectAllInInbound = useCallback(
     (panelId: number | null | undefined, tag: string, emails: string[]) => {
@@ -548,7 +554,7 @@ export default function Dashboard() {
           if (isFirstLoad) hasShownInboundsRef.current = true;
           return filteredInbounds.map((ib, i) => (
             <motion.div
-              key={ib.tag}
+              key={`${ib.panel_id ?? 'local'}:${ib.tag}`}
               layout="position"
               initial={isFirstLoad ? { opacity: 0, y: 20 } : false}
               animate={{ opacity: 1, y: 0 }}
@@ -689,7 +695,7 @@ function BulkToolbar({
   clearSelection,
 }: {
   selectedUsers: Set<string>;
-  clearSelection: () => void;
+  clearSelection: (completed?: Set<string>) => void;
 }) {
   const queryClient = useQueryClient();
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
@@ -707,43 +713,69 @@ function BulkToolbar({
 
   const parseUsers = () => [...selectedUsers].map(parseUserKey);
 
-  const onSuccess = (msg: string) => {
-    queryClient.invalidateQueries({ queryKey: ['inbounds'] });
-    clearSelection();
-    toast.success(msg);
+  type BulkUser = ReturnType<typeof parseUserKey>;
+  type BulkResult = { errors?: string[]; failed_users?: BulkUser[] };
+
+  const postBulk = async (url: string, payload: Record<string, unknown> = {}) => {
+    const users = parseUsers();
+    const response = await api.post(url, { ...payload, users });
+    return { ...response, users };
   };
 
-  const warnErrors = (errs?: string[]) => {
-    if (Array.isArray(errs) && errs.length) {
-      toast.error(`Some linked panels failed: ${errs.join('; ')}`);
+  const onSuccess = (msg: string, data: BulkResult, users: BulkUser[]) => {
+    queryClient.invalidateQueries({ queryKey: ['inbounds'] });
+    const failures = new Set(
+      (data.failed_users ?? []).map((user) => makeUserKey(user.panel_id, user.tag, user.email))
+    );
+    const partial = !!data.errors?.length || failures.size > 0;
+    if (!partial || failures.size > 0) {
+      clearSelection(
+        new Set(
+          users
+            .map((user) => makeUserKey(user.panel_id, user.tag, user.email))
+            .filter((key) => !failures.has(key))
+        )
+      );
+    }
+    if (partial) {
+      toast.warning(
+        `${msg}. Some targets failed: ${data.errors?.join('; ') || `${failures.size} user(s)`}. Failed targets remain selected.`
+      );
+    } else {
+      toast.success(msg);
     }
   };
 
   const bulkDeleteMutation = useMutation({
-    mutationFn: () => api.post('/users/bulk-delete', { users: parseUsers() }),
+    mutationFn: () => postBulk('/users/bulk-delete'),
     onSuccess: (res) => {
-      onSuccess(`${selectedUsers.size} user(s) deleted`);
-      warnErrors(res.data?.errors);
+      onSuccess(`${res.data.count ?? 'Unknown number of'} user(s) deleted`, res.data, res.users);
       setConfirmBulkDelete(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk delete failed'),
   });
 
   const bulkResetMutation = useMutation({
-    mutationFn: () => api.post('/users/reset-traffic', { users: parseUsers() }),
-    onSuccess: () => {
-      onSuccess(`Traffic reset for ${selectedUsers.size} user(s)`);
+    mutationFn: () => postBulk('/users/reset-traffic'),
+    onSuccess: (res) => {
+      onSuccess(
+        `Traffic reset for ${res.data.reset ?? 'unknown number of'} user(s)`,
+        res.data,
+        res.users
+      );
       setConfirmBulkReset(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk reset failed'),
   });
 
   const bulkEnableMutation = useMutation({
-    mutationFn: (enable: boolean) =>
-      api.post('/users/bulk-enable', { users: parseUsers(), enable }),
+    mutationFn: (enable: boolean) => postBulk('/users/bulk-enable', { enable }),
     onSuccess: (res, enable) => {
-      onSuccess(`${selectedUsers.size} user(s) ${enable ? 'enabled' : 'disabled'}`);
-      warnErrors(res.data?.errors);
+      onSuccess(
+        `${res.data.count ?? 'Unknown number of'} user(s) ${enable ? 'enabled' : 'disabled'}`,
+        res.data,
+        res.users
+      );
       setConfirmBulkEnable(false);
       setConfirmBulkDisable(false);
     },
@@ -752,15 +784,14 @@ function BulkToolbar({
 
   const bulkAdjustDaysMutation = useMutation({
     mutationFn: ({ days, mode }: { days: number; mode: AdjustMode }) =>
-      api.post('/users/bulk-adjust-days', { users: parseUsers(), days, mode }),
-    onSuccess: ({ data }, vars) => {
+      postBulk('/users/bulk-adjust-days', { days, mode }),
+    onSuccess: ({ data, users }, vars) => {
       const verb = vars.mode === 'add' ? 'Extended' : 'Shortened';
       const msg =
         data.skipped > 0
           ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
           : `${verb} ${data.updated} user(s)`;
-      onSuccess(msg);
-      warnErrors(data.errors);
+      onSuccess(msg, data, users);
       setDaysModal(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk adjust days failed'),
@@ -768,31 +799,28 @@ function BulkToolbar({
 
   const bulkAdjustTrafficMutation = useMutation({
     mutationFn: ({ gb, mode }: { gb: number; mode: AdjustMode }) =>
-      api.post('/users/bulk-adjust-traffic', { users: parseUsers(), gb, mode }),
-    onSuccess: ({ data }, vars) => {
+      postBulk('/users/bulk-adjust-traffic', { gb, mode }),
+    onSuccess: ({ data, users }, vars) => {
       const verb = vars.mode === 'add' ? 'Added traffic to' : 'Reduced traffic for';
       const msg =
         data.skipped > 0
           ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
           : `${verb} ${data.updated} user(s)`;
-      onSuccess(msg);
-      warnErrors(data.errors);
+      onSuccess(msg, data, users);
       setTrafficModal(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk adjust traffic failed'),
   });
 
   const bulkSetFlowMutation = useMutation({
-    mutationFn: (flow: '' | 'xtls-rprx-vision') =>
-      api.post('/users/bulk-set-flow', { users: parseUsers(), flow }),
-    onSuccess: ({ data }, flow) => {
+    mutationFn: (flow: '' | 'xtls-rprx-vision') => postBulk('/users/bulk-set-flow', { flow }),
+    onSuccess: ({ data, users }, flow) => {
       const verb = flow ? 'Enabled flow on' : 'Disabled flow on';
       const msg =
         data.skipped > 0
           ? `${verb} ${data.updated} user(s) — skipped ${data.skipped}`
           : `${verb} ${data.updated} user(s)`;
-      onSuccess(msg);
-      warnErrors(data.errors);
+      onSuccess(msg, data, users);
       setFlowModal(false);
     },
     onError: (e: any) => toast.error(e.response?.data?.error || 'Bulk set flow failed'),
@@ -882,7 +910,7 @@ function BulkToolbar({
                 <Trash2 size={13} className="mr-1" /> Delete
               </Button>
               <div className="w-px h-5 bg-white/10" />
-              <Button variant="ghost" size="sm" onClick={clearSelection}>
+              <Button variant="ghost" size="sm" onClick={() => clearSelection()}>
                 <X size={13} />
               </Button>
             </div>
@@ -1427,7 +1455,15 @@ function UserRow({
           }
         })()
       : undefined;
-  const link = generateLink(inbound, client, panelHost);
+  const link = (() => {
+    try {
+      if (inbound.panel_id != null && !panelHost) return '';
+      return generateLink(inbound, client, panelHost);
+    } catch {
+      return '';
+    }
+  })();
+  const exportUnavailable = 'Export unavailable: client or node configuration is incomplete';
   const subscriptionUrl = client.sub_url || '';
 
   const resetMutation = useMutation({
@@ -1703,7 +1739,8 @@ function UserRow({
               size="icon"
               className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
               onClick={() => setQr(true)}
-              title="QR Code"
+              disabled={!link}
+              title={link ? 'QR Code' : exportUnavailable}
             >
               <QrCode size={13} />
             </Button>
@@ -1711,11 +1748,16 @@ function UserRow({
               variant="secondary"
               size="icon"
               className="h-8 w-full sm:w-8 text-gray-400 hover:text-white"
-              onClick={() => {
-                navigator.clipboard.writeText(link);
-                toast.success('Link copied');
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(link);
+                  toast.success('Link copied');
+                } catch {
+                  toast.error('Could not copy link');
+                }
               }}
-              title="Copy link"
+              disabled={!link}
+              title={link ? 'Copy link' : exportUnavailable}
             >
               <Copy size={13} />
             </Button>

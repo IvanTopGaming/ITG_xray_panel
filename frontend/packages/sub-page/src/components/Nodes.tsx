@@ -6,7 +6,11 @@ function NodeRow({ node, lang }: { node: SubNode; lang: Lang }) {
   const pct = node.limit > 0 ? Math.min(100, (node.used * 100) / node.limit) : 0;
   const warn = pct >= 90;
   const until =
-    node.expiry > 0 ? `${t('until', lang)} ${formatDate(node.expiry, lang, MONTHS[lang])}` : '';
+    node.expiry === null
+      ? t('unknown', lang)
+      : node.expiry > 0
+        ? `${t('until', lang)} ${formatDate(node.expiry, lang, MONTHS[lang])}`
+        : '';
 
   return (
     <div

@@ -3,541 +3,243 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import sqlalchemy as sa
 
 from panel_core.extensions import db
-from panel_core.models import Payment, SystemSetting, Tariff, TariffItem
+from panel_core.models import BotEvent, Payment, SystemSetting, Tariff, TariffItem
+from panel_core.jobs import payments
+from panel_core.services import billing
 
 
 @pytest.fixture
-def configured(app):
+def tariff(app):
     with app.app_context():
         db.session.add_all(
             [
-                SystemSetting(key="yookassa_shop_id", value="test-shop"),
-                SystemSetting(key="yookassa_secret_key", value="test_secret"),
+                SystemSetting(key="yookassa_shop_id", value="shop"),
+                SystemSetting(key="yookassa_secret_key", value="secret"),
             ]
         )
+        row = Tariff(name="Standard", price_rub=150, period_days=30, visibility="public", enabled=True, is_trial=False)
+        row.items = [TariffItem(inbound_tag="vless-de", traffic_gb=0)]
+        db.session.add(row)
         db.session.commit()
+        yield row.id
 
 
-@pytest.fixture
-def tariff(app, configured):
+def insert(app, tariff_id, *, status="pending", age=600, key="yk-payment", url="https://checkout", lease=None):
     with app.app_context():
-        t = Tariff(
-            name="Standard",
-            price_rub=150,
-            period_days=30,
-            visibility="public",
-            enabled=True,
-            is_trial=False,
-        )
-        t.items = [TariffItem(inbound_tag="vless-de", traffic_gb=0)]
-        db.session.add(t)
-        db.session.commit()
-        yield t.id
-
-
-def _insert_pending(
-    app,
-    tariff_id,
-    age_seconds=600,
-    yk_id="yk-poll-1",
-    confirmation_url="https://yookassa.test/pay/default",
-):
-    with app.app_context():
-        p = Payment(
-            yookassa_id=yk_id,
+        row = Payment(
+            yookassa_id=key,
             telegram_id=42,
             tariff_id=tariff_id,
-            tariff_snapshot={"name": "x", "price_rub": 150, "period_days": 30, "items": []},
+            tariff_snapshot={
+                "name": "Purchased",
+                "price_rub": 150,
+                "period_days": 30,
+                "items": [{"inbound_tag": "vless-de", "panel_id": None, "traffic_gb": 0}],
+            },
             amount_rub=150,
-            status="pending",
-            confirmation_url=confirmation_url,
+            status=status,
+            confirmation_url=url,
             metadata_json={"lang": "ru"},
+            created_at=billing._now() - dt.timedelta(seconds=age),
         )
-        db.session.add(p)
-        db.session.flush()
-        p.created_at = dt.datetime.utcnow() - dt.timedelta(seconds=age_seconds)
+        if status == "succeeded":
+            row.provider_status = "succeeded"
+            row.fulfillment_status = "succeeded"
+        if lease is not None:
+            row.processing_owner = "worker"
+            row.processing_version = 1
+            row.processing_expires_at = billing._now() + dt.timedelta(seconds=lease)
+            row.fulfillment_status = "processing"
+        db.session.add(row)
         db.session.commit()
-        return p.id
+        return row.id
 
 
-def test_poll_promotes_succeeded_payments(app, tariff):
-    pid = _insert_pending(app, tariff)
-    from panel_core.jobs.payments import poll_pending_payments
+def remote(key, status="pending", refunded="0.00"):
+    return SimpleNamespace(
+        id=key,
+        status=status,
+        amount=SimpleNamespace(value="150.00", currency="RUB"),
+        refunded_amount=SimpleNamespace(value=refunded, currency="RUB"),
+        metadata={},
+    )
 
+
+@pytest.mark.parametrize("age", [600, 25 * 3600])
+def test_poll_recovers_paid_money_including_old_invoices(app, tariff, age):
+    pid = insert(app, tariff, age=age)
     with (
         app.app_context(),
-        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish"),
+        patch.object(billing.yookassa.Payment, "find_one", return_value=remote("yk-payment", "succeeded")),
+        patch.object(billing.provisioning, "apply_tariff_for_user", return_value={"expires_at_ms": 123}),
     ):
-        mock_find.return_value = SimpleNamespace(status="succeeded")
-        mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
-        poll_pending_payments()
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "succeeded"
+        payments.poll_pending_payments()
+        assert db.session.get(Payment, pid).fulfillment_status == "succeeded"
+        assert BotEvent.query.filter_by(type="payment_succeeded").count() == 1
 
 
-def test_poll_marks_cancelled(app, tariff):
-    pid = _insert_pending(app, tariff)
-    from panel_core.jobs.payments import poll_pending_payments
-
+def test_poll_authoritative_cancel_event_carries_chat_coords(app, tariff):
+    pid = insert(app, tariff)
     with (
         app.app_context(),
-        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish_local,
+        patch.object(billing.yookassa.Payment, "find_one", return_value=remote("yk-payment", "canceled")),
     ):
-        mock_find.return_value = SimpleNamespace(status="canceled")
-        poll_pending_payments()
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "cancelled"
-
-    assert (mock_publish_local.call_args or mock_publish.call_args).args[0] == "payment_cancelled"
-
-
-def test_poll_cancel_event_carries_chat_coords(app, tariff):
-
-    pid = _insert_pending(app, tariff)
-    with app.app_context():
         p = db.session.get(Payment, pid)
-        p.chat_id = 42_000
-        p.message_id = 555
+        p.chat_id, p.message_id = 42000, 555
         db.session.commit()
-
-    from panel_core.jobs.payments import poll_pending_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
-    ):
-        mock_find.return_value = SimpleNamespace(status="canceled")
-        poll_pending_payments()
-
-    call = mock_publish.call_args
-    assert call.args[0] == "payment_cancelled"
-    payload = call.args[2] if len(call.args) >= 3 else call.kwargs.get("payload") or call.args[-1]
-    assert payload["chat_id"] == 42_000
-    assert payload["message_id"] == 555
+        payments.poll_pending_payments()
+        assert p.status == "cancelled"
+        event = BotEvent.query.filter_by(type="payment_cancelled").one()
+        assert event.payload["chat_id"] == 42000
+        assert event.payload["message_id"] == 555
 
 
 def test_poll_skips_payments_younger_than_30s(app, tariff):
-    pid = _insert_pending(app, tariff, age_seconds=10)
-    from panel_core.jobs.payments import poll_pending_payments
-
-    with app.app_context(), patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find:
-        mock_find.return_value = SimpleNamespace(status="succeeded")
-        poll_pending_payments()
-    mock_find.assert_not_called()
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "pending"
+    pid = insert(app, tariff, age=10)
+    with app.app_context(), patch.object(billing.yookassa.Payment, "find_one", side_effect=AssertionError("too early")):
+        payments.poll_pending_payments()
+        assert db.session.get(Payment, pid).last_checked_at is None
 
 
-def test_poll_skips_payments_older_than_24h(app, tariff):
-    _insert_pending(app, tariff, age_seconds=25 * 3600)
-    from panel_core.jobs.payments import poll_pending_payments
+def test_poll_swallows_individual_failures_and_advances_timestamp(app, tariff):
+    first, second = insert(app, tariff, key="yk-a"), insert(app, tariff, key="yk-b")
 
-    with app.app_context(), patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find:
-        mock_find.return_value = SimpleNamespace(status="succeeded")
-        poll_pending_payments()
-    mock_find.assert_not_called()
-
-
-def test_poll_swallows_individual_failures(app, tariff):
-    pid_a = _insert_pending(app, tariff, yk_id="yk-a")
-    pid_b = _insert_pending(app, tariff, yk_id="yk-b")
-    from panel_core.jobs.payments import poll_pending_payments
-
-    def find_side_effect(yk_id):
-        if yk_id == "yk-a":
-            raise RuntimeError("transient")
-        return SimpleNamespace(status="succeeded")
+    def find(key):
+        if key == "yk-a":
+            raise RuntimeError("offline")
+        return remote(key, "succeeded")
 
     with (
         app.app_context(),
-        patch("panel_core.jobs.payments.yookassa.Payment.find_one", side_effect=find_side_effect),
-        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish"),
+        patch.object(billing.yookassa.Payment, "find_one", side_effect=find),
+        patch.object(billing.provisioning, "apply_tariff_for_user", return_value={"expires_at_ms": 123}),
     ):
-        mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
-        poll_pending_payments()
-    with app.app_context():
-        assert db.session.get(Payment, pid_a).status == "pending"
-        assert db.session.get(Payment, pid_b).status == "succeeded"
+        payments.poll_pending_payments()
+        assert db.session.get(Payment, first).status == "pending"
+        assert db.session.get(Payment, first).last_checked_at is not None
+        assert db.session.get(Payment, second).status == "succeeded"
 
 
-def _insert_succeeded(app, tariff_id, age_days=1, yk_id="yk-succ-1"):
-    with app.app_context():
-        p = Payment(
-            yookassa_id=yk_id,
-            telegram_id=42,
-            tariff_id=tariff_id,
-            tariff_snapshot={"name": "x", "price_rub": 150, "period_days": 30, "items": []},
-            amount_rub=150,
-            status="succeeded",
-            metadata_json={"lang": "ru"},
-        )
-        db.session.add(p)
-        db.session.flush()
-        p.created_at = dt.datetime.utcnow() - dt.timedelta(days=age_days)
-        db.session.commit()
-        return p.id
-
-
-def test_reconcile_revokes_refunded(app, tariff):
-    pid = _insert_succeeded(app, tariff)
-    from panel_core.jobs.payments import reconcile_refunds
-
+@pytest.mark.parametrize("days", [1, 31, 365])
+def test_refund_reconciliation_covers_old_paid_invoices(app, tariff, days):
+    pid = insert(app, tariff, status="succeeded", age=days * 86400)
     with (
         app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
+        patch.object(billing.yookassa.Payment, "find_one", return_value=remote("yk-payment", "succeeded", "150.00")),
+        patch.object(billing.provisioning, "revoke_payment_access", return_value={"panel_failures": []}) as revoke,
     ):
-        mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="150.00"))
-        reconcile_refunds()
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "refunded"
-    assert mock_publish.call_args.args[0] == "payment_refunded"
+        payments.reconcile_refunds()
+        assert db.session.get(Payment, pid).refund_status == "completed"
+        assert revoke.call_args.kwargs["operation_id"] == f"pay:{pid}"
+        assert BotEvent.query.filter_by(type="payment_refunded").count() == 1
 
 
-def test_reconcile_ignores_unrefunded(app, tariff):
-    pid = _insert_succeeded(app, tariff)
-    from panel_core.jobs.payments import reconcile_refunds
-
+@pytest.mark.parametrize("amount", ["0.00", "1.00"])
+def test_no_access_revocation_for_zero_or_partial_refund(app, tariff, amount):
+    pid = insert(app, tariff, status="succeeded")
     with (
         app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch.object(billing.yookassa.Payment, "find_one", return_value=remote("yk-payment", "succeeded", amount)),
+        patch.object(billing.provisioning, "revoke_payment_access") as revoke,
     ):
-        mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="0.00"))
-        reconcile_refunds()
-    with app.app_context():
+        payments.reconcile_refunds()
         assert db.session.get(Payment, pid).status == "succeeded"
+        assert db.session.get(Payment, pid).refunded_amount_kopeks == (100 if amount == "1.00" else 0)
+        revoke.assert_not_called()
+        assert BotEvent.query.count() == 0
 
 
-def test_reconcile_skips_old_succeeded(app, tariff):
-    pid = _insert_succeeded(app, tariff, age_days=31)
-    from panel_core.jobs.payments import reconcile_refunds
-
+@pytest.mark.parametrize("status", ["pending", "waiting_for_capture", "canceled", "succeeded"])
+def test_cleanup_uses_only_authoritative_provider_state(app, tariff, status):
+    pid = insert(app, tariff, age=25 * 3600)
     with (
         app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
+        patch.object(billing.yookassa.Payment, "find_one", return_value=remote("yk-payment", status)),
+        patch.object(billing.provisioning, "apply_tariff_for_user", return_value={"expires_at_ms": 123}),
     ):
-        mock_find.return_value = SimpleNamespace(refunded_amount=SimpleNamespace(value="150.00"))
-        reconcile_refunds()
-    mock_find.assert_not_called()
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "succeeded"
+        payments.cleanup_old_payments()
+        expected = {
+            "pending": "pending",
+            "waiting_for_capture": "pending",
+            "canceled": "cancelled",
+            "succeeded": "succeeded",
+        }[status]
+        assert db.session.get(Payment, pid).status == expected
+        assert BotEvent.query.filter_by(type="payment_cancelled").count() == (1 if status == "canceled" else 0)
 
 
-def test_cleanup_cancels_stale_pending(app, tariff):
-    pid = _insert_pending(app, tariff, age_seconds=25 * 3600)
-    from panel_core.jobs.payments import cleanup_old_payments
+def test_cleanup_keeps_unverifiable_old_payment_and_does_not_notify_cancel(app, tariff):
+    pid = insert(app, tariff, age=91 * 86400, status="cancelled")
+    with app.app_context(), patch.object(billing.yookassa.Payment, "find_one", side_effect=RuntimeError("offline")):
+        payments.cleanup_old_payments()
+        assert db.session.get(Payment, pid) is not None
+        assert db.session.get(Payment, pid).provider_status == "pending"
+        assert BotEvent.query.count() == 0
 
+
+def test_cleanup_preserves_unknown_creation_for_review(app, tariff):
+    pid = insert(app, tariff, age=25 * 3600, key="pending-placeholder", url=None)
+    with app.app_context(), patch.object(billing.yookassa.Payment, "create") as create:
+        payments.cleanup_old_payments()
+        p = db.session.get(Payment, pid)
+        assert p.status == "pending"
+        assert p.checkout_status == "review"
+        assert p.fulfillment_error == "checkout_request_missing"
+        create.assert_not_called()
+
+
+def test_cleanup_marks_every_confirmed_cancellation_with_its_own_chat(app, tariff):
+    first, second = insert(app, tariff, age=25 * 3600, key="a"), insert(app, tariff, age=25 * 3600, key="b")
     with (
         app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.jobs.payments.bot_events.publish"),
+        patch.object(billing.yookassa.Payment, "find_one", side_effect=lambda key: remote(key, "canceled")),
     ):
-        mock_find.return_value = SimpleNamespace(status="canceled")
-        cleanup_old_payments()
-        assert db.session.get(Payment, pid).status == "cancelled"
-
-
-def test_cleanup_does_not_cancel_what_yookassa_reports_succeeded(app, tariff):
-
-    pid = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-paid-late")
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish") as mock_billing_publish,
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
-    ):
-        mock_find.return_value = SimpleNamespace(status="succeeded")
-        mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
-        cleanup_old_payments()
-
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "succeeded", (
-            "cleanup_old_payments cancelled a payment YooKassa reports as succeeded — with no public "
-            "webhook route and poll_pending_payments bounded to 24h, a >24h bot-api outage would turn "
-            "every genuinely paid payment into 'cancelled' on restart"
-        )
-    published = [c.args[0] for c in mock_publish.call_args_list] + [
-        c.args[0] for c in mock_billing_publish.call_args_list
-    ]
-    assert "payment_cancelled" not in published, f"a paid payment was announced as cancelled: {published}"
-    assert mock_provision.call_count == 1, "the late-confirmed payment must be provisioned, not merely left alone"
-
-
-def test_cleanup_leaves_the_row_pending_when_yookassa_is_unreachable(app, tariff):
-
-    pid = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-unreachable")
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one", side_effect=RuntimeError("network down")),
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
-    ):
-        cleanup_old_payments()
-
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "pending", (
-            "cleanup_old_payments cancelled a payment it could not check — an unreachable YooKassa is "
-            "not evidence that the user did not pay; skipping is safe, cancelling is not"
-        )
-    assert mock_publish.call_args_list == [], "no cancellation may be announced for an unverified payment"
-
-
-def test_cleanup_leaves_money_holding_statuses_pending(app, tariff):
-
-    pid = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-held")
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
-    ):
-        mock_find.return_value = SimpleNamespace(status="waiting_for_capture")
-        cleanup_old_payments()
-
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "pending"
-    assert mock_publish.call_args_list == []
-
-
-def test_cleanup_notifies_user_on_stuck_pending_cancellation(app, tariff):
-
-    pid_a = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-stuck-a")
-    pid_b = _insert_pending(app, tariff, age_seconds=25 * 3600, yk_id="yk-stuck-b")
-    with app.app_context():
-        for pid, chat, msg in [(pid_a, 100, 1), (pid_b, 200, 2)]:
-            p = db.session.get(Payment, pid)
-            p.chat_id = chat
-            p.message_id = msg
+        for pid, chat in [(first, 100), (second, 200)]:
+            db.session.get(Payment, pid).chat_id = chat
         db.session.commit()
+        payments.cleanup_old_payments()
+        assert {event.payload["chat_id"] for event in BotEvent.query.filter_by(type="payment_cancelled")} == {100, 200}
 
-    from panel_core.jobs.payments import cleanup_old_payments
 
+def test_cleanup_prioritizes_least_recently_checked_invoices(app, tariff):
+    first, second = (
+        insert(app, tariff, age=25 * 3600, key="recent"),
+        insert(app, tariff, age=72 * 3600, key="unchecked"),
+    )
+    seen = []
     with (
         app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
+        patch.object(billing.yookassa.Payment, "find_one", side_effect=lambda key: seen.append(key) or remote(key)),
     ):
-        mock_find.return_value = SimpleNamespace(status="canceled")
-        cleanup_old_payments()
-
-    events = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "payment_cancelled"]
-    assert len(events) == 2
-    payloads = sorted([c.args[2] for c in events], key=lambda p: p["payment_id"])
-    assert payloads[0]["chat_id"] == 100
-    assert payloads[1]["chat_id"] == 200
-
-
-def test_cleanup_cancels_payment_without_confirmation_url_without_asking_yookassa(app, tariff):
-
-    pid = _insert_pending(
-        app,
-        tariff,
-        age_seconds=25 * 3600,
-        yk_id="pending-deadbeef",
-        confirmation_url=None,
-    )
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.jobs.payments.billing.fetch_remote_status") as mock_fetch,
-        patch("panel_core.jobs.payments.bot_events.publish"),
-    ):
-        cleanup_old_payments()
-
-    mock_fetch.assert_not_called()
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "cancelled", (
-            "a payment whose confirmation_url was never set never reached YooKassa's checkout page — "
-            "the user could not have paid, so it can be cancelled from local state alone"
-        )
-
-
-def test_cleanup_leaves_confirmed_payment_pending_when_unresolvable(app, tariff):
-
-    pid = _insert_pending(
-        app,
-        tariff,
-        age_seconds=25 * 3600,
-        yk_id="yk-real-unresolvable",
-        confirmation_url="https://yookassa.test/pay/real",
-    )
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.jobs.payments.billing.fetch_remote_status", return_value=None) as mock_fetch,
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
-    ):
-        cleanup_old_payments()
-
-    assert mock_fetch.call_count == 1
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "pending", (
-            "a payment the user did see a checkout page for must not be cancelled just because "
-            "YooKassa could not be reached this run"
-        )
-    assert mock_publish.call_args_list == []
-
-
-def test_cleanup_processes_oldest_pending_first(app, tariff):
-
-    _insert_pending(
-        app, tariff, age_seconds=25 * 3600, yk_id="yk-new", confirmation_url="https://yookassa.test/pay/new"
-    )
-    _insert_pending(
-        app, tariff, age_seconds=48 * 3600, yk_id="yk-mid", confirmation_url="https://yookassa.test/pay/mid"
-    )
-    _insert_pending(
-        app, tariff, age_seconds=72 * 3600, yk_id="yk-old", confirmation_url="https://yookassa.test/pay/old"
-    )
-
-    with app.app_context():
-        db.session.execute(sa.text("DROP INDEX IF EXISTS ix_payment_created_at"))
+        db.session.get(Payment, first).last_checked_at = billing._now()
         db.session.commit()
+        payments.cleanup_old_payments()
+        assert seen == ["unchecked", "recent"]
+        assert db.session.get(Payment, second).last_checked_at is not None
 
-    from panel_core.jobs.payments import cleanup_old_payments
 
-    order = []
-
-    def fake_fetch(payment):
-        order.append(payment.yookassa_id)
-        return None
-
+@pytest.mark.parametrize("job", [payments.poll_pending_payments, payments.cleanup_old_payments])
+def test_active_lease_protects_old_processing_payment(app, tariff, job):
+    pid = insert(app, tariff, status="processing", age=72 * 3600, lease=120)
     with (
         app.app_context(),
-        patch("panel_core.jobs.payments.billing.fetch_remote_status", side_effect=fake_fetch),
-        patch("panel_core.jobs.payments.bot_events.publish"),
+        patch.object(billing.yookassa.Payment, "find_one", side_effect=AssertionError("live owner")),
     ):
-        cleanup_old_payments()
-
-    assert order == ["yk-old", "yk-mid", "yk-new"], "the oldest stuck payment must be checked first"
-
-
-def test_cleanup_deletes_ancient_cancelled(app, tariff):
-    pid = _insert_pending(app, tariff, age_seconds=91 * 86400)
-    with app.app_context():
-        db.session.get(Payment, pid).status = "cancelled"
-        db.session.commit()
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with app.app_context():
-        cleanup_old_payments()
-        assert db.session.get(Payment, pid) is None
-
-
-def _insert_processing(app, tariff_id, age_seconds, yk_id="yk-stranded"):
-    """A row that was atomically claimed and then never finished — the process died mid-apply."""
-    with app.app_context():
-        p = Payment(
-            yookassa_id=yk_id,
-            telegram_id=42,
-            tariff_id=tariff_id,
-            tariff_snapshot={"name": "x", "price_rub": 150, "period_days": 30, "items": []},
-            amount_rub=150,
-            status="processing",
-            confirmation_url="https://yookassa.test/pay/stranded",
-            metadata_json={"lang": "ru"},
-        )
-        db.session.add(p)
-        db.session.flush()
-        p.created_at = dt.datetime.utcnow() - dt.timedelta(seconds=age_seconds)
-        db.session.commit()
-        return p.id
-
-
-def test_cleanup_releases_a_payment_stranded_in_processing(app, tariff):
-    """§23: `processing` is written by the atomic claim and read by nobody.
-
-    A crash between the claim and the end of `apply_payment` left the row in a status that no
-    cron selects: both `poll_pending_payments` and `cleanup_old_payments` filtered on `pending`.
-    Money taken, no access, no recovery path at all. At >24h no apply can still be in flight,
-    so releasing it there is safe — the claim keeps guarding against double provisioning.
-    """
-    pid = _insert_processing(app, tariff, age_seconds=25 * 3600)
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish"),
-        patch("panel_core.jobs.payments.bot_events.publish"),
-    ):
-        mock_find.return_value = SimpleNamespace(status="succeeded")
-        mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
-        cleanup_old_payments()
-
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "succeeded"
-    mock_provision.assert_called_once()
-
-
-def test_cleanup_cancels_a_stranded_processing_row_yookassa_never_took(app, tariff):
-    pid = _insert_processing(app, tariff, age_seconds=25 * 3600, yk_id="yk-stranded-dead")
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.jobs.payments.bot_events.publish") as mock_publish,
-    ):
-        mock_find.return_value = SimpleNamespace(status="canceled")
-        cleanup_old_payments()
-
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "cancelled"
-    assert mock_publish.call_args.args[0] == "payment_cancelled"
-
-
-def test_cleanup_leaves_a_fresh_processing_row_alone(app, tariff):
-    """The 24h bound is the whole safety argument: a running apply must not be released."""
-    pid = _insert_processing(app, tariff, age_seconds=60, yk_id="yk-inflight")
-    from panel_core.jobs.payments import cleanup_old_payments
-
-    with (
-        app.app_context(),
-        patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.jobs.payments.bot_events.publish"),
-    ):
-        cleanup_old_payments()
-        mock_find.assert_not_called()
-
-    with app.app_context():
+        job()
         assert db.session.get(Payment, pid).status == "processing"
+        assert db.session.get(Payment, pid).processing_owner == "worker"
 
 
-def test_poll_never_touches_processing_rows(app, tariff):
-    """`poll_pending_payments` must keep filtering on `pending` only.
-
-    Widening its query would race a live `apply_payment`. Since §8.16 the job does have a recovery
-    branch for stranded claims, but it runs before this query, asks YooKassa nothing, and only puts
-    a row back to 'pending' once it has been seen in 'processing' twice — which is why a row claimed
-    moments ago is still untouched here and `find_one` is still never called for it.
-    """
-    pid = _insert_processing(app, tariff, age_seconds=600, yk_id="yk-poll-processing")
-    from panel_core.jobs.payments import poll_pending_payments
-
+@pytest.mark.parametrize("job", [payments.poll_pending_payments, payments.cleanup_old_payments])
+def test_expired_lease_is_recovered_by_both_jobs(app, tariff, job):
+    pid = insert(app, tariff, status="processing", age=72 * 3600, lease=-1)
     with (
         app.app_context(),
-        patch("panel_core.jobs.payments.yookassa.Payment.find_one") as mock_find,
+        patch.object(billing.yookassa.Payment, "find_one", return_value=remote("yk-payment", "succeeded")),
+        patch.object(billing.provisioning, "apply_tariff_for_user", return_value={"expires_at_ms": 123}),
     ):
-        poll_pending_payments()
-        mock_find.assert_not_called()
-
-    with app.app_context():
-        assert db.session.get(Payment, pid).status == "processing"
+        job()
+        assert db.session.get(Payment, pid).status == "succeeded"
+        assert db.session.get(Payment, pid).processing_owner is None

@@ -232,7 +232,7 @@ export default function Panels() {
       const res = await api.get(`/panels/${panel.id}/backup`, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
-      const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+      const stamp = new Date().toISOString().slice(0, 16).replace(/-|:|T/g, '');
       link.href = url;
       link.setAttribute('download', `${panel.name.replace(/[^\w.-]+/g, '_')}-${stamp}.db`);
       document.body.appendChild(link);

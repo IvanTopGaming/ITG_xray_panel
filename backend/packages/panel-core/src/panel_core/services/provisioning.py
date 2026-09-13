@@ -5,12 +5,9 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy.exc import IntegrityError
-
 from panel_core.extensions import db
-from panel_core.models import Client, Inbound, LinkedPanel, NotificationLog
+from panel_core.models import Client, Inbound, LinkedPanel
 from panel_core.services import sub_cache
-from panel_core.services.expiry import nearest_expiry
 from panel_core.services.panel_proxy import fetch_panel_snapshot_live
 from panel_core.xray.facade import (
     _api_add_user_grpc,
@@ -147,13 +144,17 @@ def _validate_provision_semantics(
             "or 'expiry_ms' (set that absolute expiry), never both and never neither"
         )
     if period_ms is not None:
-        if period_ms < 0:
+        if not isinstance(period_ms, int) or isinstance(period_ms, bool) or period_ms < 0:
             raise ValueError("'period_ms' must not be negative")
         if not idempotency_key:
             raise ValueError(
                 "'idempotency_key' is required alongside 'period_ms': extending is not idempotent on its own, "
                 "so a retried request would add the period twice"
             )
+    if expiry_ms is not None and (not isinstance(expiry_ms, int) or isinstance(expiry_ms, bool) or expiry_ms < 0):
+        raise ValueError("expiry_ms_must_be_nonnegative_integer")
+    if expiry_ms is not None and idempotency_key is not None:
+        raise ValueError("expiry_ms_must_not_carry_period_idempotency_key")
 
 
 def _find_receipt_row(idempotency_key: str, inbound_tag: str):
@@ -211,147 +212,39 @@ def provision_single_item(
     period_ms: int | None = None,
     tariff_id: int | None = None,
     idempotency_key: str | None = None,
+    source_id: str | None = None,
+    source_revision: int = 0,
+    operation_id: str | None = None,
+    account_revision: int = 0,
 ) -> dict:
-
     _validate_provision_semantics(expiry_ms, period_ms, idempotency_key)
-    _require_local_xray(f"provisioning local inbound {inbound_tag!r} for telegram_id {telegram_id}")
+    if not isinstance(telegram_id, int) or isinstance(telegram_id, bool):
+        raise ValueError("telegram_id_must_be_integer")
+    if not isinstance(inbound_tag, str) or not inbound_tag:
+        raise ValueError("inbound_tag_required")
+    for name, value in (
+        ("limit_bytes", limit_bytes),
+        ("source_revision", source_revision),
+        ("account_revision", account_revision),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"{name}_must_be_nonnegative_integer")
+    _require_local_xray(f"provisioning local inbound {inbound_tag!r}")
+    from panel_core.services.entitlements import provision
 
-    if idempotency_key:
-        prior = _find_receipt_row(idempotency_key, inbound_tag)
-        replay = _find_receipt(idempotency_key, inbound_tag) if prior is not None else None
-        if replay is not None:
-            if prior.materialized:
-                logger.info(
-                    "provision replay tg=%s tag=%s key=%s — returning the stored result untouched",
-                    telegram_id,
-                    inbound_tag,
-                    idempotency_key,
-                )
-                return replay
-            logger.warning(
-                "provision replay tg=%s tag=%s key=%s — the stored grant never reached Xray; syncing now",
-                telegram_id,
-                inbound_tag,
-                idempotency_key,
-            )
-            stored_client = Client.query.filter_by(telegram_id=telegram_id, inbound_tag=inbound_tag).first()
-            if stored_client is not None:
-                _sync_after_provision([stored_client], [])
-            prior.materialized = True
-            db.session.commit()
-            return replay
-
-    now_ms = int(time.time() * 1000)
-    inbound = Inbound.query.filter_by(tag=inbound_tag).first()
-    if inbound is None:
-        raise ValueError(f"Inbound {inbound_tag!r} not found")
-
-    client = Client.query.filter_by(telegram_id=telegram_id, inbound_tag=inbound_tag).first()
-    expiry_ms = _target_expiry_ms(client, now_ms=now_ms, expiry_ms=expiry_ms, period_ms=period_ms)
-    preserves_foreign_tariff = (
-        period_ms is None
-        and client is not None
-        and tariff_id is not None
-        and client.tariff_id is not None
-        and client.tariff_id != tariff_id
+    return provision(
+        telegram_id=telegram_id,
+        inbound_tag=inbound_tag,
+        limit_bytes=limit_bytes,
+        expiry_ms=expiry_ms,
+        period_ms=period_ms,
+        tariff_id=tariff_id,
+        idempotency_key=idempotency_key,
+        source_id=source_id,
+        source_revision=source_revision,
+        operation_id=operation_id,
+        account_revision=account_revision,
     )
-    if preserves_foreign_tariff:
-        expiry_ms = _preserve_foreign_expiry(client.expiry_time, expiry_ms)
-
-    new_clients: list[Client] = []
-    extended_clients_with_state: list[tuple[Client, bool]] = []
-
-    if client is not None:
-        was_enabled = bool(client.enable)
-        client.expiry_time = expiry_ms
-        if not preserves_foreign_tariff:
-            client.limit_bytes = limit_bytes
-            client.up = 0
-            client.down = 0
-            client.last_reset_time = now_ms
-        client.enable = True
-        if tariff_id is not None and not preserves_foreign_tariff:
-            client.tariff_id = tariff_id
-        NotificationLog.query.filter(
-            NotificationLog.client_id == client.id,
-            NotificationLog.kind.in_(
-                (
-                    "traffic_80",
-                    "traffic_95",
-                    "traffic_exhausted",
-                    "expiry_3d",
-                    "expiry_1d",
-                    "expiry_1h",
-                    "expired",
-                )
-            ),
-        ).delete(synchronize_session=False)
-        extended_clients_with_state.append((client, was_enabled))
-    else:
-        identity = _generate_identity(inbound.protocol)
-        base_email = _generate_email(telegram_id, inbound_tag)
-        email = base_email
-        for _attempt in range(8):
-            if not Client.query.filter_by(inbound_tag=inbound_tag, email=email).first():
-                break
-            email = f"{base_email}_{secrets.token_hex(3)}"
-        else:
-            raise RuntimeError(f"Could not find unique email for tg={telegram_id}")
-
-        client = Client(
-            id=identity,
-            email=email,
-            inbound_tag=inbound_tag,
-            telegram_id=telegram_id,
-            tariff_id=tariff_id,
-            limit_bytes=limit_bytes,
-            expiry_time=expiry_ms,
-            up=0,
-            down=0,
-            enable=True,
-            flow="xtls-rprx-vision" if inbound_supports_vless_flow(inbound) else "",
-        )
-        db.session.add(client)
-        new_clients.append(client)
-
-    db.session.flush()
-    result = {"client": client.to_dict(), "expires_at_ms": expiry_ms}
-
-    if idempotency_key:
-        from panel_core.models import ProvisionReceipt
-
-        db.session.add(
-            ProvisionReceipt(
-                idempotency_key=idempotency_key,
-                inbound_tag=inbound_tag,
-                telegram_id=telegram_id,
-                response_json=json.dumps(result),
-            )
-        )
-
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        replay = _find_receipt(idempotency_key, inbound_tag) if idempotency_key else None
-        if replay is None:
-            raise
-        logger.info(
-            "provision raced on key=%s tag=%s — the concurrent request won, returning its result",
-            idempotency_key,
-            inbound_tag,
-        )
-        return replay
-
-    _sync_after_provision(new_clients, extended_clients_with_state)
-
-    if idempotency_key:
-        receipt = _find_receipt_row(idempotency_key, inbound_tag)
-        if receipt is not None:
-            receipt.materialized = True
-            db.session.commit()
-
-    return result
 
 
 def clear_notification_claims(*, telegram_id: int, tariff_id: int | None) -> None:
@@ -365,223 +258,68 @@ def clear_notification_claims(*, telegram_id: int, tariff_id: int | None) -> Non
 
 
 def apply_tariff_for_user(
-    telegram_id: int,
-    tariff: "Tariff",
+    telegram_id,
+    tariff,
     *,
-    source: str,
-    operation_id: str,
-    expiry_ms: int | None = None,
-) -> dict:
+    source,
+    operation_id,
+    expiry_ms=None,
+    guard=None,
+    source_id=None,
+    source_revision=0,
+    notification=None,
+):
+    if not operation_id:
+        raise ValueError("operation_id_required")
+    from panel_core.services.provisioning_operations import apply_grant
+
+    result = apply_grant(
+        telegram_id,
+        tariff,
+        source=source,
+        operation_id=operation_id,
+        expiry_ms=expiry_ms,
+        guard=guard,
+        source_id=source_id,
+        source_revision=source_revision,
+        notification=notification,
+    )
+    clear_notification_claims(telegram_id=telegram_id, tariff_id=tariff.id)
+    db.session.commit()
+    sub_cache.invalidate_user_aggregate(telegram_id)
+    return result
+
+
+def revoke_payment_access(
+    telegram_id, tariff_id, *, operation_id=None, tariff_snapshot=None, pending_targets=None, guard=None
+):
+    from panel_core.services.provisioning_operations import revoke_source_operation
 
     if not operation_id:
-        raise ValueError("operation_id is required — it is what stops a retry from granting a second period")
-
-    period_ms = tariff.period_days * 86400_000
-    now_ms = int(time.time() * 1000)
-
-    existing = list(Client.query.filter_by(telegram_id=telegram_id).all())
-    existing_max_expiry = max((c.expiry_time or 0 for c in existing), default=0)
-
-    assign_absolute = expiry_ms is not None
-    new_expiry_ms = expiry_ms if assign_absolute else max(now_ms, existing_max_expiry) + period_ms
-
-    remote_items = [item for item in tariff.items if item.panel_id is not None]
-    local_items = [item for item in tariff.items if item.panel_id is None]
-
-    if local_items:
-        tags = ", ".join(sorted(repr(item.inbound_tag) for item in local_items))
-        _require_local_xray(f"provisioning tariff {tariff.name!r} on local inbound(s) {tags}")
-
-    remote_expiries: list[int] = []
-    for item in remote_items:
-        from panel_core.services.panel_proxy import proxy_provision
-
-        limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
-        payload = {"limit_bytes": limit_bytes, "tariff_id": tariff.id}
-        if assign_absolute:
-            payload["expiry_ms"] = new_expiry_ms
-        else:
-            payload["period_ms"] = period_ms
-            payload["idempotency_key"] = operation_id
-        try:
-            remote = proxy_provision(item.panel_id, telegram_id, item.inbound_tag, payload)
-            remote_expiries.append(int(remote["expires_at_ms"]))
-        except Exception as exc:
-            logger.error("proxy_provision failed for panel=%s tag=%s: %s", item.panel_id, item.inbound_tag, exc)
-            raise
-
-    new_clients = []
-    extended_clients_with_state: list[tuple[Client, bool]] = []
-    for item in local_items:
-        limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
-
-        client = next(
-            (c for c in existing if c.inbound_tag == item.inbound_tag),
-            None,
-        )
-        if client is not None:
-            was_enabled = bool(client.enable)
-            preserves_foreign_tariff = (
-                assign_absolute and client.tariff_id is not None and client.tariff_id != tariff.id
-            )
-            if preserves_foreign_tariff:
-                client.expiry_time = _preserve_foreign_expiry(client.expiry_time, new_expiry_ms)
-            elif assign_absolute or client.expiry_time != 0:
-                client.expiry_time = new_expiry_ms
-            if not preserves_foreign_tariff:
-                client.limit_bytes = limit_bytes
-                client.up = 0
-                client.down = 0
-                client.last_reset_time = now_ms
-            client.enable = True
-            if not preserves_foreign_tariff:
-                client.tariff_id = tariff.id
-
-            NotificationLog.query.filter(
-                NotificationLog.client_id == client.id,
-                NotificationLog.kind.in_(
-                    (
-                        "traffic_80",
-                        "traffic_95",
-                        "traffic_exhausted",
-                        "expiry_3d",
-                        "expiry_1d",
-                        "expiry_1h",
-                        "expired",
-                    )
-                ),
-            ).delete(synchronize_session=False)
-            extended_clients_with_state.append((client, was_enabled))
-        else:
-            new_client = _create_client_for_item(
-                telegram_id=telegram_id,
-                tariff=tariff,
-                item=item,
-                expiry_ms=new_expiry_ms,
-                limit_bytes=limit_bytes,
-            )
-            new_clients.append(new_client)
-
-    clear_notification_claims(telegram_id=telegram_id, tariff_id=tariff.id)
-
-    db.session.commit()
-    _sync_after_provision(new_clients, extended_clients_with_state)
+        return {
+            "disabled_clients": 0,
+            "remote_disabled": 0,
+            "panel_failures": [{"error": "payment_source_required_for_safe_refund"}],
+        }
+    result = revoke_source_operation(
+        telegram_id, tariff_id, source_id=operation_id, snapshot=tariff_snapshot, guard=guard
+    )
     sub_cache.invalidate_user_aggregate(telegram_id)
-    logger.info(
-        "provisioned tg=%s tariff=%s source=%s op=%s new=%d extended=%d remote=%d",
-        telegram_id,
-        tariff.id,
-        source,
-        operation_id,
-        len(new_clients),
-        len(extended_clients_with_state),
-        len(remote_items),
-    )
-
-    all_provisioned = new_clients + [c for c, _ in extended_clients_with_state]
-    reported = list(remote_expiries)
-    if local_items:
-        reported.append(new_expiry_ms)
-    return {
-        "clients": [c.to_dict() for c in all_provisioned],
-        "expires_at_ms": nearest_expiry(reported, fallback=new_expiry_ms),
-        "source": source,
-    }
+    return result
 
 
-def revoke_payment_access(telegram_id: int, tariff_id: int) -> dict:
-
-    from panel_core.xray.facade import _api_remove_user_grpc
-
-    active_clients = Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id, enable=True).all()
-    inbound_tags = {c.inbound_tag for c in active_clients}
-    inbounds_by_tag = (
-        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
-    )
-
-    restart_required = False
-    for c in active_clients:
-        ib = inbounds_by_tag.get(c.inbound_tag)
-        if ib and ib.protocol in ("vless", "vmess"):
-            try:
-                if not _api_remove_user_grpc(c.inbound_tag, c.email):
-                    restart_required = True
-            except Exception:
-                restart_required = True
-        else:
-            restart_required = True
-
-    remote_disabled = 0
-    panel_failures: list[dict] = []
-    from panel_core.models import TariffItem
-
-    remote_items = (
-        TariffItem.query.filter_by(tariff_id=tariff_id)
-        .filter(TariffItem.panel_id.isnot(None))
-        .with_entities(TariffItem.panel_id, TariffItem.inbound_tag)
-        .all()
-    )
-    wanted = {(pid, tag) for pid, tag in remote_items}
-    if wanted:
-        from panel_core.services.panel_proxy import proxy_update_user
-        from panel_core.services.remote_clients import remote_clients_by_telegram_id_live
-
-        panel_ids = {pid for pid, _tag in remote_items}
-        remote_by_tg, unreachable = remote_clients_by_telegram_id_live(panel_ids=panel_ids)
-        panel_failures.extend(unreachable)
-        for rc in remote_by_tg.get(telegram_id, []):
-            if rc.get("tariff_id") != tariff_id:
-                continue
-            if (rc.get("panel_id"), rc.get("inbound_tag")) not in wanted or not rc.get("enable", True):
-                continue
-            try:
-                proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": False})
-                remote_disabled += 1
-            except Exception as exc:
-                logger.warning("revoke_payment_access: remote disable failed panel=%s: %s", rc["panel_id"], exc)
-                panel_failures.append(
-                    {"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)}
-                )
-
-    for c in active_clients:
-        c.enable = False
-    db.session.commit()
-
-    if active_clients:
-        generate_config_file()
-        if restart_required:
-            restart_xray_container()
-    for c in active_clients:
-        try:
-            sub_cache.invalidate_user(c.id)
-        except Exception:
-            pass
-    sub_cache.invalidate_user_aggregate(telegram_id)
-
-    logger.info(
-        "revoke_payment_access tg=%s tariff=%s disabled=%d remote_disabled=%d failures=%d",
-        telegram_id,
-        tariff_id,
-        len(active_clients),
-        remote_disabled,
-        len(panel_failures),
-    )
-    return {
-        "disabled_clients": len(active_clients),
-        "remote_disabled": remote_disabled,
-        "panel_failures": panel_failures,
-    }
-
-
-def _collect_tariff_holders(tariff: "Tariff", now_ms: int):
+def _collect_tariff_holders(tariff: "Tariff", now_ms: int, *, panel_ids=None):
 
     records = []
-    for c in Client.query.filter(Client.telegram_id.isnot(None)).all():
+    for c in Client.query.filter(Client.telegram_id.isnot(None), Client.tariff_id == tariff.id).all():
+        if c.expiry_time is None:
+            raise ValueError(f"Missing expiry for tariff client {c.id}")
         active = bool(c.enable) and (c.expiry_time == 0 or c.expiry_time > now_ms)
         records.append((c.telegram_id, None, c.inbound_tag, c.tariff_id, active, c.expiry_time or 0))
 
     unreachable_ids: set[int] = set()
     child_panel_ids = {it.panel_id for it in tariff.items if it.panel_id is not None}
+    child_panel_ids.update(panel_ids or [])
     for pid in child_panel_ids:
         try:
             snap = fetch_panel_snapshot_live(pid)
@@ -595,7 +333,11 @@ def _collect_tariff_holders(tariff: "Tariff", now_ms: int):
                 tg = cl.get("telegram_id")
                 if tg is None:
                     continue
-                exp = cl.get("expiry_time") or 0
+                if cl.get("tariff_id") != tariff.id:
+                    continue
+                exp = cl.get("expiry_time")
+                if exp is None:
+                    raise ValueError(f"Missing expiry for tariff holder {tg} on panel {pid}")
                 active = bool(cl.get("enable")) and (exp == 0 or exp > now_ms)
                 records.append((tg, pid, tag, cl.get("tariff_id"), active, exp))
 
@@ -609,86 +351,243 @@ def _collect_tariff_holders(tariff: "Tariff", now_ms: int):
                 prev = h["expiry_ms"]
                 h["expiry_ms"] = 0 if (prev == 0 or exp == 0) else max(prev, exp)
 
-    for tg, panel_id, tag, _tid, _active, _exp in records:
-        if tg in holders:
+    for tg, panel_id, tag, tid, _active, _exp in records:
+        if tg in holders and tid == tariff.id:
             holders[tg]["have"].add((panel_id, tag))
 
     return holders, unreachable_ids
 
 
-def backfill_tariff(tariff: "Tariff") -> dict:
+def queue_tariff_backfill(tariff, *, previous_panel_ids=()):
+    from panel_core.models import ProvisionOperation
+    from panel_core.services.provisioning_operations import snapshot_tariff
+
+    operation_id = f"tariff-rollout:{uuid.uuid4()}"
+    operation = ProvisionOperation(
+        id=operation_id,
+        kind="tariff_backfill",
+        telegram_id=0,
+        tariff_id=tariff.id,
+        source="tariff_rollout",
+        source_id=operation_id,
+        source_revision=0,
+        snapshot={**snapshot_tariff(tariff), "discovery_panel_ids": sorted(set(previous_panel_ids))},
+        params={},
+    )
+    db.session.add(operation)
+    return operation
+
+
+def _backfill_sources(tariff_id, telegram_id, expiry_ms):
+    from datetime import timezone
+
+    from panel_core.models import AccessEntitlement, ProvisionOperation, UserTariffAccess
 
     now_ms = int(time.time() * 1000)
+    operations = ProvisionOperation.query.filter_by(tariff_id=tariff_id, telegram_id=telegram_id).all()
+    latest = {}
+    for operation in operations:
+        latest[operation.source_id] = max(latest.get(operation.source_id, 0), operation.source_revision)
+    revoked = {
+        operation.source_id
+        for operation in operations
+        if operation.kind == "revoke" and operation.source_revision == latest[operation.source_id]
+    }
+    sources = {}
+    local = {}
+    for row in AccessEntitlement.query.filter_by(
+        tariff_id=tariff_id, telegram_id=telegram_id, revoked=False, enabled=True
+    ).all():
+        if row.source_id in revoked or row.source_revision < latest.get(row.source_id, 0):
+            continue
+        previous = local.get(row.source_id)
+        if previous is None or row.source_revision > previous["revision"]:
+            local[row.source_id] = {"expiry_ms": row.expires_at_ms, "revision": row.source_revision}
+        elif row.source_revision == previous["revision"]:
+            previous["expiry_ms"] = (
+                0 if 0 in (previous["expiry_ms"], row.expires_at_ms) else max(previous["expiry_ms"], row.expires_at_ms)
+            )
+    canonical = [
+        operation
+        for operation in operations
+        if operation.kind == "grant"
+        and operation.status == "succeeded"
+        and operation.source != "tariff_backfill"
+        and operation.source_id not in revoked
+        and operation.source_revision == latest[operation.source_id]
+    ]
+    for operation in canonical:
+        if operation.source_id in local:
+            sources[operation.source_id] = local[operation.source_id]
+            continue
+        end = (operation.params or {}).get("expiry_ms")
+        if end is None:
+            known = []
+            for state in (operation.target_states or {}).values():
+                reply = state.get("reply", {})
+                value = reply.get("source_expires_at_ms")
+                if (
+                    reply.get("source_id") != operation.source_id
+                    or reply.get("source_revision") != operation.source_revision
+                    or not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value < 0
+                ):
+                    raise ValueError(f"source_expiry_requires_review:{operation.source_id}")
+                known.append(value)
+            if not known:
+                raise ValueError(f"source_expiry_requires_review:{operation.source_id}")
+            end = 0 if 0 in known else max(known)
+        sources[operation.source_id] = {"expiry_ms": end, "revision": operation.source_revision}
+    sources.update(local)
+    grant = UserTariffAccess.query.filter_by(
+        telegram_id=telegram_id, tariff_id=tariff_id, billing="free", provisioning_status="succeeded"
+    ).first()
+    if grant is not None:
+        end = (
+            0 if grant.access_until is None else int(grant.access_until.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        )
+        sources[f"grant:{grant.id}"] = {"expiry_ms": end, "revision": grant.provisioning_revision}
+    legacy_id = f"legacy-tariff:{tariff_id}:user:{telegram_id}"
+    legacy_history = operations and all(
+        operation.source == "tariff_backfill" and operation.source_id == legacy_id and operation.kind == "grant"
+        for operation in operations
+    )
+    if not sources and (not operations or legacy_history):
+        sources[legacy_id] = {"expiry_ms": expiry_ms, "revision": latest.get(legacy_id, 0)}
+    return {
+        source_id: source
+        for source_id, source in sources.items()
+        if source["expiry_ms"] == 0 or source["expiry_ms"] > now_ms
+    }
 
-    panel_names: dict[int, str] = {}
-    panel_ids = {it.panel_id for it in tariff.items if it.panel_id is not None}
-    if panel_ids:
-        for p in LinkedPanel.query.filter(LinkedPanel.id.in_(panel_ids)).all():
-            panel_names[p.id] = p.name
 
-    holders, unreachable_ids = _collect_tariff_holders(tariff, now_ms)
+def run_tariff_backfill(operation):
+    import datetime as dt
+    import hashlib
+    from types import SimpleNamespace
+    from sqlalchemy import or_, update
+    from panel_core.models import ProvisionOperation
+    from panel_core.services.provisioning_operations import frozen_tariff, queue_grant, run_operation
+
+    if operation.status in {"succeeded", "superseded"}:
+        return {**(operation.params or {}).get("summary", {}), "status": operation.status, "operation_id": operation.id}
+    owner = str(uuid.uuid4())
+    moment = dt.datetime.utcnow()
+    claim = db.session.execute(
+        update(ProvisionOperation)
+        .where(
+            ProvisionOperation.id == operation.id,
+            or_(ProvisionOperation.processing_owner.is_(None), ProvisionOperation.processing_expires_at <= moment),
+        )
+        .values(processing_owner=owner, processing_expires_at=moment + dt.timedelta(minutes=2))
+    )
+    db.session.commit()
+    if not claim.rowcount:
+        return {"status": "pending", "operation_id": operation.id, "provision_failures": 0}
+
+    def renew(**values):
+        moment = dt.datetime.utcnow()
+        changed = db.session.execute(
+            update(ProvisionOperation)
+            .where(
+                ProvisionOperation.id == operation.id,
+                ProvisionOperation.processing_owner == owner,
+                ProvisionOperation.processing_expires_at > moment,
+            )
+            .values(processing_expires_at=moment + dt.timedelta(minutes=2), **values)
+        )
+        db.session.commit()
+        if not changed.rowcount:
+            raise RuntimeError("Tariff rollout lease lost")
 
     summary = {
-        "holders": len(holders),
+        "holders": 0,
         "created_local": 0,
         "created_remote": 0,
         "skipped_existing": 0,
         "provision_failures": 0,
-        "panels_unreachable": sorted(panel_names.get(pid, str(pid)) for pid in unreachable_ids),
+        "panels_unreachable": [],
+        "operation_id": operation.id,
     }
-
-    new_local_clients: list[Client] = []
-    for item in tariff.items:
-        if item.panel_id is not None and item.panel_id in unreachable_ids:
-            continue
-        limit_bytes = item.traffic_gb * _GB if item.traffic_gb else 0
+    try:
+        tariff = frozen_tariff(operation)
+        holders, unreachable = _collect_tariff_holders(
+            tariff, int(time.time() * 1000), panel_ids=operation.snapshot.get("discovery_panel_ids", [])
+        )
+        summary["holders"] = len(holders)
+        panel_names = dict(db.session.query(LinkedPanel.id, LinkedPanel.name).all())
+        summary["panels_unreachable"] = sorted(panel_names.get(pid, str(pid)) for pid in unreachable)
+        children = dict(operation.target_states or {})
         for tg, info in holders.items():
-            if (item.panel_id, item.inbound_tag) in info["have"]:
-                summary["skipped_existing"] += 1
+            missing = [
+                item
+                for item in tariff.items
+                if item.panel_id not in unreachable and (item.panel_id, item.inbound_tag) not in info["have"]
+            ]
+            summary["skipped_existing"] += sum(
+                (item.panel_id, item.inbound_tag) in info["have"] for item in tariff.items
+            )
+            if not missing:
                 continue
-            try:
-                if item.panel_id is None:
-                    new_local_clients.append(
-                        _create_client_for_item(
-                            telegram_id=tg,
-                            tariff=tariff,
-                            item=item,
-                            expiry_ms=info["expiry_ms"],
-                            limit_bytes=limit_bytes,
-                        )
-                    )
-                    summary["created_local"] += 1
-                else:
-                    from panel_core.services.panel_proxy import proxy_provision
-
-                    proxy_provision(
-                        item.panel_id,
+            sources = _backfill_sources(tariff.id, tg, info["expiry_ms"])
+            if not sources:
+                raise ValueError(f"active_holder_source_requires_review:{tariff.id}:{tg}")
+            for source_id, source in sources.items():
+                child_key = f"{tg}:{hashlib.sha256(source_id.encode()).hexdigest()[:16]}"
+                if child_key not in children:
+                    child_id = f"{operation.id}:{child_key}"
+                    child = db.session.get(ProvisionOperation, child_id) or queue_grant(
                         tg,
-                        item.inbound_tag,
-                        {"expiry_ms": info["expiry_ms"], "limit_bytes": limit_bytes, "tariff_id": tariff.id},
+                        SimpleNamespace(id=tariff.id, name=tariff.name, period_days=tariff.period_days, items=missing),
+                        source="tariff_backfill",
+                        operation_id=child_id,
+                        source_id=source_id,
+                        source_revision=source["revision"],
+                        expiry_ms=source["expiry_ms"],
                     )
-                    summary["created_remote"] += 1
-            except Exception as exc:
-                logger.error(
-                    "backfill provision failed tariff=%s panel=%s tag=%s tg=%s: %s",
-                    tariff.id,
-                    item.panel_id,
-                    item.inbound_tag,
-                    tg,
-                    exc,
-                )
+                    children[child_key] = {"operation_id": child.id}
+                renew(target_states=dict(children))
+        for child_info in children.values():
+            renew()
+            child = db.session.get(ProvisionOperation, child_info["operation_id"])
+            if child.status == "succeeded":
+                result = {"status": "succeeded"}
+            else:
+                result = run_operation(child)
+            if result.get("status") not in {"succeeded", "superseded"}:
                 summary["provision_failures"] += 1
+            else:
+                summary["created_local"] += sum(item["panel_id"] is None for item in child.snapshot["items"])
+                summary["created_remote"] += sum(item["panel_id"] is not None for item in child.snapshot["items"])
+        summary["status"] = "pending" if unreachable or summary["provision_failures"] else "succeeded"
+        renew(
+            status=summary["status"],
+            params={"summary": summary},
+            last_checked_at=dt.datetime.utcnow(),
+            last_error="tariff_rollout_incomplete" if summary["status"] == "pending" else None,
+        )
+        return summary
+    except Exception:
+        db.session.rollback()
+        logger.exception("tariff rollout failed: operation_id=%s", operation.id)
+        db.session.execute(
+            update(ProvisionOperation)
+            .where(ProvisionOperation.id == operation.id, ProvisionOperation.processing_owner == owner)
+            .values(status="pending", last_checked_at=dt.datetime.utcnow(), last_error="tariff_rollout_failed")
+        )
+        db.session.commit()
+        raise
+    finally:
+        db.session.execute(
+            update(ProvisionOperation)
+            .where(ProvisionOperation.id == operation.id, ProvisionOperation.processing_owner == owner)
+            .values(processing_owner=None, processing_expires_at=None)
+        )
+        db.session.commit()
 
+
+def backfill_tariff(tariff: "Tariff") -> dict:
+    operation = queue_tariff_backfill(tariff)
     db.session.commit()
-    _sync_after_provision(new_local_clients, [])
-    logger.info(
-        "backfill_tariff tariff=%s holders=%d created_local=%d created_remote=%d skipped=%d failures=%d unreachable=%s",
-        tariff.id,
-        summary["holders"],
-        summary["created_local"],
-        summary["created_remote"],
-        summary["skipped_existing"],
-        summary["provision_failures"],
-        summary["panels_unreachable"],
-    )
-    return summary
+    return run_tariff_backfill(operation)

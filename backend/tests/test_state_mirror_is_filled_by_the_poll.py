@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from panel_core.models import LinkedPanel
+from tests.federation_state_support import full_state
 
 
 def _panel(db):
@@ -36,7 +37,7 @@ def test_poll_linked_panels_writes_the_mirror_through_the_real_greenlet_pool(app
     panel = _panel(db)
 
     with (
-        patch.object(job, "_fetch_cold", return_value={"cold": {}, "fingerprint": "a" * 64}),
+        patch.object(job, "_fetch_cold", return_value=full_state(_snapshot())),
         patch.object(job, "FederationClient") as client_cls,
         patch("panel_core.services.panel_proxy.get_shared_redis", return_value=MagicMock()),
     ):
@@ -59,7 +60,7 @@ def test_cold_state_is_fetched_only_when_the_fingerprint_moves(app, db):
 
     def fake_state():
         cold_calls.append(1)
-        return {"cold": {"outbounds": []}, "fingerprint": "a" * 64}
+        return full_state(_snapshot())
 
     with patch.object(job, "_fetch_cold", side_effect=lambda *a, **k: fake_state()):
         job.mirror_from_snapshot(panel.id, _snapshot())
@@ -80,7 +81,7 @@ def test_cold_state_is_refetched_after_fifteen_minutes_even_with_the_same_finger
 
     def fake_state():
         cold_calls.append(1)
-        return {"cold": {"outbounds": []}, "fingerprint": "a" * 64}
+        return full_state(_snapshot())
 
     with patch.object(job, "_fetch_cold", side_effect=lambda *a, **k: fake_state()):
         job.mirror_from_snapshot(panel.id, _snapshot())
@@ -103,7 +104,7 @@ def test_cold_fetch_does_not_hold_an_open_transaction_during_the_http_call(app, 
 
     def fake_fetch(url, token):
         observed["in_transaction"] = _db.session().in_transaction()
-        return {"cold": {}, "fingerprint": "a" * 64}
+        return full_state(_snapshot())
 
     with patch.object(job, "_fetch_cold", side_effect=fake_fetch):
         job.mirror_from_snapshot(panel.id, _snapshot())
@@ -120,7 +121,7 @@ def test_a_failed_poll_never_blanks_the_mirror(app, db):
     from panel_core.services.state_mirror import read_current
 
     panel = _panel(db)
-    with patch.object(job, "_fetch_cold", return_value={"cold": {}, "fingerprint": "a" * 64}):
+    with patch.object(job, "_fetch_cold", return_value=full_state(_snapshot())):
         job.mirror_from_snapshot(panel.id, _snapshot())
 
     before = read_current(panel.id).hot_state
@@ -140,7 +141,7 @@ def test_a_malformed_snapshot_is_refused_whole(app, db):
     from panel_core.services.state_mirror import read_current
 
     panel = _panel(db)
-    with patch.object(job, "_fetch_cold", return_value={"cold": {}, "fingerprint": "a" * 64}):
+    with patch.object(job, "_fetch_cold", return_value=full_state(_snapshot())):
         job.mirror_from_snapshot(panel.id, _snapshot())
     before = read_current(panel.id).hot_state
 
@@ -156,7 +157,7 @@ def test_a_halved_client_count_writes_but_raises_the_flag(app, db):
     from panel_core.services.state_mirror import read_current
 
     panel = _panel(db)
-    with patch.object(job, "_fetch_cold", return_value={"cold": {}, "fingerprint": "a" * 64}):
+    with patch.object(job, "_fetch_cold", return_value=full_state(_snapshot(clients=10))):
         job.mirror_from_snapshot(panel.id, _snapshot(clients=10))
         job.mirror_from_snapshot(panel.id, _snapshot(clients=2))
 
@@ -172,16 +173,22 @@ def test_a_mirror_write_failure_does_not_break_the_poll(app, db):
     from panel_core.jobs import panels as job
 
     panel = _panel(db)
-    with patch.object(job, "mirror_from_snapshot", side_effect=RuntimeError("postgres down")):
-        with patch.object(job, "FederationClient") as client_cls:
-            client_cls.return_value.snapshot.return_value = _snapshot()
-            result = job._poll_one(panel.id, panel.url, panel.federation_token)
+    with (
+        patch.object(job, "_write_mirror", side_effect=RuntimeError("postgres down")),
+        patch.object(job, "_fetch_cold", return_value=full_state(_snapshot())),
+        patch.object(job, "FederationClient") as client_cls,
+    ):
+        client_cls.return_value.snapshot.return_value = _snapshot()
+        result = job._poll_one(panel.id, panel.url, panel.federation_token)
+        job._record([result])
 
     assert client_cls.return_value.snapshot.called
     assert result[1] == "online", (
         "опросом кормятся подписки: если он начнёт падать из-за зеркала, мы поменяем «нет "
         "резервной копии» на «у людей не обновляются подписки». Плохой размен"
     )
+    db.session.refresh(panel)
+    assert panel.status == "online"
 
 
 def test_a_broken_rollback_after_mirror_failure_does_not_break_the_poll(app, db):
@@ -189,7 +196,7 @@ def test_a_broken_rollback_after_mirror_failure_does_not_break_the_poll(app, db)
 
     panel = _panel(db)
     with (
-        patch.object(job, "mirror_from_snapshot", side_effect=RuntimeError("postgres down")),
+        patch.object(job, "_prepare_mirror", side_effect=RuntimeError("postgres down")),
         patch.object(job.db.session, "rollback", side_effect=RuntimeError("connection already closed")),
         patch.object(job, "FederationClient") as client_cls,
     ):
@@ -207,7 +214,7 @@ def test_daily_archive_keeps_seven_days(app, db):
     from panel_core.models import PanelStateMirror
 
     panel = _panel(db)
-    with patch.object(job, "_fetch_cold", return_value={"cold": {}, "fingerprint": "a" * 64}):
+    with patch.object(job, "_fetch_cold", return_value=full_state(_snapshot())):
         job.mirror_from_snapshot(panel.id, _snapshot())
 
     job.archive_panel_state()

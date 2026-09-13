@@ -7,7 +7,7 @@ correctly at the same moment; only this path lacked the branch. Observed live by
 backend and issuing a grant.
 
 And `GET /api/inbounds` filters by `?panel=`, while the whole rest of the federated surface —
-`/system/settings`, `/config`, `/stats/*`, `/outbounds`, every deploy note and CLAUDE.md — uses
+`/system/settings`, `/config`, `/stats/*`, `/outbounds`, every deploy note and AGENTS.md — uses
 `?panel_id=`. A caller who followed the documented name got HTTP 200 and the *whole fleet's*
 inbounds, clients and UUIDs, with nothing to indicate the filter had been ignored.
 """
@@ -36,6 +36,11 @@ def _reset_scheduler():
 @pytest.fixture
 def master(monkeypatch, tmp_path):
     from panel_core.xray import gateway as gw
+
+    monkeypatch.setattr(
+        "panel_core.services.tariff_targets.get_panel_snapshot",
+        lambda _: {"inbounds": [{"tag": "vless-reality", "protocol": "vless"}]},
+    )
 
     monkeypatch.setenv("PANEL_ROLE", "master")
     monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/master.db"))
@@ -83,18 +88,18 @@ def test_a_grant_to_an_unreachable_node_names_the_node(master, headers, monkeypa
     def refuse(*_args, **_kwargs):
         raise RemotePanelError(502, "Panel 'Amsterdam': Panel answered HTTP 502")
 
-    monkeypatch.setattr("panel_core.api.bot_admin.apply_tariff_for_user", refuse)
+    monkeypatch.setattr("panel_core.services.provisioning_operations.proxy_provision", refuse)
 
     response = master.test_client().post(
         "/api/bot/users/555001/grants", json={"tariff_id": 1, "billing": "free"}, headers=headers
     )
 
-    assert response.status_code == 502, (
+    assert response.status_code == 202, (
         f"the node's refusal reached the generic handler, so the admin got a bare HTML 500 with no "
         f"panel name and no cause (HTTP {response.status_code})"
     )
     assert response.is_json, "the reply is not JSON, so the UI has nothing to render"
-    assert "Amsterdam" in response.get_json()["error"], (
+    assert "Amsterdam" in response.get_json()["panel_failures"][0]["error"], (
         f"the message does not say which node failed: {response.get_json()!r}"
     )
 
@@ -103,29 +108,30 @@ def test_a_grant_that_fails_leaves_no_phantom_access(master, headers, monkeypatc
     def refuse(*_args, **_kwargs):
         raise RemotePanelError(502, "Panel 'Amsterdam': Panel answered HTTP 502")
 
-    monkeypatch.setattr("panel_core.api.bot_admin.apply_tariff_for_user", refuse)
+    monkeypatch.setattr("panel_core.services.provisioning_operations.proxy_provision", refuse)
     master.test_client().post("/api/bot/users/555001/grants", json={"tariff_id": 1, "billing": "free"}, headers=headers)
 
     with master.app_context():
         from panel_core.models import UserTariffAccess
 
-        assert UserTariffAccess.query.filter_by(telegram_id=555001).count() == 0, (
-            "a grant was recorded for a user who received nothing, so the panel now believes in access "
-            "that does not exist"
-        )
+        grant = UserTariffAccess.query.filter_by(telegram_id=555001).one()
+        assert grant.provisioning_status == "pending"
+        from panel_core.services.open_access import has_open_ended_access
+
+        assert not has_open_ended_access(555001)
 
 
 def test_a_revoked_token_is_reported_as_a_relink_instruction(master, headers, monkeypatch):
     def refuse(*_args, **_kwargs):
         raise RemotePanelError(401, "invalid or missing federation token")
 
-    monkeypatch.setattr("panel_core.api.bot_admin.apply_tariff_for_user", refuse)
+    monkeypatch.setattr("panel_core.services.provisioning_operations.proxy_provision", refuse)
 
     response = master.test_client().post(
         "/api/bot/users/555002/grants", json={"tariff_id": 1, "billing": "free"}, headers=headers
     )
-    assert response.status_code == 401
-    assert "relink" in response.get_json()["error"].lower(), (
+    assert response.status_code == 202
+    assert "relink" in response.get_json()["panel_failures"][0]["error"].lower(), (
         f"a revoked federation token should tell the admin what to do about it: {response.get_json()!r}"
     )
 

@@ -17,7 +17,7 @@ import jwt as jwt_lib
 import pytest
 
 from panel_core.extensions import db, scheduler
-from panel_core.models import Admin, Tariff, TariffItem, TelegramUser, UserTariffAccess
+from panel_core.models import Admin, LinkedPanel, ProvisionOperation, Tariff, TariffItem, TelegramUser, UserTariffAccess
 from panel_core.utils import SECRET_KEY
 
 from tests.schema import ensure_schema
@@ -41,6 +41,8 @@ def master_app(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)
+    snapshot = {"inbounds": [{"tag": "alpha", "protocol": "vless", "clients": [], "stream_settings": {}}]}
+    monkeypatch.setattr("panel_core.services.tariff_targets.get_panel_snapshot", lambda panel_id: snapshot)
 
     app = importlib.import_module("panel_core.roles.master").create_app()
     with app.app_context():
@@ -50,6 +52,11 @@ def master_app(monkeypatch, tmp_path):
         granted = Tariff(name="Premium", price_rub=0, period_days=30, enabled=True)
         private = Tariff(name="Private", price_rub=300, period_days=30, enabled=True, visibility="private")
         db.session.add_all([granted, private])
+        db.session.add(
+            LinkedPanel(
+                id=2, name="Alpha", url="https://alpha.example", federation_token="test", enable=True, created_at=1
+            )
+        )
         db.session.flush()
         db.session.add(TariffItem(tariff_id=granted.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
         db.session.add(TariffItem(tariff_id=private.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
@@ -87,13 +94,13 @@ def _patch_term(master, headers, tg_id, tariff_id, body):
 
 def test_editing_the_term_rewrites_the_key(master, master_headers, master_app):
     until = "2027-01-31T00:00:00"
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         applied.return_value = {"expires_at_ms": 1, "clients": [], "source": "admin_grant_edit"}
         resp = _patch_term(master, master_headers, 7, master_app.config["GRANTED_TARIFF_ID"], {"access_until": until})
 
     assert resp.status_code == 200, resp.get_data(as_text=True)
-    expected_ms = int(datetime.datetime.fromisoformat(until).timestamp() * 1000)
-    assert applied.call_args.kwargs["expiry_ms"] == expected_ms, (
+    expected_ms = int(datetime.datetime.fromisoformat(until).replace(tzinfo=datetime.UTC).timestamp() * 1000)
+    assert applied.call_args.args[3]["expiry_ms"] == expected_ms, (
         "the grant is the source of truth for the key -- an edit that only moved the row would leave "
         f"the holder on the old date with the panel claiming otherwise; got {applied.call_args.kwargs}"
     )
@@ -106,12 +113,12 @@ def test_clearing_the_term_makes_the_access_open_ended(master, master_headers, m
         grant.access_until = datetime.datetime(2026, 9, 1)
         db.session.commit()
 
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         applied.return_value = {"expires_at_ms": 0, "clients": [], "source": "admin_grant_edit"}
         resp = _patch_term(master, master_headers, 7, master_app.config["GRANTED_TARIFF_ID"], {"access_until": None})
 
     assert resp.status_code == 200, resp.get_data(as_text=True)
-    assert applied.call_args.kwargs["expiry_ms"] == 0, (
+    assert applied.call_args.args[3]["expiry_ms"] == 0, (
         f"clearing the date must put the key back to 'never'; got {applied.call_args.kwargs}"
     )
     assert resp.get_json()["access_until"] is None
@@ -133,7 +140,7 @@ def test_editing_a_grant_that_does_not_exist_is_404(master, master_headers, mast
 
 
 def test_a_malformed_date_is_refused_without_touching_the_key(master, master_headers, master_app):
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         resp = _patch_term(
             master, master_headers, 7, master_app.config["GRANTED_TARIFF_ID"], {"access_until": "whenever"}
         )
@@ -145,21 +152,23 @@ def test_a_malformed_date_is_refused_without_touching_the_key(master, master_hea
     )
 
 
-def test_a_node_that_refuses_leaves_the_stored_term_untouched(master, master_headers, master_app):
+def test_a_node_that_refuses_leaves_a_durable_pending_term(master, master_headers, master_app):
     from panel_core.services.panel_proxy import RemotePanelError
 
     def refuse(*_args, **_kwargs):
         raise RemotePanelError(502, "Panel 'Alpha': Panel answered HTTP 502")
 
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user", side_effect=refuse):
+    with patch("panel_core.services.provisioning_operations.proxy_provision", side_effect=refuse):
         resp = _patch_term(
             master, master_headers, 7, master_app.config["GRANTED_TARIFF_ID"], {"access_until": "2027-01-31T00:00:00"}
         )
 
-    assert resp.status_code == 502, resp.get_data(as_text=True)
+    assert resp.status_code == 202, resp.get_data(as_text=True)
+    assert resp.get_json()["provisioning_status"] == "pending"
+    assert resp.get_json()["panel_failures"]
     with master_app.app_context():
         grant = UserTariffAccess.query.filter_by(telegram_id=7).first()
-        assert grant.access_until is None, (
-            "the panel would otherwise show a term the node never received, which is the state this "
-            f"whole endpoint exists to prevent; got {grant.access_until!r}"
-        )
+        assert grant.access_until == datetime.datetime(2027, 1, 31)
+        operation = ProvisionOperation.query.one()
+        assert operation.status == "pending"
+        assert operation.params["expiry_ms"] == int(grant.access_until.replace(tzinfo=datetime.UTC).timestamp() * 1000)

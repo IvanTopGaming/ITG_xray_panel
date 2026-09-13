@@ -32,8 +32,43 @@ export interface OffsiteBackupReading {
 }
 
 export interface SystemHealth {
+  jobs?: {
+    available: boolean;
+    error?: string;
+    needs_attention: boolean;
+    items: {
+      role: string;
+      job_id: string;
+      interval_s: number;
+      status: 'waiting' | 'overdue' | 'running' | 'succeeded' | 'failed';
+      registered_at_ms: number;
+      started_at_ms: number | null;
+      finished_at_ms: number | null;
+      last_success_at_ms: number | null;
+      last_failure_at_ms: number | null;
+      last_error: string | null;
+      failures: number;
+      stale: boolean;
+    }[];
+  };
   undelivered_events: { available: boolean; count?: number };
-  stuck_payments: { available: boolean; processing?: number; pending_over_a_day?: number };
+  event_delivery?: {
+    available: boolean;
+    pending?: number;
+    leased?: number;
+    review?: number;
+    permanent?: number;
+    oldest_pending_ms?: number | null;
+    needs_attention?: boolean;
+  };
+  stuck_payments: {
+    available: boolean;
+    processing?: number;
+    pending_over_a_day?: number;
+    pending_fulfillment?: number;
+    pending_refunds?: number;
+    review?: number;
+  };
   data_tier: { database: string; shared_redis: string };
   offsite_backup: OffsiteBackupReading;
 }

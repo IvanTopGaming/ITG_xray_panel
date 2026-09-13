@@ -3,8 +3,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from panel_core.extensions import db, limiter
-from panel_core.models import Payment
-from panel_core.services import billing, bot_events
+from panel_core.services import billing
 from panel_core.utils import bot_service_token_required
 
 logger = logging.getLogger(__name__)
@@ -40,55 +39,31 @@ def checkout():
 @bp.route("/billing/yookassa/webhook", methods=["POST"])
 @limiter.limit("60 per minute")
 def yookassa_webhook():
-    body = request.get_json(silent=True) or {}
-    event = body.get("event")
-    obj = body.get("object") or {}
-    if not event:
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
         return jsonify({"error": "invalid_request"}), 400
-
-    if str(event).startswith("refund."):
-        original_yk_id = obj.get("payment_id")
-        if not original_yk_id:
-            return jsonify({"error": "invalid_request"}), 400
-        refunded_payment = Payment.query.filter_by(yookassa_id=original_yk_id).first()
-        if refunded_payment is None:
-            logger.info("yookassa_webhook: refund for unknown payment yk=%s", original_yk_id)
-            return jsonify({"ok": True}), 200
-        try:
-            billing.handle_refund(refunded_payment)
-        except Exception:
-            logger.exception("yookassa_webhook: refund handler crashed yk=%s", original_yk_id)
-        return jsonify({"ok": True}), 200
-
-    yk_id = obj.get("id")
-    if not yk_id:
+    event, obj = body.get("event"), body.get("object")
+    if not isinstance(event, str) or not isinstance(obj, dict):
         return jsonify({"error": "invalid_request"}), 400
-
-    payment = Payment.query.filter_by(yookassa_id=yk_id).first()
-    if payment is None:
-        logger.info("yookassa_webhook: unknown payment yk=%s", yk_id)
-        return jsonify({"ok": True}), 200
-
-    real_status = billing.fetch_remote_status(payment)
-
+    yk_id = obj.get("payment_id") if event.startswith("refund.") else obj.get("id")
+    if not isinstance(yk_id, str) or not yk_id:
+        return jsonify({"error": "invalid_request"}), 400
     try:
-        if real_status == "succeeded":
-            logger.info("yookassa_webhook: payment succeeded id=%s yk=%s", payment.id, yk_id)
-            billing.apply_payment(payment)
-        elif real_status == "canceled":
-            if payment.status not in ("succeeded", "cancelled"):
-                payment.status = "cancelled"
-                db.session.commit()
-                bot_events.publish(
-                    "payment_cancelled",
-                    payment.telegram_id,
-                    {
-                        "payment_id": payment.id,
-                        "lang": (payment.metadata_json or {}).get("lang", "ru"),
-                        "chat_id": payment.chat_id,
-                        "message_id": payment.message_id,
-                    },
-                )
+        payment, remote = billing.resolve_remote_payment(yk_id)
+        if remote is None:
+            return jsonify({"error": "provider_unavailable"}), 503
+        if payment is None:
+            return jsonify({"ok": True}), 200
+        if event.startswith("refund."):
+            billing.handle_refund(payment)
+        else:
+            billing.accept_remote_status(payment, remote.status)
+    except ValueError:
+        db.session.rollback()
+        logger.warning("yookassa_webhook: rejected provider binding yk=%s", yk_id, exc_info=True)
+        return jsonify({"error": "payment_mismatch"}), 400
     except Exception:
+        db.session.rollback()
         logger.exception("yookassa_webhook: handler crashed yk=%s", yk_id)
+        return jsonify({"error": "processing_unavailable"}), 503
     return jsonify({"ok": True}), 200

@@ -3,6 +3,7 @@ WORKER_ONLY_MAINTENANCE = {"cleanup_stats"}
 EVENT_BUS = {"cleanup_bot_events", "replay_undelivered_bot_events"}
 CRON_ONLY = {
     "reset_grant_traffic_cycles",
+    "retry_pending_provisioning",
     "poll_linked_panels",
     "check_latest_version",
     "archive_panel_state",

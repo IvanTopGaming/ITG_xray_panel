@@ -7,7 +7,9 @@ from panel_core.xray.protocol import LOG_TAIL_LINES
 class XrayGateway(Protocol):
     def has_local_xray(self) -> bool: ...
 
-    def apply_config(self, validate: bool = True) -> None: ...
+    def read_traffic_counters(self, pattern="") -> tuple[str, dict[str, int]]: ...
+
+    def apply_config(self, validate: bool = True, *, publish: bool = True) -> None: ...
 
     def restart(self) -> None: ...
 
@@ -28,7 +30,10 @@ class NullXrayGateway:
     def has_local_xray(self) -> bool:
         return False
 
-    def apply_config(self, validate: bool = True) -> None:
+    def read_traffic_counters(self, pattern=""):
+        raise LocalXrayUnavailable(_unavailable_message("read_traffic_counters"))
+
+    def apply_config(self, validate: bool = True, *, publish: bool = True) -> None:
         return None
 
     def restart(self) -> None:
@@ -61,7 +66,10 @@ class RemoteXrayGateway:
     def has_local_xray(self) -> bool:
         return False
 
-    def apply_config(self, validate: bool = True) -> None:
+    def read_traffic_counters(self, pattern=""):
+        raise LocalXrayUnavailable(_unavailable_message("read_traffic_counters"))
+
+    def apply_config(self, validate: bool = True, *, publish: bool = True) -> None:
         return None
 
     def restart(self) -> None:

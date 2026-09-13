@@ -47,6 +47,11 @@ from panel_core.models import Client, Inbound, Tariff, TariffItem
 from panel_core.services.provisioning import apply_tariff_for_user, provision_single_item
 
 
+@pytest.fixture(autouse=True)
+def provisioning_runtime_external_boundary(monkeypatch):
+    monkeypatch.setattr("panel_core.services.runtime_apply.generate_config_file", lambda **kwargs: None)
+
+
 @pytest.fixture
 def basic_setup(app, db):
 
@@ -70,6 +75,7 @@ def _make_client(db, *, telegram_id, inbound_tag, expiry_ms, limit_bytes, up=0, 
         email=f"existing_{inbound_tag}",
         inbound_tag=inbound_tag,
         telegram_id=telegram_id,
+        tariff_id=Tariff.query.first().id if Tariff.query.first() else None,
         limit_bytes=limit_bytes,
         expiry_time=expiry_ms,
         up=up,
@@ -259,38 +265,38 @@ def test_apply_handles_email_collision(app, db, basic_setup):
     assert de_client.email.startswith("tg99_DE-vless_")
 
 
-def test_provision_calls_xray_regen_once(app, db, basic_setup):
+def test_provision_preflights_and_materializes_each_target(app, db, basic_setup):
 
     tariff = basic_setup
     with (
-        patch("panel_core.services.provisioning.generate_config_file") as mock_gen,
-        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.runtime_apply.generate_config_file") as mock_gen,
+        patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
         patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True),
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
-    assert mock_gen.call_count == 1
-    assert mock_restart.call_count == 0
+    assert mock_gen.call_count == 4
+    assert mock_restart.call_count == 2
 
 
-def test_provision_new_vless_uses_grpc_no_restart(app, db, basic_setup):
+def test_provision_new_vless_materializes_committed_config(app, db, basic_setup):
 
     tariff = basic_setup
     with (
-        patch("panel_core.services.provisioning.generate_config_file") as mock_gen,
-        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.runtime_apply.generate_config_file") as mock_gen,
+        patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
         patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
-    assert mock_gen.call_count == 1
-    assert mock_restart.call_count == 0
-    assert mock_add.call_count == 2
+    assert mock_gen.call_count == 4
+    assert mock_restart.call_count == 2
+    assert mock_add.call_count == 0
 
 
-def test_provision_extending_enabled_vless_skips_runtime(app, db, basic_setup):
+def test_provision_extending_enabled_vless_materializes_config(app, db, basic_setup):
 
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
@@ -298,19 +304,19 @@ def test_provision_extending_enabled_vless_skips_runtime(app, db, basic_setup):
     _make_client(db, telegram_id=42, inbound_tag="MSK-vless", expiry_ms=now_ms, limit_bytes=0)
 
     with (
-        patch("panel_core.services.provisioning.generate_config_file") as mock_gen,
-        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.runtime_apply.generate_config_file") as mock_gen,
+        patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
         patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(42, tariff, source="auto_renew", operation_id="test-op")
 
-    assert mock_gen.call_count == 1
-    assert mock_restart.call_count == 0
+    assert mock_gen.call_count == 4
+    assert mock_restart.call_count == 2
     assert mock_add.call_count == 0
 
 
-def test_provision_extending_disabled_vless_re_adds_via_grpc(app, db, basic_setup):
+def test_provision_preserves_manual_disable_and_materializes_config(app, db, basic_setup):
 
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
@@ -320,15 +326,15 @@ def test_provision_extending_disabled_vless_re_adds_via_grpc(app, db, basic_setu
     db.session.commit()
 
     with (
-        patch("panel_core.services.provisioning.generate_config_file"),
-        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.runtime_apply.generate_config_file"),
+        patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
         patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(42, tariff, source="auto_renew", operation_id="test-op")
 
-    assert mock_restart.call_count == 0
-    assert mock_add.call_count == 1
+    assert mock_restart.call_count == 2
+    assert mock_add.call_count == 0
 
 
 def test_provision_non_vless_inbound_requires_restart(app, db):
@@ -343,8 +349,8 @@ def test_provision_non_vless_inbound_requires_restart(app, db):
     db.session.commit()
 
     with (
-        patch("panel_core.services.provisioning.generate_config_file"),
-        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.runtime_apply.generate_config_file"),
+        patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
         patch("panel_core.services.provisioning._api_add_user_grpc") as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
@@ -354,19 +360,19 @@ def test_provision_non_vless_inbound_requires_restart(app, db):
     assert mock_add.call_count == 0
 
 
-def test_provision_grpc_failure_falls_back_to_restart(app, db, basic_setup):
+def test_provision_materialization_does_not_depend_on_incremental_grpc(app, db, basic_setup):
 
     tariff = basic_setup
 
     with (
-        patch("panel_core.services.provisioning.generate_config_file"),
-        patch("panel_core.services.provisioning.restart_xray_container") as mock_restart,
+        patch("panel_core.services.runtime_apply.generate_config_file"),
+        patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
         patch("panel_core.services.provisioning._api_add_user_grpc", return_value=False),
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
-    assert mock_restart.call_count == 1
+    assert mock_restart.call_count == 2
 
 
 def _flow_tariff(db):
@@ -462,7 +468,7 @@ def test_apply_remote_provision_happens_before_local_writes(app, db):
         return {"status": "ok", "expires_at_ms": 1}
 
     with (
-        patch("panel_core.services.panel_proxy.proxy_provision", side_effect=_spy),
+        patch("panel_core.services.provisioning_operations.proxy_provision", side_effect=_spy),
         patch("panel_core.services.provisioning._sync_after_provision"),
     ):
         apply_tariff_for_user(601, tariff, source="trial", operation_id="test-op")
@@ -471,12 +477,12 @@ def test_apply_remote_provision_happens_before_local_writes(app, db):
     assert Client.query.filter_by(telegram_id=601, inbound_tag="LOC-vless").count() == 1
 
 
-def test_apply_remote_failure_leaves_local_state_untouched(app, db):
+def test_apply_remote_failure_persists_local_success_and_retry_intent(app, db):
 
     tariff = _federated_tariff(db)
 
     with (
-        patch("panel_core.services.panel_proxy.proxy_provision", side_effect=RuntimeError("panel down")),
+        patch("panel_core.services.provisioning_operations.proxy_provision", side_effect=RuntimeError("panel down")),
         patch("panel_core.services.provisioning._sync_after_provision"),
         pytest.raises(RuntimeError),
     ):
@@ -484,7 +490,10 @@ def test_apply_remote_failure_leaves_local_state_untouched(app, db):
 
     assert len(db.session.new) == 0
     assert len(db.session.dirty) == 0
-    assert Client.query.filter_by(telegram_id=602).count() == 0
+    assert Client.query.filter_by(telegram_id=602).count() == 1
+    from panel_core.models import ProvisionOperation
+
+    assert db.session.get(ProvisionOperation, "test-op").status == "pending"
 
 
 def test_apply_clears_traffic_notifications_on_renewal(app, db, basic_setup):

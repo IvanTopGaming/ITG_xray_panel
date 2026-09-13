@@ -29,7 +29,6 @@ ISOLATION_DOC = (
 
 EXTERNAL_OWNERS = {
     "docker": "panel-worker",
-    "filelock": "panel-worker",
     "grpc": "panel-worker",
     "psutil": "panel-adminapi",
     "yookassa": "panel-botapi",
@@ -37,7 +36,6 @@ EXTERNAL_OWNERS = {
 
 DECLARED_DEPENDENCY_NAME = {
     "docker": "docker",
-    "filelock": "filelock",
     "grpc": "grpcio",
     "psutil": "psutil",
     "yookassa": "yookassa",

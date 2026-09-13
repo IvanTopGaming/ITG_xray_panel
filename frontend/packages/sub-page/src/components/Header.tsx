@@ -18,7 +18,7 @@ export default function Header({ data, lang }: { data: SubInfo; lang: Lang }) {
         </h1>
       </div>
       <span className={`shrink-0 whitespace-nowrap ${pill}`}>
-        ● {t(active ? 'status_active' : 'status_disabled', lang)}
+        ● {t(active ? 'status_active' : `status_${data.reason || 'disabled'}`, lang)}
       </span>
     </div>
   );

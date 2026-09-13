@@ -4,11 +4,9 @@ import docker
 import subprocess
 import hashlib
 import ipaddress
-import requests
 import time
 import logging
 from collections import deque
-from filelock import FileLock, Timeout
 from panel_core.models import (
     Inbound,
     Outbound,
@@ -18,6 +16,8 @@ from panel_core.models import (
 )
 from panel_core.extensions import db
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
+from panel_core.services.wireguard import wireguard_addresses
+from panel_core.services.runtime_apply import runtime_lock
 from panel_core.xray.protocol import (
     ALLOWED_ROUTING_RULE_KEYS,
     LOG_TAIL_LINES,
@@ -60,7 +60,7 @@ def _extract_reason(output):
     return "Xray could not parse the configuration"
 
 
-def _validate_xray_config(candidate_path):
+def _validate_xray_config(candidate_path, asset_dir=None):
 
     if not os.path.exists(XRAY_BIN):
         logger.warning("Config validation skipped — xray binary not bundled at %s", XRAY_BIN)
@@ -73,7 +73,7 @@ def _validate_xray_config(candidate_path):
                 [XRAY_BIN, "run", "-test", "-c", candidate_path],
                 capture_output=True,
                 timeout=VALIDATE_TIMEOUT_S,
-                env={**os.environ, "XRAY_LOCATION_ASSET": "/etc/xray"},
+                env={**os.environ, "XRAY_LOCATION_ASSET": asset_dir or os.path.dirname(CONFIG_PATH)},
             )
         except subprocess.TimeoutExpired as e:
             last_timeout = e
@@ -182,23 +182,20 @@ def stream_xray_logs(tail_lines=LOG_TAIL_LINES):
 
 
 def update_geo_db():
+    from panel_core.xray.geo import update_geo_pair
+
     settings = get_system_settings()
     urls = {
         "geoip.dat": settings["geoipUrl"],
         "geosite.dat": settings["geositeUrl"],
     }
-    for filename, url in urls.items():
-        path = f"/etc/xray/{filename}"
-        try:
-            with requests.get(url, stream=True, timeout=30) as resp:
-                resp.raise_for_status()
-                with open(path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-        except (requests.RequestException, OSError) as exc:
-            raise RuntimeError(f"Failed to update {filename}") from exc
-    restart_xray_container()
+    with runtime_lock(LOCK_PATH, timeout=5):
+        update_geo_pair(
+            os.path.dirname(CONFIG_PATH),
+            urls,
+            lambda directory: _validate_xray_config(CONFIG_PATH, asset_dir=directory),
+            restart_xray_container,
+        )
 
 
 def _wg_peer_ip(client_id, used):
@@ -213,9 +210,9 @@ def _wg_peer_ip(client_id, used):
     return None
 
 
-def generate_config_file(validate=True):
+def generate_config_file(validate=True, *, publish=True):
     t0 = time.monotonic()
-    lock = FileLock(LOCK_PATH, timeout=5)
+    lock = runtime_lock(LOCK_PATH, timeout=5)
     try:
         with lock:
             system_settings = get_system_settings()
@@ -264,6 +261,8 @@ def generate_config_file(validate=True):
             balancers_json = []
             balancer_tags = set()
             for bal in balancers_db:
+                if bal.tag in {outbound.tag for outbound in outbounds_db} or bal.tag in {"api", "direct", "block"}:
+                    raise ValueError(f"Ambiguous or reserved balancer tag: {bal.tag}")
                 if not _flag_enabled(getattr(bal, "enable", True), True):
                     continue
                 selector = json.loads(bal.selector) if bal.selector else []
@@ -311,7 +310,7 @@ def generate_config_file(validate=True):
                 elif tag in known_outbound_tags:
                     rule["outboundTag"] = tag
                 else:
-                    continue
+                    raise ValueError(f"Unknown or disabled preferred routing target: {tag}")
                 routing_rules.append(rule)
 
             for ib in inbounds_db:
@@ -405,6 +404,8 @@ def generate_config_file(validate=True):
                                     "email": build_runtime_email(c.inbound_tag, c.email),
                                 }
                             )
+                            if not is_shadowsocks_2022_method(method):
+                                clients_list[-1]["method"] = method
 
                     settings = {
                         "method": method,
@@ -415,12 +416,12 @@ def generate_config_file(validate=True):
                 elif ib.protocol == "wireguard":
                     secret_key = stream_settings.get("wgSecretKey", "")
                     peers = []
-                    used_wg_ips = set()
+                    addresses = wireguard_addresses(ib)
                     for c in ib.clients:
                         if c.enable:
                             pub_key = _derive_wg_pubkey(c.id)
                             if pub_key:
-                                allowed_ip = _wg_peer_ip(c.id, used_wg_ips)
+                                allowed_ip = addresses[c.id]
                                 if allowed_ip:
                                     peers.append(
                                         {
@@ -567,7 +568,7 @@ def generate_config_file(validate=True):
                                 if "balancerTag" in new_rule:
                                     del new_rule["balancerTag"]
                             else:
-                                continue
+                                raise ValueError(f"Unknown or disabled routing target: {target}")
                             routing_rules.append(new_rule)
 
             observatory = {}
@@ -614,7 +615,8 @@ def generate_config_file(validate=True):
             try:
                 if validate:
                     _validate_xray_config(candidate)
-                os.rename(candidate, CONFIG_PATH)
+                if publish:
+                    os.replace(candidate, CONFIG_PATH)
             finally:
                 if os.path.exists(candidate):
                     try:
@@ -628,5 +630,5 @@ def generate_config_file(validate=True):
             len(outbounds_json),
             validate,
         )
-    except Timeout:
+    except TimeoutError:
         raise Exception("Could not acquire lock")

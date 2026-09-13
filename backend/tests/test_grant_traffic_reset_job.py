@@ -52,20 +52,20 @@ _ONE_REMOTE_CLIENT = {42: [{"panel_id": 2, "inbound_tag": "alpha", "email": "tg4
 
 def test_a_due_grant_has_its_counters_zeroed_and_the_date_moved(app, db, tariffs):
     tariff = tariffs(name="Limited", traffic_gb=300)
-    _grant(db, tariff, due_minutes_ago=5)
+    grant = _grant(db, tariff, due_minutes_ago=5)
 
     from panel_core.jobs.billing import reset_grant_traffic_cycles
 
     with (
-        patch("panel_core.jobs.billing.remote_clients_by_telegram_id", return_value=_ONE_REMOTE_CLIENT),
-        patch("panel_core.jobs.billing.proxy_bulk_reset_traffic") as reset,
+        patch("panel_core.services.provisioning_operations._remote", return_value={"status": "succeeded"}) as reset,
         patch("panel_core.services.provisioning.apply_tariff_for_user") as applied,
     ):
         reset_grant_traffic_cycles()
 
     assert reset.called, "a due grant on a limited tariff must have its counters zeroed"
-    panel_id, users = reset.call_args.args
-    assert panel_id == 2 and users == [{"tag": "alpha", "email": "tg42_alpha", "reenable": True}], (
+    panel_id, endpoint, payload = reset.call_args.args
+    assert panel_id == 2 and endpoint == "/api/federation/entitlements/reset-cycle"
+    assert payload["source_id"] == f"grant:{grant.id}" and payload["inbound_tag"] == "alpha", (
         f"the reset must name the holder's own key on the tariff's own node; got {reset.call_args!r}"
     )
     assert not applied.called, (
@@ -85,8 +85,7 @@ def test_an_archived_tariff_no_longer_pauses_the_grant(app, db, tariffs):
     from panel_core.jobs.billing import reset_grant_traffic_cycles
 
     with (
-        patch("panel_core.jobs.billing.remote_clients_by_telegram_id", return_value=_ONE_REMOTE_CLIENT),
-        patch("panel_core.jobs.billing.proxy_bulk_reset_traffic"),
+        patch("panel_core.services.provisioning_operations._remote", return_value={"status": "succeeded"}),
         patch("panel_core.services.bot_events.publish") as published,
     ):
         reset_grant_traffic_cycles()
@@ -108,8 +107,7 @@ def test_a_disabled_tariff_no_longer_pauses_the_grant(app, db, tariffs):
     from panel_core.jobs.billing import reset_grant_traffic_cycles
 
     with (
-        patch("panel_core.jobs.billing.remote_clients_by_telegram_id", return_value=_ONE_REMOTE_CLIENT),
-        patch("panel_core.jobs.billing.proxy_bulk_reset_traffic"),
+        patch("panel_core.services.provisioning_operations._remote", return_value={"status": "succeeded"}),
     ):
         reset_grant_traffic_cycles()
 
@@ -125,7 +123,7 @@ def test_a_grant_with_no_reset_date_is_left_alone(app, db, tariffs):
 
     from panel_core.jobs.billing import reset_grant_traffic_cycles
 
-    with patch("panel_core.jobs.billing.proxy_bulk_reset_traffic") as reset:
+    with patch("panel_core.services.provisioning_operations._remote") as reset:
         reset_grant_traffic_cycles()
 
     assert not reset.called, "an unlimited tariff has no counter to zero"
@@ -144,27 +142,23 @@ def test_a_grant_whose_date_has_not_arrived_is_left_alone(app, db, tariffs):
 
     from panel_core.jobs.billing import reset_grant_traffic_cycles
 
-    with patch("panel_core.jobs.billing.proxy_bulk_reset_traffic") as reset:
+    with patch("panel_core.services.provisioning_operations._remote") as reset:
         reset_grant_traffic_cycles()
 
     assert not reset.called, "the counter is zeroed when the cycle ends, not before"
 
 
-def test_an_unreachable_node_does_not_stall_the_cycle(app, db, tariffs):
+def test_an_unreachable_node_keeps_the_cycle_due_for_retry(app, db, tariffs):
     tariff = tariffs(name="Limited", traffic_gb=300)
-    _grant(db, tariff, due_minutes_ago=5)
+    grant = _grant(db, tariff, due_minutes_ago=5)
+    original_due = grant.next_renewal_at
 
     from panel_core.jobs.billing import reset_grant_traffic_cycles
 
     with (
-        patch("panel_core.jobs.billing.remote_clients_by_telegram_id", return_value=_ONE_REMOTE_CLIENT),
-        patch("panel_core.jobs.billing.proxy_bulk_reset_traffic", side_effect=RuntimeError("panel down")),
+        patch("panel_core.services.provisioning_operations._remote", side_effect=RuntimeError("panel down")),
     ):
         reset_grant_traffic_cycles()
 
     grant = UserTariffAccess.query.filter_by(telegram_id=42).first()
-    delta = grant.next_renewal_at - datetime.utcnow()
-    assert 29 <= delta.days <= 30, (
-        "a node that cannot be reached must not leave the grant permanently due -- the job would "
-        f"then retry it every fifteen minutes forever; got {grant.next_renewal_at!r}"
-    )
+    assert grant.next_renewal_at == original_due

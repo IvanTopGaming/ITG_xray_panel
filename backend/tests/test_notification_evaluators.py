@@ -98,14 +98,15 @@ def test_emit_if_new_publishes_once_then_dedups(app):
         db.session.add(c)
         db.session.commit()
 
-        with patch("panel_core.jobs.notifications.bot_events.publish") as mock_publish:
+        with patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish:
             r1 = emit_if_new("expiry_notification", "expired", c, {"expiry_time_ms": c.expiry_time})
             r2 = emit_if_new("expiry_notification", "expired", c, {"expiry_time_ms": c.expiry_time})
 
         assert r1 is True
         assert r2 is False
         assert mock_publish.call_count == 1
-        event_type, tg_id, payload = mock_publish.call_args.args
+        event = mock_publish.call_args.args[0]
+        event_type, tg_id, payload = event.type, event.telegram_id, event.payload
         assert event_type == "expiry_notification"
         assert tg_id == 7
         assert payload["kind"] == "expired"

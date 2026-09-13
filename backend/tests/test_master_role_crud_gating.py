@@ -327,7 +327,7 @@ def test_worker_still_runs_the_same_local_crud(worker_app):
     calls = []
 
     class _Recording(LocalXrayGateway):
-        def apply_config(self, validate=True):
+        def apply_config(self, validate=True, *, publish=True):
             calls.append("apply_config")
 
         def restart(self):

@@ -151,9 +151,19 @@ class TestADeadNodeIsSaidOutLoud:
         body = _page()
 
         assert "function StatsNodeUnreachable" in body
-        assert body.count("<StatsNodeUnreachable error=") == 4, (
-            "all four tabs must fail loudly; one that still charts zeroes is the defect"
-        )
+        errors = re.findall(r"<StatsNodeUnreachable\s+error=\{([^}]+)\}", body)
+        assert sorted(errors) == sorted(
+            [
+                "overviewError",
+                "overviewError",
+                "usersError",
+                "domainsError",
+                "trafficAllError",
+                "trafficUserError",
+                "trafficInboundError",
+                "domainUsersError",
+            ]
+        ), "all four tabs and their independent chart/detail queries must fail loudly"
 
     def test_every_tab_hides_its_content_when_its_query_failed(self):
         body = _page()

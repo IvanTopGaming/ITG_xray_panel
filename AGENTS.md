@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Working notes for this repository. Release history lives in git; this file is only what you need to
 change the code without breaking it.
@@ -641,7 +641,7 @@ streams through the master straight into the browser and stores nothing.
 network access. It loops `scripts/offsite_backup.sh` out of `panel-offsite` (Alpine + a pinned rclone
 binary + `psql`): `rclone copy` the new dumps, `rclone delete --min-age ${OFFSITE_KEEP_DAYS}d` for a
 remote rotation that is **independent of the local one** (90 days local, 365 remote), then an upsert
-of three `system_setting` rows. Three things are load-bearing and none of them is visible in the
+of three `system_setting` rows. Four things are load-bearing and none of them is visible in the
 container's logs:
 
 - **`copy`, never `sync`.** `sync` would delete on the far side everything local rotation has
@@ -652,6 +652,13 @@ container's logs:
 - **A failed pass must not kill the container.** The loop carries `|| true`. Diagnosis is the age of
   the mark, shown on the master's System → About card and red after three intervals — never a
   restart loop, which is a symptom rather than a diagnosis.
+- **Both retention knobs refuse anything that is not a whole number of at least 1**, and both refuse
+  it *before* deleting anything. `OFFSITE_KEEP_DAYS=0` makes `--min-age 0d` match every object on the
+  remote including the one the pass has just uploaded; `BACKUP_KEEP=0` makes `tail -n "+$((0 + 1))"`
+  match every local dump including the one just written. Either emptied the archive and then reported
+  success — a green card over nothing. A negative or non-numeric value reached the same place through
+  a glob that treated `-` as "not a digit", which is why the check refuses non-digits first and only
+  then compares against 1, rather than trying to accept signed integers.
 
 The panel's whole knowledge of it is `services/offsite.read_status()` reading
 `offsite_backup_last_success_ms`, `offsite_backup_interval_seconds` and `offsite_backup_remote`.
@@ -663,6 +670,19 @@ gated on `!isWorker` in the bundle — a node runs no such container and its abs
 there. The dump is worth more than `.env` (bot token, YooKassa credentials, every node's federation
 token, every `sub_token`), so the installer offers a `crypt` wrapper; the passphrase is printed once
 and stored nowhere.
+
+**`OFFSITE_REMOTE` reaches three places a secret must not: the `system_setting` row, the container's
+log line and the admin tooltip.** rclone accepts a connection string as a remote
+(`:s3,access_key_id=…,secret_access_key=…:bucket`), and the installer's free-text branch does not
+steer away from one, so a value containing a comma is replaced wholesale before it is recorded or
+printed. The installer never generates that form — the redaction is there for the deployer who types
+one. A remote whose *path* happens to contain a comma is over-redacted, which is the safe direction.
+
+**The installer copies an SFTP private key into `./rclone/sftp_key` at 0600** rather than pointing
+`key_file` at wherever the deployer keeps it. Both the one-off connection-test container and the
+running service mount only `./rclone`, so a host path is invisible to both: the test would fail for
+every correctly configured SFTP remote and blame the credentials. The copy lands beside `rclone.conf`
+in a directory that already holds `.env` and the CA key.
 
 ### Odds and ends
 
@@ -812,7 +832,7 @@ asserts it in a **separate subprocess** instead.
 
 All work on `backend/`, `frontend/`, `tg_bot/` or `caddy/` goes in a feature branch, never directly on
 `main`. Open a PR and merge with **Squash and merge**. Committing straight to `main` is acceptable
-only for CI/config-only changes (`.github/`, `scripts/`, `CLAUDE.md`, `README.md`, `docker-compose*.yml`)
+only for CI/config-only changes (`.github/`, `scripts/`, `AGENTS.md`, `README.md`, `docker-compose*.yml`)
 that touch no service source and therefore trigger no release.
 
 | Tag | Effect |

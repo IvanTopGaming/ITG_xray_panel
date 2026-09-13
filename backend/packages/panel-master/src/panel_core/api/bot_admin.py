@@ -1,6 +1,5 @@
 import logging
 import secrets
-import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -13,8 +12,8 @@ from panel_core.extensions import db
 from panel_core.models import (
     BotText,
     Client,
-    Inbound,
     Payment,
+    ProvisionOperation,
     SystemSetting,
     Tariff,
     TariffItem,
@@ -22,23 +21,13 @@ from panel_core.models import (
     UserTariffAccess,
 )
 from panel_core.services import bot_events
-from panel_core.services.panel_proxy import RemotePanelError, proxy_update_user
-from panel_core.services.provisioning import apply_tariff_for_user, backfill_tariff
-from panel_core.services.remote_clients import (
-    remote_clients_by_telegram_id_live as _remote_clients_by_telegram_id_live,
-)
+from panel_core.services.provisioning import queue_tariff_backfill
 from panel_core.services.remote_clients_cached import (
     remote_clients_by_telegram_id as _remote_clients_by_telegram_id,
 )
-from panel_core.xray.facade import (
-    generate_config_file,
-    restart_xray_container,
-    _api_add_user_grpc,
-    _api_remove_user_grpc,
-)
 from panel_core.xray.gateway import LocalXrayUnavailable
 from panel_core.resources import BOT_TEXTS_DEFAULTS, BOT_TEXTS_META, read_data_text
-from panel_core.utils import remote_panel_failure, token_required
+from panel_core.utils import token_required
 
 bp = Blueprint("bot_admin", __name__)
 
@@ -74,7 +63,25 @@ def _serialize_tariff(t):
 @token_required
 def list_tariffs():
     tariffs = Tariff.query.order_by(Tariff.sort_order, Tariff.id).all()
-    return jsonify({"tariffs": [_serialize_tariff(t) for t in tariffs]})
+    pending = {}
+    operations = (
+        ProvisionOperation.query.filter(
+            ProvisionOperation.kind == "tariff_backfill",
+            ProvisionOperation.status.notin_(["succeeded", "superseded"]),
+        )
+        .order_by(ProvisionOperation.created_at.desc())
+        .all()
+    )
+    for operation in operations:
+        pending.setdefault(
+            operation.tariff_id,
+            {
+                "status": operation.status,
+                "operation_id": operation.id,
+                "last_error": operation.last_error,
+            },
+        )
+    return jsonify({"tariffs": [{**_serialize_tariff(t), "rollout": pending.get(t.id)} for t in tariffs]})
 
 
 @bp.route("/bot/tariffs/stats", methods=["GET"])
@@ -96,16 +103,16 @@ def tariffs_stats():
     active_by_tariff = {tid: count for tid, count in active_rows}
 
     rev_rows = (
-        db.session.query(Payment.tariff_id, func.sum(Payment.amount_rub))
-        .filter(Payment.status == "succeeded", Payment.paid_at >= cutoff_30d)
+        db.session.query(Payment.tariff_id, func.sum(_payment_net_kopeks()))
+        .filter(Payment.provider_status == "succeeded", Payment.paid_at >= cutoff_30d)
         .group_by(Payment.tariff_id)
         .all()
     )
-    rev_by_tariff = {tid: int(total or 0) for tid, total in rev_rows}
+    rev_by_tariff = {tid: round(float(total or 0) / 100, 2) for tid, total in rev_rows}
 
     last_sale_rows = (
         db.session.query(Payment.tariff_id, func.max(Payment.paid_at))
-        .filter(Payment.status == "succeeded", Payment.paid_at.isnot(None))
+        .filter(Payment.provider_status == "succeeded", Payment.paid_at.isnot(None))
         .group_by(Payment.tariff_id)
         .all()
     )
@@ -116,7 +123,7 @@ def tariffs_stats():
         tid: {
             "active_subs": active_by_tariff.get(tid, 0),
             "revenue_30d": rev_by_tariff.get(tid, 0),
-            "last_sale_at": (last_sale_by_tariff[tid].isoformat() if last_sale_by_tariff.get(tid) else None),
+            "last_sale_at": _payment_timestamp(last_sale_by_tariff.get(tid)),
         }
         for tid in tariff_ids
     }
@@ -159,9 +166,10 @@ def _validate_tariff_payload(payload):
         tag = item.get("inbound_tag")
         if not isinstance(tag, str) or not tag.strip():
             raise ValueError(f"items[{i}].inbound_tag is required")
-        if tag in seen_inbounds:
-            raise ValueError(f"duplicate inbound_tag in items: {tag!r}")
-        seen_inbounds.add(tag)
+        target = (item.get("panel_id"), tag.strip())
+        if target in seen_inbounds:
+            raise ValueError(f"duplicate panel/inbound target in items: {target!r}")
+        seen_inbounds.add(target)
         traffic = item.get("traffic_gb")
         if not isinstance(traffic, int) or traffic < 0:
             raise ValueError(f"items[{i}].traffic_gb must be a non-negative integer")
@@ -171,6 +179,9 @@ def _validate_tariff_payload(payload):
                 f"items[{i}].panel_id is required: this panel does not run Xray itself, so the item "
                 f"for inbound {tag!r} must name the node that will serve it. Pick a linked panel for this item."
             )
+        from panel_core.services.tariff_targets import validate_target
+
+        validate_target(panel_id, tag.strip())
 
 
 def _apply_items(tariff, items_payload):
@@ -242,6 +253,7 @@ def update_tariff(tariff_id):
         if other_trial is not None:
             return jsonify({"error": "a trial tariff already exists"}), 400
 
+    previous_panel_ids = {item.panel_id for item in t.items if item.panel_id is not None}
     t.name = payload["name"].strip()
     t.price_rub = payload["price_rub"]
     t.period_days = payload["period_days"]
@@ -250,16 +262,25 @@ def update_tariff(tariff_id):
     t.enabled = bool(payload.get("enabled", t.enabled))
     t.sort_order = payload.get("sort_order", 0)
     _apply_items(t, payload.get("items", []))
+    db.session.flush()
+    db.session.expire(t, ["items"])
+    operation = queue_tariff_backfill(t, previous_panel_ids=previous_panel_ids)
     db.session.commit()
-
-    backfill_summary = None
-    try:
-        backfill_summary = backfill_tariff(t)
-    except Exception:
-        db.session.rollback()
-        logger.exception("backfill_tariff failed for tariff=%s", t.id)
-
-    return jsonify({**_serialize_tariff(t), "backfill": backfill_summary})
+    return jsonify(
+        {
+            **_serialize_tariff(t),
+            "backfill": {
+                "status": "pending",
+                "operation_id": operation.id,
+                "holders": 0,
+                "created_local": 0,
+                "created_remote": 0,
+                "skipped_existing": 0,
+                "provision_failures": 0,
+                "panels_unreachable": [],
+            },
+        }
+    )
 
 
 @bp.route("/bot/tariffs/<int:tariff_id>", methods=["DELETE"])
@@ -399,6 +420,7 @@ def list_texts():
 @bp.route("/bot/texts/keys", methods=["GET"])
 @token_required
 def list_text_keys():
+    from panel_core.services.bot_texts import template_variables
 
     raw_defaults = read_data_text(BOT_TEXTS_DEFAULTS)
     defaults = (yaml.safe_load(raw_defaults) or {}) if raw_defaults else {}
@@ -411,7 +433,7 @@ def list_text_keys():
         entry = {
             "key": key,
             "description": (meta.get(key) or {}).get("description", ""),
-            "variables": (meta.get(key) or {}).get("variables", []),
+            "variables": template_variables(key, defaults),
             "default_ru": (defaults.get(key) or {}).get("ru", ""),
             "default_en": (defaults.get(key) or {}).get("en", ""),
         }
@@ -431,6 +453,12 @@ def upsert_text(key):
     text = payload.get("text", "")
     if not isinstance(text, str):
         return jsonify({"error": "text must be a string"}), 400
+    from panel_core.services.bot_texts import validate_bot_text
+
+    try:
+        validate_bot_text(key, text)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     row = db.session.get(BotText, (key, lang))
     if row is None:
@@ -492,6 +520,8 @@ def _serialize_grant(g):
         "telegram_id": g.telegram_id,
         "tariff_id": g.tariff_id,
         "billing": g.billing,
+        "provisioning_status": g.provisioning_status,
+        "provisioning_revision": g.provisioning_revision,
         "access_until": g.access_until.isoformat() if g.access_until else None,
         "next_renewal_at": g.next_renewal_at.isoformat() if g.next_renewal_at else None,
         "note": g.note,
@@ -541,18 +571,7 @@ def get_telegram_user(tg_id):
             **_serialize_user_summary(user, remote_by_tg),
             "clients": clients_payload,
             "grants": [_serialize_grant(g) for g in grants],
-            "payments": [
-                {
-                    "id": p.id,
-                    "yookassa_id": p.yookassa_id,
-                    "amount_rub": p.amount_rub,
-                    "status": p.status,
-                    "tariff_id": p.tariff_id,
-                    "created_at": p.created_at.isoformat() if p.created_at else None,
-                    "paid_at": p.paid_at.isoformat() if p.paid_at else None,
-                }
-                for p in payments
-            ],
+            "payments": [_serialize_payment(p) for p in payments],
         }
     )
 
@@ -560,170 +579,71 @@ def get_telegram_user(tg_id):
 @bp.route("/bot/users/<int:tg_id>/grants", methods=["POST"])
 @token_required
 def create_grant(tg_id):
-    payload = request.get_json(silent=True) or {}
-    tariff_id = payload.get("tariff_id")
-    billing = payload.get("billing")
-    note = payload.get("note") or None
-    silent = bool(payload.get("silent", False))
+    from panel_core.services.grants import save_grant
 
-    if not isinstance(tariff_id, int):
+    payload = request.get_json(silent=True) or {}
+    tariff_id, billing = payload.get("tariff_id"), payload.get("billing")
+    if not isinstance(tariff_id, int) or isinstance(tariff_id, bool):
         return jsonify({"error": "tariff_id (integer) is required"}), 400
     if billing not in _VALID_BILLING:
         return jsonify({"error": f"billing must be one of {sorted(_VALID_BILLING)}"}), 400
-
-    try:
-        access_until = _parse_access_until(payload.get("access_until"))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
     tariff = db.session.get(Tariff, tariff_id)
     if tariff is None:
         return jsonify({"error": "tariff not found"}), 404
-
     if billing == "paid" and tariff.visibility != "private":
-        return jsonify(
-            {"error": "'paid' grants are only meaningful for private tariffs (the user can already buy public ones)"}
-        ), 400
-
-    user = db.session.get(TelegramUser, tg_id)
-    if user is None:
-        user = TelegramUser(telegram_id=tg_id, language="ru")
-        db.session.add(user)
-        db.session.flush()
-
-    grant = UserTariffAccess.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id).first()
-    if grant is None:
-        grant = UserTariffAccess(
-            telegram_id=tg_id,
-            tariff_id=tariff_id,
-            billing=billing,
-            note=note,
-        )
-        db.session.add(grant)
-    else:
-        grant.billing = billing
-        grant.note = note
-
+        return jsonify({"error": "'paid' grants are only meaningful for private tariffs"}), 400
     try:
-        if billing == "free":
-            grant.access_until = access_until
-            result = apply_tariff_for_user(
-                tg_id,
-                tariff,
-                source="admin_grant",
-                operation_id=f"grant:{uuid.uuid4().hex}",
-                expiry_ms=int(access_until.timestamp() * 1000) if access_until else 0,
-            )
-            grant.next_renewal_at = (
-                datetime.utcnow() + timedelta(days=tariff.period_days) if _tariff_limits_traffic(tariff) else None
-            )
-        else:
-            result = None
-            grant.access_until = None
-            grant.next_renewal_at = None
-    except RemotePanelError as exc:
-        db.session.rollback()
-        logger.warning("grant of tariff %r to tg=%s failed: %s", tariff.name, tg_id, exc.message)
-        return remote_panel_failure(exc)
-    except LocalXrayUnavailable as exc:
-        db.session.rollback()
-        orphans = sorted(repr(item.inbound_tag) for item in tariff.items if item.panel_id is None)
-        logger.warning(
-            "grant of tariff %r to tg=%s refused: item(s) %s name no node",
-            tariff.name,
+        grant, result = save_grant(
             tg_id,
-            ", ".join(orphans) or "(none)",
+            tariff,
+            billing=billing,
+            access_until=_parse_access_until(payload.get("access_until")),
+            note=payload.get("note") or None,
+            silent=bool(payload.get("silent", False)),
         )
-        return jsonify(
-            {
-                "error": (
-                    f"Tariff {tariff.name!r} cannot be granted: its item(s) for inbound "
-                    f"{', '.join(orphans) or '(none)'} name no node, and this panel runs no Xray of its "
-                    f"own. Open Bot -> Tariffs and pick a linked panel for every item."
-                ),
-                "detail": str(exc),
-            }
-        ), 400
-
-    db.session.commit()
-
-    if not silent:
-        if billing == "free" and result is not None:
-            bot_events.publish(
-                "access_granted",
-                tg_id,
-                {
-                    "tariff_name": tariff.name,
-                    "expires_at_ms": result["expires_at_ms"],
-                    "lang": user.language or "ru",
-                },
-            )
-        elif billing == "paid":
-            bot_events.publish(
-                "access_offered",
-                tg_id,
-                {
-                    "tariff_name": tariff.name,
-                    "lang": user.language or "ru",
-                },
-            )
-
-    return jsonify(_serialize_grant(grant)), 201
+    except (ValueError, LocalXrayUnavailable) as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+    response = _serialize_grant(grant)
+    if result:
+        response.update(panel_failures=result["panel_failures"], operation_id=result["operation_id"])
+    return jsonify(response), 202 if result and result["panel_failures"] else 201
 
 
 @bp.route("/bot/users/<int:tg_id>/grants/<int:tariff_id>", methods=["PATCH"])
 @token_required
 def update_grant_term(tg_id, tariff_id):
+    from panel_core.services.grants import save_grant
+
     grant = UserTariffAccess.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id).first()
     if grant is None:
         return jsonify({"error": "grant not found"}), 404
     if grant.billing != "free":
         return jsonify({"error": "only a granted access has a term; a 'paid' grant provisions nothing"}), 400
-
     tariff = db.session.get(Tariff, tariff_id)
     if tariff is None:
         return jsonify({"error": "tariff not found"}), 404
-
     payload = request.get_json(silent=True) or {}
+    if "access_until" not in payload:
+        if "note" in payload:
+            grant.note = payload.get("note") or None
+        db.session.commit()
+        return jsonify(_serialize_grant(grant))
     try:
-        access_until = _parse_access_until(payload.get("access_until"))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    if "note" in payload:
-        grant.note = payload.get("note") or None
-    grant.access_until = access_until
-
-    try:
-        apply_tariff_for_user(
+        grant, result = save_grant(
             tg_id,
             tariff,
-            source="admin_grant_edit",
-            operation_id=f"grant:{uuid.uuid4().hex}",
-            expiry_ms=int(access_until.timestamp() * 1000) if access_until else 0,
+            billing="free",
+            access_until=_parse_access_until(payload["access_until"]),
+            note=payload.get("note", grant.note),
+            silent=True,
         )
-    except RemotePanelError as exc:
+    except (ValueError, LocalXrayUnavailable) as exc:
         db.session.rollback()
-        logger.warning("term edit of tariff %r for tg=%s failed: %s", tariff.name, tg_id, exc.message)
-        return remote_panel_failure(exc)
-    except LocalXrayUnavailable as exc:
-        db.session.rollback()
-        orphans = sorted(repr(item.inbound_tag) for item in tariff.items if item.panel_id is None)
-        return jsonify(
-            {
-                "error": (
-                    f"Tariff {tariff.name!r} cannot be granted: its item(s) for inbound "
-                    f"{', '.join(orphans) or '(none)'} name no node, and this panel runs no Xray of its "
-                    f"own. Open Bot -> Tariffs and pick a linked panel for every item."
-                ),
-                "detail": str(exc),
-            }
-        ), 400
-
-    if _tariff_limits_traffic(tariff) and grant.next_renewal_at is None:
-        grant.next_renewal_at = datetime.utcnow() + timedelta(days=tariff.period_days)
-    db.session.commit()
-    return jsonify(_serialize_grant(grant)), 200
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(
+        {**_serialize_grant(grant), "panel_failures": result["panel_failures"], "operation_id": result["operation_id"]}
+    ), 202 if result["panel_failures"] else 200
 
 
 @bp.route("/bot/users/<int:tg_id>/reset-sub-token", methods=["POST"])
@@ -767,230 +687,40 @@ def reset_sub_token(tg_id):
 @bp.route("/bot/users/<int:tg_id>/block", methods=["POST"])
 @token_required
 def block_user(tg_id):
-
-    user = db.session.get(TelegramUser, tg_id)
-    if user is None:
-        return jsonify({"error": "user not found"}), 404
-
-    active_clients = Client.query.filter_by(telegram_id=tg_id, enable=True).all()
-
-    inbound_tags = {c.inbound_tag for c in active_clients}
-    inbounds_by_tag = (
-        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
-    )
-
-    restart_required = False
-    for c in active_clients:
-        ib = inbounds_by_tag.get(c.inbound_tag)
-        if ib and ib.protocol in ("vless", "vmess"):
-            try:
-                if not _api_remove_user_grpc(c.inbound_tag, c.email):
-                    restart_required = True
-            except Exception:
-                restart_required = True
-        else:
-            restart_required = True
-
-    remote_by_tg, panel_failures = _remote_clients_by_telegram_id_live()
-    remote_clients = remote_by_tg.get(tg_id, [])
-    remote_disabled = 0
-    for rc in remote_clients:
-        if not rc.get("enable", True):
-            continue
-        try:
-            proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": False})
-            remote_disabled += 1
-        except Exception as exc:
-            logger.warning("block: remote disable failed panel=%s tag=%s: %s", rc["panel_id"], rc["inbound_tag"], exc)
-            panel_failures.append({"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)})
-
-    user.blocked = True
-    for c in active_clients:
-        c.enable = False
-    cancelled_grants = UserTariffAccess.query.filter_by(telegram_id=tg_id).delete(synchronize_session=False)
-    db.session.commit()
-
-    if active_clients:
-        generate_config_file()
-        if restart_required:
-            restart_xray_container()
+    from panel_core.services.grants import set_account_block
+    from panel_core.services.sub_cache import invalidate_user_aggregate
 
     try:
-        bot_events.publish("user_blocked", telegram_id=tg_id, payload={})
-    except Exception:
-        pass
-
-    return jsonify(
-        {
-            "ok": True,
-            "telegram_id": tg_id,
-            "cancelled_grants": int(cancelled_grants or 0),
-            "disabled_clients": len(active_clients),
-            "remote_disabled": remote_disabled,
-            "panel_failures": panel_failures,
-        }
-    )
+        result = set_account_block(tg_id, True)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    invalidate_user_aggregate(tg_id)
+    return jsonify(result), 202 if result["panel_failures"] else 200
 
 
 @bp.route("/bot/users/<int:tg_id>/unblock", methods=["POST"])
 @token_required
 def unblock_user(tg_id):
-
-    user = db.session.get(TelegramUser, tg_id)
-    if user is None:
-        return jsonify({"error": "user not found"}), 404
-
-    now_ms = int(time.time() * 1000)
-
-    def _has_time(expiry):
-        return not expiry or expiry > now_ms
-
-    disabled = Client.query.filter_by(telegram_id=tg_id, enable=False).all()
-    to_enable = [c for c in disabled if _has_time(c.expiry_time)]
-    inbound_tags = {c.inbound_tag for c in to_enable}
-    inbounds_by_tag = (
-        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
-    )
-
-    remote_by_tg, panel_failures = _remote_clients_by_telegram_id_live()
-    remote_clients = remote_by_tg.get(tg_id, [])
-    remote_re_enabled = 0
-    for rc in remote_clients:
-        if rc.get("enable", True) or not _has_time(rc.get("expiry_time", 0)):
-            continue
-        try:
-            proxy_update_user(rc["panel_id"], rc["inbound_tag"], {"old_email": rc["email"], "enable": True})
-            remote_re_enabled += 1
-        except Exception as exc:
-            logger.warning(
-                "unblock: remote re-enable failed panel=%s tag=%s: %s", rc["panel_id"], rc["inbound_tag"], exc
-            )
-            panel_failures.append({"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)})
-
-    user.blocked = False
-    for c in to_enable:
-        c.enable = True
-    db.session.commit()
-
-    if to_enable:
-        restart_required = False
-        for c in to_enable:
-            ib = inbounds_by_tag.get(c.inbound_tag)
-            if ib and ib.protocol in ("vless", "vmess"):
-                try:
-                    if not _api_add_user_grpc(c.inbound_tag, c):
-                        restart_required = True
-                except Exception:
-                    restart_required = True
-            else:
-                restart_required = True
-        generate_config_file()
-        if restart_required:
-            restart_xray_container()
+    from panel_core.services.grants import set_account_block
+    from panel_core.services.sub_cache import invalidate_user_aggregate
 
     try:
-        bot_events.publish("user_unblocked", telegram_id=tg_id, payload={})
-    except Exception:
-        pass
-
-    return jsonify(
-        {
-            "ok": True,
-            "telegram_id": tg_id,
-            "re_enabled": len(to_enable),
-            "remote_re_enabled": remote_re_enabled,
-            "panel_failures": panel_failures,
-        }
-    )
+        result = set_account_block(tg_id, False)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    invalidate_user_aggregate(tg_id)
+    return jsonify(result), 202 if result["panel_failures"] else 200
 
 
 @bp.route("/bot/users/<int:tg_id>/tariffs/<int:tariff_id>", methods=["DELETE"])
 @token_required
 def revoke_tariff_from_user(tg_id, tariff_id):
+    from panel_core.services.grants import revoke_tariff
+    from panel_core.services.sub_cache import invalidate_user_aggregate
 
-    active_clients = Client.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id, enable=True).all()
-    inbound_tags = {c.inbound_tag for c in active_clients}
-    inbounds_by_tag = (
-        {ib.tag: ib for ib in Inbound.query.filter(Inbound.tag.in_(inbound_tags)).all()} if inbound_tags else {}
-    )
-
-    restart_required = False
-    for c in active_clients:
-        ib = inbounds_by_tag.get(c.inbound_tag)
-        if ib and ib.protocol in ("vless", "vmess"):
-            try:
-                if not _api_remove_user_grpc(c.inbound_tag, c.email):
-                    restart_required = True
-            except Exception:
-                restart_required = True
-        else:
-            restart_required = True
-
-    panel_failures: list[dict] = []
-    remote_disabled = 0
-    remote_items = (
-        TariffItem.query.filter_by(tariff_id=tariff_id)
-        .filter(TariffItem.panel_id.isnot(None))
-        .with_entities(TariffItem.panel_id, TariffItem.inbound_tag)
-        .all()
-    )
-    wanted = {(pid, tag) for pid, tag in remote_items}
-    if wanted:
-        panel_ids = {pid for pid, _tag in remote_items}
-        remote_by_tg, unreachable = _remote_clients_by_telegram_id_live(panel_ids=panel_ids)
-        panel_failures.extend(unreachable)
-        for rc in remote_by_tg.get(tg_id, []):
-            if rc.get("tariff_id") != tariff_id:
-                continue
-            if (rc.get("panel_id"), rc.get("inbound_tag")) not in wanted or not rc.get("enable", True):
-                continue
-            try:
-                proxy_update_user(
-                    rc["panel_id"],
-                    rc["inbound_tag"],
-                    {
-                        "old_email": rc["email"],
-                        "enable": False,
-                        "expiry_time": int(time.time() * 1000) - 1,
-                    },
-                )
-                remote_disabled += 1
-            except Exception as exc:
-                logger.warning(
-                    "revoke_tariff: remote disable failed panel=%s tag=%s: %s",
-                    rc["panel_id"],
-                    rc["inbound_tag"],
-                    exc,
-                )
-                panel_failures.append(
-                    {"panel_id": rc["panel_id"], "panel_name": rc.get("panel_name"), "error": str(exc)}
-                )
-
-    for c in active_clients:
-        c.enable = False
-        c.expiry_time = int(time.time() * 1000) - 1
-        c.tariff_id = None
-    revoked_grants = UserTariffAccess.query.filter_by(telegram_id=tg_id, tariff_id=tariff_id).delete(
-        synchronize_session=False
-    )
-    db.session.commit()
-
-    if active_clients:
-        generate_config_file()
-        if restart_required:
-            restart_xray_container()
-
-    return jsonify(
-        {
-            "ok": True,
-            "telegram_id": tg_id,
-            "tariff_id": tariff_id,
-            "disabled_clients": len(active_clients),
-            "revoked_grants": int(revoked_grants or 0),
-            "remote_disabled": remote_disabled,
-            "panel_failures": panel_failures,
-        }
-    )
+    result = revoke_tariff(tg_id, tariff_id)
+    invalidate_user_aggregate(tg_id)
+    return jsonify(result), 202 if result["panel_failures"] else 200
 
 
 @bp.route("/bot/grants", methods=["GET"])
@@ -1023,18 +753,45 @@ def list_grants():
     )
 
 
+def _payment_timestamp(value):
+    import datetime as dt
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _payment_net_kopeks():
+    from sqlalchemy import case
+
+    remaining = Payment.amount_rub * 100 - Payment.refunded_amount_kopeks
+    return case((remaining < 0, 0), else_=remaining)
+
+
 def _serialize_payment(p):
     return {
         "id": p.id,
         "yookassa_id": p.yookassa_id,
         "telegram_id": p.telegram_id,
         "tariff_id": p.tariff_id,
-        "tariff_name": (p.tariff_snapshot or {}).get("name") or "",
+        "tariff_name": (p.tariff_snapshot.get("name") or "") if isinstance(p.tariff_snapshot, dict) else "",
         "amount_rub": p.amount_rub,
         "status": p.status,
         "confirmation_url": p.confirmation_url,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
-        "paid_at": p.paid_at.isoformat() if p.paid_at else None,
+        "created_at": _payment_timestamp(p.created_at),
+        "paid_at": _payment_timestamp(p.paid_at),
+        "provider_status": p.provider_status,
+        "fulfillment_status": p.fulfillment_status,
+        "refund_status": p.refund_status,
+        "refunded_amount_kopeks": p.refunded_amount_kopeks,
+        "fulfillment_error": p.fulfillment_error,
+        "checkout_status": p.checkout_status,
+        "refund_pending_targets": p.refund_pending_targets,
+        "last_checked_at": _payment_timestamp(p.last_checked_at),
+        "refund_checked_at": _payment_timestamp(p.refund_checked_at),
+        "cancel_requested_at": _payment_timestamp(p.cancel_requested_at),
     }
 
 
@@ -1044,7 +801,7 @@ def list_payments():
     import datetime as dt
     from sqlalchemy import func
 
-    q = Payment.query.order_by(Payment.created_at.desc())
+    q = Payment.query.order_by(Payment.created_at.desc(), Payment.id.desc())
     status = request.args.get("status")
     if status:
         q = q.filter(Payment.status == status)
@@ -1053,30 +810,46 @@ def list_payments():
         try:
             q = q.filter(Payment.telegram_id == int(tg_id_raw))
         except ValueError:
-            pass
+            return jsonify({"error": "invalid_telegram_id"}), 400
     from_date = request.args.get("from")
-    to_date = request.args.get("to")
+    to_date = request.args.get("to_exclusive")
+
+    def parse_date(value):
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone_required")
+        return parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+
     try:
         if from_date:
-            q = q.filter(Payment.created_at >= dt.datetime.fromisoformat(from_date))
+            q = q.filter(Payment.created_at >= parse_date(from_date))
         if to_date:
-            q = q.filter(Payment.created_at <= dt.datetime.fromisoformat(to_date))
+            q = q.filter(Payment.created_at < parse_date(to_date))
     except ValueError:
         return jsonify({"error": "invalid_date"}), 400
 
-    items = q.limit(500).all()
+    try:
+        limit = int(request.args.get("limit", "100"))
+        offset = int(request.args.get("offset", "0"))
+        if not 1 <= limit <= 500 or offset < 0:
+            raise ValueError("invalid_pagination")
+    except ValueError:
+        return jsonify({"error": "invalid_pagination"}), 400
+    items = q.offset(offset).limit(limit).all()
     total = q.count()
 
-    month_start = dt.datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start = dt.datetime.now(dt.timezone.utc).replace(
+        tzinfo=None, day=1, hour=0, minute=0, second=0, microsecond=0
+    )
     month_count = (
         db.session.query(func.count(Payment.id))
-        .filter(Payment.status == "succeeded", Payment.paid_at >= month_start)
+        .filter(Payment.provider_status == "succeeded", Payment.paid_at >= month_start)
         .scalar()
         or 0
     )
     month_amount = (
-        db.session.query(func.coalesce(func.sum(Payment.amount_rub), 0))
-        .filter(Payment.status == "succeeded", Payment.paid_at >= month_start)
+        db.session.query(func.coalesce(func.sum(_payment_net_kopeks()), 0))
+        .filter(Payment.provider_status == "succeeded", Payment.paid_at >= month_start)
         .scalar()
         or 0
     )
@@ -1085,9 +858,11 @@ def list_payments():
         {
             "items": [_serialize_payment(p) for p in items],
             "total": total,
+            "limit": limit,
+            "offset": offset,
             "stats": {
                 "month_count": month_count,
-                "month_amount_rub": month_amount,
+                "month_amount_rub": round(float(month_amount) / 100, 2),
             },
         }
     )

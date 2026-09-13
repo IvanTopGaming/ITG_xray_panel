@@ -25,7 +25,7 @@ def test_sqlite_uri_uses_sqlite_migration():
             run_startup_migration(app, "/tmp/panel.db")
     m_sqlite.assert_called_once()
     m_pg.assert_not_called()
-    m_create.assert_called_once()
+    m_create.assert_not_called()
 
 
 def test_postgres_uri_uses_postgres_migration():

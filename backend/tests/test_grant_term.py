@@ -20,7 +20,7 @@ import jwt as jwt_lib
 import pytest
 
 from panel_core.extensions import db, scheduler
-from panel_core.models import Admin, Tariff, TariffItem, TelegramUser, UserTariffAccess
+from panel_core.models import Admin, LinkedPanel, Tariff, TariffItem, TelegramUser, UserTariffAccess
 from panel_core.utils import SECRET_KEY
 
 from tests.schema import ensure_schema
@@ -44,6 +44,8 @@ def master_app(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)
+    snapshot = {"inbounds": [{"tag": "alpha", "protocol": "vless", "clients": [], "stream_settings": {}}]}
+    monkeypatch.setattr("panel_core.services.tariff_targets.get_panel_snapshot", lambda panel_id: snapshot)
 
     app = importlib.import_module("panel_core.roles.master").create_app()
     with app.app_context():
@@ -53,6 +55,11 @@ def master_app(monkeypatch, tmp_path):
         unlimited = Tariff(name="Premium", price_rub=0, period_days=30, enabled=True)
         limited = Tariff(name="Basic", price_rub=125, period_days=30, enabled=True)
         db.session.add_all([unlimited, limited])
+        db.session.add(
+            LinkedPanel(
+                id=2, name="Alpha", url="https://alpha.example", federation_token="test", enable=True, created_at=1
+            )
+        )
         db.session.flush()
         db.session.add(TariffItem(tariff_id=unlimited.id, inbound_tag="alpha", traffic_gb=0, panel_id=2))
         db.session.add(TariffItem(tariff_id=limited.id, inbound_tag="alpha", traffic_gb=300, panel_id=2))
@@ -87,7 +94,7 @@ def _grant(master, headers, tg_id, payload):
 
 
 def test_open_ended_grant_stores_no_end_date_and_assigns_expiry_zero(master, master_headers, master_app):
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         applied.return_value = {"expires_at_ms": 0, "clients": [], "source": "admin_grant"}
         resp = _grant(
             master,
@@ -97,7 +104,7 @@ def test_open_ended_grant_stores_no_end_date_and_assigns_expiry_zero(master, mas
         )
 
     assert resp.status_code == 201, f"an open-ended grant is the default case; got {resp.get_data(as_text=True)}"
-    assert applied.call_args.kwargs["expiry_ms"] == 0, (
+    assert applied.call_args.args[3]["expiry_ms"] == 0, (
         "an open-ended grant must write expiry 0 onto the key -- that is the value the node, the "
         f"expiry evaluator and the limit check all read as 'never'; got {applied.call_args.kwargs}"
     )
@@ -106,7 +113,7 @@ def test_open_ended_grant_stores_no_end_date_and_assigns_expiry_zero(master, mas
 
 def test_dated_grant_stores_the_date_and_assigns_it(master, master_headers, master_app):
     until = "2026-12-31T00:00:00"
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         applied.return_value = {"expires_at_ms": 1, "clients": [], "source": "admin_grant"}
         resp = _grant(
             master,
@@ -116,8 +123,8 @@ def test_dated_grant_stores_the_date_and_assigns_it(master, master_headers, mast
         )
 
     assert resp.status_code == 201, resp.get_data(as_text=True)
-    expected_ms = int(datetime.datetime.fromisoformat(until).timestamp() * 1000)
-    assert applied.call_args.kwargs["expiry_ms"] == expected_ms, (
+    expected_ms = int(datetime.datetime.fromisoformat(until).replace(tzinfo=datetime.UTC).timestamp() * 1000)
+    assert applied.call_args.args[3]["expiry_ms"] == expected_ms, (
         "the admin's date must reach the node verbatim, not as a period added to whatever the holder "
         f"had; got {applied.call_args.kwargs}"
     )
@@ -135,7 +142,7 @@ def test_gift_is_refused(master, master_headers, master_app):
 
 
 def test_an_unlimited_tariff_schedules_no_traffic_reset(master, master_headers, master_app):
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         applied.return_value = {"expires_at_ms": 0, "clients": [], "source": "admin_grant"}
         _grant(
             master,
@@ -153,7 +160,7 @@ def test_an_unlimited_tariff_schedules_no_traffic_reset(master, master_headers, 
 
 
 def test_a_limited_tariff_schedules_its_first_traffic_reset_one_period_out(master, master_headers, master_app):
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         applied.return_value = {"expires_at_ms": 0, "clients": [], "source": "admin_grant"}
         _grant(
             master,
@@ -172,7 +179,7 @@ def test_a_limited_tariff_schedules_its_first_traffic_reset_one_period_out(maste
 
 
 def test_a_malformed_date_is_refused_without_provisioning(master, master_headers, master_app):
-    with patch("panel_core.api.bot_admin.apply_tariff_for_user") as applied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as applied:
         resp = _grant(
             master,
             master_headers,

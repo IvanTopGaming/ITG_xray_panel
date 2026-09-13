@@ -1,5 +1,6 @@
 import base64
 import hmac
+import json
 import os
 import secrets
 import time
@@ -8,7 +9,14 @@ from urllib.parse import urlparse
 from panel_core.extensions import db
 from panel_core.models import LinkedPanel
 from panel_core.services.panel_proxy import FederationClient
-from panel_core.services.state_mirror import load_state, read_current, write_cold, write_hot
+from panel_core.services.state_mirror import (
+    load_state,
+    lock_panel,
+    read_current,
+    state_is_coherent,
+    validate_state,
+    write_full,
+)
 
 TRANSFER_TOKEN_TTL_SECONDS = 3600
 CLAIMED_TOKEN_GRACE_SECONDS = 300
@@ -22,12 +30,18 @@ class TransferError(Exception):
         self.status = status
 
 
-def _master_url() -> str:
+def _master_url(*, require_config=True) -> str:
     domain = (os.environ.get("PANEL_DOMAIN") or "").strip()
     secret = (os.environ.get("PANEL_SECRET_PATH") or "").strip()
     if not domain or not secret:
+        if not require_config:
+            from flask import request
+
+            base = f"https://{domain}" if domain else request.host_url.rstrip("/")
+            prefix = secret.strip("/") or request.script_root.strip("/")
+            return f"{base}/{prefix}".rstrip("/")
         raise ValueError("PANEL_DOMAIN and PANEL_SECRET_PATH must both be set to issue a transfer key")
-    return f"https://{domain}/{secret}"
+    return f"https://{domain}/{secret.strip('/')}"
 
 
 def _client_count(inbounds) -> int:
@@ -44,23 +58,40 @@ def _shrink_flagged(panel_id, inbounds) -> bool:
 
 
 def refresh_mirror_live(panel) -> dict:
+    panel_id, url, token = panel.id, panel.url, panel.federation_token
     try:
-        payload = FederationClient(panel.url, panel.federation_token).state()
+        current = lock_panel(panel_id)
+        if current is None or current.url != url or current.federation_token != token:
+            raise ValueError("panel link changed before state refresh")
+        current.poll_generation += 1
+        generation = current.poll_generation
+        db.session.commit()
+        payload = FederationClient(url, token).state()
         hot = payload.get("hot") if isinstance(payload, dict) else None
         inbounds = hot.get("inbounds") if isinstance(hot, dict) else None
         if not isinstance(inbounds, list):
             raise ValueError("federation state reply carries no usable inbounds list")
 
-        now = int(time.time() * 1000)
-        write_hot(
-            panel.id,
+        now = payload.get("timestamp") or int(time.time() * 1000)
+        current = lock_panel(panel_id)
+        if current is None or current.url != url or current.federation_token != token:
+            raise ValueError("panel link changed during state refresh")
+        if generation <= current.poll_applied_generation:
+            raise ValueError("a newer state refresh has already completed")
+        instance_id = payload.get("instance_id") or ""
+        if current.current_instance_id and instance_id != current.current_instance_id:
+            raise ValueError("state came from a superseded installation")
+        current.poll_applied_generation = generation
+        write_full(
+            panel_id,
             {"inbounds": inbounds},
+            payload.get("cold"),
             taken_at=now,
-            instance_id=payload.get("instance_id") or "",
+            fingerprint=payload.get("fingerprint") or "",
+            instance_id=instance_id,
             app_version=payload.get("app_version") or "",
             shrink_flagged=_shrink_flagged(panel.id, inbounds),
         )
-        write_cold(panel.id, payload.get("cold") or {}, fingerprint=payload.get("fingerprint") or "", taken_at=now)
         return {"ok": True, "taken_at": now, "error": None}
     except Exception as exc:
         try:
@@ -75,6 +106,7 @@ def issue_transfer_token(panel, *, carry_admin: bool) -> dict:
     master_url = _master_url()
 
     freshness = refresh_mirror_live(panel)
+    _state_reply(panel, frozen=False)
 
     raw = secrets.token_urlsafe(32)
     panel.transfer_token = raw
@@ -82,6 +114,7 @@ def issue_transfer_token(panel, *, carry_admin: bool) -> dict:
     panel.transfer_token_used = False
     panel.transfer_claimed_instance_id = None
     panel.transfer_carry_admin = bool(carry_admin)
+    panel.transfer_state_json = None
     db.session.commit()
 
     composite = base64.urlsafe_b64encode(f"{master_url}|{raw}".encode()).decode().rstrip("=")
@@ -126,11 +159,23 @@ def resolve_identity(raw_token: str) -> dict:
     }
 
 
-def _state_reply(panel) -> dict:
+def _state_reply(panel, *, frozen=True) -> dict:
+    if frozen and panel.transfer_state_json:
+        return json.loads(panel.transfer_state_json)
     row = read_current(panel.id)
     if row is None:
         raise TransferError("no state mirrored for this panel yet", 409)
-    hot, cold = load_state(row)
+    if not state_is_coherent(row):
+        raise TransferError(
+            "mirrored state has no verified consistent snapshot; wait for a successful full node refresh", 409
+        )
+    try:
+        hot, cold = load_state(row)
+        validate_state(hot, cold)
+    except ValueError as exc:
+        raise TransferError(str(exc), 409) from exc
+    if not row.hot_updated_at or not row.cold_updated_at:
+        raise TransferError("no complete state mirrored for this panel yet", 409)
     if not panel.transfer_carry_admin:
         cold.pop("admin", None)
     return {
@@ -173,14 +218,31 @@ def claim_transfer(raw_token: str, *, instance_id: str, federation_token: str) -
         raise TransferError("instance_id and federation_token are required", 400)
 
     panel = _panel_for_token(raw_token)
+    panel = lock_panel(panel.id)
+    if panel is None or panel.transfer_token != raw_token:
+        db.session.rollback()
+        raise TransferError("transfer token changed", 409)
+    if (panel.transfer_token_expires_at or 0) < int(time.time() * 1000):
+        db.session.rollback()
+        raise TransferError("this transfer token has expired", 401)
 
     if panel.transfer_token_used:
-        if hmac.compare_digest(panel.transfer_claimed_instance_id or "", instance_id):
-            return _state_reply(panel)
+        if hmac.compare_digest(panel.transfer_claimed_instance_id or "", instance_id) and hmac.compare_digest(
+            panel.federation_token or "", federation_token
+        ):
+            reply = _state_reply(panel)
+            db.session.commit()
+            return reply
+        db.session.rollback()
         raise TransferError("this transfer token has already been claimed by another node", 409)
 
     now = int(time.time() * 1000)
     mirror_row = read_current(panel.id)
+    try:
+        reply = _state_reply(panel, frozen=False)
+    except Exception:
+        db.session.rollback()
+        raise
     claimed = LinkedPanel.query.filter(
         LinkedPanel.id == panel.id,
         LinkedPanel.transfer_token == raw_token,
@@ -188,6 +250,7 @@ def claim_transfer(raw_token: str, *, instance_id: str, federation_token: str) -
     ).update(
         {
             "transfer_token_used": True,
+            "transfer_state_json": json.dumps(reply, separators=(",", ":")),
             "transfer_claimed_instance_id": instance_id,
             "superseded_token": panel.federation_token,
             "superseded_instance_id": panel.current_instance_id
@@ -207,9 +270,11 @@ def claim_transfer(raw_token: str, *, instance_id: str, federation_token: str) -
 
     if claimed != 1:
         db.session.refresh(panel)
-        if hmac.compare_digest(panel.transfer_claimed_instance_id or "", instance_id):
+        if hmac.compare_digest(panel.transfer_claimed_instance_id or "", instance_id) and hmac.compare_digest(
+            panel.federation_token or "", federation_token
+        ):
             return _state_reply(panel)
         raise TransferError("this transfer token has already been claimed by another node", 409)
 
     db.session.refresh(panel)
-    return _state_reply(panel)
+    return reply

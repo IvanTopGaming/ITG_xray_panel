@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from panel_core.models import LinkedPanel
+from tests.federation_state_support import cold_state
 
 
 @pytest.fixture
@@ -34,33 +35,30 @@ def _panel_with_token(db, raw="raw-secret-token", current_instance_id=None):
 
 
 def _seed_mirror(db, panel):
-    from panel_core.services.state_mirror import write_cold, write_hot
+    from panel_core.services.state_mirror import write_full
 
-    write_hot(
+    write_full(
         panel.id,
         {"inbounds": [{"tag": "in-1"}]},
+        cold_state(
+            **{
+                "outbounds": [],
+                "identity": {
+                    "panel_domain": "alpha.example.com",
+                    "proxy_domain": "www.google.com",
+                    "secret_path": "secret",
+                },
+                "admin": {
+                    "username": "admin",
+                    "password": "scrypt$stub-hash-of-the-node-admin-password",
+                    "password_changed_at": 1,
+                },
+            }
+        ),
+        fingerprint="a" * 64,
         taken_at=1,
         instance_id="inst-old",
         app_version="3.2.0",
-        shrink_flagged=False,
-    )
-    write_cold(
-        panel.id,
-        {
-            "outbounds": [],
-            "identity": {
-                "panel_domain": "alpha.example.com",
-                "proxy_domain": "www.google.com",
-                "secret_path": "secret",
-            },
-            "admin": {
-                "username": "admin",
-                "password": "scrypt$stub-hash-of-the-node-admin-password",
-                "password_changed_at": 1,
-            },
-        },
-        fingerprint="a" * 64,
-        taken_at=1,
     )
 
 
@@ -146,13 +144,14 @@ def test_a_replay_by_the_same_instance_returns_the_same_answer(app, db):
 
 
 def test_a_replay_with_a_mismatched_token_does_not_move_the_stored_one(app, db):
-    from panel_core.services.panel_transfer import claim_transfer
+    from panel_core.services.panel_transfer import TransferError, claim_transfer
 
     panel = _panel_with_token(db)
     _seed_mirror(db, panel)
 
     claim_transfer("raw-secret-token", instance_id="inst-new", federation_token="new-fed")
-    claim_transfer("raw-secret-token", instance_id="inst-new", federation_token="different-fed")
+    with pytest.raises(TransferError):
+        claim_transfer("raw-secret-token", instance_id="inst-new", federation_token="different-fed")
 
     assert panel.federation_token == "new-fed", (
         "реплей по тому же instance_id не читает federation_token из повторного запроса — "

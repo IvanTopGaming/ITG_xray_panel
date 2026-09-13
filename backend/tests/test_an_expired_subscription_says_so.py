@@ -166,6 +166,8 @@ def test_a_live_subscription_is_untouched(sub):
         client = Client.query.first()
         client.enable = True
         client.expiry_time = 4_000_000_000_000
+        client.up = 0
+        client.down = 0
         db.session.commit()
 
     body = urllib.parse.unquote(_links(sub.test_client().get(f"/api/sub/u/{TOKEN}", headers=APP_UA)))

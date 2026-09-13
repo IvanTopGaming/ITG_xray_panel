@@ -4,6 +4,7 @@ import time
 import datetime
 from html import escape
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 from aiogram import Router, F, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
@@ -15,6 +16,7 @@ from i18n import I18n
 from runtime_config import runtime_config
 from utils import generate_qr, format_bytes
 from states import UserStates
+from screens import display_pages, split_html
 import keyboards as kb
 
 router = Router()
@@ -28,7 +30,7 @@ def h(value):
 async def safe_edit(message: types.Message, text: str, reply_markup=None, parse_mode="HTML"):
 
     kwargs = {"reply_markup": reply_markup, "parse_mode": parse_mode}
-    if message.content_type == types.ContentType.PHOTO:
+    if message.content_type in (types.ContentType.PHOTO, types.ContentType.DOCUMENT):
         try:
             await message.delete()
         except Exception:
@@ -60,6 +62,7 @@ async def auto_expire_keys_message(
     i18n: I18n,
     lang: str,
     client_id: str,
+    generation: str | None = None,
     delay: int = 60,
 ):
 
@@ -70,12 +73,15 @@ async def auto_expire_keys_message(
     data = await state.get_data()
     if data.get("selected_key_client_id") != client_id:
         return
+    if generation is not None and data.get("key_screen_generation") != generation:
+        return
 
     try:
         text = await i18n.t("security.timeout", lang)
         back = await i18n.t("common.back_to_main", lang)
         show_again = await i18n.t("keys.actions.show_again", lang)
-        await message.edit_text(
+        await safe_edit(
+            message,
             text,
             reply_markup=kb.expired_keys_kb(
                 show_again_label=show_again,
@@ -88,6 +94,24 @@ async def auto_expire_keys_message(
         logger.debug("auto_expire_keys_message: %s", exc)
     except Exception:
         logger.debug("auto_expire_keys_message: unexpected error", exc_info=True)
+
+
+async def _arm_key_timeout(message, state, *, i18n, lang, client_id):
+    generation = uuid4().hex
+    await state.update_data(key_screen_generation=generation)
+    asyncio.create_task(
+        auto_expire_keys_message(message, state, i18n=i18n, lang=lang, client_id=client_id, generation=generation)
+    )
+
+
+async def _render_link(message, link, text, markup):
+    if len(text.encode("utf-16-le")) // 2 <= 3500:
+        return await safe_edit(message, text, reply_markup=markup)
+    await message.delete()
+    return await message.answer_document(
+        types.BufferedInputFile(link.encode("utf-8"), filename="connection.txt"),
+        reply_markup=markup,
+    )
 
 
 async def _render_welcome(
@@ -111,8 +135,7 @@ async def _render_welcome(
     except Exception as exc:
         logger.info("get_user_state failed for %s: %s", telegram_id, exc)
 
-    legacy_users = list((user_state or {}).get("clients") or [])
-    has_clients = bool(legacy_users) or bool((user_state or {}).get("clients"))
+    has_clients = bool((user_state or {}).get("clients"))
 
     if has_clients:
         subs = await i18n.t("menu.subscription", lang)
@@ -132,14 +155,16 @@ async def _render_welcome(
         return
 
     if user_state is None:
+        unavailable = await i18n.t("errors.service_unavailable", lang)
+        markup = kb.back_to_main_kb(back_label=await i18n.t("common.back_to_main", lang))
         if edit:
-            await safe_edit(message, header)
+            await safe_edit(message, unavailable, reply_markup=markup)
         else:
-            await message.answer(header, parse_mode="HTML")
+            await message.answer(unavailable, reply_markup=markup, parse_mode="HTML")
         return
 
     if user_state.get("trial_available"):
-        trial = await i18n.t("trial.button.activate", lang, days=1)
+        trial = await i18n.t("trial.button.activate", lang, days=user_state.get("trial_days") or 1)
         tariffs = await i18n.t("menu.tariffs", lang)
         help_label = await i18n.t("menu.help", lang)
         markup = kb.no_clients_menu_kb(
@@ -199,7 +224,7 @@ async def _render_first_touch(
         return
 
     title = await i18n.t("onboarding.title", lang, user_name=h(user_name))
-    activate = await i18n.t("trial.button.activate", lang, days=1)
+    activate = await i18n.t("trial.button.activate", lang, days=user_state.get("trial_days") or 1)
     skip = await i18n.t("trial.button.skip", lang)
     markup = kb.first_touch_kb(activate_label=activate, skip_label=skip)
     if edit:
@@ -283,6 +308,7 @@ async def user_home(
     lang: str,
     backend: BackendClient,
 ):
+    await callback.answer()
     await state.clear()
     user_name = callback.from_user.first_name or callback.from_user.username or ("друг" if lang == "ru" else "friend")
     await _render_welcome(
@@ -303,6 +329,7 @@ async def user_help(
     i18n: I18n,
     lang: str,
 ):
+    await callback.answer()
     await state.clear()
     body = await i18n.t("help.body", lang)
     back = await i18n.t("common.back_to_main", lang)
@@ -321,13 +348,15 @@ async def user_sub(
         state_data = await backend.get_user_state(callback.from_user.id)
     except Exception as exc:
         logger.info("get_user_state failed: %s", exc)
-        state_data = {}
+        await callback.answer(await i18n.t("errors.service_unavailable", lang), show_alert=True)
+        return
     clients = list((state_data or {}).get("clients") or [])
     sub_url = (state_data or {}).get("sub_url")
     if not clients:
         await _render_no_subscription(callback, lang=lang, i18n=i18n, backend=backend)
         return
 
+    await callback.answer()
     await state.clear()
     open_ended_access = bool((state_data or {}).get("open_ended_access"))
     await state.update_data(open_ended_access=open_ended_access)
@@ -400,7 +429,10 @@ async def _render_keys_picker(
     clients: list,
 ):
 
+    await callback.answer()
+    data = await state.get_data()
     await state.clear()
+    await state.update_data(open_ended_access=bool(data.get("open_ended_access")))
     title = await i18n.t("keys.picker.title", lang)
     entry = await i18n.t("keys.list.entry", lang)
     back = await i18n.t("common.back_to_main", lang)
@@ -428,7 +460,9 @@ async def show_keys(
         users_records = list((state_data or {}).get("clients") or [])
     except Exception as exc:
         logger.info("get_user_state failed: %s", exc)
-        users_records = []
+        await callback.answer(await i18n.t("errors.service_unavailable", lang), show_alert=True)
+        return
+    await state.update_data(open_ended_access=bool(state_data.get("open_ended_access")))
     if not users_records:
         await _render_no_subscription(callback, lang=lang, i18n=i18n, backend=backend)
         return
@@ -462,7 +496,7 @@ async def user_key_selected(
 
     clients = (state_data or {}).get("clients", [])
     record = next(
-        (c for c in clients if c.get("id") == client_id),
+        (c for c in clients if c.get("id") == client_id or kb.key_callback(c.get("id")) == callback.data),
         None,
     )
     if not record:
@@ -484,6 +518,7 @@ async def show_key_details(
     lang: str,
     has_other_keys: bool = False,
 ):
+    await callback.answer()
     client_id = record["id"]
 
     await state.set_state(UserStates.viewing_keys)
@@ -517,8 +552,6 @@ async def show_key_details(
 
     display = record.get("inbound_label") or record.get("inbound_tag") or record["email"]
 
-    from urllib.parse import unquote
-
     await state.update_data(cached_links=links)
 
     if len(links) == 1:
@@ -527,25 +560,26 @@ async def show_key_details(
         )
         return
 
+    from urllib.parse import unquote
+
     header = await i18n.t("keys.details.header", lang, email=h(display))
     self_destruct = await i18n.t("keys.details.self_destruct", lang)
-
     link_lines = []
     for link in links:
         label = unquote(link.rsplit("#", 1)[-1]) if "#" in link else ""
-        if label:
-            link_lines.append(f"🔑 <b>{h(label)}</b>\n<code>{h(link)}</code>")
-        else:
-            link_lines.append(f"<code>{h(link)}</code>")
-
+        line = f"<code>{h(link)}</code>"
+        link_lines.append(f"🔑 <b>{h(label)}</b>\n{line}" if label else line)
     final_text = f"{header}\n\n" + "\n\n".join(link_lines) + f"\n\n{self_destruct}"
-
+    if len(final_text.encode("utf-16-le")) // 2 > 3500:
+        await safe_edit(
+            msg,
+            header,
+            reply_markup=kb.key_picker_kb(links, back_label=back, back_callback=back_callback),
+        )
+        return
     cached = await state.get_data()
     renew_tariff_id = None if cached.get("open_ended_access") else record.get("tariff_id")
-    renew_label = None
-    if renew_tariff_id:
-        renew_label = await i18n.t("notification.button.renew", lang)
-
+    renew_label = await i18n.t("notification.button.renew", lang) if renew_tariff_id else None
     msg = await safe_edit(
         msg,
         final_text,
@@ -558,7 +592,7 @@ async def show_key_details(
             renew_tariff_id=renew_tariff_id,
         ),
     )
-    asyncio.create_task(auto_expire_keys_message(msg, state, i18n=i18n, lang=lang, client_id=client_id))
+    await _arm_key_timeout(msg, state, i18n=i18n, lang=lang, client_id=client_id)
 
 
 async def _show_single_link(callback, state, link, record, *, i18n, lang, back_label, back_callback):
@@ -575,10 +609,11 @@ async def _show_single_link(callback, state, link, record, *, i18n, lang, back_l
     if renew_tariff_id:
         renew_label = await i18n.t("notification.button.renew", lang)
 
-    msg = await safe_edit(
+    msg = await _render_link(
         callback.message,
+        link,
         final_text,
-        reply_markup=kb.sub_actions_kb(
+        kb.sub_actions_kb(
             qr_label=await i18n.t("sub.actions.show_qr", lang),
             stats_label=await i18n.t("sub.actions.show_stats", lang),
             back_label=back_label,
@@ -587,7 +622,7 @@ async def _show_single_link(callback, state, link, record, *, i18n, lang, back_l
             renew_tariff_id=renew_tariff_id,
         ),
     )
-    asyncio.create_task(auto_expire_keys_message(msg, state, i18n=i18n, lang=lang, client_id=client_id))
+    await _arm_key_timeout(msg, state, i18n=i18n, lang=lang, client_id=client_id)
 
 
 @router.callback_query(F.data.startswith("show_link_"))
@@ -610,6 +645,7 @@ async def show_selected_link(
         await callback.answer("Link not found", show_alert=True)
         return
 
+    await callback.answer()
     link = links[idx]
     label = link.rsplit("#", 1)[-1] if "#" in link else f"Key {idx + 1}"
     from urllib.parse import unquote
@@ -620,16 +656,17 @@ async def show_selected_link(
     text = f"🔑 <b>{h(label)}</b>\n\n<code>{h(link)}</code>\n\n{self_destruct}"
 
     client_id = data.get("selected_key_client_id")
-    msg = await safe_edit(
+    msg = await _render_link(
         callback.message,
+        link,
         text,
-        reply_markup=InlineKeyboardMarkup(
+        InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_link_picker")],
             ]
         ),
     )
-    asyncio.create_task(auto_expire_keys_message(msg, state, i18n=i18n, lang=lang, client_id=client_id))
+    await _arm_key_timeout(msg, state, i18n=i18n, lang=lang, client_id=client_id)
 
 
 @router.callback_query(F.data == "back_to_link_picker")
@@ -639,6 +676,7 @@ async def back_to_link_picker(
     i18n: I18n,
     lang: str,
 ):
+    await callback.answer()
     data = await state.get_data()
     links = data.get("cached_links", [])
     back = await i18n.t("common.back_to_main", lang)
@@ -724,7 +762,6 @@ async def qr_for_key(
     client_id = data.get("selected_key_client_id")
 
     if not client_id:
-        await callback.answer("Session expired, please select key again.")
         await user_sub(callback, state, i18n, lang, backend)
         return
 
@@ -752,7 +789,8 @@ async def qr_for_key(
         return
 
     display = record.get("inbound_label") or record.get("inbound_tag") or record.get("email", "")
-    await _send_qr(callback, links[0], caption=f"\U0001f4f1 <b>{h(display)}</b>", i18n=i18n, lang=lang)
+    message = await _send_qr(callback, links[0], caption=f"\U0001f4f1 <b>{h(display)}</b>", i18n=i18n, lang=lang)
+    await _arm_key_timeout(message, state, i18n=i18n, lang=lang, client_id=client_id)
 
 
 @router.callback_query(F.data == "sub_qr")
@@ -797,11 +835,12 @@ async def _send_qr(
     back_key: str = "common.back_to_keys",
 ):
 
+    await callback.answer()
     qr_file = generate_qr(data)
     back = await i18n.t(back_key, lang)
 
     await callback.message.delete()
-    await callback.message.answer_photo(
+    return await callback.message.answer_photo(
         qr_file,
         caption=caption,
         reply_markup=kb.qr_back_kb(back_label=back, back_callback=back_callback),
@@ -905,8 +944,10 @@ async def user_stats(
         users_records = list((state_data or {}).get("clients") or [])
     except Exception as exc:
         logger.info("get_user_state failed: %s", exc)
-        users_records = []
+        await callback.answer(await i18n.t("errors.service_unavailable", lang), show_alert=True)
+        return
     if not users_records:
+        await _render_no_subscription(callback, lang=lang, i18n=i18n, backend=backend)
         return
 
     msg = callback.message
@@ -936,11 +977,13 @@ async def user_stats(
 
     back = await i18n.t("common.back_to_main", lang)
     refresh = await i18n.t("stats.actions.refresh", lang)
-    await safe_edit(
-        msg,
-        final_text,
-        reply_markup=kb.user_stats_kb(refresh_label=refresh, back_label=back),
-    )
+    keyboard = kb.user_stats_kb(refresh_label=refresh, back_label=back)
+    pages = split_html(final_text)
+    if len(pages) == 1:
+        await safe_edit(msg, final_text, reply_markup=keyboard)
+    else:
+        markup = keyboard.model_dump(exclude_none=True)
+        await display_pages(msg, state, [{"text": text, "markup": markup} for text in pages])
     await callback.answer()
 
 
@@ -991,6 +1034,10 @@ async def cb_trial_activate(
     except Exception:
         logger.exception("activate_trial unexpected error")
         await callback.answer("Error, try again later", show_alert=True)
+        return
+
+    if result.get("status") == "pending" or result.get("panel_failures"):
+        await callback.answer(await i18n.t("trial.pending", lang), show_alert=True)
         return
 
     expires_ms = int(result.get("expires_at_ms") or 0)

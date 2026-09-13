@@ -20,6 +20,13 @@ from panel_core.services.stats import (
     parse_access_logs,
     sync_traffic_job,
 )
+from panel_core.services.runtime_apply import (
+    RuntimeApplyError,
+    mark_runtime_dirty,
+    retry_pending_runtime,
+    synchronize_runtime,
+)
+from panel_core.extensions import db
 from panel_core.xray.gateway import set_xray_gateway, xray_gateway_configured
 from panel_core.xray.local import LocalXrayGateway
 
@@ -28,6 +35,9 @@ grpc_gevent.init_gevent()
 
 def create_app():
     app = build_base_app(ROLE_WORKER)
+    from panel_core.services.maintenance import register_maintenance_hooks
+
+    register_maintenance_hooks(app)
     sqlite_path = db_path()
 
     if not xray_gateway_configured():
@@ -40,8 +50,8 @@ def create_app():
     ensure_scheduler_job("replay_undelivered_bot_events", replay_undelivered_bot_events, 60)
     ensure_scheduler_job("cleanup_bot_events", cleanup_bot_events, 86400)
     ensure_scheduler_job("claim_state", claim_state_job, 30)
+    ensure_scheduler_job("retry_runtime", retry_pending_runtime, 10)
     ensure_scheduler_job("supersede_check", supersede_check_job, 300, next_run_time=datetime.now(timezone.utc))
-    start_scheduler()
 
     from panel_core.api import (
         auth,
@@ -65,6 +75,14 @@ def create_app():
 
     migrate_schema(app, sqlite_path, seed_bot_texts=False)
     bootstrap_defaults(app, bot_service_token=False)
+    with app.app_context():
+        mark_runtime_dirty()
+        db.session.commit()
+        try:
+            synchronize_runtime()
+        except RuntimeApplyError:
+            app.logger.exception("initial Xray synchronization failed; automatic recovery is pending")
+    start_scheduler()
 
     if not (os.getenv("SHARED_REDIS_URI", "") or "").strip():
         app.logger.warning(

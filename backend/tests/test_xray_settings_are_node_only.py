@@ -152,7 +152,7 @@ def test_a_node_still_reads_and_saves_its_own_xray_settings(node, node_headers, 
     with (
         pytest.MonkeyPatch.context() as mp,
     ):
-        mp.setattr("panel_core.api.system.generate_config_file", lambda *a, **k: None)
+        mp.setattr("panel_core.services.runtime_apply.generate_config_file", lambda *a, **k: None)
         mp.setattr("panel_core.api.system.restart_xray_container", lambda *a, **k: None)
         saved = node.put("/api/system/settings", headers=node_headers, json={"xrayLogLevel": "debug"})
 

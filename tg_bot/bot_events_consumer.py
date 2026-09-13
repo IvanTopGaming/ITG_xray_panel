@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import hashlib
 import json
 import logging
 import os
@@ -11,6 +10,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 import redis.asyncio as redis_async
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from zoneinfo import ZoneInfo
 
 import keyboards as kb
@@ -44,48 +44,6 @@ def _redis_uri() -> Optional[str]:
     return None
 
 
-_NODE_EVENT_TYPES = ("expiry_notification", "traffic_notification")
-
-
-_SCOPE_MAX = 200
-
-
-def _bounded_scope(scope: str) -> str:
-    if len(scope) <= _SCOPE_MAX:
-        return scope
-    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()
-    return scope[: _SCOPE_MAX - len(digest) - 1] + "|" + digest
-
-
-def _claim_scope(etype: str, payload: dict) -> str:
-    client_scope = "{}/{}/{}".format(
-        payload.get("node", ""),
-        payload.get("inbound_tag", ""),
-        payload.get("email", ""),
-    )
-    if etype == "traffic_notification":
-        return _bounded_scope("{}/{}".format(client_scope, payload.get("cycle") or 0))
-    if payload.get("tariff_id"):
-        return ""
-    return _bounded_scope(client_scope)
-
-
-async def _resolve_claim(etype, tg_id, payload, backend) -> tuple[bool, str, bool]:
-    if backend is None:
-        return True, payload.get("lang", "ru"), bool(payload.get("renewable"))
-    try:
-        verdict = await backend.claim_notification(
-            telegram_id=int(tg_id),
-            kind=payload.get("kind", ""),
-            tariff_id=payload.get("tariff_id"),
-            scope=_claim_scope(etype, payload),
-        )
-    except Exception as exc:
-        logger.warning("claim failed for %s/%s: %s - sending anyway", tg_id, etype, exc)
-        return True, "ru", False
-    return bool(verdict.get("claimed")), verdict.get("lang", "ru"), bool(verdict.get("renewable"))
-
-
 async def _format_expires_at(expires_at_ms: Optional[int], *, i18n: I18n, lang: str) -> str:
     if expires_at_ms is None:
         return "?"
@@ -104,18 +62,51 @@ async def _format_expires_at(expires_at_ms: Optional[int], *, i18n: I18n, lang: 
 
 
 async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, middleware, backend=None) -> None:
+    if backend is None:
+        logger.error("bot event delivery requires a backend client")
+        return
+    try:
+        verdict = await backend.claim_event(event)
+    except Exception as exc:
+        logger.warning("durable event claim unavailable: %s", type(exc).__name__)
+        return
+    if not verdict.get("claimed"):
+        return
+    canonical = verdict["event"]
+    rendered = {
+        **canonical,
+        "payload": {**canonical["payload"], "lang": verdict["lang"], "renewable": verdict["renewable"]},
+    }
+    if canonical["type"] == "texts_changed":
+        rendered = canonical
+    outcome = "delivered"
+    try:
+        await asyncio.wait_for(_render_event(rendered, bot_source, i18n, middleware), timeout=45)
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        outcome = "permanent_failure"
+        logger.warning("Telegram rejected delivery: %s", type(exc).__name__)
+    except Exception as exc:
+        outcome = "retry"
+        logger.warning("Telegram delivery will retry: %s", type(exc).__name__)
+    for attempt in range(3):
+        try:
+            ack = await backend.ack_event(canonical["source"], canonical["id"], verdict["lease_token"], outcome)
+            if ack.get("acked"):
+                return
+        except Exception as exc:
+            logger.warning("delivery acknowledgment failed: %s", type(exc).__name__)
+        await asyncio.sleep(0.5 * (2**attempt))
+    logger.error("delivery acknowledgment uncertain; a later retry may repeat a Telegram message")
+
+
+async def _render_event(event: dict[str, Any], bot_source: BotSource, i18n: I18n, middleware) -> None:
     bot = await _resolve_bot(bot_source)
     etype = event.get("type")
     tg_id = event.get("telegram_id")
     payload = event.get("payload") or {}
     lang = payload.get("lang", "ru")
 
-    if etype in _NODE_EVENT_TYPES:
-        claimed, lang, renewable = await _resolve_claim(etype, tg_id, payload, backend)
-        if not claimed:
-            return
-    else:
-        renewable = bool(payload.get("renewable"))
+    renewable = bool(payload.get("renewable"))
 
     if etype == "texts_changed":
         target_lang = payload.get("lang")
@@ -194,7 +185,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         text = await i18n.t(
             key,
             lang,
-            email=payload.get("email", ""),
+            email=h(payload.get("email", "")),
             expires=await _format_expires_at(payload.get("expiry_time_ms"), i18n=i18n, lang=lang),
         )
 
@@ -206,10 +197,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         home_label = await i18n.t("common.back_to_main", lang)
         rows.append([_types.InlineKeyboardButton(text=home_label, callback_data="user_home")])
         keyboard = _types.InlineKeyboardMarkup(inline_keyboard=rows)
-        try:
-            await bot.send_message(tg_id, text, reply_markup=keyboard)
-        except Exception as exc:
-            logger.error("bot_events.send to %s failed: %s", tg_id, exc)
+        await bot.send_message(tg_id, text, reply_markup=keyboard)
         return
     elif etype == "traffic_notification":
         from aiogram import types as _types
@@ -228,7 +216,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         text = await i18n.t(
             key,
             lang,
-            email=payload.get("email", ""),
+            email=h(payload.get("email", "")),
             used=format_bytes(used),
             limit=format_bytes(limit),
             remaining=format_bytes(remaining),
@@ -241,10 +229,7 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
         home_label = await i18n.t("common.back_to_main", lang)
         rows.append([_types.InlineKeyboardButton(text=home_label, callback_data="user_home")])
         keyboard = _types.InlineKeyboardMarkup(inline_keyboard=rows)
-        try:
-            await bot.send_message(tg_id, text, reply_markup=keyboard)
-        except Exception as exc:
-            logger.error("bot_events.send to %s failed: %s", tg_id, exc)
+        await bot.send_message(tg_id, text, reply_markup=keyboard)
         return
     else:
         return
@@ -256,13 +241,10 @@ async def _handle(event: dict[str, Any], bot_source: BotSource, i18n: I18n, midd
             await bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception as exc:
             logger.info("delete_message failed for %s (%s/%s): %s", etype, chat_id, message_id, exc)
-    try:
-        await bot.send_message(tg_id, text, reply_markup=markup, parse_mode="HTML")
-    except Exception as exc:
-        logger.warning("bot_events.send to %s failed: %s", tg_id, exc)
+    await bot.send_message(tg_id, text, reply_markup=markup, parse_mode="HTML")
 
 
-async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None, backend=None) -> None:
+async def _receive_events(enqueue) -> None:
     uri = _redis_uri()
     if uri is None:
         logger.warning("bot_events_consumer: no redis URI; events disabled")
@@ -270,6 +252,9 @@ async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None, backe
 
     backoff = 1.0
     while True:
+        client = None
+        pubsub = None
+        failed = False
         try:
             client = redis_async.from_url(
                 uri,
@@ -291,12 +276,74 @@ async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None, backe
                     continue
                 try:
                     event = json.loads(raw["data"])
-                except Exception:
+                    if not isinstance(event, dict) or not isinstance(event.get("payload", {}), dict):
+                        raise ValueError("invalid event shape")
+                except (ValueError, TypeError, KeyError):
+                    logger.warning("bot_events_consumer: discarded malformed event")
                     continue
-                await _handle(event, bot_source, i18n, middleware, backend)
+                enqueue(event)
         except asyncio.CancelledError:
-            return
+            raise
         except Exception as exc:
-            logger.warning("bot_events_consumer: %s — reconnecting in %.1fs", exc, backoff)
+            failed = True
+            logger.warning("bot_events_consumer: %s — reconnecting in %.1fs", type(exc).__name__, backoff)
+        finally:
+            for resource in (pubsub, client):
+                if resource is not None:
+                    try:
+                        await resource.aclose()
+                    except Exception as exc:
+                        logger.warning("bot_events_consumer: resource close failed: %s", type(exc).__name__)
+        if failed:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
+
+
+async def run_consumer(bot_source: BotSource, i18n: I18n, middleware=None, backend=None) -> None:
+    if backend is None:
+        logger.error("bot event delivery requires a backend client")
+        return
+    queue = asyncio.Queue(maxsize=256)
+    active = set()
+
+    def enqueue(event):
+        key = (event.get("source"), event.get("id"))
+        if not isinstance(key[0], str) or not isinstance(key[1], int):
+            logger.warning("bot_events_consumer: event has no stable identity")
+            return
+        if key in active:
+            return
+        try:
+            queue.put_nowait((key, event))
+            active.add(key)
+        except asyncio.QueueFull:
+            logger.warning("bot event queue full; durable outbox or inbox will retry")
+
+    async def work():
+        while True:
+            key, event = await queue.get()
+            try:
+                await _handle(event, bot_source, i18n, middleware, backend)
+            except Exception as exc:
+                logger.error("bot event processing failed: %s", type(exc).__name__)
+            finally:
+                active.discard(key)
+                queue.task_done()
+
+    async def retry_pending():
+        while True:
+            try:
+                for event in await backend.pending_events():
+                    enqueue(event)
+            except Exception as exc:
+                logger.warning("pending bot deliveries unavailable: %s", type(exc).__name__)
+            await asyncio.sleep(5)
+
+    tasks = [asyncio.create_task(work()) for _ in range(4)]
+    tasks.extend((asyncio.create_task(_receive_events(enqueue)), asyncio.create_task(retry_pending())))
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

@@ -13,10 +13,13 @@ def undeliverable_items(tariff):
 
 
 def is_deliverable(tariff):
+    from panel_core.services.tariff_targets import validate_tariff_targets
 
-    if tariff is None or not tariff.items:
+    try:
+        validate_tariff_targets(tariff)
+    except ValueError:
         return False
-    return not undeliverable_items(tariff)
+    return True
 
 
 def log_undeliverable(tariff, where):

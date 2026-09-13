@@ -62,9 +62,13 @@ export default function System() {
   const { services, hasUpdates, query: versionQuery } = useVersionStatus();
   const supersededAt = hasLocalXray ? (versionQuery.data?.running.superseded_at ?? null) : null;
 
-  const [confirmRestart, setConfirmRestart] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState<{ scope: string; name: string } | null>(
+    null
+  );
   const [confirmPassword, setConfirmPassword] = useState(false);
-  const [confirmGeoUpdate, setConfirmGeoUpdate] = useState(false);
+  const [confirmGeoUpdate, setConfirmGeoUpdate] = useState<{ scope: string; name: string } | null>(
+    null
+  );
   const [configModal, setConfigModal] = useState(false);
   const [configContent, setConfigContent] = useState('');
   const [isCopied, setIsCopied] = useState(false);
@@ -175,20 +179,23 @@ export default function System() {
   }, [systemSettings]);
 
   const restartMutation = useMutation({
-    mutationFn: () => api.post(`/restart${xrayScope}`),
+    mutationFn: (scope: string) => api.post(`/restart${scope}`),
     onSuccess: () => {
       toast.success('System Restarting...');
-      setConfirmRestart(false);
+      setConfirmRestart(null);
     },
     onError: (err: any) => {
       toast.error(err.response?.data?.error || 'Failed to restart Xray');
-      setConfirmRestart(false);
+      setConfirmRestart(null);
     },
   });
 
   const updateGeoMutation = useMutation({
-    mutationFn: () => api.post(`/system/update-geo${xrayScope}`),
-    onSuccess: () => toast.success('Databases updated'),
+    mutationFn: (scope: string) => api.post(`/system/update-geo${scope}`),
+    onSuccess: () => {
+      toast.success('Databases updated');
+      setConfirmGeoUpdate(null);
+    },
     onError: (err: any) => {
       toast.error(err.response?.data?.error || 'Failed to update geo databases');
     },
@@ -285,6 +292,7 @@ export default function System() {
   };
 
   const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget;
     const file = e.target.files?.[0];
     if (!file) return;
     const loweredName = file.name.toLowerCase();
@@ -293,12 +301,12 @@ export default function System() {
     );
     if (!hasAllowedExtension) {
       toast.error('Unsupported backup format');
-      e.currentTarget.value = '';
+      input.value = '';
       return;
     }
     if (file.size > MAX_RESTORE_FILE_BYTES) {
       toast.error('Backup file is too large (max 50 MB)');
-      e.currentTarget.value = '';
+      input.value = '';
       return;
     }
     const formData = new FormData();
@@ -310,7 +318,7 @@ export default function System() {
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Restore failed');
     } finally {
-      e.currentTarget.value = '';
+      input.value = '';
     }
   };
 
@@ -734,7 +742,9 @@ export default function System() {
                       <Button
                         variant="secondary"
                         className="w-full justify-start h-12 bg-white/5 hover:bg-white/10"
-                        onClick={() => setConfirmGeoUpdate(true)}
+                        onClick={() =>
+                          setConfirmGeoUpdate({ scope: xrayScope, name: xrayTargetName })
+                        }
                         isLoading={updateGeoMutation.isPending}
                       >
                         <div className="p-2 bg-black/20 rounded-lg mr-3">
@@ -760,7 +770,9 @@ export default function System() {
                       <Button
                         variant="danger"
                         className="w-full justify-start h-12"
-                        onClick={() => setConfirmRestart(true)}
+                        onClick={() =>
+                          setConfirmRestart({ scope: xrayScope, name: xrayTargetName })
+                        }
                       >
                         <div className="p-2 bg-black/20 rounded-lg mr-3">
                           <Power size={16} />
@@ -844,24 +856,25 @@ export default function System() {
         {xrayScopeResolved && (
           <>
             <ConfirmationModal
-              isOpen={confirmRestart}
-              onClose={() => setConfirmRestart(false)}
-              onConfirm={() => restartMutation.mutate()}
+              isOpen={confirmRestart !== null}
+              onClose={() => setConfirmRestart(null)}
+              onConfirm={() => {
+                if (confirmRestart) restartMutation.mutate(confirmRestart.scope);
+              }}
               title="Restart Xray Core"
-              description={`Restart the Xray Core service on ${xrayTargetName}? All current connections will be dropped.`}
+              description={`Restart the Xray Core service on ${confirmRestart?.name}? All current connections will be dropped.`}
               confirmText="Restart"
               isLoading={restartMutation.isPending}
             />
 
             <ConfirmationModal
-              isOpen={confirmGeoUpdate}
-              onClose={() => setConfirmGeoUpdate(false)}
+              isOpen={confirmGeoUpdate !== null}
+              onClose={() => setConfirmGeoUpdate(null)}
               onConfirm={() => {
-                updateGeoMutation.mutate();
-                setConfirmGeoUpdate(false);
+                if (confirmGeoUpdate) updateGeoMutation.mutate(confirmGeoUpdate.scope);
               }}
               title="Update GeoIP / GeoSite"
-              description={`Downloading updated geo databases onto ${xrayTargetName} will restart its Xray core. All active connections will be briefly interrupted.`}
+              description={`Downloading updated geo databases onto ${confirmGeoUpdate?.name} will restart its Xray core. All active connections will be briefly interrupted.`}
               confirmText="Update"
               isLoading={updateGeoMutation.isPending}
             />
@@ -982,7 +995,7 @@ function HealthLine({
       title={hint}
     >
       <span className="shrink-0 text-gray-500 uppercase tracking-wider">{label}</span>
-      <span className={`whitespace-nowrap ${colour}`}>{value}</span>
+      <span className={`text-right ${colour}`}>{value}</span>
     </div>
   );
 }
@@ -1004,6 +1017,54 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
 
   const lines = [];
 
+  const jobs = health.jobs;
+  const jobItems = jobs?.items ?? [];
+  lines.push(
+    <HealthLine
+      key="jobs"
+      label="scheduler jobs"
+      value={
+        jobs?.available
+          ? `${jobItems.filter((job) => job.status === 'failed').length} failed · ${jobItems.filter((job) => job.stale).length} overdue · ${jobItems.filter((job) => job.status === 'waiting').length} waiting`
+          : jobs?.error || 'unknown'
+      }
+      tone={
+        !jobs?.available
+          ? 'muted'
+          : jobs.needs_attention
+            ? 'bad'
+            : jobItems.some((job) => job.status === 'waiting')
+              ? 'warn'
+              : 'ok'
+      }
+      hint="Persisted scheduler outcomes, not process liveness. Overdue means no successful pass within the job interval and grace window."
+    />
+  );
+  if (jobs?.available && jobItems.length) {
+    lines.push(
+      <details key="job-details" className="col-span-2 rounded-lg border border-white/5 p-3">
+        <summary className="cursor-pointer text-gray-400">Job details ({jobItems.length})</summary>
+        <div className="mt-2 space-y-2">
+          {jobItems.map((job) => (
+            <HealthLine
+              key={`${job.role}:${job.job_id}`}
+              label={`${job.role}: ${job.job_id}`}
+              value={`${job.status} · ${job.last_success_at_ms == null ? 'never succeeded' : `success ${silentFor(job.last_success_at_ms / 1000)}`}${job.failures > 0 ? ` · ${job.last_error || 'failed'}` : ''}`}
+              tone={
+                job.stale || job.status === 'failed'
+                  ? 'bad'
+                  : job.status === 'waiting' || job.failures > 0
+                    ? 'warn'
+                    : 'ok'
+              }
+              hint={`Every ${job.interval_s}s. ${job.last_failure_at_ms == null ? 'No failure recorded.' : `Last failure ${silentFor(job.last_failure_at_ms / 1000)}: ${job.last_error || 'unknown'}.`}`}
+            />
+          ))}
+        </div>
+      </details>
+    );
+  }
+
   const events = health.undelivered_events;
   lines.push(
     <HealthLine
@@ -1011,7 +1072,34 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
       label="bus backlog"
       value={events.available ? `${events.count} undelivered` : 'unknown'}
       tone={!events.available ? 'muted' : (events.count ?? 0) > 0 ? 'warn' : 'ok'}
-      hint="bot_event rows never marked delivered. The replay cron retries them; a number that keeps climbing means the bus is not reaching the bot."
+      hint="Outbox events not yet handed to the bot inbox. A drained bus does not confirm Telegram delivery."
+    />
+  );
+
+  const delivery = health.event_delivery;
+  lines.push(
+    <HealthLine
+      key="delivery"
+      label="Telegram delivery"
+      value={
+        delivery?.available
+          ? `${delivery.pending ?? 0} pending · ${delivery.leased ?? 0} sending · ${delivery.review ?? 0} review · ${delivery.permanent ?? 0} failed`
+          : 'unknown'
+      }
+      tone={
+        !delivery?.available
+          ? 'muted'
+          : delivery.needs_attention
+            ? 'bad'
+            : (delivery.pending ?? 0) + (delivery.leased ?? 0) > 0
+              ? 'warn'
+              : 'ok'
+      }
+      hint={
+        delivery?.oldest_pending_ms == null
+          ? 'Durable bot inbox delivery state, separate from Redis publish.'
+          : `Oldest outstanding Telegram delivery: ${Math.max(0, Math.ceil((Date.now() - delivery.oldest_pending_ms) / 60000))} minutes.`
+      }
     />
   );
 
@@ -1023,7 +1111,34 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
       label="payments stuck"
       value={payments.available ? `${stuck}` : 'unknown'}
       tone={!payments.available ? 'muted' : stuck > 0 ? 'warn' : 'ok'}
-      hint={`${payments.processing ?? 0} claimed but never finished, ${payments.pending_over_a_day ?? 0} pending for over a day. Money taken, access not granted.`}
+      hint={`${payments.processing ?? 0} unfinished claims, ${payments.pending_over_a_day ?? 0} pending for over a day. These local statuses do not establish the provider's financial outcome.`}
+    />
+  );
+  const workflowKnown =
+    payments.available &&
+    payments.pending_fulfillment != null &&
+    payments.pending_refunds != null &&
+    payments.review != null;
+  lines.push(
+    <HealthLine
+      key="payment-workflow"
+      label="payment workflow"
+      value={
+        workflowKnown
+          ? `${payments.pending_fulfillment} delivery · ${payments.pending_refunds} refund · ${payments.review} review`
+          : 'unknown'
+      }
+      tone={
+        !workflowKnown
+          ? 'muted'
+          : (payments.pending_fulfillment ?? 0) +
+                (payments.pending_refunds ?? 0) +
+                (payments.review ?? 0) >
+              0
+            ? 'warn'
+            : 'ok'
+      }
+      hint="Confirmed payments awaiting access delivery, refunds awaiting access revocation, and checkouts needing review. Categories can overlap."
     />
   );
 
@@ -1035,7 +1150,7 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
       label="data tier"
       value={tierOk ? 'reachable' : `db ${tier.database} · redis ${tier.shared_redis}`}
       tone={tierOk ? 'ok' : 'bad'}
-      hint="This host's database and the shared Redis. With the Redis down, subscriptions still serve but node entries do not."
+      hint="Connectivity from this host to its database and shared Redis. This does not confirm scheduler progress or fresh subscription data."
     />
   );
 

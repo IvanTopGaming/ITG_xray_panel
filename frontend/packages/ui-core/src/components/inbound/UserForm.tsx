@@ -10,6 +10,7 @@ import api from '@ui/lib/api';
 import { epochMsFromLocalDateTimeInput, formatDateTimeForLocalInput } from '@ui/lib/datetime';
 import { toast } from 'react-toastify';
 import { RefreshCw } from 'lucide-react';
+import { useMountedRef } from '@ui/hooks/useMountedRef';
 
 interface UserFormProps {
   inbound: Inbound;
@@ -19,6 +20,7 @@ interface UserFormProps {
 }
 
 export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormProps) {
+  const mounted = useMountedRef();
   const queryClient = useQueryClient();
   const {
     register,
@@ -47,7 +49,7 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success('User updated');
-      onClose();
+      if (mounted.current) onClose();
     },
     onError: (error: any) => {
       toast.error(error.response?.data?.error || 'Failed to update user');
@@ -63,6 +65,7 @@ export function UserForm({ inbound, client, onClose, panelQs = '' }: UserFormPro
       return crypto.randomUUID();
     },
     onSuccess: (value: string) => {
+      if (!mounted.current) return;
       if (value) {
         setValue('id', value);
         toast.success(

@@ -43,26 +43,20 @@ def test_string_not_null_columns_quote_their_default_instead_of_leaving_it_dangl
         )
 
 
-def test_numeric_not_null_default_needs_no_quoting():
+def test_numeric_not_null_default_is_a_castable_literal():
     ddl, forced_nullable = _column_ddl(_column(PanelStateMirror, "taken_at"), dialect=PG)
 
     assert not forced_nullable
-    assert ddl == '"taken_at" BIGINT DEFAULT 0 NOT NULL'
+    assert ddl == "\"taken_at\" BIGINT DEFAULT '0' NOT NULL"
 
 
-def test_column_ddl_itself_still_renders_the_broken_form_for_an_unquoted_literal():
+def test_column_ddl_quotes_scalar_defaults_including_empty_strings():
     booby_trapped_bool = Column("flag", Boolean, nullable=False, server_default="0")
     ddl, forced_nullable = _column_ddl(booby_trapped_bool, dialect=PG)
     assert not forced_nullable
-    assert ddl == '"flag" BOOLEAN DEFAULT 0 NOT NULL', (
-        "this is the exact DDL Postgres rejects with 'column is of type boolean but default expression "
-        "is of type integer' — proves the assertions above are not vacuous"
-    )
+    assert ddl == "\"flag\" BOOLEAN DEFAULT '0' NOT NULL"
 
     booby_trapped_empty_string = Column("label", String(10), nullable=False, server_default="")
     ddl, forced_nullable = _column_ddl(booby_trapped_empty_string, dialect=PG)
-    assert forced_nullable
-    assert ddl.rstrip() == '"label" VARCHAR(10) DEFAULT', (
-        "a falsy default_sql leaves a dangling 'DEFAULT' with nothing after it — proves the assertions "
-        "above are not vacuous"
-    )
+    assert not forced_nullable
+    assert ddl == "\"label\" VARCHAR(10) DEFAULT '' NOT NULL"

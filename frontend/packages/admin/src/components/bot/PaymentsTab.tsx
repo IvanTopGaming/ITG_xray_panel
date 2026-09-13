@@ -4,14 +4,16 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { ExternalLink } from 'lucide-react';
 import { Select } from '@ui/components/ui/Select';
 import { listPayments, PaymentListFilters } from '../../lib/bot';
-import { PaymentStatusBadge } from './PaymentStatusBadge';
+import { PaymentState } from './PaymentState';
 import { PaymentStatus } from '@ui/lib/types';
-import { formatDateTime as formatDate } from '@ui/lib/datetime';
+import { formatDateTime as formatDate, getDisplayTimezone } from '@ui/lib/datetime';
 
 const STATUS_SELECT_OPTIONS: { value: string; label: string }[] = [
   { value: 'all', label: 'All statuses' },
   { value: 'succeeded', label: 'Succeeded' },
   { value: 'pending', label: 'Pending' },
+  { value: 'processing', label: 'Processing' },
+  { value: 'refunded', label: 'Refunded' },
   { value: 'cancelled', label: 'Cancelled' },
   { value: 'failed', label: 'Failed' },
 ];
@@ -21,15 +23,18 @@ export function PaymentsTab() {
   const [telegramId, setTelegramId] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [page, setPage] = useState(0);
+  const limit = 50;
+  const timezone = getDisplayTimezone();
 
-  const filters: PaymentListFilters = {};
+  const filters: PaymentListFilters = { limit, offset: page * limit };
   if (status !== 'all') filters.status = status;
   if (telegramId) filters.telegram_id = Number(telegramId);
   if (from) filters.from = from;
   if (to) filters.to = to;
 
   const q = useQuery({
-    queryKey: ['payments', status, telegramId, from, to],
+    queryKey: ['payments', status, telegramId, from, to, timezone, page],
     queryFn: () => listPayments(filters),
   });
 
@@ -38,6 +43,7 @@ export function PaymentsTab() {
     setTelegramId('');
     setFrom('');
     setTo('');
+    setPage(0);
   };
 
   const hasFilters = status !== 'all' || telegramId !== '' || from !== '' || to !== '';
@@ -64,25 +70,37 @@ export function PaymentsTab() {
       <div className="grid grid-cols-1 gap-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4 sm:grid-cols-2 md:grid-cols-5">
         <Select
           value={status}
-          onChange={(e) => setStatus(e.target.value as 'all' | PaymentStatus)}
+          onChange={(e) => {
+            setStatus(e.target.value as 'all' | PaymentStatus);
+            setPage(0);
+          }}
           options={STATUS_SELECT_OPTIONS}
         />
         <input
           placeholder="Telegram ID"
           value={telegramId}
-          onChange={(e) => setTelegramId(e.target.value.replace(/\D/g, ''))}
+          onChange={(e) => {
+            setTelegramId(e.target.value.replace(/\D/g, ''));
+            setPage(0);
+          }}
           className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white placeholder-white/30 transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50"
         />
         <input
           type="date"
           value={from}
-          onChange={(e) => setFrom(e.target.value)}
+          onChange={(e) => {
+            setFrom(e.target.value);
+            setPage(0);
+          }}
           className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50 [color-scheme:dark]"
         />
         <input
           type="date"
           value={to}
-          onChange={(e) => setTo(e.target.value)}
+          onChange={(e) => {
+            setTo(e.target.value);
+            setPage(0);
+          }}
           className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50 [color-scheme:dark]"
         />
         <button
@@ -94,6 +112,35 @@ export function PaymentsTab() {
         </button>
       </div>
 
+      {q.isError && (
+        <p role="alert" className="text-rose-300">
+          Could not load payments. Check the date range and retry.
+        </p>
+      )}
+      <div className="flex items-center justify-between gap-3 text-sm text-white/60">
+        <span>
+          {q.data
+            ? `${q.data.total} payments · page ${page + 1} of ${Math.max(1, Math.ceil(q.data.total / limit))}`
+            : 'Loading payments…'}{' '}
+          · {timezone}
+        </span>
+        <div className="flex gap-3">
+          <button
+            disabled={page === 0 || q.isFetching}
+            onClick={() => setPage((value) => value - 1)}
+            className="disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <button
+            disabled={!q.data || (page + 1) * limit >= q.data.total || q.isFetching}
+            onClick={() => setPage((value) => value + 1)}
+            className="disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
       <div className="overflow-x-auto rounded-2xl border border-white/[0.05] bg-white/[0.02]">
         <table className="w-full text-sm whitespace-nowrap">
           <thead className="bg-black/40 text-left text-xs uppercase tracking-wider text-white/50">
@@ -102,7 +149,7 @@ export function PaymentsTab() {
               <th className="px-4 py-3 font-medium">TG ID</th>
               <th className="px-4 py-3 font-medium">Tariff</th>
               <th className="px-4 py-3 text-right font-medium">Amount</th>
-              <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">Payment / delivery</th>
               <th className="px-4 py-3 font-medium">YooKassa</th>
             </tr>
           </thead>
@@ -138,7 +185,7 @@ export function PaymentsTab() {
                     {p.amount_rub} ₽
                   </td>
                   <td className="px-4 py-3">
-                    <PaymentStatusBadge status={p.status} />
+                    <PaymentState payment={p} />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <a

@@ -34,7 +34,7 @@ TOPOLOGY_DOC = (
     "blueprint from master and worker, and the fallback from sub_links. SUB_DOMAIN is now the only way a "
     "subscription link exists at all. This guard asserts that the code topology holds — no second role "
     "registers the blueprint and no second image bakes a bundle — but does not require the corresponding "
-    "prose in CLAUDE.md to match verbatim. The code topology is cheap to enforce; documentation can evolve."
+    "prose in AGENTS.md to match verbatim. The code topology is cheap to enforce; documentation can evolve."
 )
 
 ROLES_SERVING_THE_SUBSCRIPTION_ROUTES = {"sub"}

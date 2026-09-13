@@ -51,8 +51,8 @@ DASHBOARD = PACKAGE_ROOTS["ui-core"] / "pages" / "Dashboard.tsx"
 SCOPED_CALLS = (
     "api.get(`/system/settings${xrayScope}`)",
     "api.put(`/system/settings${xrayScope}`",
-    "api.post(`/system/update-geo${xrayScope}`)",
-    "api.post(`/restart${xrayScope}`)",
+    "api.post(`/system/update-geo${scope}`)",
+    "api.post(`/restart${scope}`)",
     "api.get(`/config${xrayScope}`)",
 )
 
@@ -112,9 +112,9 @@ class TestTheCoreTabExistsOnTheMaster:
 
         body = _flat(_system())
 
-        assert "onClick={()=>setConfirmGeoUpdate(true)}" in body
+        assert "onClick={()=>setConfirmGeoUpdate({scope:xrayScope,name:xrayTargetName})}" in body
         assert "onClick={fetchConfig}" in body
-        assert "onClick={()=>setConfirmRestart(true)}" in body
+        assert "onClick={()=>setConfirmRestart({scope:xrayScope,name:xrayTargetName})}" in body
         assert body.count("{xrayScopeResolved&&(") == 3, (
             "three blocks must hang off the scope, not off a local Xray: the maintenance buttons, "
             "the restart/geo confirmations and the config modal. A count keeps this test failing "
@@ -126,8 +126,8 @@ class TestTheCoreTabExistsOnTheMaster:
 
         body = _flat(_system())
 
-        assert "isOpen={confirmRestart}" in body
-        assert "isOpen={confirmGeoUpdate}" in body
+        assert "isOpen={confirmRestart!==null}" in body
+        assert "isOpen={confirmGeoUpdate!==null}" in body
         assert "isOpen={configModal}" in body
         assert body.count("{hasLocalXray&&(") == 1, (
             "exactly one `hasLocalXray` block may remain: the log panel, which stays node-only "
@@ -149,6 +149,8 @@ class TestEveryRequestNamesTheNode:
 
         for call in SCOPED_CALLS:
             assert _flat(call) in body, f"{call} is missing; that endpoint would be requested unscoped"
+        assert "updateGeoMutation.mutate(confirmGeoUpdate.scope)" in body
+        assert "restartMutation.mutate(confirmRestart.scope)" in body
 
     def test_no_unscoped_call_survives(self):
         """The failure mode is a leftover call, not a missing feature (§78)."""
@@ -211,6 +213,8 @@ class TestThePickerScopesTheXrayHalfOnly:
         assert "constxrayTargetName" in body
         assert "Restartthexray" not in body.lower().replace("`", "")
         assert "${xrayTargetName}" in body
+        assert "${confirmRestart?.name}" in body
+        assert "${confirmGeoUpdate?.name}" in body
 
 
 class TestTheDashboardCanRouteAUserOnANode:

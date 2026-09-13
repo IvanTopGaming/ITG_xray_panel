@@ -13,7 +13,7 @@ def _inbound(db):
         tag="DE-vless",
         protocol="vless",
         port=10020,
-        stream_settings=_json.dumps({"network": "tcp", "security": "reality"}),
+        stream_settings=_json.dumps({"network": "tcp", "security": "none"}),
     )
     db.session.add(inbound)
     db.session.commit()
@@ -23,7 +23,7 @@ def _inbound(db):
 def test_receipt_is_not_materialised_when_the_sync_fails(app, db):
     _inbound(db)
 
-    with patch("panel_core.services.provisioning._sync_after_provision", side_effect=RuntimeError("xray down")):
+    with patch("panel_core.services.runtime_apply.restart_xray_container", side_effect=RuntimeError("xray down")):
         with pytest.raises(RuntimeError):
             provision_single_item(
                 telegram_id=900,
@@ -42,7 +42,7 @@ def test_receipt_is_not_materialised_when_the_sync_fails(app, db):
 def test_replay_after_a_failed_sync_syncs_and_marks_the_receipt(app, db):
     _inbound(db)
 
-    with patch("panel_core.services.provisioning._sync_after_provision", side_effect=RuntimeError("xray down")):
+    with patch("panel_core.services.runtime_apply.restart_xray_container", side_effect=RuntimeError("xray down")):
         with pytest.raises(RuntimeError):
             provision_single_item(
                 telegram_id=901,
@@ -52,7 +52,7 @@ def test_replay_after_a_failed_sync_syncs_and_marks_the_receipt(app, db):
                 idempotency_key="pay:901",
             )
 
-    with patch("panel_core.services.provisioning._sync_after_provision") as sync:
+    with patch("panel_core.services.runtime_apply.restart_xray_container") as sync:
         result = provision_single_item(
             telegram_id=901,
             inbound_tag="DE-vless",
@@ -70,7 +70,7 @@ def test_replay_after_a_failed_sync_syncs_and_marks_the_receipt(app, db):
 def test_replay_of_a_materialised_receipt_leaves_xray_alone(app, db):
     _inbound(db)
 
-    with patch("panel_core.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.runtime_apply.restart_xray_container"):
         first = provision_single_item(
             telegram_id=902,
             inbound_tag="DE-vless",
@@ -79,7 +79,7 @@ def test_replay_of_a_materialised_receipt_leaves_xray_alone(app, db):
             idempotency_key="pay:902",
         )
 
-    with patch("panel_core.services.provisioning._sync_after_provision") as sync:
+    with patch("panel_core.services.runtime_apply.restart_xray_container") as sync:
         second = provision_single_item(
             telegram_id=902,
             inbound_tag="DE-vless",
@@ -95,7 +95,7 @@ def test_replay_of_a_materialised_receipt_leaves_xray_alone(app, db):
 def test_replay_adds_no_second_period(app, db):
     _inbound(db)
 
-    with patch("panel_core.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.runtime_apply.restart_xray_container"):
         first = provision_single_item(
             telegram_id=903,
             inbound_tag="DE-vless",

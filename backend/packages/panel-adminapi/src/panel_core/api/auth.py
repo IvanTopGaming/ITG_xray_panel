@@ -16,7 +16,14 @@ from panel_core.utils import (
     normalize_email,
     normalize_tag,
 )
-from panel_core.xray.facade import generate_config_file, has_local_xray, restart_xray_container
+from panel_core.xray.facade import has_local_xray
+from panel_core.services.runtime_apply import (
+    RuntimeApplyError,
+    mark_runtime_dirty,
+    prepare_runtime_config,
+    runtime_mutation,
+    synchronize_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +70,7 @@ def login():
 @bp.route("/user/routing", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def set_user_routing():
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -139,13 +147,25 @@ def set_user_routing():
                 return jsonify({"error": "Balancer has no enabled outbounds"}), 400
 
     if (client.preferred_outbound or "") == (tag or ""):
+        try:
+            synchronize_runtime()
+        except RuntimeApplyError as exc:
+            return jsonify({"status": "pending", "saved": True, "error": str(exc)}), 503
         return jsonify({"status": "unchanged", "preferred": client.preferred_outbound}), 200
 
     audit_privileged_change(logger, f"Preferred outbound for '{client.email}' set to '{tag or 'default'}'")
     client.preferred_outbound = tag if tag else None
+    try:
+        prepare_runtime_config()
+    except (ValueError, RuntimeError) as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+    mark_runtime_dirty()
     db.session.commit()
-    generate_config_file()
-    restart_xray_container()
+    try:
+        synchronize_runtime()
+    except RuntimeApplyError as exc:
+        return jsonify({"status": "pending", "saved": True, "error": str(exc)}), 503
 
     return jsonify({"status": "updated", "preferred": client.preferred_outbound}), 200
 

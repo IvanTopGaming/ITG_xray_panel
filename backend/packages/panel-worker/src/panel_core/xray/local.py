@@ -7,10 +7,16 @@ class LocalXrayGateway:
     def has_local_xray(self) -> bool:
         return True
 
-    def apply_config(self, validate: bool = True) -> None:
+    def read_traffic_counters(self, pattern=""):
+        from panel_core.xray.grpc_client import read_traffic_counters
+
+        return read_traffic_counters(pattern)
+
+    def apply_config(self, validate: bool = True, *, publish: bool = True) -> None:
         from panel_core.xray import engine
 
-        return engine.generate_config_file(validate=validate)
+        options = {} if publish else {"publish": False}
+        return engine.generate_config_file(validate=validate, **options)
 
     def restart(self) -> None:
         from panel_core.xray import engine

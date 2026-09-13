@@ -148,8 +148,8 @@ class TestOverview:
         assert body["active_users"] == 1
         assert body["total_users"] == 2
         assert body["active_inbounds"] == 1
-        assert body["total_up_alltime"] == 600
-        assert body["total_down_alltime"] == 1700
+        assert body["total_up_alltime"] == 1200
+        assert body["total_down_alltime"] == 5300
         assert len(body["top_users"]) == 2
         assert body["top_users"][0]["email"] == "alice@test"
         assert len(body["top_inbounds"]) == 1

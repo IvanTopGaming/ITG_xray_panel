@@ -22,7 +22,7 @@ from unittest.mock import patch
 import pytest
 
 from panel_core.extensions import db, scheduler
-from panel_core.models import Payment, SystemSetting, Tariff, TariffItem, TelegramUser, UserTariffAccess
+from panel_core.models import Payment, SystemSetting, Tariff, TariffItem, TelegramUser, UserTariffAccess, LinkedPanel
 from panel_core.xray import gateway as gw
 
 from tests.schema import ensure_schema
@@ -42,6 +42,11 @@ def _reset_scheduler():
 
 @pytest.fixture
 def botapi_app(monkeypatch, tmp_path):
+    def snapshot(_):
+        return {"inbounds": [{"tag": "alpha", "protocol": "vless", "clients": [], "stream_settings": {}}]}
+
+    monkeypatch.setattr("panel_core.services.panel_proxy.get_panel_snapshot", snapshot)
+    monkeypatch.setattr("panel_core.services.tariff_targets.get_panel_snapshot", snapshot)
     monkeypatch.setenv("PANEL_ROLE", "bot")
     monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/botapi.db"))
     monkeypatch.setenv("SUB_DOMAIN", "sub.example.com")
@@ -54,6 +59,9 @@ def botapi_app(monkeypatch, tmp_path):
     app = importlib.import_module("panel_core.roles.botapi").create_app()
 
     with app.app_context():
+        db.session.add(
+            LinkedPanel(id=2, name="node", url="https://node.test", federation_token="token", enable=True, created_at=1)
+        )
         db.session.add_all(
             [
                 SystemSetting(key="bot_service_token", value=BOT_TOKEN),
@@ -178,11 +186,18 @@ def test_a_user_with_no_grant_still_sees_the_catalogue(client):
 
 
 def _mock_yk_payment():
-    return SimpleNamespace(id="yk-open-ended-1", confirmation=SimpleNamespace(confirmation_url="https://yk.test/pay"))
+    payment = Payment.query.order_by(Payment.id.desc()).first()
+    return SimpleNamespace(
+        id="yk-open-ended-1",
+        amount=SimpleNamespace(value="150.00", currency="RUB"),
+        metadata=payment.checkout_payload["metadata"],
+        status="pending",
+        confirmation=SimpleNamespace(confirmation_url="https://yk.test/pay"),
+    )
 
 
 def test_a_user_with_no_grant_can_still_check_out(botapi_app, client):
-    with patch("panel_core.services.billing.yookassa.Payment.create", return_value=_mock_yk_payment()):
+    with patch("panel_core.services.billing.yookassa.Payment.create", side_effect=lambda *args: _mock_yk_payment()):
         resp = client.post(
             "/api/billing/checkout",
             json={"telegram_id": 999, "tariff_id": botapi_app.config["PAID_TARIFF_ID"], "lang": "ru"},

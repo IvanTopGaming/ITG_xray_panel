@@ -2,6 +2,7 @@ from sqlalchemy import inspect, text
 
 from panel_core.extensions import db
 from panel_core.db_migration import CURRENT_DB_VERSION, RETIRED_TABLES
+from panel_core.schema_metadata import column_ddl, model_indexes
 
 
 def _drop_foreign_keys():
@@ -32,11 +33,12 @@ PG_DEAD_TABLES = ("traffic_snapshot", "domain_stat", "notification_log")
 
 
 def _create_all_except_dead_tables(skip_dead=False):
-    if not skip_dead or db.engine.dialect.name != "postgresql":
-        db.create_all()
-        return
-    tables = [table for name, table in db.metadata.tables.items() if name not in PG_DEAD_TABLES]
-    db.metadata.create_all(bind=db.engine, tables=tables)
+    tables = [
+        table
+        for name, table in db.metadata.tables.items()
+        if not (skip_dead and db.engine.dialect.name == "postgresql" and name in PG_DEAD_TABLES)
+    ]
+    db.metadata.create_all(bind=db.session.connection(), tables=tables)
 
 
 def _drop_dead_tables(logger=None):
@@ -65,28 +67,13 @@ def _drop_dead_tables(logger=None):
 
 
 def _column_ddl(column, dialect=None) -> tuple[str, bool]:
-    dialect = dialect or db.engine.dialect
-    type_sql = column.type.compile(dialect=dialect)
-    pieces = [f'"{column.name}" {type_sql}']
-    server_default = getattr(column, "server_default", None)
-    default_sql = ""
-    if server_default is not None and getattr(server_default, "arg", None) is not None:
-        arg = server_default.arg
-        default_sql = str(arg.text if hasattr(arg, "text") else arg)
-        pieces.append(f"DEFAULT {default_sql}")
-    forced_nullable = False
-    if not column.nullable:
-        if default_sql:
-            pieces.append("NOT NULL")
-        else:
-            forced_nullable = True
-    return " ".join(pieces), forced_nullable
+    return column_ddl(column, dialect or db.engine.dialect)
 
 
 def _add_missing_columns(logger=None) -> int:
     if db.engine.dialect.name != "postgresql":
         return 0
-    inspector = inspect(db.engine)
+    inspector = inspect(db.session.connection())
     existing_tables = set(inspector.get_table_names())
     added = 0
     for table in db.metadata.sorted_tables:
@@ -112,6 +99,58 @@ def _add_missing_columns(logger=None) -> int:
     return added
 
 
+def _ensure_model_indexes():
+    connection = db.session.connection()
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names())
+    created = 0
+    for table in db.metadata.sorted_tables:
+        if table.name not in tables:
+            continue
+        existing = {index["name"] for index in inspector.get_indexes(table.name)}
+        unique_columns = {tuple(item["column_names"]) for item in inspector.get_unique_constraints(table.name)}
+        for name, ddl, unique in model_indexes(table, connection.dialect):
+            if name in existing or unique in unique_columns:
+                continue
+            db.session.execute(text(ddl))
+            created += 1
+    return created
+
+
+def _backfill_payment_lifecycle(old_version):
+    if old_version >= 29:
+        return
+    db.session.execute(
+        text(
+            "UPDATE payment SET provider_status='succeeded', fulfillment_status='succeeded' WHERE status IN ('succeeded','refunded')"
+        )
+    )
+    db.session.execute(
+        text(
+            "UPDATE payment SET provider_status='succeeded', fulfillment_status='retry', status='pending', processing_owner=NULL, processing_expires_at=NULL WHERE status='processing'"
+        )
+    )
+    db.session.execute(
+        text(
+            "UPDATE payment SET checkout_status='review', fulfillment_error='Legacy checkout has no recoverable provider request' WHERE yookassa_id LIKE 'pending-%' AND (provider_idempotency_key IS NULL OR checkout_payload IS NULL)"
+        )
+    )
+
+
+def _read_schema_version():
+    if not inspect(db.session.connection()).has_table("schema_version"):
+        return 0
+    return db.session.execute(text("SELECT version FROM schema_version LIMIT 1")).scalar() or 0
+
+
+def _backfill_wireguard_addresses():
+    from panel_core.models import Inbound
+    from panel_core.services.wireguard import ensure_wireguard_addresses
+
+    for inbound in Inbound.query.filter_by(protocol="wireguard").all():
+        ensure_wireguard_addresses(inbound)
+
+
 def _ensure_schema_version():
     db.session.execute(text("CREATE TABLE IF NOT EXISTS schema_version (version integer not null)"))
     existing = db.session.execute(text("SELECT version FROM schema_version LIMIT 1")).fetchone()
@@ -135,8 +174,14 @@ def migrate_postgres_db(logger=None, *, drop_dead_tables=False):
             lock_conn = db.engine.connect()
             lock_conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
             lock_conn.commit()
+        old_version = _read_schema_version()
+        if old_version > CURRENT_DB_VERSION:
+            raise ValueError(f"database schema {old_version} is newer than supported schema {CURRENT_DB_VERSION}")
         _create_all_except_dead_tables(skip_dead=drop_dead_tables)
         columns_added = _add_missing_columns(logger=logger)
+        indexes_added = _ensure_model_indexes()
+        _backfill_payment_lifecycle(old_version)
+        _backfill_wireguard_addresses()
         if drop_dead_tables:
             dead_dropped, dead_kept = _drop_dead_tables(logger=logger)
         retired = _drop_retired_tables()
@@ -176,6 +221,7 @@ def migrate_postgres_db(logger=None, *, drop_dead_tables=False):
         "foreign_keys_dropped": dropped,
         "retired_tables_dropped": retired,
         "columns_added": columns_added,
+        "indexes_added": indexes_added,
         "dead_tables_dropped": dead_dropped,
         "dead_tables_kept": dead_kept,
         "bot_texts_force_reseeded": reseeded,

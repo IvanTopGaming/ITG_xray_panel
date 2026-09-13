@@ -25,6 +25,7 @@ export default function Footer({ data, lang }: { data: SubInfo; lang: Lang }) {
           </span>
         ))}
       </div>
+      <div>{t('format_help', lang)}</div>
       <div>{t('auto_update', lang, { h: data.update_interval_hours })}</div>
     </div>
   );

@@ -9,6 +9,7 @@ import { Select } from '@ui/components/ui/Select';
 import { Button } from '@ui/components/ui/Button';
 import { cn } from '@ui/lib/utils';
 import { listGrants, createGrant, revokeTariff, listTariffs, listBotUsers } from '@/lib/bot';
+import { grantProvisioningLabel, notifyGrantResult } from './grantStatus';
 import type { GrantRow, Tariff, BotUser, GrantBilling } from '@ui/lib/types';
 
 function billingChipClass(billing: GrantBilling): string {
@@ -39,7 +40,7 @@ function tariffAvailability(
   return null;
 }
 
-import { formatDateTime as formatDate } from '@ui/lib/datetime';
+import { formatDateTime as formatDate, epochMsFromLocalDateTimeInput } from '@ui/lib/datetime';
 
 interface AddDialogProps {
   open: boolean;
@@ -59,7 +60,7 @@ interface AddDialogProps {
 
 function toIsoOrNull(localValue: string): string | null {
   if (!localValue) return null;
-  const parsed = new Date(localValue);
+  const parsed = new Date(epochMsFromLocalDateTimeInput(localValue));
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
@@ -288,9 +289,9 @@ export function GrantsTab() {
         note: args.note || undefined,
         silent: args.silent || undefined,
       }),
-    onSuccess: (_data, vars) => {
+    onSuccess: (data, vars) => {
       const label = vars.billing === 'free' ? 'Access granted' : 'Private-tariff access granted';
-      toast.success(label);
+      notifyGrantResult(data, label);
       queryClient.invalidateQueries({ queryKey: ['bot', 'grants'] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'user', vars.tg_id] });
@@ -306,9 +307,17 @@ export function GrantsTab() {
   const revokeMutation = useMutation({
     mutationFn: (row: GrantRow) => revokeTariff(row.telegram_id, row.tariff_id),
     onSuccess: (data) => {
-      toast.success(
-        `Grant revoked. Disabled ${data.disabled_clients} client(s), removed ${data.revoked_grants} grant(s).`
-      );
+      const summary = `Disabled ${data.disabled_clients + (data.remote_disabled ?? 0)} client(s), removed ${data.revoked_grants} grant(s).`;
+      if (data.panel_failures?.length) {
+        const nodes = data.panel_failures
+          .map((failure) => failure.panel_name || `#${failure.panel_id}`)
+          .join(', ');
+        toast.warning(
+          `Revoke incomplete. ${summary} Could not apply on: ${nodes}. Retry when the nodes are available.`
+        );
+      } else {
+        toast.success(`Grant revoked. ${summary}`);
+      }
       queryClient.invalidateQueries({ queryKey: ['bot', 'grants'] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'users'] });
       queryClient.invalidateQueries({ queryKey: ['bot', 'user'] });
@@ -403,15 +412,17 @@ export function GrantsTab() {
                           billingChipClass(r.billing)
                         )}
                       >
-                        {billingLabel(r.billing)}
+                        {grantProvisioningLabel(r) || billingLabel(r.billing)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-white/60">
-                      {r.billing !== 'free'
-                        ? '—'
-                        : r.access_until
-                          ? formatDate(r.access_until)
-                          : 'Forever'}
+                      {grantProvisioningLabel(r)
+                        ? `${grantProvisioningLabel(r)} · requested ${r.access_until ? formatDate(r.access_until) : 'Forever'}`
+                        : r.billing !== 'free'
+                          ? '—'
+                          : r.access_until
+                            ? formatDate(r.access_until)
+                            : 'Forever'}
                     </td>
                     <td className="px-4 py-3 text-white/60">{formatDate(r.next_renewal_at)}</td>
                     <td className="px-4 py-3 text-white/60">{r.note || '—'}</td>

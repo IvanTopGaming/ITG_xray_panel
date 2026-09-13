@@ -9,12 +9,26 @@ from aiogram.fsm.context import FSMContext
 
 from backend_client import BackendClient
 from i18n import I18n
+from screens import display_pages, split_html
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 _checkout_tasks: set[asyncio.Task] = set()
 _checkout_in_flight: set[int] = set()
+
+
+def _checkout_finished(task: asyncio.Task) -> None:
+    _checkout_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("checkout task failed: %s", type(task.exception()).__name__)
+
+
+async def close_checkout_tasks() -> None:
+    tasks = tuple(_checkout_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def h(value):
@@ -103,14 +117,15 @@ async def show_catalog(
                 ]
             ),
         )
+        await callback.answer()
         return
-    cards = [await _tariff_card(t, i18n=i18n, lang=lang) for t in tariffs]
-    text = "\n\n".join(cards)
-    await callback.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=await _catalog_keyboard(tariffs, i18n=i18n, lang=lang),
-    )
+    pages = []
+    for start in range(0, len(tariffs), 8):
+        group = tariffs[start : start + 8]
+        cards = [await _tariff_card(t, i18n=i18n, lang=lang) for t in group]
+        markup = (await _catalog_keyboard(group, i18n=i18n, lang=lang)).model_dump(exclude_none=True)
+        pages.extend({"text": text, "markup": markup} for text in split_html("\n\n".join(cards)))
+    await display_pages(callback.message, state, pages)
     await callback.answer()
 
 
@@ -219,26 +234,31 @@ async def start_checkout(
         return
     _checkout_in_flight.add(telegram_id)
 
-    await callback.answer()
-
-    message = callback.message
+    handed_off = False
     try:
-        await message.edit_text(await i18n.t("checkout.creating", lang), reply_markup=None)
-    except TelegramBadRequest as exc:
-        logger.info("start_checkout: could not show the invoice placeholder: %s", exc)
-
-    task = asyncio.create_task(
-        _finish_checkout(
-            message=message,
-            telegram_id=telegram_id,
-            tariff_id=tariff_id,
-            i18n=i18n,
-            lang=lang,
-            backend=backend,
+        await callback.answer()
+        message = callback.message
+        try:
+            await message.edit_text(await i18n.t("checkout.creating", lang), reply_markup=None)
+        except TelegramBadRequest as exc:
+            logger.info("start_checkout: could not show the invoice placeholder: %s", exc)
+        task = asyncio.create_task(
+            _finish_checkout(
+                message=message,
+                telegram_id=telegram_id,
+                tariff_id=tariff_id,
+                i18n=i18n,
+                lang=lang,
+                backend=backend,
+            )
         )
-    )
-    _checkout_tasks.add(task)
-    task.add_done_callback(_checkout_tasks.discard)
+        _checkout_tasks.add(task)
+        task.add_done_callback(_checkout_finished)
+        task.add_done_callback(lambda _: _checkout_in_flight.discard(telegram_id))
+        handed_off = True
+    finally:
+        if not handed_off:
+            _checkout_in_flight.discard(telegram_id)
 
 
 @router.callback_query(F.data.startswith("cancel:"))
@@ -259,15 +279,23 @@ async def cancel_payment(
         result = await backend.cancel_payment(payment_id, telegram_id=callback.from_user.id)
         status = (result or {}).get("status")
     except Exception as exc:
-        logger.info("catalog: cancel_payment failed: %s", exc)
+        logger.warning("catalog: cancel_payment failed: %s", type(exc).__name__)
+        await callback.answer(await i18n.t("errors.service_unavailable", lang), show_alert=True)
+        return
 
     if status == "succeeded":
         await callback.answer()
         return
 
+    closed = status == "pending" and result.get("ui_closed") is True
+    if status != "cancelled" and not closed:
+        await callback.answer(await i18n.t("errors.service_unavailable", lang), show_alert=True)
+        return
+
     await callback.answer()
     back = await i18n.t("common.back_to_main", lang)
-    message = await i18n.t("catalog.payment_cancelled.message", lang)
+    key = "catalog.invoice_closed.message" if closed else "catalog.payment_cancelled.message"
+    message = await i18n.t(key, lang)
     home_kb = types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text=back, callback_data="user_home")],

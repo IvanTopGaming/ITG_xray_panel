@@ -94,25 +94,30 @@ export function TagInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDropdown, filteredSuggestions.length]);
 
-  const addTag = (raw: string) => {
-    const tag = raw.trim();
-    if (!tag) return;
-    if (tag.length > maxLength) {
-      setError(`Tag must be ≤ ${maxLength} chars`);
-      return;
+  const addTags = (raw: string[]) => {
+    const next = new Set(value);
+    let validationError: string | null = null;
+    const rejected: string[] = [];
+    for (const item of raw) {
+      const tag = item.trim();
+      if (!tag) continue;
+      if (pattern) pattern.lastIndex = 0;
+      if (tag.length > maxLength) {
+        validationError = `Tag must be ≤ ${maxLength} chars`;
+        rejected.push(tag);
+      } else if (pattern && !pattern.test(tag)) {
+        validationError = patternError || "Use only letters, digits, '-', '_'";
+        rejected.push(tag);
+      } else {
+        next.add(tag);
+      }
     }
-    if (pattern && !pattern.test(tag)) {
-      setError(patternError || "Use only letters, digits, '-', '_'");
-      return;
-    }
-    if (value.includes(tag)) {
-      setDraft('');
-      return;
-    }
-    onChange([...value, tag]);
-    setDraft('');
-    setError(null);
+    if (next.size !== value.length) onChange([...next]);
+    setError(validationError);
+    return rejected;
   };
+
+  const addTag = (raw: string) => setDraft(addTags([raw]).join(', '));
 
   const removeTag = (tag: string) => {
     onChange(value.filter((t) => t !== tag));
@@ -179,8 +184,7 @@ export function TagInput({
               if (/[,\n\t]/.test(v)) {
                 const parts = v.split(/[,\n\t]+/);
                 const last = parts.pop() ?? '';
-                parts.forEach((p) => addTag(p));
-                setDraft(last);
+                setDraft([...addTags(parts), last].filter(Boolean).join(', '));
               } else {
                 setDraft(v);
               }

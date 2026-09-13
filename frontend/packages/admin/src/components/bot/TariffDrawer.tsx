@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, Trash2, Package, Gift } from 'lucide-react';
 import { cn } from '@ui/lib/utils';
@@ -20,6 +20,7 @@ interface TariffDrawerProps {
   inbounds: Inbound[];
   panels: LinkedPanel[];
   saving: boolean;
+  isTrial?: boolean;
   onClose: () => void;
   onSave: (payload: TariffWritePayload) => Promise<void>;
 }
@@ -86,17 +87,27 @@ export function TariffDrawer({
   inbounds,
   panels,
   saving,
+  isTrial = false,
   onClose,
   onSave,
 }: TariffDrawerProps) {
   const [form, setForm] = useState<FormState>(emptyForm());
   const [error, setError] = useState<string | null>(null);
+  const generation = useRef(0);
+  const source = useRef(tariff);
+  source.current = tariff;
+  const latestForm = useRef(form);
+  latestForm.current = form;
 
   useEffect(() => {
+    generation.current += 1;
     if (!open) return;
-    setForm(tariff ? tariffToForm(tariff) : emptyForm());
+    setForm(source.current ? tariffToForm(source.current) : emptyForm(isTrial));
     setError(null);
-  }, [open, tariff]);
+    return () => {
+      generation.current += 1;
+    };
+  }, [open, tariff?.id, isTrial]);
 
   useEffect(() => {
     if (!open) return;
@@ -170,10 +181,14 @@ export function TariffDrawer({
       setError('Every included inbound needs a node selected.');
       return;
     }
+    const submittedGeneration = generation.current;
+    const submittedForm = form;
     try {
       await onSave(payload);
-      onClose();
+      if (submittedGeneration === generation.current && latestForm.current === submittedForm)
+        onClose();
     } catch (e) {
+      if (submittedGeneration !== generation.current) return;
       const err = e as { response?: { data?: { error?: string } } };
       setError(err?.response?.data?.error || 'Save failed.');
     }
@@ -541,8 +556,8 @@ function ItemRow({
   );
 
   const matchedInbound = useMemo(
-    () => allInbounds.find((i) => i.tag === item.inbound_tag) || null,
-    [allInbounds, item.inbound_tag]
+    () => filteredInbounds.find((i) => i.tag === item.inbound_tag) || null,
+    [filteredInbounds, item.inbound_tag]
   );
 
   const [confirmRemove, setConfirmRemove] = useState(false);

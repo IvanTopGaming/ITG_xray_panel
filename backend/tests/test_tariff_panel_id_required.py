@@ -6,7 +6,7 @@ from unittest.mock import patch
 import jwt
 import pytest
 
-from panel_core.models import Admin, Inbound, Tariff, TariffItem
+from panel_core.models import Admin, Inbound, Tariff, TariffItem, LinkedPanel
 from panel_core.utils import SECRET_KEY
 from panel_core.xray import gateway as gw
 from panel_core.xray.local import LocalXrayGateway
@@ -103,7 +103,15 @@ def test_create_tariff_rejects_null_panel_id(app_with_bot_api, db, client, auth_
     assert "panel_id" in resp.get_data(as_text=True)
 
 
-def test_create_tariff_accepts_item_with_panel_id(app_with_bot_api, db, client, auth_headers):
+def test_create_tariff_accepts_item_with_panel_id(app_with_bot_api, db, client, auth_headers, monkeypatch):
+    db.session.add(
+        LinkedPanel(id=7, name="node7", url="https://node7.test", federation_token="token", enable=True, created_at=1)
+    )
+    db.session.commit()
+    monkeypatch.setattr(
+        "panel_core.services.tariff_targets.get_panel_snapshot",
+        lambda _: {"inbounds": [{"tag": "DE-vless", "protocol": "vless"}]},
+    )
     resp = client.post(
         "/api/bot/tariffs",
         headers=auth_headers,
@@ -177,7 +185,15 @@ def test_update_tariff_rejects_item_without_panel_id(app_with_bot_api, db, clien
     assert [(i.inbound_tag, i.panel_id) for i in fresh.items] == [("OLD", 3)]
 
 
-def test_update_tariff_accepts_items_with_panel_id(app_with_bot_api, db, client, auth_headers):
+def test_update_tariff_accepts_items_with_panel_id(app_with_bot_api, db, client, auth_headers, monkeypatch):
+    db.session.add(
+        LinkedPanel(id=4, name="node4", url="https://node4.test", federation_token="token", enable=True, created_at=1)
+    )
+    db.session.commit()
+    monkeypatch.setattr(
+        "panel_core.services.tariff_targets.get_panel_snapshot",
+        lambda _: {"inbounds": [{"tag": "NEW", "protocol": "vless"}]},
+    )
     t = Tariff(name="X", price_rub=100, period_days=30)
     db.session.add(t)
     db.session.commit()
@@ -227,7 +243,7 @@ def test_provisioning_error_names_the_tariff_and_the_inbound(app, db):
     assert Client.query.filter_by(telegram_id=9001).count() == 0
 
 
-def test_provisioning_still_works_on_a_gateway_with_local_xray(app, db):
+def test_provisioning_still_works_on_a_gateway_with_local_xray(app, db, monkeypatch):
     from panel_core.models import Client
     from panel_core.services import provisioning
 
@@ -236,18 +252,21 @@ def test_provisioning_still_works_on_a_gateway_with_local_xray(app, db):
     calls = []
 
     class _Recording(LocalXrayGateway):
-        def apply_config(self, validate=True):
-            calls.append("apply_config")
+        def apply_config(self, validate=True, publish=True):
+            calls.append("apply_config" if publish else "preflight")
 
         def restart(self):
             calls.append("restart")
 
     gw.set_xray_gateway(_Recording())
+    monkeypatch.setattr(
+        "panel_core.services.runtime_apply.restart_xray_container", lambda: gw.get_xray_gateway().restart()
+    )
 
     provisioning.apply_tariff_for_user(9002, tariff, source="test", operation_id="test-op")
 
     assert Client.query.filter_by(telegram_id=9002).count() == 1
-    assert calls == ["apply_config", "restart"]
+    assert calls == ["preflight", "apply_config", "restart"]
 
 
 def test_startup_audit_warns_and_names_the_tariff(app, db, caplog):

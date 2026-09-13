@@ -104,7 +104,7 @@ def test_a_dangerous_backup_keep_refuses_instead_of_emptying_the_directory(tmp_p
 
     `0` makes that `+$((0 + 1))` collapse to `+1`, which keeps nothing at all -- including the
     dump this very pass just wrote. `0` is not "unlimited" here even though that is this
-    project's own convention elsewhere (CLAUDE.md: `expiry_time == 0` means never); on a knob
+    project's own convention elsewhere (AGENTS.md: `expiry_time == 0` means never); on a knob
     named "keep days" it is the one value that empties the archive it was meant to protect, and
     before this fix it did so while the container still logged `backup written: ...` and exited
     0. `-1` reproduced the exact same wipe through a case-glob that treated the leading `-` as
@@ -139,20 +139,14 @@ def test_a_dangerous_backup_keep_refuses_instead_of_emptying_the_directory(tmp_p
     )
 
 
-def test_the_interval_is_substituted_by_compose_and_not_handed_to_the_container():
+def test_the_interval_drives_both_the_loop_and_its_healthcheck():
     text = COMPOSE.read_text()
 
-    assert "sleep ${BACKUP_INTERVAL_SECONDS:-21600}" in text, (
-        "the pg-backup loop no longer reads BACKUP_INTERVAL_SECONDS, or reads it with `$$` so the "
-        "container resolves it. Host-side substitution is deliberate: the value is compose "
-        "plumbing, and handing it into the environment would force pg_backup.sh to name a variable "
-        "it has no use for, purely to satisfy test_env_reaches_code_that_reads_it.py."
+    assert "sleep $${BACKUP_INTERVAL_SECONDS}" in text, (
+        "the backup loop no longer sleeps on the same container-side interval that its healthcheck reads"
     )
-    assert not re.search(r"^\s+BACKUP_INTERVAL_SECONDS:\s", text, re.M), (
-        "BACKUP_INTERVAL_SECONDS is back in an environment: block. Nothing inside the image reads "
-        "it, and handing it in would force pg_backup.sh to name it purely to keep "
-        "test_env_reaches_code_that_reads_it.py quiet. Matched at line start on purpose: the "
-        "entrypoint's own `${BACKUP_INTERVAL_SECONDS:-21600}` contains the same characters."
+    assert re.search(r"^\s+BACKUP_INTERVAL_SECONDS:\s+\$\{BACKUP_INTERVAL_SECONDS:-21600\}", text, re.M), (
+        "the interval is not handed to the loop and healthcheck through one shared environment value"
     )
     assert "BACKUP_KEEP: ${BACKUP_KEEP" in text, (
         "BACKUP_KEEP must stay in the environment: block -- pg_backup.sh reads it inside the container."

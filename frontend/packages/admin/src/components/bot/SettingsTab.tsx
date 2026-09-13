@@ -1,30 +1,53 @@
-import { useEffect, useState } from 'react';
+import { useState, type SetStateAction } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Eye, EyeOff, Copy, Check, RefreshCw } from 'lucide-react';
 import { getBotSettings, updateBotSettings, rotateBotServiceToken } from '../../lib/bot';
 import type { BotSettingsUpdate } from '@ui/lib/types';
 import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
 import { Switch } from '@ui/components/ui/Switch';
+import { toast } from 'react-toastify';
+
+function useSettingsDraft<T>(saved: T) {
+  const [draft, setDraft] = useState<T | null>(null);
+  const update = (next: SetStateAction<T>) =>
+    setDraft((current) =>
+      typeof next === 'function' ? (next as (value: T) => T)(current ?? saved) : next
+    );
+  const clear = (submitted: T) =>
+    setDraft((current) => (JSON.stringify(current) === JSON.stringify(submitted) ? null : current));
+  return [draft ?? saved, update, clear] as const;
+}
+
+function settingsError(error: unknown) {
+  toast.error(
+    (error as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+      'Could not save settings'
+  );
+}
 
 export function SettingsTab() {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ['bot-settings'], queryFn: getBotSettings });
-  const [draft, setDraft] = useState({
-    yookassa_shop_id: '',
-    yookassa_secret_key: '',
-    yookassa_return_url: '',
+  const data = settings.data;
+  const [draft, setDraft, clearDraft] = useSettingsDraft({
+    yookassa_shop_id: data?.yookassa_shop_id || '',
+    yookassa_secret_key: data?.yookassa_secret_key || '',
+    yookassa_return_url: data?.yookassa_return_url || '',
   });
-  const [botDraft, setBotDraft] = useState({
-    bot_token: '',
-    telegram_proxy_url: '',
-    admin_ids_text: '',
-    display_timezone: '',
+  const [botDraft, setBotDraft, clearBotDraft] = useSettingsDraft({
+    bot_token: data?.bot_token || '',
+    telegram_proxy_url: data?.telegram_proxy_url || '',
+    admin_ids_text: data?.admin_ids?.join(', ') ?? '',
+    display_timezone: data?.display_timezone || 'Europe/Moscow',
   });
-  const [deviceDraft, setDeviceDraft] = useState({ enabled: false, perUser: 0 });
-  const [panelDraft, setPanelDraft] = useState({
-    brand_name: '',
-    panel_name: '',
-    subscription_update_interval_hours: 24,
+  const [deviceDraft, setDeviceDraft, clearDeviceDraft] = useSettingsDraft({
+    enabled: !!data?.device_limit_enabled,
+    perUser: Number(data?.device_limit_per_user ?? 0),
+  });
+  const [panelDraft, setPanelDraft, clearPanelDraft] = useSettingsDraft({
+    brand_name: data?.brand_name || '',
+    panel_name: data?.panel_name || '',
+    subscription_update_interval_hours: Number(data?.subscription_update_interval_hours ?? 24),
   });
   const [panelSavedAt, setPanelSavedAt] = useState<number | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -33,38 +56,14 @@ export function SettingsTab() {
   const [rotatedAt, setRotatedAt] = useState<number | null>(null);
   const [rotateConfirmOpen, setRotateConfirmOpen] = useState(false);
 
-  const data = settings.data;
-
-  useEffect(() => {
-    if (!data) return;
-    setDraft({
-      yookassa_shop_id: data.yookassa_shop_id || '',
-      yookassa_secret_key: data.yookassa_secret_key || '',
-      yookassa_return_url: data.yookassa_return_url || '',
-    });
-    setBotDraft({
-      bot_token: data.bot_token || '',
-      telegram_proxy_url: data.telegram_proxy_url || '',
-      admin_ids_text: data.admin_ids?.join(', ') ?? '',
-      display_timezone: data.display_timezone || 'Europe/Moscow',
-    });
-    setDeviceDraft({
-      enabled: !!data.device_limit_enabled,
-      perUser: Number(data.device_limit_per_user ?? 0),
-    });
-    setPanelDraft({
-      brand_name: data.brand_name || '',
-      panel_name: data.panel_name || '',
-      subscription_update_interval_hours: Number(data.subscription_update_interval_hours ?? 24),
-    });
-  }, [data?.bot_config_version, data]);
-
   const save = useMutation({
-    mutationFn: () => updateBotSettings(draft),
-    onSuccess: () => {
+    mutationFn: (submitted: typeof draft) => updateBotSettings(submitted),
+    onSuccess: async (_, submitted) => {
+      await qc.invalidateQueries({ queryKey: ['bot-settings'] });
+      clearDraft(submitted);
       setSavedAt(Date.now());
-      qc.invalidateQueries({ queryKey: ['bot-settings'] });
     },
+    onError: settingsError,
   });
 
   const parseAdminIds = (text: string): number[] => {
@@ -77,45 +76,54 @@ export function SettingsTab() {
   };
 
   const saveBot = useMutation({
-    mutationFn: () => {
+    mutationFn: (submitted: typeof botDraft) => {
       const payload: BotSettingsUpdate = {
-        admin_ids: parseAdminIds(botDraft.admin_ids_text),
-        telegram_proxy_url: botDraft.telegram_proxy_url,
-        display_timezone: botDraft.display_timezone || 'Europe/Moscow',
-        bot_token: botDraft.bot_token,
+        admin_ids: parseAdminIds(submitted.admin_ids_text),
+        telegram_proxy_url: submitted.telegram_proxy_url,
+        display_timezone: submitted.display_timezone || 'Europe/Moscow',
+        bot_token: submitted.bot_token,
       };
       return updateBotSettings(payload);
     },
-    onSuccess: () => {
+    onSuccess: async (_, submitted) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['bot-settings'] }),
+        qc.invalidateQueries({ queryKey: ['display-config'] }),
+      ]);
+      clearBotDraft(submitted);
       setBotSavedAt(Date.now());
-      qc.invalidateQueries({ queryKey: ['bot-settings'] });
     },
+    onError: settingsError,
   });
 
   const saveDevices = useMutation({
-    mutationFn: () =>
+    mutationFn: (submitted: typeof deviceDraft) =>
       updateBotSettings({
-        device_limit_enabled: deviceDraft.enabled,
-        device_limit_per_user: Number(deviceDraft.perUser) || 0,
+        device_limit_enabled: submitted.enabled,
+        device_limit_per_user: Number(submitted.perUser) || 0,
       }),
-    onSuccess: () => {
+    onSuccess: async (_, submitted) => {
+      await qc.invalidateQueries({ queryKey: ['bot-settings'] });
+      clearDeviceDraft(submitted);
       setDeviceSavedAt(Date.now());
-      qc.invalidateQueries({ queryKey: ['bot-settings'] });
     },
+    onError: settingsError,
   });
 
   const savePanel = useMutation({
-    mutationFn: () =>
+    mutationFn: (submitted: typeof panelDraft) =>
       updateBotSettings({
-        brand_name: panelDraft.brand_name,
-        panel_name: panelDraft.panel_name,
+        brand_name: submitted.brand_name,
+        panel_name: submitted.panel_name,
         subscription_update_interval_hours:
-          Number(panelDraft.subscription_update_interval_hours) || 24,
+          Number(submitted.subscription_update_interval_hours) || 24,
       }),
-    onSuccess: () => {
+    onSuccess: async (_, submitted) => {
+      await qc.invalidateQueries({ queryKey: ['bot-settings'] });
+      clearPanelDraft(submitted);
       setPanelSavedAt(Date.now());
-      qc.invalidateQueries({ queryKey: ['bot-settings'] });
     },
+    onError: settingsError,
   });
 
   const rotate = useMutation({
@@ -125,8 +133,18 @@ export function SettingsTab() {
       setRotateConfirmOpen(false);
       qc.invalidateQueries({ queryKey: ['bot-settings'] });
     },
+    onError: settingsError,
   });
 
+  if (settings.isError && !data)
+    return (
+      <div role="alert" className="space-y-3 text-rose-300">
+        <p>Could not load bot settings.</p>
+        <button onClick={() => settings.refetch()} className="rounded-lg border px-3 py-2">
+          Retry
+        </button>
+      </div>
+    );
   if (!data) return <div className="text-white/50">Loading…</div>;
 
   return (
@@ -177,7 +195,7 @@ export function SettingsTab() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => saveBot.mutate()}
+                onClick={() => saveBot.mutate(botDraft)}
                 disabled={saveBot.isPending}
                 className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
               >
@@ -219,7 +237,7 @@ export function SettingsTab() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => saveDevices.mutate()}
+                onClick={() => saveDevices.mutate(deviceDraft)}
                 disabled={saveDevices.isPending}
                 className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
               >
@@ -263,7 +281,7 @@ export function SettingsTab() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => savePanel.mutate()}
+                onClick={() => savePanel.mutate(panelDraft)}
                 disabled={savePanel.isPending}
                 className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
               >
@@ -298,7 +316,7 @@ export function SettingsTab() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => save.mutate()}
+                onClick={() => save.mutate(draft)}
                 disabled={save.isPending}
                 className="rounded-xl bg-primary/20 px-4 py-2.5 text-sm font-medium text-primary-100 transition-colors hover:bg-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
               >

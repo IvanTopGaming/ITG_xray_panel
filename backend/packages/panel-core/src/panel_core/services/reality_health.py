@@ -57,7 +57,7 @@ def read_failures(now=None):
     return {"count": state["count"], "since_ms": int(state["since"] * 1000)}
 
 
-def record_failures(seen, now=None):
+def record_failures(seen, now=None, *, commit=True):
     moment = time.time() if now is None else now
     row, state = _load(moment)
     if not seen and row is not None and state["count"] == 0:
@@ -68,5 +68,6 @@ def record_failures(seen, now=None):
         db.session.add(SystemSetting(key=SETTING_KEY, value=payload))
     else:
         row.value = payload
-    db.session.commit()
+    if commit:
+        db.session.commit()
     return state["count"]

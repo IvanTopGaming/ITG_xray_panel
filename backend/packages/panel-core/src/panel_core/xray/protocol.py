@@ -476,9 +476,6 @@ def _build_stream_settings(settings_dict):
         tls_key_file = _validate_cert_path(settings_dict.get("tlsKeyFile", ""), "TLS key file")
         tls_utls_fingerprint = str(settings_dict.get("tlsUTLSFingerprint", "") or "").strip()
 
-        if bool(tls_cert_file) != bool(tls_key_file):
-            raise ValueError("TLS certificate and key file must be provided together")
-
         if isinstance(raw_tls_alpn, list):
             tls_alpn = [str(item).strip() for item in raw_tls_alpn if str(item).strip()]
         else:
@@ -491,6 +488,8 @@ def _build_stream_settings(settings_dict):
             raise ValueError(
                 f'Invalid TLS fingerprint "{tls_utls_fingerprint}" — allowed: {", ".join(sorted(VALID_UTLS_FINGERPRINTS))}'
             )
+        if not tls_cert_file or not tls_key_file:
+            raise ValueError("TLS certificate and key file are required for an inbound")
 
         tls_settings = {}
         if tls_server_name:
@@ -527,6 +526,8 @@ def _build_stream_settings(settings_dict):
                 raise ValueError("Invalid REALITY public key")
         else:
             public_key = _derive_reality_pubkey(pk)
+        if public_key != _derive_reality_pubkey(pk):
+            raise ValueError("REALITY public key does not match the private key")
 
         reality_fp = str(settings_dict.get("realityFingerprint", "chrome") or "chrome").strip()
         if reality_fp.lower() not in VALID_UTLS_FINGERPRINTS:
@@ -548,6 +549,8 @@ def _build_stream_settings(settings_dict):
 
     if protocol == "shadowsocks":
         ss_method = str(settings_dict.get("ssMethod", "2022-blake3-aes-128-gcm") or "").strip()
+        if ss_method == "2022-blake3-chacha20-poly1305":
+            raise ValueError("Shadowsocks 2022 ChaCha20 does not support multi-user inbounds")
         ss_password = str(settings_dict.get("ssPassword", "") or "").strip()
         if is_shadowsocks_2022_method(ss_method):
             normalized_ss_password = normalize_shadowsocks_2022_key(ss_password, ss_method)
@@ -583,6 +586,8 @@ def _build_stream_settings(settings_dict):
 
         if not public_key:
             raise ValueError("WireGuard public key required")
+        if public_key != _derive_wg_pubkey(secret_key):
+            raise ValueError("WireGuard public key does not match the private key")
 
         stream["wgSecretKey"] = secret_key
         stream["wgPublicKey"] = public_key

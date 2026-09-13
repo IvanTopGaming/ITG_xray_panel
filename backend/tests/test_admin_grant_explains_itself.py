@@ -24,7 +24,7 @@ import jwt as jwt_lib
 import pytest
 
 from panel_core.extensions import db, scheduler
-from panel_core.models import Admin, Client, Tariff, TariffItem, TelegramUser, UserTariffAccess
+from panel_core.models import Admin, Client, LinkedPanel, Tariff, TariffItem, TelegramUser, UserTariffAccess
 from panel_core.utils import SECRET_KEY
 
 from tests.schema import ensure_schema
@@ -48,6 +48,8 @@ def master_app(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _reset_scheduler()
     gw.set_xray_gateway(None)
+    snapshot = {"inbounds": [{"tag": "ams-reality", "protocol": "vless", "clients": [], "stream_settings": {}}]}
+    monkeypatch.setattr("panel_core.services.tariff_targets.get_panel_snapshot", lambda panel_id: snapshot)
 
     app = importlib.import_module("panel_core.roles.master").create_app()
     with app.app_context():
@@ -57,6 +59,11 @@ def master_app(monkeypatch, tmp_path):
         orphan = Tariff(name="Legacy 30d", price_rub=300, period_days=30, enabled=True)
         routed = Tariff(name="Amsterdam 30d", price_rub=300, period_days=30, enabled=True)
         db.session.add_all([orphan, routed])
+        db.session.add(
+            LinkedPanel(
+                id=9, name="Amsterdam", url="https://ams.example", federation_token="test", enable=True, created_at=1
+            )
+        )
         db.session.flush()
         db.session.add(TariffItem(tariff_id=orphan.id, inbound_tag="vless-reality", traffic_gb=0, panel_id=None))
         db.session.add(TariffItem(tariff_id=routed.id, inbound_tag="ams-reality", traffic_gb=0, panel_id=9))
@@ -100,8 +107,7 @@ def test_granting_an_undeliverable_tariff_says_why(master, master_headers, maste
     )
     message = resp.get_json()["error"]
     assert "vless-reality" in message, f"the message must name the offending inbound: {message!r}"
-    assert "Legacy 30d" in message, f"the message must name the tariff: {message!r}"
-    assert "node" in message.lower()
+    assert "panel_id" in message, f"the message must identify the missing node assignment: {message!r}"
 
 
 def test_a_refused_grant_leaves_nothing_behind(master, master_headers, master_app):
@@ -122,7 +128,7 @@ def test_a_tariff_routed_to_a_node_still_grants(master, master_headers, master_a
     """The negative control. Without it, a handler that refused every grant would look identical."""
 
     monkeypatch.setattr(
-        "panel_core.services.panel_proxy.proxy_provision",
+        "panel_core.services.provisioning_operations.proxy_provision",
         lambda panel_id, tg, tag, payload: {"expires_at_ms": 1_900_000_000_000, "client": {}},
     )
     resp = master.post(

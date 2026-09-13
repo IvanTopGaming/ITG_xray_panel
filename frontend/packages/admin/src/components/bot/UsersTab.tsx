@@ -105,6 +105,7 @@ export function UsersTab() {
       )}
 
       <UserDrawer
+        key={selectedTgId ?? 'closed'}
         open={selectedTgId !== null}
         telegramId={selectedTgId}
         onClose={() => setSelectedTgId(null)}

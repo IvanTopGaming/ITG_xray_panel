@@ -24,7 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from panel_core.extensions import db, scheduler
-from panel_core.models import Payment, SystemSetting, Tariff, TariffItem, TelegramUser
+from panel_core.models import Payment, SystemSetting, Tariff, TariffItem, TelegramUser, LinkedPanel
 from panel_core.xray import gateway as gw
 
 from tests.schema import ensure_schema
@@ -44,6 +44,16 @@ def _reset_scheduler():
 
 @pytest.fixture
 def botapi_app(monkeypatch, tmp_path):
+    def snapshot(_):
+        return {
+            "inbounds": [
+                {"tag": f"vless-{index}", "protocol": "vless", "clients": [], "stream_settings": {}}
+                for index in range(4)
+            ]
+        }
+
+    monkeypatch.setattr("panel_core.services.panel_proxy.get_panel_snapshot", snapshot)
+    monkeypatch.setattr("panel_core.services.tariff_targets.get_panel_snapshot", snapshot)
     monkeypatch.setenv("PANEL_ROLE", "bot")
     monkeypatch.setenv("DATABASE_URL", ensure_schema(f"sqlite:///{tmp_path}/botapi.db"))
     monkeypatch.setenv("SUB_DOMAIN", "sub.example.com")
@@ -56,6 +66,19 @@ def botapi_app(monkeypatch, tmp_path):
     app = importlib.import_module("panel_core.roles.botapi").create_app()
 
     with app.app_context():
+        db.session.add_all(
+            [
+                LinkedPanel(
+                    id=pid,
+                    name=f"node{pid}",
+                    url=f"https://node{pid}.test",
+                    federation_token="token",
+                    enable=True,
+                    created_at=1,
+                )
+                for pid in (7, 9)
+            ]
+        )
         db.session.add_all(
             [
                 SystemSetting(key="bot_service_token", value=BOT_TOKEN),
@@ -101,7 +124,14 @@ def _make_tariff(app, *, name, panel_ids, is_trial=False, enabled=True, price=15
 
 
 def _mock_yk_payment():
-    return SimpleNamespace(id="yk-wave5a-1", confirmation=SimpleNamespace(confirmation_url="https://yk.test/pay"))
+    payment = Payment.query.order_by(Payment.id.desc()).first()
+    return SimpleNamespace(
+        id="yk-wave5a-1",
+        status="pending",
+        amount=SimpleNamespace(value="150.00", currency="RUB"),
+        metadata=payment.checkout_payload["metadata"],
+        confirmation=SimpleNamespace(confirmation_url="https://yk.test/pay"),
+    )
 
 
 def _checkout(client, tariff_id, telegram_id=4242):
@@ -175,7 +205,7 @@ def test_a_fully_routed_tariff_still_checks_out(botapi_app, client):
     tariff_id = _make_tariff(botapi_app, name="Standard 30d", panel_ids=[7, 9])
 
     with patch("panel_core.services.billing.yookassa.Payment.create") as mock_create:
-        mock_create.return_value = _mock_yk_payment()
+        mock_create.side_effect = lambda *args: _mock_yk_payment()
         resp = _checkout(client, tariff_id)
 
     assert resp.status_code == 200, (
@@ -239,7 +269,7 @@ def test_a_deliverable_trial_still_activates(botapi_app, client):
     state = client.get("/api/bot-service/users/4242/state", headers=_auth())
     assert state.get_json()["trial_available"] is True
 
-    with patch("panel_core.api.bot_service.apply_tariff_for_user") as mock_apply:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as mock_apply:
         mock_apply.return_value = {"expires_at_ms": 1_900_000_000_000, "clients": []}
         resp = client.post("/api/bot-service/trial/activate", json={"telegram_id": 4242}, headers=_auth())
 
@@ -257,11 +287,12 @@ def test_a_failing_provision_still_gives_the_trial_back(botapi_app, client):
         db.session.add(TelegramUser(telegram_id=4242, language="ru"))
         db.session.commit()
 
-    with patch("panel_core.api.bot_service.apply_tariff_for_user") as mock_apply:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as mock_apply:
         mock_apply.side_effect = RuntimeError("node unreachable")
         resp = client.post("/api/bot-service/trial/activate", json={"telegram_id": 4242}, headers=_auth())
 
-    assert resp.status_code == 500, "a provisioning failure must not be reported to the bot as success"
+    assert resp.status_code == 202
+    assert resp.get_json()["panel_failures"]
 
     with botapi_app.app_context():
         assert db.session.get(TelegramUser, 4242).trial_used_at is None, (
@@ -304,8 +335,6 @@ def test_a_payment_taken_before_this_wave_fails_without_reaching_provisioning(bo
         assert mock_apply.call_count == 0, (
             "apply_payment still went into provisioning for a tariff it can no longer deliver"
         )
-        assert db.session.get(Payment, payment_id).status == "failed"
+        assert db.session.get(Payment, payment_id).fulfillment_status == "review"
         published = [call.args[0] for call in mock_publish.call_args_list]
-        assert "payment_failed" in published, (
-            "the payment failed without telling the user. `payment_failed` is the only way they find out."
-        )
+        assert "payment_failed" not in published

@@ -226,7 +226,7 @@ def test_a_dangerous_keep_days_refuses_instead_of_wiping_the_remote(workspace, b
 
     `0` matches every object on the remote -- including the one this very pass just uploaded --
     so it does not mean "keep forever", which is this project's own convention everywhere else
-    (CLAUDE.md: `expiry_time == 0` means never). It means "delete the whole archive and still
+    (AGENTS.md: `expiry_time == 0` means never). It means "delete the whole archive and still
     exit 0", which is exactly what happened when the reviewer first tried it. `-1` reproduced the
     same wipe through a case-glob that treated the leading `-` as "not a digit" and skipped the
     check entirely instead of rejecting it -- `*[!0-9]*` matches a negative number and a garbage

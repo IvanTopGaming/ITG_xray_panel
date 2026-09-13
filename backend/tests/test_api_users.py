@@ -1,5 +1,5 @@
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import jwt as jwt_lib
 import pytest
@@ -15,6 +15,7 @@ from panel_core.models import (
     TariffItem,
     TelegramUser,
     UserTariffAccess,
+    ProvisionOperation,
 )
 
 
@@ -28,12 +29,30 @@ class _SqlOrderRecorder:
         if head in ("INSERT", "UPDATE", "DELETE"):
             self._order.append(self._label)
 
+    def _commit(self, connection):
+        self._order.append("commit")
+
     def __enter__(self):
+        event.listen(Engine, "commit", self._commit)
         event.listen(Engine, "before_cursor_execute", self._listener)
         return self
 
     def __exit__(self, *_exc):
+        event.remove(Engine, "commit", self._commit)
         event.remove(Engine, "before_cursor_execute", self._listener)
+
+
+def _published(mock):
+    return [call(item.args[0].type, item.args[0].telegram_id, item.args[0].payload) for item in mock.call_args_list]
+
+
+@pytest.fixture(autouse=True)
+def runtime_io(monkeypatch):
+    generated, restarted = MagicMock(), MagicMock()
+    monkeypatch.setattr("panel_core.services.runtime_apply.generate_config_file", generated)
+    monkeypatch.setattr("panel_core.services.runtime_apply.restart_xray_container", restarted)
+    monkeypatch.setattr("panel_core.services.bot_events.publish_stored", MagicMock())
+    return generated, restarted
 
 
 @pytest.fixture
@@ -139,7 +158,7 @@ def test_grant_paid_creates_access_row(app_with_admin, db, client, admin_headers
     db.session.add(TelegramUser(telegram_id=42, language="ru"))
     db.session.commit()
 
-    with patch("panel_core.api.bot_admin.bot_events.publish") as mock_publish:
+    with patch("panel_core.services.bot_events.publish_stored") as mock_publish:
         resp = client.post(
             "/api/bot/users/42/grants",
             headers=admin_headers,
@@ -150,9 +169,9 @@ def test_grant_paid_creates_access_row(app_with_admin, db, client, admin_headers
     assert body["telegram_id"] == 42
     assert body["billing"] == "paid"
     assert Client.query.filter_by(telegram_id=42).count() == 0
-    assert not any(call.args and call.args[0] == "access_granted" for call in mock_publish.call_args_list)
+    assert not any(call.args and call.args[0] == "access_granted" for call in _published(mock_publish))
 
-    offered_calls = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "access_offered"]
+    offered_calls = [c for c in _published(mock_publish) if c.args and c.args[0] == "access_offered"]
     assert len(offered_calls) == 1
     event_type, tg_id, payload = offered_calls[0].args
     assert tg_id == 42
@@ -192,8 +211,8 @@ def test_grant_with_a_term_provisions_and_announces_access(
     db.session.commit()
 
     with (
-        patch("panel_core.services.provisioning._sync_after_provision"),
-        patch("panel_core.api.bot_admin.bot_events.publish") as mock_publish,
+        patch("panel_core.services.runtime_apply.generate_config_file"),
+        patch("panel_core.services.bot_events.publish_stored") as mock_publish,
     ):
         resp = client.post(
             "/api/bot/users/42/grants",
@@ -213,18 +232,18 @@ def test_grant_with_a_term_provisions_and_announces_access(
     )
     assert Client.query.filter_by(telegram_id=42).count() == 2
 
-    granted = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "access_granted"]
-    assert len(granted) == 1, f"issued access announces itself exactly once; got {mock_publish.call_args_list!r}"
+    granted = [c for c in _published(mock_publish) if c.args and c.args[0] == "access_granted"]
+    assert len(granted) == 1, f"issued access announces itself exactly once; got {_published(mock_publish)!r}"
     _event_type, tg_id, payload = granted[0].args
     assert tg_id == 42
     assert payload["tariff_name"] == tariff.name
     assert payload["lang"] == "ru"
 
-    assert not any(call.args and call.args[0] == "access_granted_once" for call in mock_publish.call_args_list), (
+    assert not any(call.args and call.args[0] == "access_granted_once" for call in _published(mock_publish)), (
         "'access_granted_once' belonged to the gift kind and has no publisher left; the bot branch "
         "that consumed it is gone with it"
     )
-    assert not any(call.args and call.args[0] == "access_offered" for call in mock_publish.call_args_list)
+    assert not any(call.args and call.args[0] == "access_offered" for call in _published(mock_publish))
 
 
 def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
@@ -234,8 +253,8 @@ def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_hea
     db.session.commit()
 
     with (
-        patch("panel_core.services.provisioning._sync_after_provision"),
-        patch("panel_core.api.bot_admin.bot_events.publish") as mock_publish,
+        patch("panel_core.services.runtime_apply.generate_config_file"),
+        patch("panel_core.services.bot_events.publish_stored") as mock_publish,
     ):
         resp = client.post(
             "/api/bot/users/42/grants",
@@ -252,7 +271,7 @@ def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_hea
     )
     assert Client.query.filter_by(telegram_id=42).count() == 2
 
-    grant_calls = [c for c in mock_publish.call_args_list if c.args and c.args[0] == "access_granted"]
+    grant_calls = [c for c in _published(mock_publish) if c.args and c.args[0] == "access_granted"]
     assert len(grant_calls) == 1
     event_type, tg_id, payload = grant_calls[0].args
     assert tg_id == 42
@@ -262,7 +281,7 @@ def test_grant_free_provisions_immediately(app_with_admin, db, client, admin_hea
         "0 is what every layer reads as 'never', and it is what the bot renders as permanent -- a "
         f"date here would promise the holder an end that no longer exists; got {payload!r}"
     )
-    assert not any(call.args and call.args[0] == "access_offered" for call in mock_publish.call_args_list)
+    assert not any(call.args and call.args[0] == "access_offered" for call in _published(mock_publish))
 
 
 def test_grant_rejects_invalid_billing(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
@@ -290,7 +309,7 @@ def test_grant_upsert_replaces_existing(app_with_admin, db, client, admin_header
     db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
     db.session.commit()
 
-    with patch("panel_core.services.provisioning._sync_after_provision"):
+    with patch("panel_core.services.runtime_apply.generate_config_file"):
         resp = client.post(
             "/api/bot/users/42/grants",
             headers=admin_headers,
@@ -361,826 +380,239 @@ def _make_user_with_active_clients(db, tariff, telegram_id=42):
     return [c1, c2]
 
 
-def test_revoke_tariff_disables_clients_and_removes_grant(
+def _operation_request(client, headers, operation, tariff_id):
+    if operation == "revoke":
+        return client.delete(f"/api/bot/users/42/tariffs/{tariff_id}", headers=headers)
+    return client.post(f"/api/bot/users/42/{operation}", headers=headers)
+
+
+def test_revoke_keeps_tombstone_and_counts_actual_clients(
     app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
 ):
     tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free"))
+    clients = _make_user_with_active_clients(db, tariff)
+    grant = UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free")
+    db.session.add(grant)
     db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True) as remove,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body == {
-        "ok": True,
-        "telegram_id": 42,
-        "tariff_id": tariff.id,
-        "disabled_clients": 2,
-        "revoked_grants": 1,
-        "remote_disabled": 0,
-        "panel_failures": [],
-    }
-
-    remaining = Client.query.filter_by(telegram_id=42).all()
-    assert len(remaining) == 2
-    assert all(c.enable is False for c in remaining)
-    assert all(c.tariff_id is None for c in remaining)
-    assert UserTariffAccess.query.filter_by(telegram_id=42, tariff_id=tariff.id).count() == 0
-
-    assert remove.call_count == 2
-    regen.assert_called_once()
-    restart.assert_not_called()
-
-
-def test_revoke_tariff_idempotent_when_nothing_to_revoke(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
-):
-    tariff = two_inbounds_and_tariff
-    db.session.add(TelegramUser(telegram_id=42, language="ru"))
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert resp.get_json() == {
-        "ok": True,
-        "telegram_id": 42,
-        "tariff_id": tariff.id,
-        "disabled_clients": 0,
-        "revoked_grants": 0,
-        "remote_disabled": 0,
-        "panel_failures": [],
-    }
-    remove.assert_not_called()
-    regen.assert_not_called()
-    restart.assert_not_called()
-
-
-def test_revoke_tariff_restarts_when_grpc_fails(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=[False, True]),
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert resp.get_json() == {
-        "ok": True,
-        "telegram_id": 42,
-        "tariff_id": tariff.id,
-        "disabled_clients": 2,
-        "revoked_grants": 1,
-        "remote_disabled": 0,
-        "panel_failures": [],
-    }
-    remaining = Client.query.filter_by(telegram_id=42).all()
-    assert all(c.enable is False for c in remaining)
-    assert all(c.tariff_id is None for c in remaining)
-    assert UserTariffAccess.query.filter_by(telegram_id=42, tariff_id=tariff.id).count() == 0
-    regen.assert_called_once()
-    restart.assert_called_once()
-
-
-def test_revoke_tariff_restarts_for_non_vless_protocol(app_with_admin, db, client, admin_headers):
-
-    db.session.add(Inbound(tag="TR", protocol="trojan", port=10003, stream_settings="{}"))
-    db.session.flush()
-    t = Tariff(name="Trojan-only", price_rub=100, period_days=30)
-    db.session.add(t)
-    db.session.flush()
-    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="TR", traffic_gb=0, sort_order=0))
-    db.session.add(TelegramUser(telegram_id=42, language="ru"))
-    db.session.flush()
-    db.session.add(
-        Client(
-            id="33333333-3333-3333-3333-333333333333",
-            inbound_tag="TR",
-            email="tg42_TR",
-            telegram_id=42,
-            tariff_id=t.id,
-            enable=True,
-            expiry_time=0,
-        )
-    )
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{t.id}", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert resp.get_json() == {
-        "ok": True,
-        "telegram_id": 42,
-        "tariff_id": t.id,
-        "disabled_clients": 1,
-        "revoked_grants": 0,
-        "remote_disabled": 0,
-        "panel_failures": [],
-    }
-
-    remove.assert_not_called()
-    regen.assert_called_once()
-    restart.assert_called_once()
-
-
-def test_block_user_disables_and_removes_via_grpc(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free"))
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True) as remove,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body["telegram_id"] == 42
-    assert body["disabled_clients"] == 2
-    assert body["cancelled_grants"] == 1
-
-    remaining = Client.query.filter_by(telegram_id=42).all()
-    assert all(c.enable is False for c in remaining)
-    assert UserTariffAccess.query.filter_by(telegram_id=42).count() == 0
-
-    assert remove.call_count == 2
-    regen.assert_called_once()
-    restart.assert_not_called()
-
-
-def test_block_user_restarts_when_grpc_fails(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=[False, True]),
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200
-    regen.assert_called_once()
-    restart.assert_called_once()
-
-
-def test_block_user_restarts_for_non_vless_protocol(app_with_admin, db, client, admin_headers):
-
-    db.session.add(Inbound(tag="TR", protocol="trojan", port=10003, stream_settings="{}"))
-    db.session.flush()
-    t = Tariff(name="Trojan-only", price_rub=100, period_days=30)
-    db.session.add(t)
-    db.session.flush()
-    db.session.add(TariffItem(tariff_id=t.id, inbound_tag="TR", traffic_gb=0))
-    db.session.add(TelegramUser(telegram_id=42, language="ru"))
-    db.session.add(
-        Client(
-            id="44444444-4444-4444-4444-444444444444",
-            inbound_tag="TR",
-            email="tg42_TR",
-            telegram_id=42,
-            tariff_id=t.id,
-            enable=True,
-            expiry_time=0,
-        )
-    )
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200
-    remove.assert_not_called()
-    regen.assert_called_once()
-    restart.assert_called_once()
-
-
-def test_block_user_no_clients_skips_xray_touch(app_with_admin, db, client, admin_headers):
-
-    db.session.add(TelegramUser(telegram_id=42, language="ru"))
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc") as remove,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert resp.get_json()["disabled_clients"] == 0
-    remove.assert_not_called()
-    regen.assert_not_called()
-    restart.assert_not_called()
-
-
-def test_block_user_grpc_calls_precede_all_sql_writes(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
-):
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free"))
-    db.session.commit()
-
-    order: list[str] = []
-
-    def _on_grpc(*_a, **_kw):
-        order.append("grpc")
-        return True
-
-    with (
-        _SqlOrderRecorder(order),
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    grpc_indices = [i for i, op in enumerate(order) if op == "grpc"]
-    write_indices = [i for i, op in enumerate(order) if op == "sql_write"]
-    assert grpc_indices, f"No gRPC calls recorded — fixture should hit two vless clients. Order: {order}"
-    assert write_indices, f"No SQL writes recorded — block_user should commit user.blocked=True. Order: {order}"
-    assert max(grpc_indices) < min(write_indices), (
-        f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
-        f"This holds the SQLite write lock across gRPC, blocking concurrent writers. Order: {order}"
-    )
-
-
-def test_revoke_tariff_grpc_calls_precede_all_sql_writes(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
-):
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free"))
-    db.session.commit()
-
-    order: list[str] = []
-
-    def _on_grpc(*_a, **_kw):
-        order.append("grpc")
-        return True
-
-    with (
-        _SqlOrderRecorder(order),
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", side_effect=_on_grpc),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    grpc_indices = [i for i, op in enumerate(order) if op == "grpc"]
-    write_indices = [i for i, op in enumerate(order) if op == "sql_write"]
-    assert grpc_indices, f"No gRPC calls recorded — fixture has two vless clients. Order: {order}"
-    assert write_indices, f"No SQL writes recorded — revoke should update clients + delete grant. Order: {order}"
-    assert max(grpc_indices) < min(write_indices), (
-        f"gRPC call at {max(grpc_indices)} ran after first SQL write at {min(write_indices)}. "
-        f"This holds the SQLite write lock across gRPC, blocking concurrent writers. Order: {order}"
-    )
-
-
-def test_block_user_disables_remote_clients(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.commit()
-
-    remote = {
-        42: [
-            {
-                "panel_id": 7,
-                "panel_name": "Child-A",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": True,
-                "expiry_time": 0,
-            },
-            {
-                "panel_id": 7,
-                "panel_name": "Child-A",
-                "inbound_tag": "NL",
-                "email": "tg42_NL",
-                "enable": False,
-                "expiry_time": 0,
-            },
-        ]
-    }
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body["disabled_clients"] == 2
-    assert body["remote_disabled"] == 1
-    assert body["panel_failures"] == []
-    prox.assert_called_once_with(7, "FR", {"old_email": "tg42_FR", "enable": False})
-
-
-def test_block_user_remote_failure_is_best_effort(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
-    db.session.commit()
-
-    remote = {
-        42: [
-            {
-                "panel_id": 9,
-                "panel_name": "Child-B",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": True,
-                "expiry_time": 0,
-            }
-        ]
-    }
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200
-    body = resp.get_json()
+    response = _operation_request(client, admin_headers, "revoke", tariff.id)
+    body = response.get_json()
+    assert response.status_code == 200, body
     assert body["disabled_clients"] == 2
     assert body["remote_disabled"] == 0
-    assert body["panel_failures"] == [{"panel_id": 9, "panel_name": "Child-B", "error": "panel offline"}]
-    assert UserTariffAccess.query.filter_by(telegram_id=42).count() == 0
+    assert body["revoked_grants"] == 1
+    assert body["panel_failures"] == []
+    assert all(not row.enable and row.expiry_time < int(time.time() * 1000) for row in clients)
+    assert db.session.get(UserTariffAccess, grant.id).provisioning_status == "revoked"
 
 
-def test_block_user_remote_partial_success(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+def test_revoke_empty_is_idempotent(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
+    db.session.add(TelegramUser(telegram_id=42, language="ru"))
+    db.session.commit()
+    for _ in range(2):
+        response = _operation_request(client, admin_headers, "revoke", two_inbounds_and_tariff.id)
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()["disabled_clients"] == 0
+        assert response.get_json()["revoked_grants"] == 0
+
+
+@pytest.mark.parametrize("operation", ["block", "unblock", "revoke"])
+@pytest.mark.parametrize("protocol", ["vless", "trojan"])
+def test_access_mutation_applies_committed_runtime(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, runtime_io, operation, protocol
+):
+    tariff = two_inbounds_and_tariff
+    clients = _make_user_with_active_clients(db, tariff)
+    for inbound in Inbound.query.all():
+        inbound.protocol = protocol
+    if operation == "unblock":
+        db.session.get(TelegramUser, 42).blocked = True
+        for row in clients:
+            row.enable = False
+    db.session.commit()
+    order = []
+    observed = []
+
+    def restart():
+        order.append("runtime")
+        observed.append([row.enable for row in Client.query.filter_by(telegram_id=42).all()])
+
+    runtime_io[1].side_effect = restart
+    with _SqlOrderRecorder(order):
+        response = _operation_request(client, admin_headers, operation, tariff.id)
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["re_enabled" if operation == "unblock" else "disabled_clients"] == 2
+    assert observed and observed[-1] == [operation == "unblock"] * 2
+    for index, value in enumerate(order):
+        if value == "runtime":
+            boundary = max((i for i in range(index) if order[i] == "commit"), default=-1)
+            assert "sql_write" not in order[boundary + 1 : index], order
+
+
+@pytest.mark.parametrize("operation", ["block", "unblock", "revoke"])
+def test_runtime_failure_is_pending_then_retry_recovers(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, runtime_io, operation
+):
+    tariff = two_inbounds_and_tariff
+    clients = _make_user_with_active_clients(db, tariff)
+    if operation == "unblock":
+        db.session.get(TelegramUser, 42).blocked = True
+        for row in clients:
+            row.enable = False
+    db.session.commit()
+    runtime_io[1].side_effect = RuntimeError("runtime offline")
+    response = _operation_request(client, admin_headers, operation, tariff.id)
+    assert response.status_code == 202, response.get_json()
+    assert response.get_json()["panel_failures"]
+    operation_id = response.get_json()["operation_id"]
+    assert db.session.get(ProvisionOperation, operation_id).status == "pending"
+    runtime_io[1].side_effect = None
+    from panel_core.services.provisioning_operations import run_operation
+
+    result = run_operation(db.session.get(ProvisionOperation, operation_id))
+    assert not result["panel_failures"], result
+    assert db.session.get(ProvisionOperation, operation_id).status == "succeeded"
+    assert all(row.enable == (operation == "unblock") for row in Client.query.filter_by(telegram_id=42))
+
+
+def test_block_preserves_grants_for_later_unblock(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
     tariff = two_inbounds_and_tariff
     _make_user_with_active_clients(db, tariff)
+    grant = UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="free")
+    db.session.add(grant)
     db.session.commit()
+    response = _operation_request(client, admin_headers, "block", tariff.id)
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["disabled_clients"] == 2
+    assert response.get_json()["cancelled_grants"] == 0
+    assert db.session.get(UserTariffAccess, grant.id) is not None
+    response = _operation_request(client, admin_headers, "unblock", tariff.id)
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["re_enabled"] == 2
 
-    remote = {
-        42: [
-            {
-                "panel_id": 7,
-                "panel_name": "Child-A",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": True,
-                "expiry_time": 0,
-            },
-            {
-                "panel_id": 8,
-                "panel_name": "Child-B",
-                "inbound_tag": "NL",
-                "email": "tg42_NL",
-                "enable": True,
-                "expiry_time": 0,
-            },
-        ]
-    }
 
-    def _proxy(panel_id, inbound_tag, body):
-        if panel_id == 8:
+@pytest.mark.parametrize(
+    "expiry,limit,used,manual,expected",
+    [
+        (0, 0, 0, False, True),
+        (4102444800000, 100, 20, False, True),
+        (1, 0, 0, False, False),
+        (0, 100, 100, False, False),
+        (0, 0, 0, True, False),
+    ],
+)
+def test_unblock_honors_expiry_quota_and_manual_override(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, expiry, limit, used, manual, expected
+):
+    clients = _make_user_with_active_clients(db, two_inbounds_and_tariff)
+    db.session.delete(clients[1])
+    row = clients[0]
+    row.enable, row.expiry_time, row.limit_bytes, row.up, row.manual_disabled = False, expiry, limit, used, manual
+    db.session.get(TelegramUser, 42).blocked = True
+    db.session.commit()
+    response = _operation_request(client, admin_headers, "unblock", two_inbounds_and_tariff.id)
+    assert response.status_code == 200, response.get_json()
+    assert row.enable is expected
+    assert response.get_json()["re_enabled"] == int(expected)
+    assert db.session.get(TelegramUser, 42).blocked is False
+
+
+@pytest.mark.parametrize("operation", ["block", "unblock"])
+def test_account_without_clients_never_touches_runtime(
+    app_with_admin, db, client, admin_headers, runtime_io, operation
+):
+    db.session.add(TelegramUser(telegram_id=42, language="ru"))
+    db.session.commit()
+    response = _operation_request(client, admin_headers, operation, 0)
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["disabled_clients"] == 0
+    assert response.get_json()["re_enabled"] == 0
+    runtime_io[0].assert_not_called()
+    runtime_io[1].assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["block", "unblock"])
+@pytest.mark.parametrize("failed_panels", [[], [1, 2], [2]])
+def test_remote_account_results_count_only_successful_nodes(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, operation, failed_panels
+):
+    clients = _make_user_with_active_clients(db, two_inbounds_and_tariff)
+    if operation == "unblock":
+        db.session.get(TelegramUser, 42).blocked = True
+        for row in clients:
+            row.enable = False
+    for pid in (1, 2):
+        _add_linked_panel(db, pid=pid, name=f"node{pid}")
+    db.session.commit()
+    calls = []
+
+    def remote(connection, verb, path, **kwargs):
+        pid = 1 if "node1." in connection.base_url else 2
+        calls.append((pid, path, kwargs["json"]))
+        if pid in failed_panels:
             raise ValueError("panel offline")
-        return {}
+        return {
+            "revision": kwargs["json"]["revision"],
+            "blocked": operation == "block",
+            "disabled_clients": 2 if operation == "block" else 0,
+            "re_enabled": 3 if operation == "unblock" else 0,
+            "affected_clients": 3,
+        }
 
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=_proxy),
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
+    with patch("panel_core.services.panel_proxy.FederationClient._call_reporting", autospec=True, side_effect=remote):
+        response = _operation_request(client, admin_headers, operation, two_inbounds_and_tariff.id)
+    body = response.get_json()
+    assert response.status_code == (202 if failed_panels else 200), body
+    assert body["re_enabled" if operation == "unblock" else "disabled_clients"] == 2
+    assert body["remote_re_enabled" if operation == "unblock" else "remote_disabled"] == (2 - len(failed_panels)) * (
+        3 if operation == "unblock" else 2
+    )
+    assert sorted(failure["panel_id"] for failure in body["panel_failures"]) == failed_panels
+    assert all(
+        path == "/api/federation/account-access"
+        and payload["telegram_id"] == 42
+        and payload["blocked"] == (operation == "block")
+        for _, path, payload in calls
+    )
+    assert db.session.get(TelegramUser, 42).blocked is (operation == "block")
 
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
+
+@pytest.mark.parametrize("failed_panels", [[], [1, 2], [2]])
+def test_remote_revoke_is_source_scoped_and_journaled(
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, failed_panels
+):
+    tariff = two_inbounds_and_tariff
+    _make_user_with_active_clients(db, tariff)
+    for pid in (1, 2):
+        _add_linked_panel(db, pid=pid, name=f"node{pid}")
+        db.session.add(TariffItem(tariff_id=tariff.id, panel_id=pid, inbound_tag=f"remote{pid}", traffic_gb=1))
+    _add_linked_panel(db, pid=3, name="unrelated")
+    db.session.commit()
+    calls = []
+
+    def remote(connection, verb, path, **kwargs):
+        pid = 1 if "node1." in connection.base_url else 2
+        calls.append((pid, path, kwargs["json"]))
+        assert "unrelated" not in connection.base_url
+        if pid in failed_panels:
+            raise ValueError("panel offline")
+        return {"disabled_clients": 1, "expires_at_ms": None}
+
+    with patch("panel_core.services.panel_proxy.FederationClient._call_reporting", autospec=True, side_effect=remote):
+        response = _operation_request(client, admin_headers, "revoke", tariff.id)
+    body = response.get_json()
+    assert response.status_code == (202 if failed_panels else 200), body
     assert body["disabled_clients"] == 2
-    assert body["remote_disabled"] == 1
-    assert body["panel_failures"] == [{"panel_id": 8, "panel_name": "Child-B", "error": "panel offline"}]
-
-
-def _add_disabled_client(db, *, cid, tag, email, expiry, tg=42):
-    db.session.add(Client(id=cid, inbound_tag=tag, email=email, telegram_id=tg, enable=False, expiry_time=expiry))
-
-
-def test_unblock_re_enables_clients_with_time_left(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
-    db.session.flush()
-    future = int(time.time() * 1000) + 86_400_000
-    _add_disabled_client(db, cid="11111111-1111-1111-1111-111111111111", tag="DE", email="tg42_DE", expiry=future)
-    _add_disabled_client(db, cid="22222222-2222-2222-2222-222222222222", tag="MSK", email="tg42_MSK", expiry=0)
-    _add_disabled_client(db, cid="33333333-3333-3333-3333-333333333333", tag="DE", email="tg42_DE_old", expiry=1)
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True) as add,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
-    ):
-        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body["re_enabled"] == 2
-    states = {c.email: c.enable for c in Client.query.filter_by(telegram_id=42)}
-    assert states["tg42_DE"] is True
-    assert states["tg42_MSK"] is True
-    assert states["tg42_DE_old"] is False
-    assert db.session.get(TelegramUser, 42).blocked is False
-    assert add.call_count == 2
-    regen.assert_called_once()
-    restart.assert_not_called()
-
-
-def test_unblock_does_not_restore_grants(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
-    db.session.flush()
-    _add_disabled_client(db, cid="11111111-1111-1111-1111-111111111111", tag="DE", email="tg42_DE", expiry=0)
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
-    ):
-        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert UserTariffAccess.query.filter_by(telegram_id=42).count() == 0
-
-
-def test_unblock_restarts_for_non_vless(app_with_admin, db, client, admin_headers):
-    db.session.add(Inbound(tag="TR", protocol="trojan", port=10003, stream_settings="{}"))
-    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
-    db.session.flush()
-    _add_disabled_client(db, cid="44444444-4444-4444-4444-444444444444", tag="TR", email="tg42_TR", expiry=0)
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_add_user_grpc") as add,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
-    ):
-        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert resp.get_json()["re_enabled"] == 1
-    add.assert_not_called()
-    regen.assert_called_once()
-    restart.assert_called_once()
-
-
-def test_unblock_re_enables_remote_clients_with_time(app_with_admin, db, client, admin_headers):
-    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
-    db.session.commit()
-    future = int(time.time() * 1000) + 86_400_000
-    remote = {
-        42: [
-            {
-                "panel_id": 7,
-                "panel_name": "A",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": False,
-                "expiry_time": future,
-            },
-            {
-                "panel_id": 7,
-                "panel_name": "A",
-                "inbound_tag": "NL",
-                "email": "tg42_NL",
-                "enable": False,
-                "expiry_time": 1,
-            },
-            {
-                "panel_id": 7,
-                "panel_name": "A",
-                "inbound_tag": "BE",
-                "email": "tg42_BE",
-                "enable": True,
-                "expiry_time": 0,
-            },
-        ]
-    }
-    with (
-        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
-    ):
-        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
-
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert body["re_enabled"] == 0
-    assert body["remote_re_enabled"] == 1
-    prox.assert_called_once_with(7, "FR", {"old_email": "tg42_FR", "enable": True})
-
-
-def test_unblock_no_clients_is_idempotent(app_with_admin, db, client, admin_headers):
-    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_add_user_grpc") as add,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
-    ):
-        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert resp.get_json()["re_enabled"] == 0
-    assert db.session.get(TelegramUser, 42).blocked is False
-    add.assert_not_called()
-    regen.assert_not_called()
-    restart.assert_not_called()
-
-
-def test_unblock_remote_failure_is_best_effort(app_with_admin, db, client, admin_headers):
-    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
-    db.session.commit()
-    future = int(time.time() * 1000) + 86_400_000
-    remote = {
-        42: [
-            {
-                "panel_id": 9,
-                "panel_name": "Child-B",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": False,
-                "expiry_time": future,
-            }
-        ]
-    }
-    with (
-        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
-    ):
-        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
-
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert body["remote_re_enabled"] == 0
-    assert body["panel_failures"] == [{"panel_id": 9, "panel_name": "Child-B", "error": "panel offline"}]
-    assert db.session.get(TelegramUser, 42).blocked is False
-
-
-def test_unblock_restarts_when_grpc_add_fails(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-    db.session.add(TelegramUser(telegram_id=42, language="ru", blocked=True))
-    db.session.flush()
-    _add_disabled_client(db, cid="11111111-1111-1111-1111-111111111111", tag="DE", email="tg42_DE", expiry=0)
-    db.session.commit()
-
-    with (
-        patch("panel_core.api.bot_admin._api_add_user_grpc", return_value=False) as add,
-        patch("panel_core.api.bot_admin.generate_config_file") as regen,
-        patch("panel_core.api.bot_admin.restart_xray_container") as restart,
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, [])),
-    ):
-        resp = client.post("/api/bot/users/42/unblock", headers=admin_headers)
-
-    assert resp.status_code == 200
-    assert resp.get_json()["re_enabled"] == 1
-    add.assert_called_once()
-    regen.assert_called_once()
-    restart.assert_called_once()
-
-
-def test_revoke_tariff_disables_remote_clients_for_that_tariff(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
-):
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-
-    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="FR", traffic_gb=0, panel_id=7, sort_order=2))
-    db.session.add(UserTariffAccess(telegram_id=42, tariff_id=tariff.id, billing="paid"))
-    db.session.commit()
-
-    remote = {
-        42: [
-            {
-                "panel_id": 7,
-                "panel_name": "Child-A",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": True,
-                "expiry_time": 0,
-                "tariff_id": tariff.id,
-            },
-            {
-                "panel_id": 7,
-                "panel_name": "Child-A",
-                "inbound_tag": "OTHER",
-                "email": "tg42_OTHER",
-                "enable": True,
-                "expiry_time": 0,
-                "tariff_id": tariff.id,
-            },
-        ]
-    }
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body["remote_disabled"] == 1
-    assert body["panel_failures"] == []
-    prox.assert_called_once()
-    panel_id, inbound_tag, payload = prox.call_args.args
-    assert (panel_id, inbound_tag) == (7, "FR")
-    assert payload["old_email"] == "tg42_FR"
-    assert payload["enable"] is False
-    assert payload["expiry_time"] < int(time.time() * 1000)
-
-
-def test_revoke_tariff_remote_failure_is_best_effort(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
-):
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="FR", traffic_gb=0, panel_id=9, sort_order=2))
-    db.session.commit()
-
-    remote = {
-        42: [
-            {
-                "panel_id": 9,
-                "panel_name": "Child-B",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": True,
-                "expiry_time": 0,
-                "tariff_id": tariff.id,
-            }
-        ]
-    }
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", side_effect=ValueError("panel offline")),
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert body["remote_disabled"] == 0
-    assert body["panel_failures"] == [{"panel_id": 9, "panel_name": "Child-B", "error": "panel offline"}]
-
-
-def test_revoke_tariff_leaves_remote_client_of_other_tariff(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff
-):
-
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="FR", traffic_gb=0, panel_id=7, sort_order=2))
-    db.session.commit()
-
-    remote = {
-        42: [
-            {
-                "panel_id": 7,
-                "panel_name": "Child-A",
-                "inbound_tag": "FR",
-                "email": "tg42_FR",
-                "enable": True,
-                "expiry_time": 0,
-                "tariff_id": tariff.id + 999,
-            }
-        ]
-    }
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=(remote, [])),
-        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body["remote_disabled"] == 0
-    assert body["panel_failures"] == []
-    prox.assert_not_called()
-
-
-def test_revoke_tariff_reports_unreachable_panel(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.add(TariffItem(tariff_id=tariff.id, inbound_tag="FR", traffic_gb=0, panel_id=7, sort_order=2))
-    db.session.commit()
-
-    unreachable = [{"panel_id": 7, "panel_name": "Child-A", "error": "panel offline"}]
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, unreachable)),
-        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
-    ):
-        resp = client.delete(f"/api/bot/users/42/tariffs/{tariff.id}", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body["remote_disabled"] == 0
-    assert body["panel_failures"] == unreachable
-    prox.assert_not_called()
-
-
-def test_block_user_reports_unreachable_panel(app_with_admin, db, client, admin_headers, two_inbounds_and_tariff):
-
-    tariff = two_inbounds_and_tariff
-    _make_user_with_active_clients(db, tariff)
-    db.session.commit()
-
-    unreachable = [{"panel_id": 5, "panel_name": "Child-C", "error": "panel offline"}]
-    with (
-        patch("panel_core.api.bot_admin._api_remove_user_grpc", return_value=True),
-        patch("panel_core.api.bot_admin.generate_config_file"),
-        patch("panel_core.api.bot_admin.restart_xray_container"),
-        patch("panel_core.api.bot_admin.bot_events.publish"),
-        patch("panel_core.api.bot_admin._remote_clients_by_telegram_id_live", return_value=({}, unreachable)),
-        patch("panel_core.api.bot_admin.proxy_update_user", return_value={}) as prox,
-    ):
-        resp = client.post("/api/bot/users/42/block", headers=admin_headers)
-
-    assert resp.status_code == 200, resp.get_data(as_text=True)
-    body = resp.get_json()
-    assert body["disabled_clients"] == 2
-    assert body["remote_disabled"] == 0
-    assert body["panel_failures"] == unreachable
-    prox.assert_not_called()
+    assert body["remote_disabled"] == 2 - len(failed_panels)
+    assert sorted(failure["panel_id"] for failure in body["panel_failures"]) == failed_panels
+    assert all(
+        path == "/api/federation/entitlements/revoke"
+        and payload["tariff_id"] == tariff.id
+        and payload["source_id"] == f"tariff:42:{tariff.id}"
+        for _, path, payload in calls
+    )
+    record = db.session.get(ProvisionOperation, body["operation_id"])
+    assert record.status == ("pending" if failed_panels else "succeeded")
+    assert len(record.target_states) == 4
 
 
 def _add_linked_panel(db, *, pid, name, enable=True):
@@ -1198,7 +630,9 @@ def _add_linked_panel(db, *, pid, name, enable=True):
 
 def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin, db):
 
-    from panel_core.api.bot_admin import _remote_clients_by_telegram_id_live
+    from panel_core.services.remote_clients import (
+        remote_clients_by_telegram_id_live as _remote_clients_by_telegram_id_live,
+    )
 
     _add_linked_panel(db, pid=1, name="Child-A")
     _add_linked_panel(db, pid=2, name="Child-B")
@@ -1226,7 +660,9 @@ def test_live_enumeration_buckets_clients_and_reports_unreachable(app_with_admin
 
 def test_live_enumeration_scopes_to_given_panel_ids(app_with_admin, db):
 
-    from panel_core.api.bot_admin import _remote_clients_by_telegram_id_live
+    from panel_core.services.remote_clients import (
+        remote_clients_by_telegram_id_live as _remote_clients_by_telegram_id_live,
+    )
 
     _add_linked_panel(db, pid=1, name="Child-A")
     _add_linked_panel(db, pid=2, name="Child-B")

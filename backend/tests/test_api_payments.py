@@ -81,6 +81,8 @@ def _seed(app, tariff_id, status, tg_id=42, days_ago=0):
         p.created_at = dt.datetime.utcnow() - dt.timedelta(days=days_ago)
         if status == "succeeded":
             p.paid_at = p.created_at
+            p.provider_status = "succeeded"
+            p.fulfillment_status = "succeeded"
         db.session.commit()
 
 

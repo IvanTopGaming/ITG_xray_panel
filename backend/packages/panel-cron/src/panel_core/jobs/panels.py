@@ -15,7 +15,15 @@ from panel_core.services.panel_proxy import (
     store_panel_offline,
     store_panel_snapshot,
 )
-from panel_core.services.state_mirror import read_current, write_cold, write_hot
+from panel_core.services.state_mirror import (
+    load_state,
+    lock_panel,
+    read_current,
+    state_is_coherent,
+    validate_state,
+    write_full,
+    write_hot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +46,19 @@ def _fetch_cold(url, token):
     return FederationClient(url, token).state()
 
 
+def _rollback_safely(panel_id):
+    try:
+        db.session.rollback()
+    except Exception:
+        logger.warning("panel %s: database rollback failed", panel_id, exc_info=True)
+        db.session.remove()
+
+
 def _client_count(inbounds):
     return sum(len(ib.get("clients") or []) for ib in inbounds)
 
 
-def mirror_from_snapshot(panel_id, data):
+def _prepare_mirror(panel_id, data, *, url=None, token=None):
     inbounds = data.get("inbounds")
     if not isinstance(inbounds, list):
         logger.warning("panel %s: snapshot has no usable inbounds list, mirror left untouched", panel_id)
@@ -51,7 +67,7 @@ def mirror_from_snapshot(panel_id, data):
     panel = db.session.get(LinkedPanel, panel_id)
     if panel is None:
         return
-    panel_url, panel_token = panel.url, panel.federation_token
+    panel_url, panel_token = url or panel.url, token or panel.federation_token
 
     existing = read_current(panel_id)
     existing_fingerprint = existing.cold_fingerprint if existing is not None else None
@@ -76,14 +92,6 @@ def mirror_from_snapshot(panel_id, data):
             )
 
     taken_at = _normalize_ts(data.get("timestamp"))
-    write_hot(
-        panel_id,
-        {"inbounds": inbounds},
-        taken_at=taken_at,
-        instance_id=data.get("instance_id") or "",
-        app_version=data.get("app_version") or "",
-        shrink_flagged=shrink,
-    )
 
     fingerprint = str(data.get("cold_fingerprint") or "")
     if not fingerprint:
@@ -92,21 +100,79 @@ def mirror_from_snapshot(panel_id, data):
     cold_is_fresh = (
         existing_fingerprint == fingerprint
         and existing_has_cold
+        and state_is_coherent(existing)
+        and existing.node_instance_id == data.get("instance_id")
         and existing_cold_updated_at is not None
         and taken_at - existing_cold_updated_at < _COLD_REFRESH_INTERVAL_MS
     )
     if cold_is_fresh:
-        return
+        try:
+            validate_state({"inbounds": inbounds}, load_state(existing)[1])
+        except ValueError:
+            cold_is_fresh = False
+    if cold_is_fresh:
+        return {
+            "hot": {"inbounds": inbounds},
+            "timestamp": taken_at,
+            "instance_id": data.get("instance_id") or "",
+            "app_version": data.get("app_version") or "",
+            "shrink_flagged": shrink,
+            "full": False,
+        }
 
+    db.session.rollback()
     try:
         payload = _fetch_cold(panel_url, panel_token)
     except Exception as exc:
         logger.warning("panel %s: cold state fetch failed (%s); mirror keeps the previous copy", panel_id, exc)
         return
 
-    write_cold(
-        panel_id, payload.get("cold") or {}, fingerprint=payload.get("fingerprint") or fingerprint, taken_at=taken_at
-    )
+    validate_state(payload.get("hot"), payload.get("cold"))
+    if data.get("instance_id") != payload.get("instance_id"):
+        raise ValueError("node identity changed while fetching full state")
+    return {
+        **payload,
+        "timestamp": _normalize_ts(payload.get("timestamp") or taken_at),
+        "shrink_flagged": shrink,
+        "full": True,
+    }
+
+
+def _write_mirror(panel_id, payload, *, commit=True):
+    if payload is None:
+        return
+    options = {
+        "taken_at": payload["timestamp"],
+        "instance_id": payload.get("instance_id") or "",
+        "app_version": payload.get("app_version") or "",
+        "shrink_flagged": payload["shrink_flagged"],
+        "commit": commit,
+    }
+    if payload["full"]:
+        return write_full(
+            panel_id, payload["hot"], payload["cold"], fingerprint=payload.get("fingerprint") or "", **options
+        )
+    return write_hot(panel_id, payload["hot"], **options)
+
+
+def mirror_from_snapshot(panel_id, data):
+    panel = db.session.get(LinkedPanel, panel_id)
+    if panel is None:
+        return
+    url, token = panel.url, panel.federation_token
+    payload = _prepare_mirror(panel_id, data, url=url, token=token)
+    panel = lock_panel(panel_id)
+    if (
+        panel is None
+        or panel.url != url
+        or panel.federation_token != token
+        or (panel.current_instance_id and data.get("instance_id") != panel.current_instance_id)
+    ):
+        db.session.rollback()
+        return
+    _write_mirror(panel_id, payload)
+    if payload is None:
+        db.session.commit()
 
 
 def _mirror_safely(panel_id, data, app):
@@ -123,16 +189,39 @@ def _mirror_safely(panel_id, data, app):
 
 
 def _poll_one(panel_id, url, token, app=None):
-    try:
-        client = FederationClient(url, token)
-        data = client.snapshot()
-        ts = _normalize_ts(data.get("timestamp"))
-        store_panel_snapshot(panel_id, data, ts)
-        _mirror_safely(panel_id, data, app)
-        return panel_id, "online", None, ts
-    except Exception as exc:
-        store_panel_offline(panel_id)
-        return panel_id, "offline", str(exc)[:500], None
+    ctx = app.app_context() if app is not None else nullcontext()
+    with ctx:
+        panel = lock_panel(panel_id)
+        if panel is None or panel.url != url or panel.federation_token != token:
+            db.session.rollback()
+            return None
+        panel.poll_generation += 1
+        generation = panel.poll_generation
+        db.session.commit()
+        data = payload = None
+        try:
+            client = FederationClient(url, token)
+            data = client.snapshot()
+            if not isinstance(data, dict) or not isinstance(data.get("inbounds"), list):
+                raise ValueError("snapshot has no usable inbounds list")
+            ts = _normalize_ts(data.get("timestamp"))
+            try:
+                payload = _prepare_mirror(panel_id, data, url=url, token=token)
+                if payload and payload["full"]:
+                    data = {
+                        **data,
+                        "inbounds": payload["hot"]["inbounds"],
+                        "timestamp": payload["timestamp"],
+                        "cold_fingerprint": payload.get("fingerprint") or "",
+                    }
+                    ts = payload["timestamp"]
+            except Exception:
+                _rollback_safely(panel_id)
+                logger.warning("panel %s: state mirror refresh failed", panel_id, exc_info=True)
+            return panel_id, "online", None, ts, url, token, generation, data, payload
+        except Exception as exc:
+            _rollback_safely(panel_id)
+            return panel_id, "offline", str(exc)[:500], None, url, token, generation, data, payload
 
 
 def _record(results):
@@ -141,19 +230,53 @@ def _record(results):
     for result in results:
         if result is None:
             continue
-        panel_id, status, error, ts = result
-        panel = db.session.get(LinkedPanel, panel_id)
+        panel_id, status, error, ts = result[:4]
+        panel = lock_panel(panel_id)
         if panel is None:
             continue
+        if len(result) < 9:
+            db.session.rollback()
+            continue
+        url, token, generation, data, mirror = result[4:]
+        if panel.url != url or panel.federation_token != token or generation <= panel.poll_applied_generation:
+            db.session.rollback()
+            continue
+        instance_id = (data or {}).get("instance_id") or ""
+        if status == "online" and panel.current_instance_id and panel.current_instance_id != instance_id:
+            db.session.rollback()
+            continue
+        panel.poll_applied_generation = generation
+        if status == "online":
+            if not panel.current_instance_id and instance_id:
+                panel.current_instance_id = instance_id
+            try:
+                with db.session.begin_nested():
+                    _write_mirror(panel_id, mirror, commit=False)
+            except Exception:
+                logger.warning(
+                    "panel %s: mirror persistence failed; keeping the previous complete copy", panel_id, exc_info=True
+                )
+            store_panel_snapshot(panel_id, data, ts, generation=generation)
+            panel.last_poll = ts
+            dirty = True
+        else:
+            store_panel_offline(panel_id, generation=generation)
+        dirty = True
 
         if status == "offline" and (panel.transfer_state or "") == "awaiting_dns":
             status = "transferring"
-        if status == "online" and (panel.transfer_state or ""):
+        if (
+            status == "online"
+            and instance_id
+            and instance_id == panel.current_instance_id
+            and (panel.transfer_state or "")
+        ):
             panel.transfer_state = ""
             dirty = True
             transfer_finished.append(panel.name)
 
         if panel.status == status and (panel.last_error or None) == (error or None):
+            db.session.commit()
             continue
         logger.info("panel %s: %s → %s", panel.name, panel.status, status)
         panel.status = status
@@ -163,6 +286,7 @@ def _record(results):
         else:
             panel.last_error = error
         dirty = True
+        db.session.commit()
 
     if dirty:
         db.session.commit()

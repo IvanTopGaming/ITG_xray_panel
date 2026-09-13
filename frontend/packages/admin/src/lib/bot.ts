@@ -1,4 +1,5 @@
 import api from '@ui/lib/api';
+import { epochMsFromLocalDateTimeInput } from '@ui/lib/datetime';
 import type {
   Tariff,
   TariffWritePayload,
@@ -97,6 +98,8 @@ export async function revokeTariff(
   tariff_id: number;
   disabled_clients: number;
   revoked_grants: number;
+  remote_disabled?: number;
+  panel_failures?: PanelFailure[];
 }> {
   const { data } = await api.delete(`/bot/users/${tgId}/tariffs/${tariffId}`);
   return data;
@@ -143,6 +146,12 @@ export async function getBotUser(tgId: number): Promise<BotUserDetail> {
   return data;
 }
 
+export interface GrantWriteResult extends UserTariffGrant {
+  pending: boolean;
+  panel_failures?: PanelFailure[];
+  operation_id?: string;
+}
+
 export async function createGrant(
   tgId: number,
   payload: {
@@ -152,21 +161,21 @@ export async function createGrant(
     note?: string;
     silent?: boolean;
   }
-): Promise<UserTariffGrant> {
-  const { data } = await api.post<UserTariffGrant>(`/bot/users/${tgId}/grants`, payload);
-  return data;
+): Promise<GrantWriteResult> {
+  const { data, status } = await api.post<GrantWriteResult>(`/bot/users/${tgId}/grants`, payload);
+  return { ...data, pending: status === 202 };
 }
 
 export async function updateGrantTerm(
   tgId: number,
   tariffId: number,
   payload: { access_until: string | null }
-): Promise<UserTariffGrant> {
-  const { data } = await api.patch<UserTariffGrant>(
+): Promise<GrantWriteResult> {
+  const { data, status } = await api.patch<GrantWriteResult>(
     `/bot/users/${tgId}/grants/${tariffId}`,
     payload
   );
-  return data;
+  return { ...data, pending: status === 202 };
 }
 
 export async function listGrants(): Promise<GrantRow[]> {
@@ -179,14 +188,28 @@ export interface PaymentListFilters {
   telegram_id?: number;
   from?: string;
   to?: string;
+  limit?: number;
+  offset?: number;
 }
 
 export async function listPayments(filters: PaymentListFilters = {}): Promise<PaymentListResponse> {
   const params = new URLSearchParams();
   if (filters.status) params.set('status', filters.status);
   if (filters.telegram_id) params.set('telegram_id', String(filters.telegram_id));
-  if (filters.from) params.set('from', filters.from);
-  if (filters.to) params.set('to', filters.to);
+  if (filters.from) {
+    params.set(
+      'from',
+      new Date(epochMsFromLocalDateTimeInput(`${filters.from}T00:00`)).toISOString()
+    );
+  }
+  if (filters.to) {
+    const nextDay = new Date(`${filters.to}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    const end = epochMsFromLocalDateTimeInput(`${nextDay.toISOString().slice(0, 10)}T00:00`);
+    params.set('to_exclusive', new Date(end).toISOString());
+  }
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  if (filters.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();
   const r = await api.get<PaymentListResponse>(`/bot/payments${qs ? `?${qs}` : ''}`);
   return r.data;

@@ -26,23 +26,29 @@ def _client_mock(snapshot=None, exc=None):
     if exc is not None:
         m.snapshot.side_effect = exc
     else:
-        m.snapshot.return_value = snapshot if snapshot is not None else {"timestamp": int(time.time())}
+        m.snapshot.return_value = {
+            "timestamp": int(time.time()),
+            "inbounds": [],
+            "instance_id": "node",
+            **(snapshot or {}),
+        }
     return m
 
 
-def test_poll_skips_db_write_when_status_unchanged(app, db):
+def test_poll_persists_fence_when_status_unchanged(app, db):
     panel = _make_panel(db, status="online", last_poll=12345)
     mock_redis = MagicMock()
 
     with (
         patch("panel_core.jobs.panels.FederationClient", return_value=_client_mock()),
         patch("panel_core.services.panel_proxy.get_shared_redis", return_value=mock_redis),
-        patch.object(db.session, "commit") as mock_commit,
     ):
         poll_linked_panels()
 
-    assert mock_commit.call_count == 0
-    keys = [c.args[0] for c in mock_redis.setex.call_args_list]
+    db.session.refresh(panel)
+    assert panel.status == "online"
+    assert panel.poll_generation == panel.poll_applied_generation == 1
+    keys = list(mock_redis.eval.call_args.args[2:8])
     assert f"panel:{panel.id}:last_poll" in keys
     assert f"panel:{panel.id}:status" in keys
 
@@ -65,7 +71,7 @@ def test_poll_commits_on_status_change(app, db):
     assert panel.last_poll == 1781200000 * 1000
 
 
-def test_poll_offline_commits_once_then_skips(app, db):
+def test_repeated_offline_poll_advances_fence_without_changing_failure(app, db):
     panel = _make_panel(db, status="online")
     failing = _client_mock(exc=RuntimeError("conn refused"))
 
@@ -78,7 +84,10 @@ def test_poll_offline_commits_once_then_skips(app, db):
         assert panel.status == "offline"
         assert "conn refused" in (panel.last_error or "")
 
-        with patch.object(db.session, "commit") as mock_commit:
-            poll_linked_panels()
+        first_error = panel.last_error
+        poll_linked_panels()
 
-    assert mock_commit.call_count == 0
+    db.session.refresh(panel)
+    assert panel.status == "offline"
+    assert panel.last_error == first_error
+    assert panel.poll_generation == panel.poll_applied_generation == 2

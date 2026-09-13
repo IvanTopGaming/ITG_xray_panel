@@ -21,15 +21,19 @@ export function ConfirmationModal({
   description,
   confirmText = 'Confirm',
   confirmVariant = 'danger',
-  isLoading = false,
+  isLoading,
 }: ConfirmationModalProps) {
   const handleConfirm = () => {
+    if (isLoading) return;
     onConfirm();
+    if (isLoading === undefined) onClose();
+  };
+  const handleClose = () => {
     if (!isLoading) onClose();
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={title} maxWidth="max-w-sm">
+    <Modal isOpen={isOpen} onClose={handleClose} title={title} maxWidth="max-w-sm">
       <div className="flex flex-col items-center text-center space-y-4 pt-2 pb-2">
         <div
           className={`p-4 rounded-full ${confirmVariant === 'danger' ? 'bg-red-500/10 text-red-500' : 'bg-primary/10 text-primary'}`}
@@ -39,7 +43,7 @@ export function ConfirmationModal({
         <p className="text-gray-300 text-sm leading-relaxed">{description}</p>
 
         <div className="flex w-full gap-3 mt-4">
-          <Button variant="secondary" className="flex-1" onClick={onClose} disabled={isLoading}>
+          <Button variant="secondary" className="flex-1" onClick={handleClose} disabled={isLoading}>
             Cancel
           </Button>
           <Button

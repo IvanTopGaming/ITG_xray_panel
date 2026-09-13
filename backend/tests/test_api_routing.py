@@ -1,6 +1,6 @@
 import datetime
 import json
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import jwt
 import pytest
@@ -143,7 +143,7 @@ class TestGetProfiles:
 
 class TestCreateProfile:
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_create_minimal(self, mock_gen, mock_restart, client, auth_headers):
         resp = client.post(
             "/api/routing-profiles",
@@ -157,7 +157,7 @@ class TestCreateProfile:
         assert "id" in body
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_create_with_rules(self, mock_gen, mock_restart, client, auth_headers, outbound_direct):
         rules = [
             {
@@ -181,7 +181,7 @@ class TestCreateProfile:
         assert stored_rules[0]["domain"] == ["example.com"]
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_create_disabled(self, mock_gen, mock_restart, client, auth_headers):
         resp = client.post(
             "/api/routing-profiles",
@@ -218,7 +218,7 @@ class TestCreateProfile:
         assert "too long" in resp.get_json()["error"].lower()
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_create_duplicate_name(self, mock_gen, mock_restart, client, auth_headers):
 
         client.post(
@@ -266,7 +266,7 @@ class TestCreateProfile:
         assert "unknown" in resp.get_json()["error"].lower()
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_create_rule_with_balancer_target(self, mock_gen, mock_restart, client, auth_headers, app):
         bal = Balancer(tag="my-balancer", enable=True)
         db.session.add(bal)
@@ -293,7 +293,7 @@ class TestUpdateProfile:
         return p
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_update_name(self, mock_gen, mock_restart, client, auth_headers, profile):
         resp = client.put(
             f"/api/routing-profiles/{profile.id}",
@@ -302,14 +302,14 @@ class TestUpdateProfile:
         )
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "updated"
-        mock_gen.assert_called_once()
+        assert mock_gen.call_args_list == [call(publish=False), call()]
         mock_restart.assert_called_once()
 
         db.session.refresh(profile)
         assert profile.name == "renamed"
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_update_enable(self, mock_gen, mock_restart, client, auth_headers, profile):
         resp = client.put(
             f"/api/routing-profiles/{profile.id}",
@@ -322,7 +322,7 @@ class TestUpdateProfile:
         assert profile.enable is False
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_update_rules(self, mock_gen, mock_restart, client, auth_headers, profile, outbound_block):
         new_rules = [{"outboundTag": "block", "domain": ["ads.example.com"], "enabled": True}]
         resp = client.put(
@@ -346,7 +346,7 @@ class TestUpdateProfile:
         assert resp.status_code == 404
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_update_duplicate_name(self, mock_gen, mock_restart, client, auth_headers, profile):
         other = RoutingProfile(name="other", enable=True, rules="[]")
         db.session.add(other)
@@ -361,7 +361,7 @@ class TestUpdateProfile:
         assert "exists" in resp.get_json()["error"].lower()
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_update_same_name_ok(self, mock_gen, mock_restart, client, auth_headers, profile):
 
         resp = client.put(
@@ -390,7 +390,7 @@ class TestUpdateProfile:
 
 class TestDeleteProfile:
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_delete_profile(self, mock_gen, mock_restart, client, auth_headers):
         p = RoutingProfile(name="to-delete", enable=True, rules="[]")
         db.session.add(p)
@@ -400,7 +400,7 @@ class TestDeleteProfile:
         resp = client.delete(f"/api/routing-profiles/{pid}", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "deleted"
-        mock_gen.assert_called_once()
+        assert mock_gen.call_args_list == [call(publish=False), call()]
         mock_restart.assert_called_once()
 
         assert db.session.get(RoutingProfile, pid) is None
@@ -410,7 +410,7 @@ class TestDeleteProfile:
         assert resp.status_code == 404
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_delete_unlinks_inbounds(self, mock_gen, mock_restart, client, auth_headers):
 
         p = RoutingProfile(name="linked", enable=True, rules="[]")
@@ -549,7 +549,7 @@ class TestRuleFieldPrefixes:
         assert rules[0]["network"] == "TCP,udp"
 
     @patch("panel_core.api.routing.restart_xray_container")
-    @patch("panel_core.api.routing.generate_config_file")
+    @patch("panel_core.services.runtime_apply.generate_config_file")
     def test_api_create_rejects_geoip_in_domain(self, mock_gen, mock_restart, client, auth_headers):
         resp = client.post(
             "/api/routing-profiles",

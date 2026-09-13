@@ -156,15 +156,15 @@ def test_the_host_comes_from_the_panel_url_not_from_this_hosts_domain(botapi_app
     assert "bot.example.com" not in link
 
 
-def test_a_missing_snapshot_yields_no_client_and_no_link(botapi_app, monkeypatch):
-    """A dead cron means an empty subscription, not a broken response."""
-
+def test_a_missing_snapshot_is_retryable_not_an_empty_subscription(botapi_app, monkeypatch):
     _seed(botapi_app, telegram_id=4003)
-
-    data = _state(botapi_app, monkeypatch, 4003, None)
-
-    assert data["clients"] == []
-    assert data["expires_at_ms"] is None
+    monkeypatch.setattr("panel_core.services.panel_proxy.get_panel_snapshot", lambda panel_id: None)
+    response = botapi_app.test_client().get(
+        "/api/bot-service/users/4003/state", headers={"Authorization": "Bearer statetoken"}
+    )
+    assert response.status_code == 503
+    assert response.json["error"] == "subscription_unavailable"
+    assert "clients" not in response.json
 
 
 def test_an_unlimited_key_absorbs_a_dated_one_in_the_aggregate(botapi_app, monkeypatch):

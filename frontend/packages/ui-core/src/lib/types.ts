@@ -30,6 +30,7 @@ export interface Client {
   panel_id?: number | null;
   panel_name?: string;
   sub_url?: string | null;
+  wg_address?: string | null;
 }
 
 export interface UserDevice {
@@ -209,13 +210,19 @@ export interface Tariff {
   created_at: string | null;
   updated_at: string | null;
   items: TariffItem[];
+  rollout?: { status: string; operation_id: string; last_error: string | null } | null;
 }
 
-export type TariffWritePayload = Omit<Tariff, 'id' | 'created_at' | 'updated_at' | 'items'> & {
+export type TariffWritePayload = Omit<
+  Tariff,
+  'id' | 'created_at' | 'updated_at' | 'items' | 'rollout'
+> & {
   items: Omit<TariffItem, 'id'>[];
 };
 
 export interface BackfillSummary {
+  status?: string;
+  operation_id?: string;
   holders: number;
   created_local: number;
   created_remote: number;
@@ -261,7 +268,12 @@ export interface BotUser {
   grants_count: number;
 }
 
-export interface UserTariffGrant {
+export interface GrantProvisioning {
+  provisioning_status?: 'pending' | 'succeeded' | 'revoking' | 'revoked' | 'review';
+  provisioning_revision?: number;
+}
+
+export interface UserTariffGrant extends GrantProvisioning {
   id: number;
   telegram_id: number;
   tariff_id: number;
@@ -271,14 +283,27 @@ export interface UserTariffGrant {
   note: string | null;
 }
 
-export interface BotUserPayment {
+export interface BotUserPayment extends PaymentWorkflow {
   id: number;
   yookassa_id: string;
   amount_rub: number;
-  status: 'pending' | 'succeeded' | 'cancelled' | 'failed';
+  status: PaymentStatus;
   tariff_id: number;
   created_at: string | null;
   paid_at: string | null;
+}
+
+export interface PaymentWorkflow {
+  provider_status?: 'pending' | 'waiting_for_capture' | 'succeeded' | 'canceled';
+  fulfillment_status?: 'pending' | 'processing' | 'succeeded' | 'blocked' | 'retry' | 'review';
+  refund_status?: 'none' | 'partial' | 'processing' | 'pending' | 'completed';
+  refunded_amount_kopeks?: number;
+  fulfillment_error?: string | null;
+  checkout_status?: 'creating' | 'ready' | 'review';
+  refund_pending_targets?: { panel_id?: number | null; error?: string }[];
+  last_checked_at?: string | null;
+  refund_checked_at?: string | null;
+  cancel_requested_at?: string | null;
 }
 
 export interface BotUserDetail extends BotUser {
@@ -287,7 +312,7 @@ export interface BotUserDetail extends BotUser {
   payments: BotUserPayment[];
 }
 
-export interface GrantRow {
+export interface GrantRow extends GrantProvisioning {
   id: number;
   telegram_id: number;
   username: string | null;
@@ -299,9 +324,15 @@ export interface GrantRow {
   note: string | null;
 }
 
-export type PaymentStatus = 'pending' | 'succeeded' | 'cancelled' | 'failed';
+export type PaymentStatus =
+  | 'pending'
+  | 'processing'
+  | 'succeeded'
+  | 'refunded'
+  | 'cancelled'
+  | 'failed';
 
-export interface Payment {
+export interface Payment extends PaymentWorkflow {
   id: number;
   yookassa_id: string;
   telegram_id: number;

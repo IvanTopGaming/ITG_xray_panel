@@ -40,7 +40,7 @@ def _payload_of(proxied) -> dict:
 def test_open_ended_grant_sends_zero_expiry_and_no_idempotency_key(remote_tariff):
     tariff = remote_tariff(traffic_gb=0)
 
-    with patch("panel_core.services.panel_proxy.proxy_provision") as proxied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as proxied:
         proxied.return_value = {"expires_at_ms": 0, "client": {}}
         result = apply_tariff_for_user(701, tariff, source="admin_grant", operation_id="grant:test", expiry_ms=0)
 
@@ -62,7 +62,7 @@ def test_dated_grant_assigns_that_exact_date(remote_tariff):
     tariff = remote_tariff(traffic_gb=10)
     target = 1800000000000
 
-    with patch("panel_core.services.panel_proxy.proxy_provision") as proxied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as proxied:
         proxied.return_value = {"expires_at_ms": target, "client": {}}
         apply_tariff_for_user(702, tariff, source="admin_grant", operation_id="grant:test", expiry_ms=target)
 
@@ -77,7 +77,7 @@ def test_dated_grant_assigns_that_exact_date(remote_tariff):
 def test_omitting_expiry_ms_keeps_the_extend_semantics(remote_tariff):
     tariff = remote_tariff(traffic_gb=300)
 
-    with patch("panel_core.services.panel_proxy.proxy_provision") as proxied:
+    with patch("panel_core.services.provisioning_operations.proxy_provision") as proxied:
         proxied.return_value = {"expires_at_ms": 1, "client": {}}
         apply_tariff_for_user(703, tariff, source="pay", operation_id="pay:1")
 

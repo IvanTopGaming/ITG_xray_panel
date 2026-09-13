@@ -10,6 +10,7 @@ import { toast } from 'react-toastify';
 import { Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { hasLocalXray } from '@ui/lib/panelRole';
 import { useLinkedPanels } from '@ui/hooks/useLinkedPanels';
+import { useMountedRef } from '@ui/hooks/useMountedRef';
 
 interface InboundFormProps {
   inbound?: Inbound;
@@ -71,6 +72,7 @@ const getTransportOptions = (protocol: string, security: string) => {
 };
 
 export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) {
+  const mounted = useMountedRef();
   const isEdit = !!inbound;
   const queryClient = useQueryClient();
   const [showAuthPass, setShowAuthPass] = useState(false);
@@ -213,9 +215,16 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
     }
   }, [protocol, security, network, setValue, supportsTransport, securityOptions, allowedNetworks]);
 
+  const profilePanelId = isEdit ? (inbound?.panel_id ?? null) : targetPanelId;
   const { data: profiles } = useQuery({
-    queryKey: ['routing-profiles'],
-    queryFn: async () => (await api.get<RoutingProfile[]>('/routing-profiles')).data,
+    queryKey: ['routing-profiles', profilePanelId ?? 'local'],
+    queryFn: async () =>
+      (
+        await api.get<RoutingProfile[]>('/routing-profiles', {
+          params: profilePanelId != null ? { panel_id: profilePanelId } : undefined,
+        })
+      ).data,
+    enabled: hasLocalXray || profilePanelId != null,
   });
 
   const appendShortId = (rawShortId: string) => {
@@ -256,7 +265,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inbounds'] });
       toast.success(isEdit ? 'Inbound updated' : 'Inbound created');
-      onSuccess();
+      if (mounted.current) onSuccess();
     },
     onError: (err: any) => toast.error(err.response?.data?.error || 'Save failed'),
   });
@@ -394,6 +403,7 @@ export function InboundForm({ inbound, onSuccess, onCancel }: InboundFormProps) 
           onChange={(e) => {
             const val = e.target.value === 'local' ? null : Number(e.target.value);
             setTargetPanelId(val);
+            setValue('routing_profile_id', '');
           }}
           options={[
             ...(hasLocalXray ? [{ value: 'local', label: 'Master (local)' }] : []),

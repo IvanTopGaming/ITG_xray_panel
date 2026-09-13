@@ -132,6 +132,7 @@ function AreaChart({
   showLabels?: boolean;
 }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  useEffect(() => setHoverIdx(null), [points]);
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -280,7 +281,7 @@ function AreaChart({
           strokeLinejoin="round"
         />
 
-        {hoverIdx !== null && (
+        {hoverIdx !== null && hovered && (
           <>
             <line
               x1={toX(hoverIdx)}
@@ -291,18 +292,8 @@ function AreaChart({
               strokeWidth="1"
               strokeDasharray="3 2"
             />
-            <circle
-              cx={toX(hoverIdx)}
-              cy={toY(points[hoverIdx].up)}
-              r="3.5"
-              fill="rgb(167,139,250)"
-            />
-            <circle
-              cx={toX(hoverIdx)}
-              cy={toY(points[hoverIdx].down)}
-              r="3.5"
-              fill="rgb(96,165,250)"
-            />
+            <circle cx={toX(hoverIdx)} cy={toY(hovered.up)} r="3.5" fill="rgb(167,139,250)" />
+            <circle cx={toX(hoverIdx)} cy={toY(hovered.down)} r="3.5" fill="rgb(96,165,250)" />
           </>
         )}
       </svg>
@@ -693,6 +684,13 @@ export default function Statistics() {
   const [selectedInboundForChart, setSelectedInboundForChart] = useState<string | null>(null);
 
   const [panelId, setPanelId] = useState<number | null>(null);
+  useEffect(() => {
+    setSelectedUserForChart(null);
+    setSelectedInboundForChart(null);
+    setExpandedDomain(null);
+    setDomainTagFilter('');
+    setSearch('');
+  }, [panelId]);
   const { data: panels, isLoading: panelsLoading } = useLinkedPanels(!isWorker);
 
   const selectablePanels = useMemo(
@@ -724,7 +722,11 @@ export default function Statistics() {
     refetchInterval: 30_000,
   });
 
-  const { data: trafficAll } = useQuery<TrafficData>({
+  const {
+    data: trafficAll,
+    error: trafficAllError,
+    refetch: refetchTrafficAll,
+  } = useQuery<TrafficData>({
     queryKey: ['stats-traffic-all', period, customRange, panelId],
     queryFn: async () =>
       (
@@ -740,7 +742,11 @@ export default function Statistics() {
     refetchInterval: 30_000,
   });
 
-  const { data: trafficUser } = useQuery<TrafficData>({
+  const {
+    data: trafficUser,
+    error: trafficUserError,
+    refetch: refetchTrafficUser,
+  } = useQuery<TrafficData>({
     queryKey: ['stats-traffic-user', period, customRange, selectedUserForChart, panelId],
     queryFn: async () =>
       (
@@ -758,7 +764,11 @@ export default function Statistics() {
     refetchInterval: 30_000,
   });
 
-  const { data: trafficInbound } = useQuery<TrafficData>({
+  const {
+    data: trafficInbound,
+    error: trafficInboundError,
+    refetch: refetchTrafficInbound,
+  } = useQuery<TrafficData>({
     queryKey: ['stats-traffic-inbound', period, customRange, selectedInboundForChart, panelId],
     queryFn: async () =>
       (
@@ -796,7 +806,12 @@ export default function Statistics() {
     refetchInterval: 60_000,
   });
 
-  const { data: domainUsersData, isLoading: domainUsersLoading } = useQuery({
+  const {
+    data: domainUsersData,
+    isLoading: domainUsersLoading,
+    error: domainUsersError,
+    refetch: refetchDomainUsers,
+  } = useQuery({
     queryKey: ['stats-domain-users', expandedDomain, period, customRange, panelId],
     queryFn: async () =>
       (
@@ -1041,7 +1056,11 @@ export default function Statistics() {
                   </span>
                 </div>
               </div>
-              <AreaChart points={trafficAll?.points ?? []} height={200} />
+              {trafficAllError ? (
+                <StatsNodeUnreachable error={trafficAllError} onRetry={() => refetchTrafficAll()} />
+              ) : (
+                <AreaChart points={trafficAll?.points ?? []} height={200} />
+              )}
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1168,7 +1187,14 @@ export default function Statistics() {
                       Close
                     </button>
                   </div>
-                  <AreaChart points={trafficUser?.points ?? []} height={160} />
+                  {trafficUserError ? (
+                    <StatsNodeUnreachable
+                      error={trafficUserError}
+                      onRetry={() => refetchTrafficUser()}
+                    />
+                  ) : (
+                    <AreaChart points={trafficUser?.points ?? []} height={160} />
+                  )}
                   {(() => {
                     const u = sortedUsers.find(
                       (x) =>
@@ -1394,7 +1420,14 @@ export default function Statistics() {
                       Close
                     </button>
                   </div>
-                  <AreaChart points={trafficInbound?.points ?? []} height={160} />
+                  {trafficInboundError ? (
+                    <StatsNodeUnreachable
+                      error={trafficInboundError}
+                      onRetry={() => refetchTrafficInbound()}
+                    />
+                  ) : (
+                    <AreaChart points={trafficInbound?.points ?? []} height={160} />
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1612,7 +1645,12 @@ export default function Statistics() {
                                       className="overflow-hidden"
                                     >
                                       <div className="px-6 py-3 bg-emerald-500/[0.03] border-l-2 border-emerald-500/30">
-                                        {domainUsersLoading ? (
+                                        {domainUsersError ? (
+                                          <StatsNodeUnreachable
+                                            error={domainUsersError}
+                                            onRetry={() => refetchDomainUsers()}
+                                          />
+                                        ) : domainUsersLoading ? (
                                           <div className="flex items-center gap-2 py-2 text-xs text-gray-500">
                                             <RefreshCw size={12} className="animate-spin" />
                                             Loading users...

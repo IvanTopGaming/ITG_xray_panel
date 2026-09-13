@@ -1,9 +1,16 @@
 import json
 import os
+import time
+from contextlib import contextmanager
+
+from panel_core.extensions import db
 
 from panel_core.models import (
     Admin,
+    AccessEntitlement,
+    AccountAccessState,
     Balancer,
+    BotEvent,
     Inbound,
     NotificationLog,
     Outbound,
@@ -52,6 +59,13 @@ def _client_row(c):
         "preferred_outbound": c.preferred_outbound or "",
         "telegram_id": c.telegram_id,
         "tariff_id": c.tariff_id,
+        "wg_address": c.wg_address,
+        "access_generation": c.access_generation,
+        "traffic_generation": c.traffic_generation,
+        "provisioning_key": c.provisioning_key,
+        "active_entitlement_source": c.active_entitlement_source,
+        "manual_disabled": bool(c.manual_disabled),
+        "disable_reason": c.disable_reason,
     }
 
 
@@ -64,6 +78,48 @@ def _identity() -> dict:
 
 
 def export_hot_state() -> dict:
+    with _read_transaction():
+        return _export_hot_state()
+
+
+@contextmanager
+def _read_transaction():
+    connection = db.session.connection()
+    if connection.dialect.name == "sqlite":
+        driver = connection.connection.driver_connection
+        if not driver.in_transaction:
+            connection.exec_driver_sql("BEGIN")
+    yield
+
+
+def export_state(*, include_cold=True) -> dict:
+    from panel_core.services.node_identity import get_or_create_instance_id
+    from panel_core.services.state_fingerprint import compute_fingerprint
+
+    instance_id = get_or_create_instance_id()
+    from panel_core.services.bot_events import ensure_event_identity
+
+    unidentified = BotEvent.query.filter(
+        BotEvent.delivered_at.is_(None),
+        db.or_(BotEvent.source == "", BotEvent.origin_event_id.is_(None)),
+    ).all()
+    for event in unidentified:
+        ensure_event_identity(event)
+    if unidentified:
+        db.session.commit()
+    with _read_transaction():
+        result = {
+            "hot": _export_hot_state(),
+            "fingerprint": compute_fingerprint(),
+            "instance_id": instance_id,
+            "timestamp": int(time.time() * 1000),
+        }
+        if include_cold:
+            result["cold"] = export_cold_state()
+        return result
+
+
+def _export_hot_state() -> dict:
     inbounds = []
     for ib in Inbound.query.order_by(Inbound.id).all():
         inbounds.append(
@@ -87,6 +143,21 @@ def export_hot_state() -> dict:
 def export_cold_state() -> dict:
     admin = Admin.query.order_by(Admin.id).first()
     return {
+        "entitlements": [_model_row(row) for row in AccessEntitlement.query.order_by(AccessEntitlement.id).all()],
+        "account_access": [
+            _model_row(row) for row in AccountAccessState.query.order_by(AccountAccessState.telegram_id).all()
+        ],
+        "events": [
+            {
+                "source": event.source,
+                "origin_event_id": event.origin_event_id,
+                "type": event.type,
+                "telegram_id": event.telegram_id,
+                "payload": event.payload,
+                "created_at": event.created_at.isoformat() if event.created_at else None,
+            }
+            for event in BotEvent.query.filter(BotEvent.delivered_at.is_(None)).order_by(BotEvent.id).all()
+        ],
         "outbounds": [
             {
                 "tag": o.tag,
@@ -127,6 +198,7 @@ def export_cold_state() -> dict:
                 "inbound_tag": r.inbound_tag,
                 "telegram_id": r.telegram_id,
                 "response_json": r.response_json,
+                "request_json": r.request_json,
                 "materialized": bool(r.materialized),
             }
             for r in ProvisionReceipt.query.order_by(ProvisionReceipt.id).all()
@@ -151,3 +223,11 @@ def export_cold_state() -> dict:
         ),
         "identity": _identity(),
     }
+
+
+def _model_row(row):
+    result = {}
+    for column in row.__table__.columns:
+        value = getattr(row, column.name)
+        result[column.name] = value.isoformat() if hasattr(value, "isoformat") else value
+    return result

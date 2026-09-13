@@ -124,6 +124,8 @@ def build_share_links(host, protocol, port, stream, client_id, flow, label) -> l
     security = stream.get("security", "none")
     uuid = quote(str(client_id), safe="")
     remark = quote(str(label), safe="")
+    host = str(host).strip("[]")
+    authority_host = f"[{host}]" if ":" in host else host
 
     def _add_transport(query):
         if network == "grpc":
@@ -165,7 +167,7 @@ def build_share_links(host, protocol, port, stream, client_id, flow, label) -> l
             _add_tls(query)
         if flow and stream_supports_vless_flow(stream):
             query["flow"] = flow
-        return [f"vless://{uuid}@{host}:{port}?{urlencode(query)}#{remark}"]
+        return [f"vless://{uuid}@{authority_host}:{port}?{urlencode(query)}#{remark}"]
 
     if protocol == "vmess":
         if network == "grpc":
@@ -198,7 +200,7 @@ def build_share_links(host, protocol, port, stream, client_id, flow, label) -> l
             _add_reality(query)
         elif security == "tls":
             _add_tls(query)
-        return [f"trojan://{uuid}@{host}:{port}?{urlencode(query)}#{remark}"]
+        return [f"trojan://{uuid}@{authority_host}:{port}?{urlencode(query)}#{remark}"]
 
     if protocol == "shadowsocks":
         method = stream.get("ssMethod", "2022-blake3-aes-128-gcm")
@@ -208,7 +210,7 @@ def build_share_links(host, protocol, port, stream, client_id, flow, label) -> l
             server_pass = normalize_ss2022_key(server_pass)
             user_pass = normalize_ss2022_key(user_pass)
         user_part = f"{method}:{server_pass}:{user_pass}" if is_ss2022_method(method) else f"{method}:{user_pass}"
-        return [f"ss://{base64.b64encode(user_part.encode()).decode()}@{host}:{port}#{remark}"]
+        return [f"ss://{base64.b64encode(user_part.encode()).decode()}@{authority_host}:{port}#{remark}"]
 
     return []
 

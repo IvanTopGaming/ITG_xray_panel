@@ -30,6 +30,9 @@ _REPLY = {
         "settings": [],
         "receipts": [],
         "notification_logs": [],
+        "events": [],
+        "entitlements": [],
+        "account_access": [],
         "admin": None,
         "identity": {"panel_domain": "alpha.example.com", "proxy_domain": "www.google.com", "secret_path": "s"},
     },
@@ -148,8 +151,10 @@ def test_a_broken_config_generation_skips_the_restart_but_keeps_the_claim(app, d
 
     with (
         patch.object(job, "MasterClient") as client_cls,
-        patch("panel_core.xray.facade.generate_config_file", side_effect=RuntimeError("disk full")) as mock_gen,
-        patch("panel_core.xray.facade.restart_xray_container") as mock_restart,
+        patch(
+            "panel_core.services.runtime_apply.generate_config_file", side_effect=RuntimeError("disk full")
+        ) as mock_gen,
+        patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
         caplog.at_level("WARNING", logger="panel_core.jobs.transfer"),
     ):
         client_cls.return_value.claim.return_value = _REPLY
@@ -183,9 +188,9 @@ def test_a_failed_restart_is_retried_next_tick_without_recontacting_the_master(a
 
     with (
         patch.object(job, "MasterClient") as client_cls,
-        patch("panel_core.xray.facade.generate_config_file"),
+        patch("panel_core.services.runtime_apply.generate_config_file"),
         patch(
-            "panel_core.xray.facade.restart_xray_container",
+            "panel_core.services.runtime_apply.restart_xray_container",
             side_effect=[RuntimeError("docker down"), None],
         ) as mock_restart,
     ):

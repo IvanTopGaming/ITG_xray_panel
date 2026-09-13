@@ -120,8 +120,10 @@ export function formatDateTimeForLocalInput(input: string | number | null | unde
 
 export function epochMsFromLocalDateTimeInput(str: string): number {
   if (!str) return 0;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(str)) return NaN;
   const want = `${str}:00`;
   const wantAsUtc = Date.parse(want + 'Z');
+  if (!Number.isFinite(wantAsUtc)) return NaN;
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: _timezone,
     year: 'numeric',
@@ -132,12 +134,15 @@ export function epochMsFromLocalDateTimeInput(str: string): number {
     second: '2-digit',
     hour12: false,
   });
-  const parts = Object.fromEntries(fmt.formatToParts(wantAsUtc).map((p) => [p.type, p.value]));
-  let hour = parts.hour;
-  if (hour === '24') hour = '00';
-  const seenStr = `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}:${parts.second}`;
-  const seenAsUtc = Date.parse(seenStr + 'Z');
-  return wantAsUtc + (wantAsUtc - seenAsUtc);
+  let candidate = wantAsUtc;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const parts = Object.fromEntries(fmt.formatToParts(candidate).map((p) => [p.type, p.value]));
+    const hour = parts.hour === '24' ? '00' : parts.hour;
+    const seenStr = `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}:${parts.second}`;
+    if (seenStr === want) return candidate;
+    candidate += wantAsUtc - Date.parse(seenStr + 'Z');
+  }
+  return NaN;
 }
 
 export function epochSecFromLocalDateTimeInput(str: string): number {

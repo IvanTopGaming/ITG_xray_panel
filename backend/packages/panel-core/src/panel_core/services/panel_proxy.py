@@ -292,31 +292,74 @@ def get_panel_liveness(panel_id: int) -> tuple[str | None, int | None]:
         return None, None
 
 
-def store_panel_snapshot(panel_id: int, data: dict, last_poll_ms: int) -> None:
+def store_panel_snapshot(panel_id: int, data: dict, last_poll_ms: int, *, generation=None) -> bool:
 
     r = get_shared_redis()
     if r is None:
-        return
+        return False
     try:
         payload = json.dumps(data).encode()
+        if generation is not None:
+            return bool(
+                r.eval(
+                    "local old=tonumber(redis.call('GET',KEYS[6]) or '-1'); "
+                    "if old>=tonumber(ARGV[1]) then return 0 end; "
+                    "redis.call('SETEX',KEYS[1],ARGV[4],ARGV[2]); "
+                    "redis.call('SETEX',KEYS[2],ARGV[5],'online'); "
+                    "redis.call('SETEX',KEYS[3],ARGV[6],ARGV[3]); "
+                    "redis.call('SET',KEYS[4],ARGV[2]); redis.call('SET',KEYS[5],ARGV[3]); "
+                    "redis.call('SET',KEYS[6],ARGV[1]); return 1",
+                    6,
+                    _snapshot_key(panel_id),
+                    _status_key(panel_id),
+                    _last_poll_key(panel_id),
+                    _last_snapshot_key(panel_id),
+                    _last_seen_key(panel_id),
+                    f"panel:{panel_id}:generation",
+                    generation,
+                    payload,
+                    str(last_poll_ms),
+                    _SNAPSHOT_TTL,
+                    _STATUS_TTL,
+                    _LAST_POLL_TTL,
+                )
+            )
         r.setex(_snapshot_key(panel_id), _SNAPSHOT_TTL, payload)
         r.setex(_status_key(panel_id), _STATUS_TTL, "online")
         r.setex(_last_poll_key(panel_id), _LAST_POLL_TTL, str(last_poll_ms))
         r.set(_last_snapshot_key(panel_id), payload)
         r.set(_last_seen_key(panel_id), str(last_poll_ms))
+        return True
     except Exception as exc:
         logger.debug("panel_proxy: snapshot write failed for panel %d: %s", panel_id, exc)
+        return False
 
 
-def store_panel_offline(panel_id: int) -> None:
+def store_panel_offline(panel_id: int, *, generation=None) -> bool:
 
     r = get_shared_redis()
     if r is None:
-        return
+        return False
     try:
+        if generation is not None:
+            return bool(
+                r.eval(
+                    "local old=tonumber(redis.call('GET',KEYS[2]) or '-1'); "
+                    "if old>=tonumber(ARGV[1]) then return 0 end; "
+                    "redis.call('SETEX',KEYS[1],ARGV[2],'offline'); "
+                    "redis.call('SET',KEYS[2],ARGV[1]); return 1",
+                    2,
+                    _status_key(panel_id),
+                    f"panel:{panel_id}:generation",
+                    generation,
+                    _STATUS_TTL,
+                )
+            )
         r.setex(_status_key(panel_id), _STATUS_TTL, "offline")
+        return True
     except Exception as exc:
         logger.debug("panel_proxy: offline marker write failed for panel %d: %s", panel_id, exc)
+        return False
 
 
 def forget_panel(panel_id: int) -> None:
@@ -332,6 +375,7 @@ def forget_panel(panel_id: int) -> None:
             _last_poll_key(panel_id),
             _last_snapshot_key(panel_id),
             _last_seen_key(panel_id),
+            f"panel:{panel_id}:generation",
         )
     except Exception as exc:
         logger.debug("panel_proxy: key removal failed for panel %d: %s", panel_id, exc)

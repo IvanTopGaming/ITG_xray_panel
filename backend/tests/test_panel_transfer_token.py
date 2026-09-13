@@ -7,12 +7,18 @@ import pytest
 
 from panel_core.models import Admin, LinkedPanel
 from panel_core.utils import SECRET_KEY
+from tests.federation_state_support import cold_state
 
 
 def _panel(db):
     panel = LinkedPanel(name="alpha", url="https://alpha.example.com/secret", federation_token="old-fed", created_at=1)
     db.session.add(panel)
     db.session.commit()
+    from panel_core.services.state_mirror import write_full
+
+    write_full(
+        panel.id, {"inbounds": []}, cold_state(), taken_at=1_700_000_000_000, instance_id="i", fingerprint="initial"
+    )
     return panel
 
 
@@ -65,7 +71,7 @@ def test_issuing_a_token_tries_a_live_copy_first(app, db):
     with patch.object(panel_transfer, "FederationClient") as client_cls:
         client_cls.return_value.state.return_value = {
             "hot": {"inbounds": []},
-            "cold": {"outbounds": []},
+            "cold": cold_state(),
             "fingerprint": "a" * 64,
             "instance_id": "inst-1",
             "app_version": "3.2.0",
@@ -178,11 +184,11 @@ def test_a_mirror_write_failure_does_not_crash_the_endpoint(app, db):
     panel = _panel(db)
     with (
         patch.object(panel_transfer, "FederationClient") as client_cls,
-        patch.object(panel_transfer, "write_hot", side_effect=RuntimeError("db is down")),
+        patch.object(panel_transfer, "write_full", side_effect=RuntimeError("db is down")),
     ):
         client_cls.return_value.state.return_value = {
             "hot": {"inbounds": []},
-            "cold": {"outbounds": []},
+            "cold": cold_state(),
             "fingerprint": "b" * 64,
             "instance_id": "inst-2",
             "app_version": "3.2.0",
@@ -210,7 +216,7 @@ def test_inbounds_not_a_list_leaves_the_mirror_untouched(app, db):
     with patch.object(panel_transfer, "FederationClient") as client_cls:
         client_cls.return_value.state.return_value = {
             "hot": {"inbounds": "oops-not-a-list"},
-            "cold": {},
+            "cold": cold_state(),
             "fingerprint": "c" * 64,
             "instance_id": "inst-3",
             "app_version": "3.2.0",
@@ -240,7 +246,7 @@ def test_a_shrunk_reply_still_raises_the_shrink_flag(app, db):
     with patch.object(panel_transfer, "FederationClient") as client_cls:
         client_cls.return_value.state.return_value = {
             "hot": {"inbounds": [{"clients": [{"email": "u0"}]}]},
-            "cold": {},
+            "cold": cold_state(),
             "fingerprint": "d" * 64,
             "instance_id": "inst-4",
             "app_version": "3.2.0",

@@ -184,19 +184,20 @@ class TestShareLinkFlowCompat:
         )
         assert "flow" not in node
 
-    def test_singbox_outbound_drops_flow_on_xhttp_stream(self):
+    def test_singbox_rejects_xhttp_instead_of_changing_transport(self):
         from panel_core.api.subscription import _build_singbox_outbound
+        from panel_core.services.subscription_sources import UnsupportedSubscriptionFormat
 
-        ob = _build_singbox_outbound(
-            "XH",
-            "vless",
-            "example.com",
-            443,
-            {"network": "xhttp", "security": "tls"},
-            TEST_UUID,
-            "xtls-rprx-vision",
-        )
-        assert "flow" not in ob
+        with pytest.raises(UnsupportedSubscriptionFormat, match="xhttp"):
+            _build_singbox_outbound(
+                "XH",
+                "vless",
+                "example.com",
+                443,
+                {"network": "xhttp", "security": "tls"},
+                TEST_UUID,
+                "xtls-rprx-vision",
+            )
 
 
 class TestV2RaySubscription:
@@ -515,12 +516,22 @@ class TestProfileTitle:
 
 
 class TestSubCacheHit:
-    def test_cache_hit_skips_link_generation(self, client, seed_vless):
+    def test_cache_hit_skips_link_generation(self, app, client, seed_vless):
+        from panel_core.api.subscription import _cache_revision, _local_revision
+
         cached_blob = base64.b64encode(b"vless://cached@host:443").decode()
+        with app.app_context():
+            envelope = json.dumps(
+                {"revision": _cache_revision(_local_revision(db.session.get(Client, seed_vless))), "body": cached_blob}
+            )
         with (
             patch(_PATCH_PANEL, return_value=None),
             patch(_PATCH_DEVICE_GATE, side_effect=_device_gate_ok),
-            patch(_PATCH_SUB_CACHE_GET, return_value=cached_blob),
+            patch(_PATCH_SUB_CACHE_GET, return_value=envelope),
+            patch(
+                "panel_core.api.subscription.get_subscription_content",
+                side_effect=AssertionError("cache should be used"),
+            ),
         ):
             resp = client.get(f"/api/sub/{seed_vless}", headers=_proxy_app_ua())
 
@@ -671,6 +682,8 @@ def _matrix_payload(proto, net, sec):
         "tlsServerName": "tls.example.com",
         "tlsAlpn": "h2,http/1.1",
         "tlsUTLSFingerprint": "chrome",
+        "tlsCertFile": "/etc/xray/certs/server.pem",
+        "tlsKeyFile": "/etc/xray/certs/server.key",
     }
     if sec == "reality":
         p.update(
@@ -733,13 +746,19 @@ def test_link_matrix(proto, net, sec):
     cnode = {}
     _apply_clash_transport(cnode, stream)
     sob = {}
-    _apply_singbox_transport(sob, stream)
+    if net in ("xhttp", "splithttp"):
+        from panel_core.services.subscription_sources import UnsupportedSubscriptionFormat
+
+        with pytest.raises(UnsupportedSubscriptionFormat, match=net):
+            _apply_singbox_transport(sob, stream)
+    else:
+        _apply_singbox_transport(sob, stream)
     if net in ("ws", "httpupgrade"):
         assert cnode.get("network") == "ws" and cnode.get("ws-opts", {}).get("path") == "/mypath"
         assert sob["transport"]["path"] == "/mypath"
     elif net in ("xhttp", "splithttp"):
-        assert cnode.get("network") == "http" and cnode.get("http-opts", {}).get("path") == ["/mypath"]
-        assert sob["transport"]["type"] == "http"
+        assert cnode.get("network") == "xhttp" and cnode.get("xhttp-opts", {}).get("path") == "/mypath"
+        assert sob == {}
     elif net == "grpc":
         assert cnode.get("grpc-opts", {}).get("grpc-service-name") == "mysvc"
         assert sob["transport"]["service_name"] == "mysvc"
@@ -816,6 +835,16 @@ def test_clash_and_singbox_for_user_merge_federation_nodes(app):
 
         with patch("panel_core.services.panel_proxy.get_panel_snapshot", return_value=remote_snapshot):
             clash = generate_clash_config_for_user(TG)
+            from panel_core.services.subscription_sources import UnsupportedSubscriptionFormat
+
+            with pytest.raises(UnsupportedSubscriptionFormat, match="xhttp"):
+                generate_singbox_config_for_user(TG)
+            remote_snapshot["inbounds"][0]["stream_settings"] = {
+                "network": "ws",
+                "security": "tls",
+                "wsSettings": {"path": "/childp"},
+                "tlsSettings": {"serverName": "child.example.com"},
+            }
             singbox = generate_singbox_config_for_user(TG)
 
     cproxies = _yaml.safe_load(clash)["proxies"]
@@ -823,10 +852,10 @@ def test_clash_and_singbox_for_user_merge_federation_nodes(app):
     assert len(cproxies) == 2, cnames
     assert any("Child XHTTP" in n for n in cnames), cnames
     child = next(p for p in cproxies if "Child XHTTP" in p["name"])
-    assert child["server"] == "child.example.com" and child["network"] == "http"
-    assert child["http-opts"]["path"] == ["/childp"]
+    assert child["server"] == "child.example.com" and child["network"] == "xhttp"
+    assert child["xhttp-opts"]["path"] == "/childp"
 
     sout = [o for o in json.loads(singbox)["outbounds"] if o.get("type") == "vless"]
     assert len(sout) == 2, [o["tag"] for o in sout]
     schild = next(o for o in sout if "Child XHTTP" in o["tag"])
-    assert schild["server"] == "child.example.com" and schild["transport"]["type"] == "http"
+    assert schild["server"] == "child.example.com" and schild["transport"]["type"] == "ws"

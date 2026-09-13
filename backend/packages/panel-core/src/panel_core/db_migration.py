@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 28
+CURRENT_DB_VERSION = 29
 CURRENT_BOT_TEXTS_VERSION = 20
 
 
@@ -864,15 +864,104 @@ def _set_db_version(cursor: sqlite3.Cursor, version: int) -> None:
     cursor.execute(f"PRAGMA user_version = {int(version)}")
 
 
+def _ensure_model_tables(cursor):
+    from sqlalchemy.dialects.sqlite import dialect
+    from sqlalchemy.schema import CreateTable
+    from panel_core.schema_metadata import model_metadata
+
+    created = 0
+    for table in model_metadata().sorted_tables:
+        if not _table_exists(cursor, table.name):
+            cursor.execute(str(CreateTable(table).compile(dialect=dialect())))
+            created += 1
+    return created
+
+
+def _ensure_model_columns(cursor):
+    from sqlalchemy.dialects.sqlite import dialect
+    from panel_core.schema_metadata import column_ddl, model_metadata
+
+    changed = 0
+    for table in model_metadata().sorted_tables:
+        for column in table.columns:
+            if _column_exists(cursor, table.name, column.name):
+                continue
+            ddl, _ = column_ddl(column, dialect())
+            cursor.execute(f'ALTER TABLE "{table.name}" ADD COLUMN {ddl}')
+            changed += 1
+    return changed
+
+
+def _ensure_model_indexes(cursor):
+    from sqlalchemy.dialects.sqlite import dialect
+    from panel_core.schema_metadata import model_indexes, model_metadata
+
+    created = 0
+    for table in model_metadata().sorted_tables:
+        unique_columns = set()
+        for row in cursor.execute(f'PRAGMA index_list("{table.name}")').fetchall():
+            if row[2]:
+                unique_columns.add(
+                    tuple(item[2] for item in cursor.execute(f'PRAGMA index_info("{row[1]}")').fetchall())
+                )
+        for name, ddl, unique in model_indexes(table, dialect()):
+            if _index_exists(cursor, name) or unique in unique_columns:
+                continue
+            cursor.execute(ddl)
+            created += 1
+    return created
+
+
+def _backfill_payment_lifecycle(cursor, *, old_version):
+    if old_version >= 29:
+        return 0
+    changed = 0
+    cursor.execute(
+        "UPDATE payment SET provider_status='succeeded', fulfillment_status='succeeded' WHERE status IN ('succeeded','refunded')"
+    )
+    changed += cursor.rowcount
+    cursor.execute(
+        "UPDATE payment SET provider_status='succeeded', fulfillment_status='retry', status='pending', processing_owner=NULL, processing_expires_at=NULL WHERE status='processing'"
+    )
+    changed += cursor.rowcount
+    cursor.execute(
+        "UPDATE payment SET checkout_status='review', fulfillment_error='Legacy checkout has no recoverable provider request' WHERE yookassa_id LIKE 'pending-%' AND (provider_idempotency_key IS NULL OR checkout_payload IS NULL)"
+    )
+    changed += cursor.rowcount
+    return changed
+
+
+def _backfill_wireguard_addresses(cursor):
+    from types import SimpleNamespace
+    from panel_core.services.wireguard import assign_wireguard_addresses
+
+    changed = 0
+    tags = [row[0] for row in cursor.execute("SELECT tag FROM inbound WHERE protocol='wireguard'").fetchall()]
+    for tag in tags:
+        rows = cursor.execute(
+            "SELECT id, email, enable, wg_address FROM client WHERE inbound_tag=? ORDER BY rowid", (tag,)
+        ).fetchall()
+        clients = [SimpleNamespace(id=row[0], email=row[1], enable=bool(row[2]), wg_address=row[3]) for row in rows]
+        pending = [client for client in clients if not client.wg_address]
+        assign_wireguard_addresses(clients)
+        for client in pending:
+            cursor.execute("UPDATE client SET wg_address=? WHERE id=?", (client.wg_address, client.id))
+            changed += 1
+    return changed
+
+
 def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True) -> Dict[str, int]:
     if not db_path:
         raise ValueError("db_path is required")
 
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         old_version = _get_db_version(cursor)
+        if old_version > CURRENT_DB_VERSION:
+            raise ValueError(f"database schema {old_version} is newer than supported schema {CURRENT_DB_VERSION}")
 
         stats_tables = _ensure_stats_tables(cursor)
         retired_tables_dropped = _drop_retired_tables(cursor)
@@ -885,11 +974,16 @@ def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True)
         federation_config_table = _ensure_federation_config_table(cursor)
         user_device_table = _ensure_user_device_table(cursor)
         billing_tables = _ensure_billing_tables(cursor)
+        model_tables = _ensure_model_tables(cursor)
         client_billing_columns = _alter_client_billing_columns(cursor)
-        bot_texts_seeded = _seed_bot_texts(cursor) if seed_bot_texts else 0
         bot_texts_customized_marked = _ensure_bot_text_customized_column(cursor)
+        bot_texts_seeded = _seed_bot_texts(cursor) if seed_bot_texts else 0
         bot_texts_force_reseeded = _maybe_force_reseed_bot_texts(cursor) if seed_bot_texts else False
         schema_changes = _ensure_schema_columns(cursor)
+        schema_changes += _ensure_model_columns(cursor)
+        model_indexes = _ensure_model_indexes(cursor)
+        payment_lifecycle_backfilled = _backfill_payment_lifecycle(cursor, old_version=old_version)
+        wireguard_addresses_backfilled = _backfill_wireguard_addresses(cursor)
         sub_tokens_backfilled = _backfill_sub_tokens(cursor)
         removed_legacy_inbounds, normalized_streams = _cleanup_legacy_inbounds(cursor)
         fixed_rows = _apply_data_fixups(cursor)
@@ -913,6 +1007,10 @@ def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True)
             "federation_config_table_created": federation_config_table,
             "user_device_table_created": user_device_table,
             "billing_tables_created": billing_tables,
+            "model_tables_created": model_tables,
+            "model_indexes_created": model_indexes,
+            "payment_lifecycle_backfilled": payment_lifecycle_backfilled,
+            "wireguard_addresses_backfilled": wireguard_addresses_backfilled,
             "client_billing_columns_added": client_billing_columns,
             "bot_texts_seeded": bot_texts_seeded,
             "bot_texts_customized_marked": bot_texts_customized_marked,
@@ -935,6 +1033,10 @@ def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True)
             or federation_config_table > 0
             or user_device_table > 0
             or billing_tables > 0
+            or model_tables > 0
+            or model_indexes > 0
+            or payment_lifecycle_backfilled > 0
+            or wireguard_addresses_backfilled > 0
             or client_billing_columns > 0
             or bot_texts_seeded > 0
             or bot_texts_customized_marked > 0
@@ -962,5 +1064,8 @@ def migrate_sqlite_db(db_path: str, logger=None, *, seed_bot_texts: bool = True)
                 fixed_rows,
             )
         return report
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

@@ -8,7 +8,14 @@ from panel_core.utils import (
     audit_privileged_change,
     remote_panel_failure,
 )
-from panel_core.xray.facade import generate_config_file, has_local_xray, restart_xray_container
+from panel_core.xray.facade import has_local_xray, restart_xray_container
+from panel_core.services.runtime_apply import (
+    RuntimeApplyError,
+    mark_runtime_dirty,
+    prepare_runtime_config,
+    runtime_mutation,
+    synchronize_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +235,8 @@ def create_profile():
         db.session.commit()
         audit_privileged_change(logger, f"routing profile '{p.name}' created")
         return jsonify({"id": p.id, "name": p.name, "enable": bool(p.enable)}), 201
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
@@ -237,6 +246,7 @@ def create_profile():
 @bp.route("/routing-profiles/<int:pid>", methods=["PUT"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def update_profile(pid):
     panel_id = _requested_panel_id()
     if panel_id:
@@ -270,11 +280,14 @@ def update_profile(pid):
             _ensure_rule_targets_exist(rules)
             p.rules = json.dumps(rules, ensure_ascii=False)
 
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"routing profile '{p.name}' updated")
         return jsonify({"status": "updated"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -285,6 +298,7 @@ def update_profile(pid):
 @bp.route("/routing-profiles/<int:pid>", methods=["DELETE"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def delete_profile(pid):
     panel_id = _requested_panel_id()
     if panel_id:
@@ -307,11 +321,14 @@ def delete_profile(pid):
         for ib in p.inbounds:
             ib.routing_profile_id = None
         db.session.delete(p)
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"routing profile '{profile_name}' deleted")
         return jsonify({"status": "deleted"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400

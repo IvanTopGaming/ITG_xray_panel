@@ -64,7 +64,10 @@ export const useLogStore = create<LogState>((set, get) => ({
       ],
     }));
 
-    _abortController = new AbortController();
+    const controller = new AbortController();
+    _abortController = controller;
+    const isCurrent = () => _abortController === controller && !controller.signal.aborted;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
     try {
       const response = await fetch(LOGS_ENDPOINT, {
@@ -73,8 +76,9 @@ export const useLogStore = create<LogState>((set, get) => ({
           Accept: 'text/event-stream',
         },
         cache: 'no-store',
-        signal: _abortController.signal,
+        signal: controller.signal,
       });
+      if (!isCurrent()) return;
 
       if (!response.ok) {
         throw new Error(`Stream request failed (${response.status})`);
@@ -83,12 +87,13 @@ export const useLogStore = create<LogState>((set, get) => ({
         throw new Error('Stream body is empty');
       }
 
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
 
       while (true) {
         const { value, done } = await reader.read();
+        if (!isCurrent()) return;
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -122,6 +127,7 @@ export const useLogStore = create<LogState>((set, get) => ({
         logs: [...state.logs, { text: '> Stream finished.', ts: Date.now() }],
       }));
     } catch (e: any) {
+      if (!isCurrent()) return;
       if (e.name === 'AbortError') {
         set({ isStreaming: false });
         return;
@@ -134,9 +140,18 @@ export const useLogStore = create<LogState>((set, get) => ({
         ],
       }));
     } finally {
-      _abortController = null;
+      reader?.releaseLock();
+      if (_abortController === controller) _abortController = null;
     }
   },
 
   clearLogs: () => set({ logs: [] }),
 }));
+
+useAuthStore.subscribe((state, previous) => {
+  if (previous.token && state.token !== previous.token) {
+    _abortController?.abort();
+    _abortController = null;
+    useLogStore.setState({ logs: [], isStreaming: false });
+  }
+});

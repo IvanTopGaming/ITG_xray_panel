@@ -6,8 +6,8 @@ import { listBotTexts, listBotTextKeys, updateBotText, resetBotText } from '@/li
 import type { BotTextKeyMeta } from '@ui/lib/types';
 
 interface RowState {
-  ru: string;
-  en: string;
+  ru?: string;
+  en?: string;
   ruDirty: boolean;
   enDirty: boolean;
 }
@@ -48,7 +48,7 @@ export function TextsTab() {
 
   const lookupRow = (key: string, lang: 'ru' | 'en'): string => {
     if (drafts[key] && drafts[key][lang] !== undefined) {
-      return drafts[key][lang];
+      return drafts[key][lang]!;
     }
     const row = textsQuery.data?.find((r) => r.key === key && r.lang === lang);
     if (row) return row.text;
@@ -58,7 +58,7 @@ export function TextsTab() {
 
   const setDraft = (key: string, lang: 'ru' | 'en', value: string) => {
     setDrafts((prev) => {
-      const cur = prev[key] || { ru: '', en: '', ruDirty: false, enDirty: false };
+      const cur = prev[key] || { ruDirty: false, enDirty: false };
       return {
         ...prev,
         [key]: {
@@ -73,15 +73,11 @@ export function TextsTab() {
   const saveMutation = useMutation({
     mutationFn: ({ key, lang, text }: { key: string; lang: 'ru' | 'en'; text: string }) =>
       updateBotText(key, lang, text),
-    onSuccess: (row) => {
+    onSuccess: (row, vars) => {
       toast.success('Saved');
       setDrafts((prev) => {
-        const cur = prev[row.key] || {
-          ru: '',
-          en: '',
-          ruDirty: false,
-          enDirty: false,
-        };
+        const cur = prev[row.key];
+        if (!cur || cur[vars.lang] !== vars.text) return prev;
         return {
           ...prev,
           [row.key]: { ...cur, [`${row.lang}Dirty`]: false } as RowState,
@@ -93,18 +89,21 @@ export function TextsTab() {
   });
 
   const resetMutation = useMutation({
-    mutationFn: ({ key, lang }: { key: string; lang: 'ru' | 'en' }) => resetBotText(key, lang),
-    onSuccess: (_, vars) => {
+    mutationFn: ({ key, lang }: { key: string; lang: 'ru' | 'en'; draft?: string }) =>
+      resetBotText(key, lang),
+    onSuccess: async (_, vars) => {
       toast.success('Reset to default');
+      await queryClient.invalidateQueries({ queryKey: ['bot', 'texts'] });
       setDrafts((prev) => {
         const cur = prev[vars.key];
-        if (!cur) return prev;
+        if (!cur || cur[vars.lang] !== vars.draft) return prev;
+        const next = { ...cur, [`${vars.lang}Dirty`]: false };
+        delete next[vars.lang];
         return {
           ...prev,
-          [vars.key]: { ...cur, [`${vars.lang}Dirty`]: false } as RowState,
+          [vars.key]: next,
         };
       });
-      queryClient.invalidateQueries({ queryKey: ['bot', 'texts'] });
     },
     onError: () => toast.error('Reset failed'),
   });
@@ -209,6 +208,7 @@ export function TextsTab() {
                             resetMutation.mutate({
                               key: selectedMeta.key,
                               lang,
+                              draft: drafts[selectedMeta.key]?.[lang],
                             })
                           }
                           className="rounded-lg bg-white/[0.05] px-3 py-1 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.1] hover:text-white focus:outline-none focus:ring-2 focus:ring-white/20"

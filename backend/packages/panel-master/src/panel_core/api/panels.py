@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import os
 import time
 
@@ -29,18 +30,21 @@ class _HandshakeError(Exception):
         self.message = message
 
 
-def _handshake(url: str, link_token: str) -> str:
+def _handshake(url: str, link_token: str) -> dict:
+    from panel_core.services.panel_transfer import _master_url
 
     setting = SystemSetting.query.filter_by(key="panel_name").first()
     master_name = (setting.value if setting else None) or "Master"
+    master_url = _master_url(require_config=False)
 
     try:
         resp = requests.post(
             f"{url}/api/federation/handshake",
             json={
                 "link_token": link_token,
-                "master_url": request.host_url,
+                "master_url": master_url,
                 "master_name": master_name,
+                "request_id": hashlib.sha256(f"{master_url}|{link_token}".encode()).hexdigest(),
             },
             timeout=10,
             allow_redirects=False,
@@ -57,10 +61,14 @@ def _handshake(url: str, link_token: str) -> str:
             err = resp.text
         raise _HandshakeError(f"Handshake failed: {err}")
 
-    token = str(resp.json().get("federation_token", "") or "")
+    reply = resp.json()
+    token = str(reply.get("federation_token", "") or "")
     if not token:
         raise _HandshakeError("Handshake returned no federation token")
-    return token
+    instance_id = str(reply.get("instance_id") or "")
+    if not instance_id:
+        raise _HandshakeError("Handshake returned no installation identity; upgrade the node first")
+    return {"federation_token": token, "instance_id": instance_id}
 
 
 def _decode_link_token(raw: str) -> tuple[str, str]:
@@ -178,14 +186,15 @@ def create_panel():
             raise ValueError("Panel name already exists")
 
         try:
-            federation_token = _handshake(url, link_token)
+            handshake = _handshake(url, link_token)
         except _HandshakeError as e:
             return jsonify({"error": e.message}), 502
 
         panel = LinkedPanel(
             name=name,
             url=url,
-            federation_token=federation_token,
+            federation_token=handshake["federation_token"],
+            current_instance_id=handshake["instance_id"],
             created_at=int(time.time() * 1000),
         )
         db.session.add(panel)
@@ -252,12 +261,29 @@ def relink_panel(panel_id):
         _validate_panel_url(url)
 
         try:
-            federation_token = _handshake(url, link_token)
+            handshake = _handshake(url, link_token)
         except _HandshakeError as e:
             return jsonify({"error": e.message}), 502
 
-        panel.federation_token = federation_token
+        from panel_core.services.state_mirror import lock_panel
+
+        panel = lock_panel(panel_id)
+        previous_id = panel.current_instance_id
+        if previous_id and previous_id != handshake["instance_id"]:
+            panel.superseded_instance_id = previous_id
+            panel.superseded_token = panel.federation_token
+            panel.superseded_at = int(time.time() * 1000)
+        elif panel.superseded_instance_id == handshake["instance_id"]:
+            panel.superseded_instance_id = None
+            panel.superseded_token = None
+            panel.superseded_at = None
+        panel.federation_token = handshake["federation_token"]
+        panel.current_instance_id = handshake["instance_id"]
         panel.url = url
+        panel.transfer_token = None
+        panel.transfer_state_json = None
+        panel.transfer_state = ""
+        panel.transfer_claimed_instance_id = None
         db.session.commit()
 
         _nudge_panel_refresh(panel.id)
@@ -406,7 +432,7 @@ def test_panel(panel_id):
 @bp.route("/panels/<int:panel_id>/transfer-token", methods=["POST"])
 @token_required
 def issue_panel_transfer_token(panel_id):
-    from panel_core.services.panel_transfer import issue_transfer_token
+    from panel_core.services.panel_transfer import TransferError, issue_transfer_token
 
     panel = db.session.get(LinkedPanel, panel_id)
     if not panel:
@@ -417,6 +443,8 @@ def issue_panel_transfer_token(panel_id):
 
     try:
         result = issue_transfer_token(panel, carry_admin=carry_admin)
+    except TransferError as exc:
+        return jsonify({"error": exc.message}), exc.status
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 

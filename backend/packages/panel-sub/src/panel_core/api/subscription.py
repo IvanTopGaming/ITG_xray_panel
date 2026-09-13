@@ -1,5 +1,7 @@
 import base64
+import hashlib
 import json
+import logging
 import os
 import time
 from urllib.parse import quote
@@ -9,6 +11,13 @@ from panel_core.extensions import limiter, db
 from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
 from panel_core.services.expiry import nearest_expiry
+from panel_core.services.subscription_sources import (
+    SubscriptionUnavailable,
+    UnsupportedSubscriptionFormat,
+    access_reason,
+    aggregate_access_reason,
+    remote_subscription_clients,
+)
 from panel_core.services.sub_links import build_aggregate_sub_url  # noqa: F401 — re-exported under the original name
 from panel_core.xray.protocol import stream_supports_vless_flow
 from panel_core.services.share_links import (
@@ -25,70 +34,58 @@ from panel_core.services.share_links import (
 
 
 bp = Blueprint("subscription", __name__)
+logger = logging.getLogger(__name__)
+
+
+@bp.errorhandler(SubscriptionUnavailable)
+def subscription_unavailable(exc):
+    unsupported = isinstance(exc, UnsupportedSubscriptionFormat)
+    logger.warning("subscription request could not be rendered: %s", exc)
+    return Response(
+        "Unsupported subscription format or transport. Use the raw subscription with a compatible client."
+        if unsupported
+        else "Subscription data is temporarily unavailable. Please retry later.",
+        status=422 if unsupported else 503,
+        mimetype="text/plain",
+        headers={"Cache-Control": "no-store", "Retry-After": "30"},
+    )
 
 
 def _get_remote_links_for_client(client_uuid: str, telegram_id: int | None) -> list[str]:
-
-    from urllib.parse import urlparse
-    from panel_core.models import LinkedPanel
-    from panel_core.services.panel_proxy import get_panel_snapshot
-
     remote_links = []
-    panels = LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all()
-    if not panels:
-        return remote_links
-
-    for panel in panels:
-        snapshot = get_panel_snapshot(panel.id)
-        if not snapshot:
-            continue
+    for host, inbound, client, stream in remote_subscription_clients(
+        telegram_id=telegram_id, client_uuid=None if telegram_id else client_uuid
+    ):
         try:
-            panel_host = urlparse(panel.url).hostname or ""
-        except Exception:
-            continue
-        if not panel_host:
-            continue
-
-        for ib_data in snapshot.get("inbounds", []):
-            for c in ib_data.get("clients", []):
-                if c.get("id") != client_uuid and (not telegram_id or c.get("telegram_id") != telegram_id):
-                    continue
-                if not c.get("enable", True):
-                    continue
-                remote_links.extend(build_remote_link(panel_host, ib_data, c))
+            links = build_remote_link(host, {**inbound, "stream_settings": stream}, client)
+            if not links:
+                raise UnsupportedSubscriptionFormat("The active protocol has no raw subscription representation")
+            remote_links.extend(links)
+        except UnsupportedSubscriptionFormat:
+            raise
+        except Exception as exc:
+            logger.exception("subscription link build failed: panel_id=%s phase=render", inbound.get("panel_id"))
+            raise SubscriptionUnavailable("Subscription link cannot be generated") from exc
     return remote_links
 
 
 def _remote_clients_for_headers(telegram_id, *, only_enabled=True):
-
     from types import SimpleNamespace
-    from panel_core.models import LinkedPanel
-    from panel_core.services.panel_proxy import get_panel_snapshot
 
     out = []
     if not telegram_id:
         return out
-    try:
-        for panel in LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all():
-            snapshot = get_panel_snapshot(panel.id)
-            if not snapshot:
-                continue
-            for ib_data in snapshot.get("inbounds", []):
-                for c in ib_data.get("clients", []):
-                    if c.get("telegram_id") != telegram_id:
-                        continue
-                    if only_enabled and not c.get("enable", True):
-                        continue
-                    out.append(
-                        SimpleNamespace(
-                            up=int(c.get("up", 0) or 0),
-                            down=int(c.get("down", 0) or 0),
-                            limit_bytes=int(c.get("limit_bytes", 0) or 0),
-                            expiry_time=int(c.get("expiry_time", 0) or 0),
-                        )
-                    )
-    except Exception:
-        pass
+    for _, _, client, _ in remote_subscription_clients(telegram_id=telegram_id, only_enabled=only_enabled):
+        expiry = client.get("expiry_time")
+        out.append(
+            SimpleNamespace(
+                up=int(client.get("up", 0) or 0),
+                down=int(client.get("down", 0) or 0),
+                limit_bytes=int(client.get("limit_bytes", 0) or 0),
+                expiry_time=int(expiry) if expiry is not None else None,
+                enable=bool(client.get("enable", True)),
+            )
+        )
     return out
 
 
@@ -129,8 +126,19 @@ def _no_access_remark(lang: str) -> str:
 
 
 def _remark_for(state: str, lang: str = "ru") -> str:
-    if state == "no_access":
+    if state in {"no_access", "expired"}:
         return _no_access_remark(lang)
+    if state in {"blocked", "disabled", "not_configured", "traffic_exhausted"}:
+        texts = {
+            "blocked": ("⛔ Аккаунт заблокирован — обратитесь в поддержку", "⛔ Account blocked — contact support"),
+            "disabled": ("⛔ Доступ отключён — обратитесь в поддержку", "⛔ Access disabled — contact support"),
+            "not_configured": ("⛔ Доступ пока не выдан — откройте бота", "⛔ Access not issued yet — open the bot"),
+            "traffic_exhausted": (
+                "⛔ Лимит трафика исчерпан — откройте бота",
+                "⛔ Traffic limit reached — open the bot",
+            ),
+        }
+        return texts[state][1 if lang == "en" else 0]
     return WARN_REMARK[state]
 
 
@@ -221,8 +229,8 @@ def _filename_from_email(email, ext: str) -> str:
 
     if not email:
         return f"config.{ext}"
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(email))
-    return safe or "config"
+    safe = "".join(c if c.isascii() and (c.isalnum() or c in "._-") else "_" for c in str(email))
+    return f"{safe.strip('._') or 'config'}.{ext}"
 
 
 def _config_filename(client, ext: str) -> str:
@@ -271,6 +279,44 @@ def _encode_links(links) -> str | None:
     return base64.b64encode("\n".join(links).encode("utf-8")).decode("utf-8")
 
 
+def _cache_revision(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _local_revision(client):
+    inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
+    if inbound is None:
+        raise SubscriptionUnavailable("Client inbound is missing")
+    return [
+        client.to_dict(),
+        inbound.protocol,
+        inbound.port,
+        inbound.stream_settings,
+        inbound.label,
+        os.getenv("PANEL_DOMAIN", "localhost"),
+    ]
+
+
+def _cached_body(kind, key, revision, builder):
+    cached = sub_cache.get(kind, key)
+    if cached is not None:
+        try:
+            envelope = json.loads(cached)
+            if (
+                isinstance(envelope, dict)
+                and envelope.get("revision") == revision
+                and isinstance(envelope.get("body"), str)
+            ):
+                return envelope["body"]
+        except (ValueError, TypeError):
+            logger.warning("subscription cache entry invalid; rebuilding kind=%s", kind)
+    body = builder()
+    if not body:
+        raise UnsupportedSubscriptionFormat("The active protocol has no subscription representation")
+    sub_cache.set(kind, key, json.dumps({"revision": revision, "body": body}))
+    return body
+
+
 def _gate_request_headers() -> dict:
 
     return {
@@ -286,11 +332,13 @@ def _gate_request_headers() -> dict:
 def _userinfo_headers(*, up, down, total, expiry_ms, title) -> dict:
 
     headers = {"Profile-Update-Interval": str(_update_interval_hours())}
-    expire_s = int(expiry_ms or 0) // 1000 if expiry_ms else 0
-    headers["subscription-userinfo"] = (
-        f"upload={int(up or 0)}; download={int(down or 0)}; total={int(total or 0)}; expire={expire_s}"
-    )
+    headers["subscription-userinfo"] = f"upload={int(up or 0)}; download={int(down or 0)}; total={int(total or 0)}"
+    if expiry_ms is not None:
+        headers["subscription-userinfo"] += f"; expire={int(expiry_ms) // 1000}"
     if title:
+        title = str(title)
+        if not title.isascii() or any(ord(char) < 32 or ord(char) == 127 for char in title):
+            title = "base64:" + base64.b64encode(title.encode("utf-8")).decode("ascii")
         headers["profile-title"] = title
     return headers
 
@@ -315,7 +363,7 @@ def _snapshot_client_headers(client_data) -> dict:
         up=client_data.get("up", 0),
         down=client_data.get("down", 0),
         total=client_data.get("limit_bytes", 0),
-        expiry_ms=client_data.get("expiry_time", 0),
+        expiry_ms=client_data.get("expiry_time"),
         title=client_data.get("email") or "",
     )
 
@@ -326,7 +374,7 @@ def _aggregate_user_headers(clients) -> dict:
 
     brand = SystemSetting.query.filter_by(key="brand_name").first()
     title = (brand.value if brand and brand.value else "Subscription").strip()[:25]
-    if title.isascii():
+    if title.isascii() and not any(ord(char) < 32 or ord(char) == 127 for char in title):
         headers["profile-title"] = title
     else:
         headers["profile-title"] = "base64:" + base64.b64encode(title.encode("utf-8")).decode("ascii")
@@ -350,9 +398,10 @@ def _aggregate_user_headers(clients) -> dict:
         download = sum(int(c.down or 0) for c in clients)
         total = 0
 
-    expire_s = nearest_expiry([c.expiry_time for c in clients], fallback=0) // 1000
-
-    headers["subscription-userinfo"] = f"upload={upload}; download={download}; total={total}; expire={expire_s}"
+    expiry = nearest_expiry([c.expiry_time for c in clients], fallback=None)
+    headers["subscription-userinfo"] = f"upload={upload}; download={download}; total={total}"
+    if expiry is not None:
+        headers["subscription-userinfo"] += f"; expire={expiry // 1000}"
     return headers
 
 
@@ -383,12 +432,21 @@ def _apply_clash_transport(proxy_node, stream):
         return
 
     if network in ["xhttp", "splithttp"]:
-        proxy_node["network"] = "http"
-        proxy_node["http-opts"] = {"path": [path or "/"]}
+        settings = stream.get("xhttpSettings" if network == "xhttp" else "splitHttpSettings", {})
+        if settings.get("extra"):
+            raise UnsupportedSubscriptionFormat("Advanced XHTTP options need an explicit compatible export")
+        proxy_node["network"] = "xhttp"
+        proxy_node["xhttp-opts"] = {"path": path or "/", "mode": settings.get("mode", "auto")}
         if host:
-            proxy_node["http-opts"]["headers"] = {"Host": [host]}
+            proxy_node["xhttp-opts"]["host"] = host
         return
-
+    if network not in {"tcp", "http"}:
+        raise UnsupportedSubscriptionFormat(f"Unsupported Clash transport: {network}")
+    if network == "http":
+        settings = stream.get("httpSettings", {})
+        proxy_node["network"] = "h2"
+        proxy_node["h2-opts"] = {"path": settings.get("path", "/"), "host": settings.get("host", [])}
+        return
     proxy_node["network"] = network
 
 
@@ -421,14 +479,16 @@ def _apply_singbox_transport(outbound, stream):
             outbound["transport"]["host"] = host
         return
 
-    if network in ["xhttp", "splithttp"]:
+    if network == "http":
+        settings = stream.get("httpSettings", {})
         outbound["transport"] = {
             "type": "http",
-            "path": path or "/",
+            "path": settings.get("path", "/"),
+            "host": settings.get("host", []),
         }
-        if host:
-            outbound["transport"]["host"] = [host]
         return
+    if network != "tcp":
+        raise UnsupportedSubscriptionFormat(f"Unsupported sing-box transport: {network}")
 
 
 _KNOWN_CLIENT_UA_TOKENS = (
@@ -506,21 +566,25 @@ def get_subscription_aggregate(token):
     elif forced_ua in ("v2ray", "v2rayng", "raw"):
         user_agent = "v2ray"
 
-    clients = [] if user.blocked else Client.query.filter_by(telegram_id=user.telegram_id, enable=True).all()
-    try:
+    clients = (
+        []
+        if user.blocked
+        else [
+            client
+            for client in Client.query.filter_by(telegram_id=user.telegram_id).all()
+            if access_reason(client) == "active"
+        ]
+    )
+    if not user.blocked:
         clients = clients + _remote_clients_for_headers(user.telegram_id)
-    except Exception:
-        pass
     headers = _aggregate_user_headers(clients)
 
     def no_access(extra):
         every = Client.query.filter_by(telegram_id=user.telegram_id).all()
-        try:
+        if not user.blocked:
             every = every + _remote_clients_for_headers(user.telegram_id, only_enabled=False)
-        except Exception:
-            pass
         return _warn_response(
-            "no_access",
+            aggregate_access_reason(every, blocked=user.blocked),
             user_agent,
             extra,
             lang=user.language or "ru",
@@ -535,54 +599,32 @@ def get_subscription_aggregate(token):
             shell = fh.read()
         return Response(shell, mimetype="text/html", headers=headers)
 
+    if user.blocked or not clients:
+        return no_access({})
+
     from panel_core.services.device_tracking import user_device_gate
 
     gate_state, extra_headers = user_device_gate(user.telegram_id, _gate_request_headers())
     if gate_state != "ok":
         return _warn_response(gate_state, user_agent, extra_headers, lang=user.language or "ru")
 
-    if user.blocked:
-        return no_access(extra_headers)
-
-    if any(x in user_agent for x in ["clash", "meta", "stash"]):
-        cached = sub_cache.get("u-clash", token)
-        if cached is None:
-            cfg = generate_clash_config_for_user(user.telegram_id)
-            if not cfg:
-                return no_access(extra_headers)
-            sub_cache.set("u-clash", token, cfg)
-            cached = cfg
-        return Response(
-            cached,
-            mimetype="text/yaml",
-            headers={"Content-Disposition": 'attachment; filename="config.yaml"', **headers, **extra_headers},
-        )
-
-    if any(x in user_agent for x in ["sing-box", "nekobox"]):
-        cached = sub_cache.get("u-singbox", token)
-        if cached is None:
-            cfg = generate_singbox_config_for_user(user.telegram_id)
-            if not cfg:
-                return no_access(extra_headers)
-            sub_cache.set("u-singbox", token, cfg)
-            cached = cfg
-        return Response(
-            cached,
-            mimetype="application/json",
-            headers={"Content-Disposition": 'attachment; filename="config.json"', **headers, **extra_headers},
-        )
-
-    cached = sub_cache.get("u-v2ray", token)
-    if cached is None:
-        links = get_subscription_content_for_user(user.telegram_id)
-        if not links:
-            return no_access(extra_headers)
-        cached = base64.b64encode("\n".join(links).encode("utf-8")).decode("utf-8")
-        sub_cache.set("u-v2ray", token, cached)
+    kind, mimetype, ext = _response_format(user_agent)
+    revision = _cache_revision(
+        [
+            [_local_revision(client) for client in clients if isinstance(client, Client)],
+            list(remote_subscription_clients(telegram_id=user.telegram_id)),
+        ]
+    )
+    builders = {
+        "v2ray": lambda: _encode_links(get_subscription_content_for_user(user.telegram_id)),
+        "clash": lambda: generate_clash_config_for_user(user.telegram_id),
+        "singbox": lambda: generate_singbox_config_for_user(user.telegram_id),
+    }
+    cached = _cached_body(f"u-{kind}", token, revision, builders[kind])
     return Response(
         cached,
-        mimetype="text/plain",
-        headers={"Content-Disposition": 'attachment; filename="config.txt"', **headers, **extra_headers},
+        mimetype=mimetype,
+        headers={"Content-Disposition": f'attachment; filename="config.{ext}"', **headers, **extra_headers},
     )
 
 
@@ -592,13 +634,15 @@ def get_subscription(uuid_str):
     user_agent = _resolve_user_agent()
 
     client = db.session.get(Client, uuid_str)
-    if client and client.enable:
+    if client:
         inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
         if not inbound:
-            return "User not found", 404
+            raise SubscriptionUnavailable("Client inbound is missing")
         telegram_id = client.telegram_id
         info_headers = _user_headers(client)
         email = client.email
+        access_client = client
+        revision = _cache_revision(_local_revision(client))
         builders = {
             "v2ray": lambda: _encode_links(get_subscription_content(uuid_str)),
             "clash": lambda: generate_clash_config(uuid_str),
@@ -607,22 +651,25 @@ def get_subscription(uuid_str):
     else:
         pair = _remote_pair_for_uuid(uuid_str)
         if pair is None:
-            if client is None:
-                return "User not found", 404
-            lang = "ru"
-            if client.telegram_id:
-                owner = db.session.get(TelegramUser, client.telegram_id)
-                lang = (owner.language if owner else "ru") or "ru"
-            return _warn_response("no_access", user_agent, {}, lang=lang, info=_user_headers(client))
+            return "User not found", 404
         host, ib_data, client_data, stream = pair
         telegram_id = client_data.get("telegram_id")
         info_headers = _snapshot_client_headers(client_data)
         email = client_data.get("email") or ""
+        access_client = client_data
+        revision = _cache_revision(pair)
         builders = {
             "v2ray": lambda: _encode_links(build_remote_link(host, ib_data, client_data)),
             "clash": lambda: _remote_clash_config(host, ib_data, client_data, stream),
             "singbox": lambda: _remote_singbox_config(host, ib_data, client_data, stream),
         }
+
+    owner = db.session.get(TelegramUser, telegram_id) if telegram_id else None
+    reason = access_reason(access_client, blocked=bool(owner and owner.blocked))
+    if reason != "active":
+        return _warn_response(
+            reason, user_agent, {}, lang=(owner.language if owner else "ru") or "ru", info=info_headers
+        )
 
     from panel_core.services.device_tracking import user_device_gate
 
@@ -631,12 +678,7 @@ def get_subscription(uuid_str):
         return _warn_response(state, user_agent, extra_headers)
 
     kind, mimetype, ext = _response_format(user_agent)
-    body = sub_cache.get(kind, uuid_str)
-    if body is None:
-        body = builders[kind]()
-        if not body:
-            return "User not found", 404
-        sub_cache.set(kind, uuid_str, body)
+    body = _cached_body(kind, uuid_str, revision, builders[kind])
 
     return Response(
         body,
@@ -655,18 +697,15 @@ def get_subscription_content(uuid_str):
     client = db.session.get(Client, uuid_str)
     if not client:
         return local
-    try:
-        remote = _get_remote_links_for_client(uuid_str, None)
-    except Exception:
-        remote = []
+    remote = _get_remote_links_for_client(uuid_str, None)
     links = (local or []) + remote
     return links if links else None
 
 
 def _enabled_client_ids_for_user(telegram_id):
 
-    rows = Client.query.filter_by(telegram_id=telegram_id, enable=True).with_entities(Client.id).all()
-    return [r[0] for r in rows if r[0]]
+    rows = Client.query.filter_by(telegram_id=telegram_id, enable=True).all()
+    return [row.id for row in rows if row.id and access_reason(row) == "active"]
 
 
 def get_subscription_content_for_user(telegram_id):
@@ -676,10 +715,7 @@ def get_subscription_content_for_user(telegram_id):
         local = _get_local_subscription_content(cid)
         if local:
             links.extend(local)
-    try:
-        remote = _get_remote_links_for_client(None, telegram_id)
-    except Exception:
-        remote = []
+    remote = _get_remote_links_for_client(None, telegram_id)
     links.extend(remote)
     return links if links else None
 
@@ -697,58 +733,26 @@ def _get_local_subscription_content(uuid_str):
 
 
 def _iter_remote_pairs():
-
-    from urllib.parse import urlparse
-    from panel_core.models import LinkedPanel
-    from panel_core.services.panel_proxy import get_panel_snapshot
-
-    for panel in LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all():
-        snapshot = get_panel_snapshot(panel.id)
-        if not snapshot:
-            continue
-        host = ""
-        try:
-            host = urlparse(panel.url).hostname or ""
-        except Exception:
-            host = ""
-        if not host:
-            continue
-        for ib_data in snapshot.get("inbounds", []):
-            for c in ib_data.get("clients", []):
-                if not c.get("enable", True):
-                    continue
-                stream = ib_data.get("stream_settings", {})
-                if isinstance(stream, str):
-                    try:
-                        stream = json.loads(stream)
-                    except Exception:
-                        stream = {}
-                yield host, ib_data, c, stream
+    yield from remote_subscription_clients()
 
 
 def _remote_inbound_client_pairs(telegram_id):
 
     if not telegram_id:
         return
-    for host, ib_data, c, stream in _iter_remote_pairs():
-        if c.get("telegram_id") != telegram_id:
-            continue
-        yield host, ib_data, c, stream
+    yield from remote_subscription_clients(telegram_id=telegram_id)
 
 
 def _remote_pair_for_uuid(uuid_str):
-
-    try:
-        for host, ib_data, c, stream in _iter_remote_pairs():
-            if c.get("id") == uuid_str:
-                return host, ib_data, c, stream
-    except Exception:
-        return None
+    for pair in remote_subscription_clients(client_uuid=uuid_str, only_enabled=False):
+        return pair
     return None
 
 
 def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
 
+    if protocol not in {"vless", "vmess", "trojan", "shadowsocks"}:
+        raise UnsupportedSubscriptionFormat(f"Unsupported Clash protocol: {protocol}")
     if not isinstance(stream, dict):
         stream = {}
     security = stream.get("security", "none")
@@ -775,6 +779,9 @@ def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
         fp = extract_tls_utls_fingerprint(stream)
         if fp:
             n["client-fingerprint"] = fp
+        alpn = extract_tls_alpn(stream)
+        if alpn:
+            n["alpn"] = alpn
 
     if protocol == "vless":
         node.update({"uuid": client_id, "network": stream.get("network", "tcp"), "udp": True})
@@ -823,6 +830,8 @@ def _build_clash_proxy(name, protocol, host, port, stream, client_id, flow):
 
 def _build_singbox_outbound(tag, protocol, host, port, stream, client_id, flow):
 
+    if protocol not in {"vless", "vmess", "trojan", "shadowsocks"}:
+        raise UnsupportedSubscriptionFormat(f"Unsupported sing-box protocol: {protocol}")
     if not isinstance(stream, dict):
         stream = {}
     security = stream.get("security", "none")
@@ -1023,7 +1032,7 @@ def generate_clash_config_for_user(telegram_id):
 
     for host, ib_data, c, stream in _remote_inbound_client_pairs(telegram_id):
         label = ib_data.get("label") or ib_data.get("tag", "remote")
-        name = f"{label}-{c.get('email') or c.get('id', '')}"
+        name = f"{label}-{c.get('email') or c.get('id', '')} [{ib_data['panel_id']}:{ib_data.get('tag', '')}:{c.get('id', '')}]"
         if name in seen:
             continue
         seen.add(name)
@@ -1039,8 +1048,11 @@ def generate_clash_config_for_user(telegram_id):
                     c.get("flow", ""),
                 )
             )
-        except Exception:
-            pass
+        except UnsupportedSubscriptionFormat:
+            raise
+        except Exception as exc:
+            logger.exception("subscription Clash build failed: panel_id=%s phase=render", ib_data.get("panel_id"))
+            raise SubscriptionUnavailable("Clash configuration cannot be generated") from exc
 
     return _clash_document(proxies)
 
@@ -1073,7 +1085,7 @@ def generate_singbox_config_for_user(telegram_id):
 
     for host, ib_data, c, stream in _remote_inbound_client_pairs(telegram_id):
         label = ib_data.get("label") or ib_data.get("tag", "remote")
-        tag = f"{label}-{c.get('email') or c.get('id', '')}"
+        tag = f"{label}-{c.get('email') or c.get('id', '')} [{ib_data['panel_id']}:{ib_data.get('tag', '')}:{c.get('id', '')}]"
         if tag in seen:
             continue
         seen.add(tag)
@@ -1089,8 +1101,11 @@ def generate_singbox_config_for_user(telegram_id):
                     c.get("flow", ""),
                 )
             )
-        except Exception:
-            pass
+        except UnsupportedSubscriptionFormat:
+            raise
+        except Exception as exc:
+            logger.exception("subscription sing-box build failed: panel_id=%s phase=render", ib_data.get("panel_id"))
+            raise SubscriptionUnavailable("sing-box configuration cannot be generated") from exc
 
     if not outbounds:
         return None
@@ -1180,47 +1195,36 @@ def _user_page_nodes(telegram_id):
                 "tag": _protocol_tag(ib.protocol, ib.stream_settings),
                 "used": used,
                 "limit": limit,
-                "expiry": int(c.expiry_time or 0),
+                "expiry": c.expiry_time,
                 "expiry_raw": c.expiry_time,
                 "online": online,
-                "enabled": bool(c.enable),
+                "enabled": access_reason(c) == "active",
+                "reason": access_reason(c),
                 "unlimited": limit <= 0,
             }
         )
 
-    try:
-        from panel_core.models import LinkedPanel
-        from panel_core.services.panel_proxy import get_panel_liveness, get_panel_snapshot
+    from panel_core.services.panel_proxy import get_panel_liveness
 
-        for panel in LinkedPanel.query.filter_by(enable=True).options(db.defer(LinkedPanel.federation_token)).all():
-            snapshot = get_panel_snapshot(panel.id)
-            if not snapshot:
-                continue
-            live_status, _ = get_panel_liveness(panel.id)
-            status = (live_status or panel.status or "").lower()
-            panel_online = status != "offline"
-            for ib_data in snapshot.get("inbounds", []):
-                for c in ib_data.get("clients", []):
-                    if c.get("telegram_id") != telegram_id:
-                        continue
-                    used = int(c.get("up", 0) or 0) + int(c.get("down", 0) or 0)
-                    limit = int(c.get("limit_bytes", 0) or 0)
-                    enabled = bool(c.get("enable", True))
-                    nodes.append(
-                        {
-                            "name": ib_data.get("label") or ib_data.get("tag", "remote"),
-                            "tag": _protocol_tag(ib_data.get("protocol", ""), ib_data.get("stream_settings", {})),
-                            "used": used,
-                            "limit": limit,
-                            "expiry": int(c.get("expiry_time", 0) or 0),
-                            "expiry_raw": c.get("expiry_time"),
-                            "online": panel_online and enabled,
-                            "enabled": enabled,
-                            "unlimited": limit <= 0,
-                        }
-                    )
-    except Exception:
-        pass
+    for _, inbound, client, stream in remote_subscription_clients(telegram_id=telegram_id, only_enabled=False):
+        live_status, _ = get_panel_liveness(inbound["panel_id"])
+        used = int(client.get("up", 0) or 0) + int(client.get("down", 0) or 0)
+        limit = int(client.get("limit_bytes", 0) or 0)
+        enabled = access_reason(client) == "active"
+        nodes.append(
+            {
+                "name": inbound.get("label") or inbound.get("tag", "remote"),
+                "tag": _protocol_tag(inbound.get("protocol", ""), stream),
+                "used": used,
+                "limit": limit,
+                "expiry": client.get("expiry_time"),
+                "expiry_raw": client.get("expiry_time"),
+                "online": live_status == "online" and enabled,
+                "enabled": enabled,
+                "reason": access_reason(client),
+                "unlimited": limit <= 0,
+            }
+        )
 
     return nodes
 
@@ -1239,7 +1243,7 @@ def _subscription_info_payload(user, token) -> dict:
     brand_row = SystemSetting.query.filter_by(key="brand_name").first()
     brand = (brand_row.value if brand_row and brand_row.value else "").strip()
 
-    nodes = _user_page_nodes(user.telegram_id)
+    nodes = [] if user.blocked else _user_page_nodes(user.telegram_id)
     dev = _user_device_summary(user.telegram_id)
 
     interval_row = SystemSetting.query.filter_by(key="subscription_update_interval_hours").first()
@@ -1254,12 +1258,22 @@ def _subscription_info_payload(user, token) -> dict:
     known_enabled = [e for e in enabled_expiries if e is not None]
     expiries = enabled_expiries if known_enabled else [n["expiry_raw"] for n in nodes]
     active = not user.blocked and any(n["enabled"] for n in nodes)
+    reasons = {node["reason"] for node in nodes}
+    reason = (
+        "blocked"
+        if user.blocked
+        else next(
+            (reason for reason in ("active", "disabled", "traffic_exhausted", "expired") if reason in reasons),
+            "not_configured",
+        )
+    )
 
     return {
         "brand": brand,
         "sub_url": _absolute_sub_url(token),
         "status": "active" if active else "disabled",
-        "expiry_at": nearest_expiry(expiries, fallback=0),
+        "reason": reason,
+        "expiry_at": nearest_expiry(expiries, fallback=None),
         "devices": None if dev is None else {"count": dev["count"], "limit": dev["limit"]},
         "nodes": [
             {
@@ -1281,6 +1295,8 @@ def _subscription_info_payload(user, token) -> dict:
 @limiter.limit("180 per minute")
 def get_subscription_info(token):
     user = TelegramUser.query.filter_by(sub_token=token).first()
-    if not user or user.blocked:
+    if not user:
         return "User not found", 404
-    return jsonify(_subscription_info_payload(user, token))
+    response = jsonify(_subscription_info_payload(user, token))
+    response.headers["Cache-Control"] = "no-store"
+    return response

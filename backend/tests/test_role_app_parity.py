@@ -16,12 +16,13 @@ WORKER_BLUEPRINTS = {
 }
 MASTER_BLUEPRINTS = (WORKER_BLUEPRINTS - {"federation", "backup"}) | {"bot_admin", "panels"}
 SUB_BLUEPRINTS = {"subscription"}
-BOT_BLUEPRINTS = {"bot_service", "billing"}
+BOT_BLUEPRINTS = {"bot_service", "billing", "bot_delivery"}
 
 DATA_PLANE_JOBS = {
     ("sync_traffic", 10),
     ("check_limits", 60),
     ("parse_logs", 15),
+    ("retry_runtime", 10),
 }
 DB_MAINTENANCE_JOBS = {
     ("cleanup_stats", 86400),
@@ -46,6 +47,7 @@ CRON_JOBS = {
     ("poll_linked_panels", 10),
     ("replay_undelivered_bot_events", 60),
     ("reset_grant_traffic_cycles", 900),
+    ("retry_pending_provisioning", 30),
     ("cleanup_bot_events", 86400),
     ("check_latest_version", 21600),
     ("archive_panel_state", 86400),

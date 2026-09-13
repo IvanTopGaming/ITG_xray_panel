@@ -32,7 +32,7 @@ async def test_zero_reads_as_permanent_not_as_a_question_mark(etype):
     bot = AsyncMock()
     i18n = _i18n()
 
-    await consumer._handle(
+    await consumer._render_event(
         {"type": etype, "telegram_id": 42, "payload": {"lang": "ru", "expires_at_ms": 0, "tariff_name": "Pro"}},
         lambda: bot,
         i18n,

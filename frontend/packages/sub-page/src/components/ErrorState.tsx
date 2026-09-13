@@ -1,13 +1,24 @@
 import { t, type Lang } from '@/lib/i18n';
+import type { SubInfoError } from '@/lib/types';
 
-export default function ErrorState({ lang, onRetry }: { lang: Lang; onRetry: () => void }) {
+export default function ErrorState({
+  lang,
+  error,
+  onRetry,
+}: {
+  lang: Lang;
+  error: SubInfoError;
+  onRetry: () => void;
+}) {
   return (
     <div className="mx-auto max-w-3xl px-4 pb-16 pt-8">
       <div className="rounded-[20px] border border-white/[0.06] bg-white/[0.04] p-5 text-center backdrop-blur-xl">
         <div className="mx-auto mb-4 flex h-[42px] w-[42px] items-center justify-center rounded-[13px] border border-error/25 bg-error/[0.12] text-xl">
           ⚠
         </div>
-        <p className="mb-4 text-[15px] text-[#eae6f0]">{t('load_failed', lang)}</p>
+        <p role="alert" className="mb-4 text-[15px] text-[#eae6f0]">
+          {t(`load_${error}`, lang)}
+        </p>
         <button
           type="button"
           onClick={onRetry}

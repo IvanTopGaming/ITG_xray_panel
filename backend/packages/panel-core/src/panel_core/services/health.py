@@ -29,11 +29,13 @@ one that says that reading is unavailable.
 """
 
 import logging
+import datetime as dt
 
 from sqlalchemy import text
 
-from panel_core.extensions import db, get_shared_redis, redis_answered
+from panel_core.extensions import db, get_shared_redis
 from panel_core.services.offsite import read_status as read_offsite_status
+from panel_core.services.job_status import read_job_status
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +67,63 @@ def _stuck_payments():
                 cutoff=_hours_ago(STUCK_PENDING_HOURS),
             )
         )
-        return {"available": True, "processing": processing, "pending_over_a_day": pending}
+        pending_fulfillment = int(
+            _scalar(
+                "SELECT COUNT(*) FROM payment WHERE provider_status = 'succeeded' AND fulfillment_status <> 'succeeded'"
+            )
+        )
+        pending_refunds = int(
+            _scalar(
+                "SELECT COUNT(*) FROM payment WHERE refund_status IN ('pending', 'processing', 'retry', 'review', 'failed')"
+            )
+        )
+        review = int(
+            _scalar(
+                "SELECT COUNT(*) FROM payment WHERE checkout_status = 'review' OR fulfillment_status = 'review' OR refund_status = 'review'"
+            )
+        )
+        return {
+            "available": True,
+            "processing": processing,
+            "pending_over_a_day": pending,
+            "pending_fulfillment": pending_fulfillment,
+            "pending_refunds": pending_refunds,
+            "review": review,
+        }
     except Exception as exc:
         logger.debug("health: stuck payment count failed: %s", exc)
+        db.session.rollback()
+        return {"available": False}
+
+
+def _event_delivery():
+    from panel_core.models import BotDelivery
+
+    try:
+        counts = dict(
+            db.session.query(BotDelivery.state, db.func.count(BotDelivery.id)).group_by(BotDelivery.state).all()
+        )
+        oldest = (
+            db.session.query(db.func.min(BotDelivery.created_at))
+            .filter(BotDelivery.state.in_(("pending", "leased")))
+            .scalar()
+        )
+        oldest_ms = int(oldest.replace(tzinfo=dt.timezone.utc).timestamp() * 1000) if oldest else None
+        now_ms = int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
+        attention = bool(
+            counts.get("review") or counts.get("permanent") or (oldest_ms is not None and now_ms - oldest_ms > 300000)
+        )
+        return {
+            "available": True,
+            "pending": counts.get("pending", 0),
+            "leased": counts.get("leased", 0),
+            "review": counts.get("review", 0),
+            "permanent": counts.get("permanent", 0),
+            "oldest_pending_ms": oldest_ms,
+            "needs_attention": attention,
+        }
+    except Exception as exc:
+        logger.warning("health: event inbox reading failed: %s", type(exc).__name__)
         db.session.rollback()
         return {"available": False}
 
@@ -94,10 +150,7 @@ def _data_tier():
             client.ping()
             shared_redis = "ok"
         except Exception as exc:
-            if redis_answered(exc):
-                shared_redis = "ok"
-            else:
-                logger.debug("health: shared Redis probe failed: %s", exc)
+            logger.debug("health: shared Redis probe failed: %s", exc)
     else:
         shared_redis = "not configured"
 
@@ -115,7 +168,9 @@ def _offsite_backup():
 
 def collect():
     return {
+        "jobs": read_job_status(),
         "undelivered_events": _undelivered_events(),
+        "event_delivery": _event_delivery(),
         "stuck_payments": _stuck_payments(),
         "data_tier": _data_tier(),
         "offsite_backup": _offsite_backup(),

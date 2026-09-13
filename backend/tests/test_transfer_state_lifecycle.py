@@ -11,6 +11,7 @@ def _panel(db, transfer_state="awaiting_dns"):
         created_at=1,
         transfer_state=transfer_state,
         status="online",
+        current_instance_id="replacement",
     )
     db.session.add(panel)
     db.session.commit()
@@ -38,7 +39,11 @@ def test_the_first_successful_poll_clears_the_transfer_state(app, db):
     panel = _panel(db)
     with patch.object(job, "mirror_from_snapshot"):
         with patch.object(job, "FederationClient") as client_cls:
-            client_cls.return_value.snapshot.return_value = {"timestamp": 1, "inbounds": []}
+            client_cls.return_value.snapshot.return_value = {
+                "timestamp": 1,
+                "inbounds": [],
+                "instance_id": "replacement",
+            }
             job._record([job._poll_one(panel.id, panel.url, panel.federation_token)])
 
     assert panel.transfer_state == ""
@@ -97,7 +102,11 @@ def test_transfer_finished_is_logged_only_after_the_commit_succeeds(app, db, cap
     panel = _panel(db)
     with patch.object(job, "mirror_from_snapshot"):
         with patch.object(job, "FederationClient") as client_cls:
-            client_cls.return_value.snapshot.return_value = {"timestamp": 1, "inbounds": []}
+            client_cls.return_value.snapshot.return_value = {
+                "timestamp": 1,
+                "inbounds": [],
+                "instance_id": "replacement",
+            }
             result = job._poll_one(panel.id, panel.url, panel.federation_token)
 
     with patch.object(job.db.session, "commit", side_effect=RuntimeError("db is gone")):

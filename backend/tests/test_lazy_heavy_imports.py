@@ -12,6 +12,8 @@ from tests.import_graph import (
 )
 
 ALLOWED_LAZY_HEAVY_FILES = {
+    "xray/engine.py": "worker-only GeoDB validation imports generated router protobufs only during an asset update",
+    "xray/grpc_client.py": "worker-only protocol-specific VMess protobuf and authoritative Docker runtime epoch lookup",
     "dispatch.py": (
         "the role dispatcher: create_app() imports panel_core.roles.worker only when PANEL_ROLE=worker, "
         "which is exactly how the light roles avoid the heavy stack"
@@ -87,6 +89,7 @@ LOCAL_GATEWAY_METHODS = (
     "update_geo",
     "reset_user_counters",
     "reset_inbound_counters",
+    "read_traffic_counters",
 )
 
 

@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import update
 
 from panel_core.extensions import db
-from panel_core.models import SystemSetting, Tariff, TariffItem
+from panel_core.models import BotEvent, SystemSetting, Tariff, TariffItem, Inbound
 
 
 @pytest.fixture
@@ -40,6 +40,7 @@ def bot_token(app):
 @pytest.fixture
 def public_tariff(app, bot_token):
     with app.app_context():
+        db.session.add(Inbound(tag="vless-de", protocol="vless", port=14443, stream_settings="{}"))
         t = Tariff(
             name="Standard 30d",
             price_rub=150,
@@ -64,8 +65,11 @@ def test_checkout_requires_bot_token(client, public_tariff):
 
 def test_checkout_success_returns_url(client, bot_token, public_tariff):
     with patch("panel_core.services.billing.yookassa.Payment.create") as mock_create:
-        mock_create.return_value = SimpleNamespace(
-            id="yk-1", confirmation=SimpleNamespace(confirmation_url="https://yk.test/p/1")
+        mock_create.side_effect = lambda payload, key: SimpleNamespace(
+            id="yk-1",
+            amount=SimpleNamespace(**payload["amount"]),
+            metadata=payload["metadata"],
+            confirmation=SimpleNamespace(confirmation_url="https://yk.test/p/1"),
         )
         resp = client.post(
             "/api/billing/checkout",
@@ -121,7 +125,12 @@ def _make_pending(app, public_tariff, yk_id="yk-pending-1"):
             yookassa_id=yk_id,
             telegram_id=42,
             tariff_id=public_tariff,
-            tariff_snapshot={"name": "x", "price_rub": 150, "period_days": 30, "items": []},
+            tariff_snapshot={
+                "name": "x",
+                "price_rub": 150,
+                "period_days": 30,
+                "items": [{"inbound_tag": "vless-de", "traffic_gb": 0, "panel_id": None}],
+            },
             amount_rub=150,
             status="pending",
             metadata_json={"lang": "ru"},
@@ -136,9 +145,10 @@ def test_webhook_processes_succeeded_payment(client, public_tariff, app):
     with (
         patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
         patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish"),
     ):
-        mock_find.return_value = SimpleNamespace(status="succeeded")
+        mock_find.return_value = SimpleNamespace(
+            id="yk-pending-1", status="succeeded", amount=SimpleNamespace(value="150.00", currency="RUB"), metadata={}
+        )
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         resp = client.post(
             "/api/billing/yookassa/webhook",
@@ -154,9 +164,10 @@ def test_webhook_is_idempotent_on_repeat_delivery(client, public_tariff, app):
     with (
         patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
         patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish"),
     ):
-        mock_find.return_value = SimpleNamespace(status="succeeded")
+        mock_find.return_value = SimpleNamespace(
+            id="yk-pending-1", status="succeeded", amount=SimpleNamespace(value="150.00", currency="RUB"), metadata={}
+        )
         mock_provision.return_value = {"clients": [], "expires_at_ms": 9999999999000, "source": "yookassa"}
         for _ in range(2):
             resp = client.post(
@@ -172,9 +183,10 @@ def test_webhook_marks_cancelled(client, public_tariff, app):
     pid = _make_pending(app, public_tariff)
     with (
         patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
-        patch("panel_core.services.billing.bot_events.publish") as mock_publish,
     ):
-        mock_find.return_value = SimpleNamespace(status="canceled")
+        mock_find.return_value = SimpleNamespace(
+            id="yk-pending-1", status="canceled", amount=SimpleNamespace(value="150.00", currency="RUB"), metadata={}
+        )
         resp = client.post(
             "/api/billing/yookassa/webhook",
             json={"event": "payment.canceled", "object": {"id": "yk-pending-1"}},
@@ -182,15 +194,18 @@ def test_webhook_marks_cancelled(client, public_tariff, app):
     assert resp.status_code == 200
     with app.app_context():
         assert db.session.get(Payment, pid).status == "cancelled"
-    mock_publish.assert_called_once()
-    assert mock_publish.call_args.args[0] == "payment_cancelled"
+    with app.app_context():
+        assert BotEvent.query.filter_by(type="payment_cancelled").count() == 1
 
 
-def test_webhook_returns_200_for_unknown_payment(client, public_tariff):
-    resp = client.post(
-        "/api/billing/yookassa/webhook",
-        json={"event": "payment.succeeded", "object": {"id": "unknown-yk"}},
-    )
+def test_webhook_returns_200_for_verified_unknown_payment(client, public_tariff):
+    with patch(
+        "panel_core.services.billing.yookassa.Payment.find_one",
+        return_value=SimpleNamespace(id="unknown-yk", metadata={}),
+    ):
+        resp = client.post(
+            "/api/billing/yookassa/webhook", json={"event": "payment.succeeded", "object": {"id": "unknown-yk"}}
+        )
     assert resp.status_code == 200
 
 
@@ -198,15 +213,14 @@ def test_webhook_does_nothing_when_status_lookup_unavailable(client, public_tari
 
     pid = _make_pending(app, public_tariff)
     with (
-        patch("panel_core.services.billing.fetch_remote_status", return_value=None),
+        patch("panel_core.services.billing.yookassa.Payment.find_one", side_effect=RuntimeError("offline")),
         patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish"),
     ):
         resp = client.post(
             "/api/billing/yookassa/webhook",
             json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
     mock_provision.assert_not_called()
     with app.app_context():
         assert db.session.get(Payment, pid).status == "pending"
@@ -218,9 +232,10 @@ def test_webhook_ignores_spoofed_succeeded_when_yookassa_says_pending(client, pu
     with (
         patch("panel_core.services.billing.yookassa.Payment.find_one") as mock_find,
         patch("panel_core.services.billing.provisioning.apply_tariff_for_user") as mock_provision,
-        patch("panel_core.services.billing.bot_events.publish"),
     ):
-        mock_find.return_value = SimpleNamespace(status="pending")
+        mock_find.return_value = SimpleNamespace(
+            id="yk-pending-1", status="pending", amount=SimpleNamespace(value="150.00", currency="RUB"), metadata={}
+        )
         resp = client.post(
             "/api/billing/yookassa/webhook",
             json={"event": "payment.succeeded", "object": {"id": "yk-pending-1"}},

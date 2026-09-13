@@ -240,7 +240,7 @@ def _panel_with_a_tariff(db, token="old-fed-token"):
 def _handshake_answers(token="fresh-fed-token"):
     resp = MagicMock()
     resp.status_code = 200
-    resp.json.return_value = {"federation_token": token}
+    resp.json.return_value = {"federation_token": token, "instance_id": "linked-installation"}
     return resp
 
 

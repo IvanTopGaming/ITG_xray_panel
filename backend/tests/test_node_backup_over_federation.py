@@ -81,7 +81,7 @@ def _keep_restore_inside_the_test_process(monkeypatch):
     """
 
     monkeypatch.setattr("panel_core.api.backup._schedule_worker_restart", lambda *a, **kw: None)
-    monkeypatch.setattr("panel_core.api.backup.restart_xray_container", lambda *a, **kw: None)
+    monkeypatch.setattr("panel_core.services.runtime_apply.restart_xray_container", lambda *a, **kw: None)
 
 
 def _admin_headers(app):

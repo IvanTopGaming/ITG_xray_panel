@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+from sqlalchemy import inspect
 
 from panel_core.extensions import db
 from panel_core.models import BotEvent
@@ -48,20 +49,27 @@ def replay_undelivered_bot_events() -> None:
 
     now = dt.datetime.utcnow()
     for event in undelivered:
+        if not event.source or event.origin_event_id is None:
+            bot_events.ensure_event_identity(event)
+            db.session.commit()
         message = _json.dumps(
             {
-                "id": event.id,
+                "id": event.origin_event_id,
+                "source": event.source,
+                "sender": bot_events.event_source(),
+                "created_at_ms": int(event.created_at.replace(tzinfo=dt.timezone.utc).timestamp() * 1000),
                 "type": event.type,
                 "telegram_id": event.telegram_id,
                 "payload": event.payload,
             }
         )
         try:
-            redis_client.publish("bot:events", message)
+            subscribers = redis_client.publish("bot:events", message)
         except Exception as exc:
             logger.info("replay: publish failed for event=%s: %s", event.id, exc)
             continue
-        event.delivered_at = now
+        if subscribers == 0:
+            event.delivered_at = now
     db.session.commit()
 
 
@@ -77,7 +85,16 @@ def cleanup_bot_events() -> None:
         BotEvent.created_at < now - dt.timedelta(days=30),
     ).delete(synchronize_session=False)
 
-    from panel_core.models import NotificationClaim, ProvisionReceipt
+    from panel_core.models import BotDelivery, NotificationClaim, NotificationLog, ProvisionReceipt
+
+    if inspect(db.session.connection()).has_table(NotificationLog.__tablename__):
+        NotificationLog.query.filter(NotificationLog.sent_at < now - dt.timedelta(days=90)).delete(
+            synchronize_session=False
+        )
+    BotDelivery.query.filter(
+        BotDelivery.state.in_(("delivered", "suppressed", "permanent")),
+        BotDelivery.updated_at < now - dt.timedelta(days=90),
+    ).delete(synchronize_session=False)
 
     NotificationClaim.query.filter(
         NotificationClaim.created_at < now - dt.timedelta(days=90),

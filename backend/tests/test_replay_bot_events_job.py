@@ -8,7 +8,7 @@ def _aged(seconds_old: int) -> dt.datetime:
     return dt.datetime.utcnow() - dt.timedelta(seconds=seconds_old)
 
 
-def test_replay_picks_up_old_undelivered_and_marks_them(app, db):
+def test_replay_waits_for_inbox_ack_after_publishing(app, db):
 
     from panel_core.jobs.notifications import replay_undelivered_bot_events
 
@@ -19,12 +19,13 @@ def test_replay_picks_up_old_undelivered_and_marks_them(app, db):
     db.session.commit()
 
     fake_redis = MagicMock()
+    fake_redis.publish.return_value = 1
     with patch("panel_core.jobs.notifications._get_redis", return_value=fake_redis):
         replay_undelivered_bot_events()
 
     fake_redis.publish.assert_called_once()
     refreshed = db.session.get(BotEvent, event.id)
-    assert refreshed.delivered_at is not None
+    assert refreshed.delivered_at is None
 
 
 def test_replay_skips_recent_events_to_avoid_racing_publish(app, db):

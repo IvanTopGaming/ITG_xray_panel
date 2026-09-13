@@ -1,7 +1,6 @@
 import json
 import os
 import uuid
-import base64
 import secrets
 from datetime import datetime
 from flask import Blueprint, request, jsonify
@@ -18,7 +17,6 @@ from panel_core.utils import (
     parse_int,
 )
 from panel_core.xray.facade import (
-    generate_config_file,
     has_local_xray,
     restart_xray_container,
     _api_add_user_grpc,
@@ -32,7 +30,6 @@ from panel_core.xray.protocol import (
     _derive_wg_pubkey,
     is_shadowsocks_2022_method,
     normalize_shadowsocks_2022_key,
-    generate_shadowsocks_user_key,
     stream_supports_vless_flow,
     inbound_supports_vless_flow,
 )
@@ -43,6 +40,14 @@ from panel_core.services.traffic_store import (
 )
 from panel_core.services import sub_cache
 from panel_core.services.tariffs import purge_tariff_items
+from panel_core.services.wireguard import ensure_wireguard_addresses
+from panel_core.services.runtime_apply import (
+    RuntimeApplyError,
+    mark_runtime_dirty,
+    prepare_runtime_config,
+    runtime_mutation,
+    synchronize_runtime,
+)
 
 bp = Blueprint("inbound", __name__)
 MAX_CLIENT_ID_LEN = 128
@@ -259,6 +264,7 @@ def get_inbounds():
 @bp.route("/inbounds", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def create_inbound():
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -312,10 +318,13 @@ def create_inbound():
         )
         db.session.add(new_ib)
 
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         return jsonify({"tag": tag, "port": port}), 201
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -326,6 +335,7 @@ def create_inbound():
 @bp.route("/inbounds/<tag>", methods=["PUT"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def update_inbound(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -415,7 +425,7 @@ def update_inbound(tag):
         if "realityPrivateKey" not in merged_stream_data:
             merged_stream_data["realityPrivateKey"] = reality_settings.get("privateKey", "")
         if "realityPublicKey" not in merged_stream_data:
-            merged_stream_data["realityPublicKey"] = reality_settings.get("publicKey", "")
+            merged_stream_data["realityPublicKey"] = ""
         if "realityShortIds" not in merged_stream_data:
             merged_stream_data["realityShortIds"] = ",".join(reality_settings.get("shortIds", []))
         if "realityFingerprint" not in merged_stream_data:
@@ -454,7 +464,7 @@ def update_inbound(tag):
         if "wgSecretKey" not in merged_stream_data:
             merged_stream_data["wgSecretKey"] = current_stream.get("wgSecretKey", "")
         if "wgPublicKey" not in merged_stream_data:
-            merged_stream_data["wgPublicKey"] = current_stream.get("wgPublicKey", "")
+            merged_stream_data["wgPublicKey"] = ""
         if "wgMTU" not in merged_stream_data:
             merged_stream_data["wgMTU"] = current_stream.get("wgMTU", "")
         if "authUser" not in merged_stream_data:
@@ -505,7 +515,9 @@ def update_inbound(tag):
                 if c.flow:
                     c.flow = ""
 
-        generate_config_file()
+        ensure_wireguard_addresses(ib)
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
 
         try:
@@ -518,8 +530,10 @@ def update_inbound(tag):
         except Exception:
             pass
 
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         return jsonify({"status": "updated"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -530,6 +544,7 @@ def update_inbound(tag):
 @bp.route("/inbounds/<tag>", methods=["DELETE"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def delete_inbound(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -565,9 +580,10 @@ def delete_inbound(tag):
         purge = purge_tariff_items(TariffItem.inbound_tag == deleted_tag, TariffItem.panel_id.is_(None))
         db.session.delete(ib)
 
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         return (
             jsonify(
                 {
@@ -578,6 +594,8 @@ def delete_inbound(tag):
             ),
             200,
         )
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -606,6 +624,8 @@ def reset_ib_traffic(tag):
     try:
         reset_inbound_traffic(tag)
         return jsonify({"status": "reset"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
@@ -615,6 +635,7 @@ def reset_ib_traffic(tag):
 @bp.route("/inbounds/<tag>/users", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("60 per minute")
+@runtime_mutation
 def add_user(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -650,12 +671,9 @@ def add_user(tag):
 
         provided_id = data.get("id")
         if not provided_id:
-            if ib.protocol == "wireguard":
-                provided_id = base64.b64encode(secrets.token_bytes(32)).decode("utf-8")
-            elif is_ss_2022:
-                provided_id = generate_shadowsocks_user_key(ss_method)
-            else:
-                provided_id = str(uuid.uuid4())
+            from panel_core.services.credentials import generate_client_credentials
+
+            provided_id = generate_client_credentials(ib)
         provided_id = _normalize_client_id(provided_id, ib.protocol)
         if is_ss_2022:
             normalized_ss_client_id = normalize_shadowsocks_2022_key(provided_id, ss_method)
@@ -675,9 +693,13 @@ def add_user(tag):
             reset_day=parse_int(data.get("reset_day"), "reset_day", min_value=0, max_value=31),
             flow=(str(data.get("flow", "xtls-rprx-vision") or "").strip() if inbound_supports_vless_flow(ib) else ""),
         )
+        new_client.manual_disabled = not new_client.enable
+        new_client.disable_reason = "manual" if new_client.manual_disabled else ""
         db.session.add(new_client)
 
-        generate_config_file()
+        ensure_wireguard_addresses(ib)
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
 
         try:
@@ -685,14 +707,16 @@ def add_user(tag):
         except Exception:
             pass
 
-        if ib.protocol in ["vless", "vmess"]:
-            grpc_added = _api_add_user_grpc(tag, new_client)
-            if not grpc_added:
-                restart_xray_container()
-        else:
-            restart_xray_container()
+        callback = (
+            (lambda: not new_client.enable or _api_add_user_grpc(tag, new_client))
+            if ib.protocol in ["vless", "vmess"]
+            else restart_xray_container
+        )
+        synchronize_runtime(callback, expected_revision=revision)
 
         return jsonify(new_client.to_dict()), 201
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -703,6 +727,7 @@ def add_user(tag):
 @bp.route("/inbounds/<tag>/users", methods=["PUT"])
 @admin_or_federation_token_required
 @limiter.limit("60 per minute")
+@runtime_mutation
 def update_user(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -763,6 +788,14 @@ def update_user(tag):
         old_runtime_enabled = bool(client.enable)
         old_client_id = client.id
 
+        if new_id != old_client_id and client.provisioning_key:
+            raise ValueError("Managed client credentials cannot be replaced independently of its entitlements")
+        manual_changed = (client.limit_bytes, client.expiry_time, bool(client.enable)) != (
+            limit_bytes,
+            expiry_time,
+            enable,
+        )
+
         client.email = new_email
         client.id = new_id
         client.limit_bytes = limit_bytes
@@ -770,8 +803,17 @@ def update_user(tag):
         client.reset_day = reset_day
         client.enable = enable
         client.flow = flow
+        if old_runtime_enabled != enable:
+            client.manual_disabled = not enable
+            client.disable_reason = "manual" if not enable else ""
+        if manual_changed:
+            from panel_core.services.entitlements import capture_manual_entitlement
 
-        generate_config_file()
+            capture_manual_entitlement(client)
+
+        ensure_wireguard_addresses(ib)
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
 
         try:
@@ -781,22 +823,23 @@ def update_user(tag):
         except Exception:
             pass
 
-        if ib.protocol in ["vless", "vmess"]:
-            grpc_failed = False
-            if old_runtime_enabled:
-                removed = _api_remove_user_grpc(tag, old_runtime_email)
-                if not removed:
-                    grpc_failed = True
+        def apply_user():
+            succeeded = not old_runtime_enabled or _api_remove_user_grpc(tag, old_runtime_email)
             if client.enable:
-                added = _api_add_user_grpc(tag, client)
-                if not added:
-                    grpc_failed = True
-            if grpc_failed:
-                restart_xray_container()
-        else:
-            restart_xray_container()
+                succeeded = _api_add_user_grpc(tag, client) and succeeded
+            return succeeded
+
+        callback = apply_user
+        if ib.protocol not in ["vless", "vmess"] or (
+            client.preferred_outbound
+            and (old_runtime_email != client.email or old_runtime_enabled != bool(client.enable))
+        ):
+            callback = restart_xray_container
+        synchronize_runtime(callback, expected_revision=revision)
 
         return jsonify(client.to_dict()), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -807,6 +850,7 @@ def update_user(tag):
 @bp.route("/inbounds/<tag>/users", methods=["DELETE"])
 @admin_or_federation_token_required
 @limiter.limit("60 per minute")
+@runtime_mutation
 def delete_user_route(tag):
     panel_id = request.args.get("panel_id", type=int)
     if panel_id:
@@ -836,10 +880,12 @@ def delete_user_route(tag):
         if not client:
             return jsonify({"error": "User not found"}), 404
         was_enabled = bool(client.enable)
+        had_routing = bool(client.preferred_outbound)
         deleted_client_id = client.id
         db.session.delete(client)
 
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
 
         try:
@@ -847,13 +893,15 @@ def delete_user_route(tag):
         except Exception:
             pass
 
-        if ib and ib.protocol in ["vless", "vmess"] and was_enabled:
-            grpc_removed = _api_remove_user_grpc(tag, email)
-            if not grpc_removed:
-                restart_xray_container()
-        else:
-            restart_xray_container()
+        callback = (
+            (lambda: _api_remove_user_grpc(tag, email))
+            if ib and ib.protocol in ["vless", "vmess"] and was_enabled and not had_routing
+            else restart_xray_container
+        )
+        synchronize_runtime(callback, expected_revision=revision)
         return jsonify({"status": "deleted"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -874,6 +922,8 @@ def _split_users_by_panel(users):
             "tag": normalize_tag(user.get("tag")),
             "email": normalize_email(user.get("email")),
         }
+        if "reenable" in user:
+            entry["reenable"] = _parse_bool(user["reenable"])
         pid = user.get("panel_id")
         if pid in (None, "", 0, "0"):
             local.append(entry)
@@ -923,6 +973,8 @@ def bulk_delete_users_route():
         if errors:
             resp["errors"] = errors
         return jsonify(resp), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
@@ -939,19 +991,63 @@ def reset_user_traffic_route():
         data = request.get_json(silent=True) or {}
         if "users" in data:
             local, remote = _split_users_by_panel(data["users"])
-            for panel_id, group in remote.items():
-                proxy_bulk_reset_traffic(panel_id, group)
-            for u in local:
-                reset_user_traffic(u["tag"], u["email"], reenable=bool(u.get("reenable")))
         else:
             panel_id = request.args.get("panel_id", type=int)
             tag = normalize_tag(data.get("tag"))
             email = normalize_email(data.get("email"))
-            if panel_id:
-                proxy_bulk_reset_traffic(panel_id, [{"tag": tag, "email": email}])
-            else:
-                reset_user_traffic(tag, email)
-        return jsonify({"status": "reset"}), 200
+            entry = {"tag": tag, "email": email}
+            if "reenable" in data:
+                entry["reenable"] = _parse_bool(data["reenable"])
+            local, remote = ([], {panel_id: [entry]}) if panel_id else ([entry], {})
+        if local and not has_local_xray():
+            return jsonify({"error": XRAY_LOCAL_USERS_UNSUPPORTED}), 501
+
+        reset = 0
+        errors = []
+        failed_users = []
+        for panel_id, group in remote.items():
+            try:
+                result = proxy_bulk_reset_traffic(panel_id, group)
+                count = result.get("reset")
+                if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= len(group):
+                    raise ValueError(f"Panel {panel_id} did not confirm the number of reset users")
+                remote_failed = result.get("failed_users", [])
+                if not isinstance(remote_failed, list) or len(remote_failed) != len(group) - count:
+                    raise ValueError(f"Panel {panel_id} did not identify every failed reset")
+                identified = [
+                    {"tag": user["tag"], "email": user["email"], "panel_id": panel_id} for user in remote_failed
+                ]
+                remaining = [(user["tag"], user["email"]) for user in group]
+                for user in identified:
+                    identity = (user["tag"], user["email"])
+                    if identity not in remaining:
+                        raise ValueError(f"Panel {panel_id} returned an unknown failed reset")
+                    remaining.remove(identity)
+                remote_errors = result.get("errors", [])
+                if not isinstance(remote_errors, list):
+                    raise ValueError(f"Panel {panel_id} returned invalid reset errors")
+                reset += count
+                errors.extend(str(error) for error in remote_errors)
+                failed_users.extend(identified)
+            except Exception as exc:
+                errors.append(str(exc))
+                failed_users.extend(
+                    {"tag": user["tag"], "email": user["email"], "panel_id": panel_id} for user in group
+                )
+        for user in local:
+            try:
+                options = (
+                    {"reenable": _parse_bool(user.get("reenable"))} if "users" in data or "reenable" in user else {}
+                )
+                reset_user_traffic(user["tag"], user["email"], **options)
+                reset += 1
+            except Exception as exc:
+                db.session.rollback()
+                errors.append(str(exc))
+                failed_users.append({"tag": user["tag"], "email": user["email"]})
+        return jsonify({"status": "reset", "reset": reset, "errors": errors, "failed_users": failed_users}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
@@ -961,6 +1057,7 @@ def reset_user_traffic_route():
 @bp.route("/users/bulk-enable", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("60 per minute")
+@runtime_mutation
 def bulk_enable_users_route():
     try:
         from panel_core.services.panel_proxy import proxy_bulk_enable_users
@@ -998,14 +1095,22 @@ def bulk_enable_users_route():
                 }
             )
             client.enable = enable
+            client.manual_disabled = not enable
+            client.disable_reason = "manual" if not enable else ""
+            from panel_core.services.entitlements import capture_manual_entitlement
+
+            capture_manual_entitlement(client)
 
         if not updated:
+            if local:
+                synchronize_runtime()
             resp = {"status": "ok", "count": count}
             if errors:
                 resp["errors"] = errors
             return jsonify(resp), 200
 
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
 
         for item in updated:
@@ -1015,29 +1120,28 @@ def bulk_enable_users_route():
             except Exception:
                 pass
 
-        grpc_failed = False
-        for item in updated:
-            client = item["client"]
-            ib = item["inbound"]
-            if ib and ib.protocol in ["vless", "vmess"]:
+        def apply_users():
+            succeeded = True
+            for item in updated:
+                client = item["client"]
+                ib = item["inbound"]
+                if not ib or ib.protocol not in ["vless", "vmess"] or client.preferred_outbound:
+                    return False
                 if item["was_enabled"]:
-                    if not _api_remove_user_grpc(ib.tag, client.email):
-                        grpc_failed = True
+                    succeeded = _api_remove_user_grpc(ib.tag, client.email) and succeeded
                 if enable:
-                    if not _api_add_user_grpc(ib.tag, client):
-                        grpc_failed = True
+                    succeeded = _api_add_user_grpc(ib.tag, client) and succeeded
+            return succeeded
 
-        needs_restart = grpc_failed or any(
-            item["inbound"] and item["inbound"].protocol not in ["vless", "vmess"] for item in updated
-        )
-        if needs_restart:
-            restart_xray_container()
+        synchronize_runtime(apply_users, expected_revision=revision)
 
         count += len(updated)
         resp = {"status": "ok", "count": count}
         if errors:
             resp["errors"] = errors
         return jsonify(resp), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -1048,6 +1152,7 @@ def bulk_enable_users_route():
 @bp.route("/users/bulk-adjust-days", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("60 per minute")
+@runtime_mutation
 def bulk_adjust_days_route():
     try:
         from panel_core.services.panel_proxy import proxy_bulk_adjust_days
@@ -1081,15 +1186,19 @@ def bulk_adjust_days_route():
             if not client or client.expiry_time == 0:
                 skipped += 1
                 continue
-            base = max(now_ms, client.expiry_time)
+            base = max(now_ms, client.expiry_time or now_ms)
             if mode == "add":
                 client.expiry_time = base + delta_ms
             else:
-                client.expiry_time = base - delta_ms
+                client.expiry_time = max(1, base - delta_ms)
+            from panel_core.services.entitlements import capture_manual_entitlement
+
+            capture_manual_entitlement(client)
             updated_clients.append(client)
 
         if updated_clients:
-            generate_config_file()
+            prepare_runtime_config()
+            revision = mark_runtime_dirty()
             db.session.commit()
 
             for client in updated_clients:
@@ -1098,11 +1207,17 @@ def bulk_adjust_days_route():
                 except Exception:
                     pass
 
+            synchronize_runtime(lambda: True, expected_revision=revision)
+        elif local:
+            synchronize_runtime()
+
         updated += len(updated_clients)
         resp = {"status": "ok", "updated": updated, "skipped": skipped}
         if errors:
             resp["errors"] = errors
         return jsonify(resp), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -1113,6 +1228,7 @@ def bulk_adjust_days_route():
 @bp.route("/users/bulk-adjust-traffic", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("60 per minute")
+@runtime_mutation
 def bulk_adjust_traffic_route():
     try:
         from panel_core.services.panel_proxy import proxy_bulk_adjust_traffic
@@ -1153,10 +1269,14 @@ def bulk_adjust_traffic_route():
                     skipped += 1
                     continue
                 client.limit_bytes = new_limit
+            from panel_core.services.entitlements import capture_manual_entitlement
+
+            capture_manual_entitlement(client)
             updated_clients.append(client)
 
         if updated_clients:
-            generate_config_file()
+            prepare_runtime_config()
+            revision = mark_runtime_dirty()
             db.session.commit()
 
             for client in updated_clients:
@@ -1165,11 +1285,17 @@ def bulk_adjust_traffic_route():
                 except Exception:
                     pass
 
+            synchronize_runtime(lambda: True, expected_revision=revision)
+        elif local:
+            synchronize_runtime()
+
         updated += len(updated_clients)
         resp = {"status": "ok", "updated": updated, "skipped": skipped}
         if errors:
             resp["errors"] = errors
         return jsonify(resp), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -1180,6 +1306,7 @@ def bulk_adjust_traffic_route():
 @bp.route("/users/bulk-set-flow", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("60 per minute")
+@runtime_mutation
 def bulk_set_flow_route():
 
     try:
@@ -1227,7 +1354,8 @@ def bulk_set_flow_route():
             client.flow = flow
 
         if changed:
-            generate_config_file()
+            prepare_runtime_config()
+            revision = mark_runtime_dirty()
             db.session.commit()
 
             for item in changed:
@@ -1236,23 +1364,27 @@ def bulk_set_flow_route():
                 except Exception:
                     pass
 
-            grpc_failed = False
-            for item in changed:
-                if not item["was_enabled"]:
-                    continue
-                client = item["client"]
-                if not _api_remove_user_grpc(client.inbound_tag, item["old_email"]):
-                    grpc_failed = True
-                if not _api_add_user_grpc(client.inbound_tag, client):
-                    grpc_failed = True
-            if grpc_failed:
-                restart_xray_container()
+            def apply_flows():
+                succeeded = True
+                for item in changed:
+                    if not item["was_enabled"]:
+                        continue
+                    client = item["client"]
+                    succeeded = _api_remove_user_grpc(client.inbound_tag, item["old_email"]) and succeeded
+                    succeeded = _api_add_user_grpc(client.inbound_tag, client) and succeeded
+                return succeeded
+
+            synchronize_runtime(apply_flows, expected_revision=revision)
+        elif local:
+            synchronize_runtime()
 
         updated += len(changed)
         resp = {"status": "ok", "updated": updated, "skipped": skipped}
         if errors:
             resp["errors"] = errors
         return jsonify(resp), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400

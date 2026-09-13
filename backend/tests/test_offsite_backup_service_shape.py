@@ -108,7 +108,7 @@ def test_the_example_carries_the_profile_switch_turned_off():
     assert lines, (
         ".env.data.example does not define COMPOSE_PROFILES. It is the only thing that turns the "
         "offsite profile on for a plain `docker compose -f docker-compose.postgres.yml up -d`, "
-        "which is the command CLAUDE.md tells a maintainer to run."
+        "which is the command AGENTS.md tells a maintainer to run."
     )
     assert lines[0].strip() == "COMPOSE_PROFILES=", (
         f"the example ships {lines[0]!r}. Off-site upload is opt-in and every deployer who copies "

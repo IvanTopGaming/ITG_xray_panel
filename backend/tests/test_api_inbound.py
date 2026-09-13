@@ -60,7 +60,7 @@ def auth_headers(admin):
 
 
 _COMMON_PATCHES = [
-    "panel_core.api.inbound.generate_config_file",
+    "panel_core.services.runtime_apply.generate_config_file",
     "panel_core.api.inbound.restart_xray_container",
     "panel_core.xray.engine.generate_config_file",
     "panel_core.xray.engine.restart_xray_container",
@@ -343,7 +343,17 @@ class TestUpdateInbound:
             tag="flow-xhttp",
             port=8101,
             protocol="vless",
-            stream_settings=json.dumps({"network": "tcp", "security": "tls"}),
+            stream_settings=json.dumps(
+                {
+                    "network": "tcp",
+                    "security": "tls",
+                    "tlsSettings": {
+                        "certificates": [
+                            {"certificateFile": "/etc/xray/certs/server.pem", "keyFile": "/etc/xray/certs/server.key"}
+                        ]
+                    },
+                }
+            ),
         )
         db.session.add(ib)
         db.session.commit()
@@ -359,7 +369,17 @@ class TestUpdateInbound:
             tag="flow-keep",
             port=8102,
             protocol="vless",
-            stream_settings=json.dumps({"network": "tcp", "security": "tls"}),
+            stream_settings=json.dumps(
+                {
+                    "network": "tcp",
+                    "security": "tls",
+                    "tlsSettings": {
+                        "certificates": [
+                            {"certificateFile": "/etc/xray/certs/server.pem", "keyFile": "/etc/xray/certs/server.key"}
+                        ]
+                    },
+                }
+            ),
         )
         db.session.add(ib)
         db.session.commit()

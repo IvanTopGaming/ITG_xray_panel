@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Blueprint, request, jsonify
 from panel_core.extensions import db, limiter
-from panel_core.models import Outbound, Balancer, Client
+from panel_core.models import Outbound, Balancer, Client, RoutingProfile
 from panel_core.utils import (
     admin_or_federation_token_required,
     audit_privileged_change,
@@ -15,7 +15,14 @@ from panel_core.utils import (
     token_required,
 )
 from panel_core.services.egress import allocate_bind_ip
-from panel_core.xray.facade import generate_config_file, has_local_xray, restart_xray_container
+from panel_core.xray.facade import has_local_xray, restart_xray_container
+from panel_core.services.runtime_apply import (
+    RuntimeApplyError,
+    mark_runtime_dirty,
+    prepare_runtime_config,
+    runtime_mutation,
+    synchronize_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +42,16 @@ XRAY_OUTBOUND_HEALTH_UNSUPPORTED = (
 ALLOWED_BALANCER_STRATEGIES = {"random", "leastLoad", "leastPing"}
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 FALSY_VALUES = {"0", "false", "no", "off"}
+
+
+def _reject_referenced_target(tag):
+    profiles = []
+    for profile in RoutingProfile.query.all():
+        rules = json.loads(profile.rules or "[]")
+        if any(rule.get("outboundTag") == tag or rule.get("balancerTag") == tag for rule in rules):
+            profiles.append(profile.name)
+    if profiles:
+        raise ValueError("Routing target is used by profiles: " + ", ".join(profiles))
 
 
 def _normalize_protocol(value):
@@ -278,6 +295,7 @@ def get_outbounds_health():
 @bp.route("/outbounds", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def create_outbound():
     panel_id = _requested_panel_id()
     if panel_id:
@@ -295,11 +313,11 @@ def create_outbound():
     data = request.get_json(silent=True) or {}
     try:
         tag = normalize_tag(data.get("tag"))
-        if tag in ["api", "direct", "block"]:
+        if tag in ["api", "direct", "block", "system_auto_balancer"]:
             raise ValueError(f"Tag '{tag}' is reserved")
         protocol = _normalize_protocol(data.get("protocol"))
         enabled = _parse_bool(data.get("enable"), True)
-        if Outbound.query.filter_by(tag=tag).first():
+        if Outbound.query.filter_by(tag=tag).first() or Balancer.query.filter_by(tag=tag).first():
             raise ValueError("Tag exists")
 
         settings = data.get("settings", {})
@@ -324,11 +342,14 @@ def create_outbound():
         gateway = _normalize_ip(data.get("gateway"))
         _assign_egress_fields(new_ob, protocol, public_ip, gateway)
         db.session.add(new_ob)
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"outbound '{new_ob.tag}' created")
         return jsonify({"tag": new_ob.tag}), 201
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -339,6 +360,7 @@ def create_outbound():
 @bp.route("/outbounds/<tag>", methods=["PUT"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def update_outbound(tag):
     panel_id = _requested_panel_id()
     if panel_id:
@@ -380,11 +402,14 @@ def update_outbound(tag):
             public_ip = _normalize_ip(data["public_ip"]) if "public_ip" in data else (ob.public_ip or "")
             gateway = _normalize_ip(data["gateway"]) if "gateway" in data else (ob.gateway or "")
             _assign_egress_fields(ob, ob.protocol, public_ip, gateway, current_tag=ob.tag)
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"outbound '{tag}' updated")
         return jsonify({"status": "updated"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -395,6 +420,7 @@ def update_outbound(tag):
 @bp.route("/outbounds/<tag>", methods=["DELETE"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def delete_outbound(tag):
     panel_id = _requested_panel_id()
     if panel_id:
@@ -416,6 +442,7 @@ def delete_outbound(tag):
         if not ob:
             return jsonify({"error": "Not found"}), 404
 
+        _reject_referenced_target(tag)
         balancers = Balancer.query.all()
         dependent_selectors = []
         dependent_fallbacks = []
@@ -438,11 +465,14 @@ def delete_outbound(tag):
             client.preferred_outbound = None
 
         db.session.delete(ob)
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"outbound '{tag}' deleted")
         return jsonify({"status": "deleted"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -482,6 +512,7 @@ def get_balancers():
 @bp.route("/balancers", methods=["POST"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def create_balancer():
     panel_id = _requested_panel_id()
     if panel_id:
@@ -499,10 +530,10 @@ def create_balancer():
     data = request.get_json(silent=True) or {}
     try:
         tag = normalize_tag(data.get("tag"))
-        if Balancer.query.filter_by(tag=tag).first():
+        if Balancer.query.filter_by(tag=tag).first() or Outbound.query.filter_by(tag=tag).first():
             raise ValueError("Tag exists")
-        if tag == "system_auto_balancer":
-            raise ValueError("Tag 'system_auto_balancer' is reserved")
+        if tag in {"direct", "block", "api", "system_auto_balancer"}:
+            raise ValueError(f"Tag '{tag}' is reserved")
 
         selector = _normalize_selector(data.get("selector", []))
         if not selector:
@@ -525,11 +556,14 @@ def create_balancer():
             fallback_tag=fallback_tag,
         )
         db.session.add(new_bal)
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"balancer '{new_bal.tag}' created")
         return jsonify({"tag": new_bal.tag}), 201
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -540,6 +574,7 @@ def create_balancer():
 @bp.route("/balancers/<tag>", methods=["PUT"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def update_balancer(tag):
     panel_id = _requested_panel_id()
     if panel_id:
@@ -590,11 +625,14 @@ def update_balancer(tag):
             bal.fallback_tag = _validate_fallback_tag(data.get("fallback_tag"), selector)
         if "enable" in data:
             bal.enable = _parse_bool(data.get("enable"), bool(getattr(bal, "enable", True)))
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"balancer '{tag}' updated")
         return jsonify({"status": "updated"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
@@ -605,6 +643,7 @@ def update_balancer(tag):
 @bp.route("/balancers/<tag>", methods=["DELETE"])
 @admin_or_federation_token_required
 @limiter.limit("30 per minute")
+@runtime_mutation
 def delete_balancer(tag):
     panel_id = _requested_panel_id()
     if panel_id:
@@ -624,16 +663,20 @@ def delete_balancer(tag):
         if not bal:
             return jsonify({"error": "Not found"}), 404
 
+        _reject_referenced_target(tag)
         clients = Client.query.filter_by(preferred_outbound=tag).all()
         for client in clients:
             client.preferred_outbound = None
 
         db.session.delete(bal)
-        generate_config_file()
+        prepare_runtime_config()
+        revision = mark_runtime_dirty()
         db.session.commit()
-        restart_xray_container()
+        synchronize_runtime(restart_xray_container, expected_revision=revision)
         audit_privileged_change(logger, f"balancer '{tag}' deleted")
         return jsonify({"status": "deleted"}), 200
+    except RuntimeApplyError as e:
+        return jsonify({"error": str(e), "status": "pending", "saved": True}), 503
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400

@@ -668,22 +668,26 @@ check_data_tier() {
 }
 
 cmd_doctor() {
+    local container_fault=0
     rule "Deployment"
     ok "role      ${C_BOLD}${ROLE}${C_RESET}  ${C_DIM}${DIR}${C_RESET}"
     ok "compose   ${C_DIM}${COMPOSE_FILE}${C_RESET}"
 
     rule "Containers"
     if has_docker; then
-        local out
-        out="$(compose ps --format '{{.Service}} {{.State}} {{.Status}}' 2>/dev/null || true)"
+        local out normalized
+        out="$(compose ps --all --format '{{.Service}} {{.State}} {{.Status}}' 2>/dev/null || true)"
         if [ -z "$out" ]; then
             warn "nothing is running here"
+            container_fault=1
         else
             while IFS= read -r line; do
                 [ -n "$line" ] || continue
-                case "$line" in
+                normalized="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+                case "$normalized" in
+                    *unhealthy*|*restarting*|*exited*|*dead*) warn "$line"; container_fault=1 ;;
                     *running*) ok "$line" ;;
-                    *) warn "$line" ;;
+                    *) warn "$line"; container_fault=1 ;;
                 esac
             done <<< "$out"
         fi
@@ -710,6 +714,7 @@ cmd_doctor() {
     rule "Monitoring"
     check_monitoring
     printf '\n'
+    return "$container_fault"
 }
 
 check_egress() {
@@ -941,23 +946,95 @@ egress_refresh_host_side() {
     fi
 }
 
+UPDATE_ASSETS=()
+UPDATE_ASSET_EXISTING=()
+UPDATE_ASSET_CREATED=()
+UPDATE_ASSET_STAGE=""
+UPDATE_ASSET_BACKUP=""
+UPDATE_ASSETS_CHANGED=0
+
+stage_update_assets() {
+    UPDATE_ASSETS=()
+    UPDATE_ASSET_EXISTING=()
+    UPDATE_ASSET_CREATED=()
+    UPDATE_ASSETS_CHANGED=0
+    [ "$ROLE" = "data" ] || return 0
+
+    UPDATE_ASSETS=(
+        "$COMPOSE_FILE"
+        "scripts/pg_backup.sh"
+        "scripts/pg_backup_health.sh"
+        "scripts/offsite_backup.sh"
+    )
+    UPDATE_ASSET_STAGE="$WORK/update-assets"
+    UPDATE_ASSET_BACKUP="$WORK/update-assets-before"
+    local relative staged current
+    for relative in "${UPDATE_ASSETS[@]}"; do
+        staged="$UPDATE_ASSET_STAGE/$relative"
+        current="$DIR/$relative"
+        mkdir -p "$(dirname "$staged")"
+        fetch "$relative" "$staged"
+        case "$relative" in *.sh) chmod +x "$staged" ;; esac
+        if [ ! -f "$current" ] || ! cmp -s "$staged" "$current"; then
+            UPDATE_ASSETS_CHANGED=$((UPDATE_ASSETS_CHANGED + 1))
+        elif [[ "$relative" = *.sh ]] && [ ! -x "$current" ]; then
+            UPDATE_ASSETS_CHANGED=$((UPDATE_ASSETS_CHANGED + 1))
+        fi
+    done
+}
+
+apply_update_assets() {
+    local relative current backup
+    for relative in "${UPDATE_ASSETS[@]}"; do
+        current="$DIR/$relative"
+        backup="$UPDATE_ASSET_BACKUP/$relative"
+        mkdir -p "$(dirname "$current")" "$(dirname "$backup")"
+        if [ -e "$current" ]; then
+            cp -p "$current" "$backup"
+            UPDATE_ASSET_EXISTING+=("$relative")
+        else
+            UPDATE_ASSET_CREATED+=("$relative")
+        fi
+        cp -p "$UPDATE_ASSET_STAGE/$relative" "$current"
+    done
+}
+
+restore_update_assets() {
+    local relative
+    for relative in "${UPDATE_ASSET_EXISTING[@]}"; do
+        cp -p "$UPDATE_ASSET_BACKUP/$relative" "$DIR/$relative"
+    done
+    for relative in "${UPDATE_ASSET_CREATED[@]}"; do
+        rm -f "$DIR/$relative"
+    done
+}
+
 cmd_update() {
     egress_refresh_host_side
 
     rule "Image pins"
     PIN_UPDATES=()
-    if check_pins report; then
+    stage_update_assets
+    local pins_changed=0
+    if ! check_pins report; then
+        pins_changed=1
+    fi
+    if [ "$pins_changed" -eq 0 ] && [ "$UPDATE_ASSETS_CHANGED" -eq 0 ]; then
         ok "already up to date"
         printf '\n'
         return 0
     fi
 
-    local entry key value
+    local entry key value previous_env
+    previous_env="$WORK/env-before-update"
+    cp "$ENV_FILE" "$previous_env"
     for entry in "${PIN_UPDATES[@]}"; do
         key="${entry%%=*}"; value="${entry#*=}"
         env_set "$ENV_FILE" "$key" "$value"
     done
-    ok "${#PIN_UPDATES[@]} pin(s) moved forward in .env"
+    apply_update_assets
+    [ "${#PIN_UPDATES[@]}" -gt 0 ] && ok "${#PIN_UPDATES[@]} pin(s) moved forward in .env"
+    [ "$UPDATE_ASSETS_CHANGED" -gt 0 ] && ok "$UPDATE_ASSETS_CHANGED runtime file(s) refreshed"
 
     if [ "$START" -eq 0 ]; then
         rule "Not restarting"
@@ -965,12 +1042,28 @@ cmd_update() {
         printf '\n'
         return 0
     fi
-    has_docker || die "docker is not available" "The pins are updated; run pull and up -d yourself."
+    if ! has_docker; then
+        cp "$previous_env" "$ENV_FILE"
+        restore_update_assets
+        die "docker is not available" "The previous image pins were restored."
+    fi
 
     rule "Pulling"
-    compose_show pull
+    if ! compose_show pull; then
+        cp "$previous_env" "$ENV_FILE"
+        restore_update_assets
+        die "image pull failed" "The previous image pins were restored."
+    fi
     rule "Restarting"
-    compose_show up -d
+    if ! compose_show up -d --wait --wait-timeout "${COMPOSE_WAIT_TIMEOUT_SECONDS:-300}"; then
+        cp "$previous_env" "$ENV_FILE"
+        restore_update_assets
+        warn "update failed; restoring the previous containers"
+        if compose_show up -d --wait --wait-timeout "${COMPOSE_WAIT_TIMEOUT_SECONDS:-300}"; then
+            die "the new release did not become healthy" "Rollback completed and the previous image pins are active."
+        fi
+        die "the new release and rollback both failed" "The previous image pins were restored; inspect docker compose logs immediately."
+    fi
     printf '\n'
     ok "updated"
     printf '\n'
@@ -1402,13 +1495,14 @@ case "$ROLE" in
     master|node|sub|bot) fetch "caddy/routes.yaml" "$DIR/caddy/routes.yaml" ;;
     data)
         fetch "scripts/pg_backup.sh" "$DIR/scripts/pg_backup.sh"; chmod +x "$DIR/scripts/pg_backup.sh"
+        fetch "scripts/pg_backup_health.sh" "$DIR/scripts/pg_backup_health.sh"; chmod +x "$DIR/scripts/pg_backup_health.sh"
         fetch "scripts/offsite_backup.sh" "$DIR/scripts/offsite_backup.sh"; chmod +x "$DIR/scripts/offsite_backup.sh"
         ;;
 esac
 spinner_stop
 ok "$COMPOSE_FILE"
 case "$ROLE" in master|node|sub|bot) ok "caddy/routes.yaml" ;; esac
-case "$ROLE" in data) ok "scripts/pg_backup.sh"; ok "scripts/offsite_backup.sh" ;; esac
+case "$ROLE" in data) ok "scripts/pg_backup.sh"; ok "scripts/pg_backup_health.sh"; ok "scripts/offsite_backup.sh" ;; esac
 
 V="$WORK/versions.json"
 GHCR="ghcr.io/ivantopgaming"
@@ -1724,7 +1818,7 @@ next_steps() {
 
 if [ "$START" -eq 1 ]; then
     rule "Starting"
-    compose_show up -d
+    compose_show up -d --wait --wait-timeout "${COMPOSE_WAIT_TIMEOUT_SECONDS:-300}"
     printf '\n'
     ok "running in ${C_BOLD}${DIR}${C_RESET}"
     note "  logs:   cd $DIR && docker compose -f $COMPOSE_FILE logs -f"

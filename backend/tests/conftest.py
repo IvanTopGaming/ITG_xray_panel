@@ -57,6 +57,37 @@ import panel_core.models  # noqa: E402, F401  -- registers tables with db.metada
 _PANEL_ROLE_UNSET = object()
 
 
+@pytest.fixture(autouse=True)
+def _restore_limiter_enabled(monkeypatch):
+    from panel_core.extensions import limiter
+
+    monkeypatch.setattr(limiter, "enabled", limiter.enabled)
+
+
+@pytest.fixture(autouse=True)
+def _stop_started_schedulers(monkeypatch):
+    from flask_apscheduler import APScheduler
+
+    started = []
+    original = APScheduler.start
+    original_shutdown = APScheduler.shutdown
+
+    def start(instance, *args, **kwargs):
+        if instance._scheduler not in started:
+            started.append(instance._scheduler)
+        return original(instance, *args, **kwargs)
+
+    def shutdown(instance, wait=True):
+        return original_shutdown(instance, wait=True)
+
+    monkeypatch.setattr(APScheduler, "start", start)
+    monkeypatch.setattr(APScheduler, "shutdown", shutdown)
+    yield
+    for instance in reversed(started):
+        if instance.running:
+            instance.shutdown(wait=True)
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_protocol(item, nextitem):
     from panel_core.panel_role import ROLE_ENV
@@ -95,15 +126,25 @@ def _xray_paths_stay_out_of_etc(tmp_path_factory):
     """
 
     from panel_core.xray import engine
+    from panel_core.services import runtime_apply
 
     base = tmp_path_factory.mktemp("xray-etc")
     saved = {name: getattr(engine, name) for name in ("CONFIG_PATH", "LOCK_PATH", "CANDIDATE_PATH")}
+    previous_runtime_lock = runtime_apply.DEFAULT_LOCK_PATH
     engine.CONFIG_PATH = str(base / "config.json")
     engine.LOCK_PATH = str(base / "config.lock")
+    runtime_apply.DEFAULT_LOCK_PATH = engine.LOCK_PATH
     engine.CANDIDATE_PATH = str(base / "config.candidate.json")
     yield
     for name, value in saved.items():
         setattr(engine, name, value)
+    runtime_apply.DEFAULT_LOCK_PATH = previous_runtime_lock
+
+
+@pytest.fixture(autouse=True)
+def _runtime_apply_stays_off_docker(monkeypatch):
+    monkeypatch.setattr("panel_core.services.runtime_apply.restart_xray_container", lambda: None)
+    monkeypatch.setattr("panel_core.xray.grpc_client._runtime_epoch", lambda: "test-runtime-epoch")
 
 
 @pytest.fixture(autouse=True)

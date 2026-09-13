@@ -168,7 +168,7 @@ def test_list_panels_keeps_db_values_when_redis_empty(client, admin_token, db):
 def test_create_panel_success(mock_post, client, admin_token, db):
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"federation_token": "new-fed-token-xyz"}
+    mock_resp.json.return_value = {"federation_token": "new-fed-token-xyz", "instance_id": "new-node"}
     mock_post.return_value = mock_resp
 
     resp = client.post(
@@ -192,6 +192,7 @@ def test_create_panel_success(mock_post, client, admin_token, db):
     panel = LinkedPanel.query.filter_by(name="new-child").first()
     assert panel is not None
     assert panel.federation_token == "new-fed-token-xyz"
+    assert panel.current_instance_id == "new-node"
 
 
 @patch("panel_core.api.panels.requests.post")
@@ -201,7 +202,7 @@ def test_create_panel_uses_custom_master_name(mock_post, client, admin_token, db
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"federation_token": "tok"}
+    mock_resp.json.return_value = {"federation_token": "tok", "instance_id": "custom-node"}
     mock_post.return_value = mock_resp
 
     resp = client.post(
@@ -365,6 +366,7 @@ def test_delete_panel_cleans_redis(mock_get_redis, client, admin_token, db):
         f"panel:{panel_id}:last_poll",
         f"panel:{panel_id}:snapshot:last",
         f"panel:{panel_id}:last_poll:last",
+        f"panel:{panel_id}:generation",
     )
 
 

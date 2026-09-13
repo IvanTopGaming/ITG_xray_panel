@@ -6,7 +6,6 @@ dependencies = [
     "panel-core",
     "panel-adminapi",
     "docker",
-    "filelock",
     "grpcio==1.66.2",
     "grpcio-tools==1.66.2",
     "protobuf==5.28.3",

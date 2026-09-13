@@ -15,10 +15,19 @@ function Box({ label, value, note }: { label: string; value: ReactNode; note: st
 
 export default function Summary({ data, lang }: { data: SubInfo; lang: Lang }) {
   const expiry = data.expiry_at;
-  const until = expiry > 0 ? formatDate(expiry, lang, MONTHS[lang]) : t('never', lang);
-  const days = expiry > 0 ? daysLeft(expiry) : 0;
+  const until =
+    expiry === null
+      ? t('unknown', lang)
+      : expiry > 0
+        ? formatDate(expiry, lang, MONTHS[lang])
+        : t('never', lang);
+  const days = expiry !== null && expiry > 0 ? daysLeft(expiry) : 0;
   const note =
-    expiry <= 0 ? '' : days <= 0 ? t('expired', lang) : t('days_left', lang, { n: days });
+    expiry === null || expiry <= 0
+      ? ''
+      : days <= 0
+        ? t('expired', lang)
+        : t('days_left', lang, { n: days });
 
   return (
     <div className="mb-4 flex gap-3.5">

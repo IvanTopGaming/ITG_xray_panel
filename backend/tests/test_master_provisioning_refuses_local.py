@@ -153,16 +153,19 @@ def test_worker_still_provisions_the_same_tariff(monkeypatch, tmp_path):
         calls = []
 
         class _Recording(LocalXrayGateway):
-            def apply_config(self, validate=True):
-                calls.append("apply_config")
+            def apply_config(self, validate=True, publish=True):
+                calls.append("apply_config" if publish else "preflight")
 
             def restart(self):
                 calls.append("restart")
 
         gw.set_xray_gateway(_Recording())
+        monkeypatch.setattr(
+            "panel_core.services.runtime_apply.restart_xray_container", lambda: gw.get_xray_gateway().restart()
+        )
 
         provisioning.apply_tariff_for_user(4245, tariff, source="test", operation_id="test-op")
 
         assert Client.query.filter_by(telegram_id=4245).count() == 1
-        assert calls == ["apply_config", "restart"]
+        assert calls == ["preflight", "apply_config", "restart"]
         db.session.remove()

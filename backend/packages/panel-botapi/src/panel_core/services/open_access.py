@@ -8,6 +8,7 @@ def has_open_ended_access(telegram_id) -> bool:
         UserTariffAccess.query.filter(
             UserTariffAccess.telegram_id == telegram_id,
             UserTariffAccess.billing == "free",
+            UserTariffAccess.provisioning_status == "succeeded",
             UserTariffAccess.access_until.is_(None),
         ).first()
         is not None

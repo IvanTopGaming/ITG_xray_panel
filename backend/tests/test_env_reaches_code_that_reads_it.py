@@ -71,7 +71,10 @@ PLAIN_SERVICES = {
     ("docker-compose.node.yml", "caddy"): [REPO_ROOT / "caddy"],
     ("docker-compose.sub.yml", "caddy"): [REPO_ROOT / "caddy"],
     ("docker-compose.bot.yml", "caddy"): [REPO_ROOT / "caddy"],
-    ("docker-compose.postgres.yml", "pg-backup"): [REPO_ROOT / "scripts" / "pg_backup.sh"],
+    ("docker-compose.postgres.yml", "pg-backup"): [
+        REPO_ROOT / "scripts" / "pg_backup.sh",
+        REPO_ROOT / "scripts" / "pg_backup_health.sh",
+    ],
     ("docker-compose.postgres.yml", "offsite-backup"): [REPO_ROOT / "scripts" / "offsite_backup.sh"],
 }
 
@@ -251,10 +254,12 @@ def test_the_parser_reads_both_yaml_shapes_of_an_environment_block():
     assert "SECRET_KEY" in listed, "the list-form branch stopped matching"
 
     mapped = _environment_variables(_service_blocks("docker-compose.postgres.yml")["pg-backup"])
-    assert mapped >= {"POSTGRES_HOST", "PGPASSWORD", "BACKUP_DIR", "BACKUP_KEEP"}, (
-        f"the mapping-form branch stopped matching; parsed {sorted(mapped)}"
-    )
-    assert "BACKUP_INTERVAL_SECONDS" not in mapped, (
-        "the sleep interval is handed to the container again. It is substituted host-side on "
-        "purpose; nothing inside the image reads it."
-    )
+    assert mapped >= {
+        "POSTGRES_HOST",
+        "PGPASSWORD",
+        "BACKUP_DIR",
+        "BACKUP_KEEP",
+        "BACKUP_INTERVAL_SECONDS",
+        "BACKUP_STALE_AFTER_INTERVALS",
+        "BACKUP_SUCCESS_FILE",
+    }, f"the mapping-form branch stopped matching; parsed {sorted(mapped)}"

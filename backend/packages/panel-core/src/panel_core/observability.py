@@ -2,7 +2,7 @@ import logging
 import os
 import time
 
-from flask import g, request
+from flask import g, request, has_app_context
 
 _request_logger = logging.getLogger("app.requests")
 _jobs_logger = logging.getLogger("app.jobs")
@@ -62,15 +62,36 @@ def init_request_logging(app):
 
 
 def run_job_logged(job_id, interval_seconds, func):
+    from panel_core.extensions import db
+    from panel_core.services.job_status import start_job, finish_job
+
     t0 = time.monotonic()
+    run_id = None
+    if has_app_context():
+        try:
+            run_id = start_job(job_id, interval_seconds)
+        except Exception:
+            _jobs_logger.exception("job %s: could not record start", job_id)
     _jobs_logger.debug("job %s: start", job_id)
     try:
         func()
-    except Exception:
-        _jobs_logger.warning("job %s: failed after %.2fs", job_id, time.monotonic() - t0)
+    except Exception as error:
+        _jobs_logger.exception("job %s: failed after %.2fs", job_id, time.monotonic() - t0)
+        try:
+            if has_app_context():
+                db.session.rollback()
+            if run_id is not None:
+                finish_job(job_id, run_id, error=error)
+        except Exception:
+            _jobs_logger.exception("job %s: could not record failure", job_id)
         raise
+    if run_id is not None:
+        try:
+            finish_job(job_id, run_id)
+        except Exception:
+            _jobs_logger.exception("job %s: could not record success", job_id)
     dur = time.monotonic() - t0
     if dur > interval_seconds:
         _jobs_logger.warning("job %s: overran its %ss interval — done in %.2fs", job_id, interval_seconds, dur)
     else:
-        _jobs_logger.info("job %s: done in %.2fs", job_id, dur)
+        _jobs_logger.debug("job %s: done in %.2fs", job_id, dur)
