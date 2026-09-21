@@ -337,9 +337,12 @@ date and NULL is damage, not "never". Every surface that shows one date uses it 
 numbers. `backfill_tariff` deliberately keeps its own generous fold (`0` absorbs, else `max`): it
 decides what to *write*, not what to show.
 
-Each call also clears the user's `NotificationClaim` rows for that tariff, and ends in a single
-`_sync_after_provision` — regenerate the config, gRPC-patch for vless/vmess or restart, invalidate
-the sub-cache.
+Node provisioning goes through `entitlements.provision` and the desired/applied runtime revisions.
+For VLESS/VMess, a new or re-enabled user is added over gRPC, an active renewal keeps the existing
+runtime user, and disabling access removes that user. Config preflight and publication still run.
+An older unapplied revision, failed gRPC operation, unsupported protocol, or activation change with
+`preferred_outbound` requires a full apply. A receipt becomes materialized only after runtime sync
+succeeds; recovery replays the committed grant without adding another period.
 
 ### Grants
 

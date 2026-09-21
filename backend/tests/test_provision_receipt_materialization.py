@@ -23,7 +23,10 @@ def _inbound(db):
 def test_receipt_is_not_materialised_when_the_sync_fails(app, db):
     _inbound(db)
 
-    with patch("panel_core.services.runtime_apply.restart_xray_container", side_effect=RuntimeError("xray down")):
+    with (
+        patch("panel_core.services.entitlements._api_add_user_grpc", return_value=False),
+        patch("panel_core.services.runtime_apply.restart_xray_container", side_effect=RuntimeError("xray down")),
+    ):
         with pytest.raises(RuntimeError):
             provision_single_item(
                 telegram_id=900,
@@ -42,7 +45,10 @@ def test_receipt_is_not_materialised_when_the_sync_fails(app, db):
 def test_replay_after_a_failed_sync_syncs_and_marks_the_receipt(app, db):
     _inbound(db)
 
-    with patch("panel_core.services.runtime_apply.restart_xray_container", side_effect=RuntimeError("xray down")):
+    with (
+        patch("panel_core.services.entitlements._api_add_user_grpc", return_value=False),
+        patch("panel_core.services.runtime_apply.restart_xray_container", side_effect=RuntimeError("xray down")),
+    ):
         with pytest.raises(RuntimeError):
             provision_single_item(
                 telegram_id=901,

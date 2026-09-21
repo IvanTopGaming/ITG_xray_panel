@@ -228,6 +228,24 @@ def test_unapplied_older_revision_still_requires_full_recovery(db, live_runtime)
     assert_applied(db)
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_custom_routing_requires_full_apply_only_when_activation_changes(db, live_runtime, enabled):
+    first = grant()
+    client = db.session.get(Client, first["client"]["id"])
+    client.preferred_outbound = "special-egress"
+    client.enable = enabled
+    db.session.commit()
+    if not enabled:
+        live_runtime.users.clear()
+    live_runtime.calls.clear()
+
+    grant("pay:2")
+
+    assert live_runtime.calls == ([] if enabled else ["restart"])
+    assert live_runtime.users == live_runtime.published
+    assert_applied(db)
+
+
 def test_invalid_config_does_not_commit_a_grant(db, live_runtime):
     live_runtime.config_fails = True
 

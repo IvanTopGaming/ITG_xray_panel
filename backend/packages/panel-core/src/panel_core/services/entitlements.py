@@ -14,6 +14,7 @@ from panel_core.services.runtime_apply import (
 )
 from panel_core.services.wireguard import ensure_wireguard_addresses
 from panel_core.services.traffic_store import read_traffic_sample, settle_client_traffic, start_traffic_cycle
+from panel_core.xray.facade import _api_add_user_grpc, _api_remove_user_grpc
 from panel_core.xray.protocol import inbound_supports_vless_flow
 
 
@@ -168,7 +169,7 @@ def _client_for(telegram_id, tariff_id, inbound):
     return client
 
 
-def _sync():
+def _sync(callback=None):
     db.session.flush()
     try:
         prepare_runtime_config()
@@ -177,7 +178,19 @@ def _sync():
         raise
     revision = mark_runtime_dirty()
     db.session.commit()
-    synchronize_runtime(expected_revision=revision)
+    synchronize_runtime(callback, expected_revision=revision)
+
+
+def _apply_provisioned_client(inbound, client, was_enabled):
+    if inbound.protocol not in {"vless", "vmess"}:
+        return False
+    if bool(client.enable) == was_enabled:
+        return True
+    if client.preferred_outbound:
+        return False
+    if client.enable:
+        return _api_add_user_grpc(inbound.tag, client)
+    return _api_remove_user_grpc(inbound.tag, client.email)
 
 
 def provision(
@@ -240,6 +253,7 @@ def provision(
         if inbound is None:
             raise ValueError("inbound_not_found")
         client = _client_for(telegram_id, tariff_id, inbound)
+        was_enabled = bool(client.enable)
         sample = read_traffic_sample()
         settle_client_traffic(client, sample=sample)
         _save_usage(client)
@@ -285,7 +299,7 @@ def provision(
             materialized=False,
         )
         db.session.add(receipt)
-        _sync()
+        _sync(lambda: _apply_provisioned_client(inbound, client, was_enabled))
         receipt.materialized = True
         db.session.commit()
         return result

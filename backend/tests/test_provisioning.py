@@ -271,32 +271,32 @@ def test_provision_preflights_and_materializes_each_target(app, db, basic_setup)
     with (
         patch("panel_core.services.runtime_apply.generate_config_file") as mock_gen,
         patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
-        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True),
+        patch("panel_core.services.entitlements._api_add_user_grpc", return_value=True),
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     assert mock_gen.call_count == 4
-    assert mock_restart.call_count == 2
+    assert mock_restart.call_count == 0
 
 
-def test_provision_new_vless_materializes_committed_config(app, db, basic_setup):
+def test_provision_new_vless_uses_grpc_without_restart(app, db, basic_setup):
 
     tariff = basic_setup
     with (
         patch("panel_core.services.runtime_apply.generate_config_file") as mock_gen,
         patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
-        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("panel_core.services.entitlements._api_add_user_grpc", return_value=True) as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
 
     assert mock_gen.call_count == 4
-    assert mock_restart.call_count == 2
-    assert mock_add.call_count == 0
+    assert mock_restart.call_count == 0
+    assert mock_add.call_count == 2
 
 
-def test_provision_extending_enabled_vless_materializes_config(app, db, basic_setup):
+def test_provision_extending_enabled_vless_keeps_runtime(app, db, basic_setup):
 
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
@@ -306,17 +306,17 @@ def test_provision_extending_enabled_vless_materializes_config(app, db, basic_se
     with (
         patch("panel_core.services.runtime_apply.generate_config_file") as mock_gen,
         patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
-        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("panel_core.services.entitlements._api_add_user_grpc", return_value=True) as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(42, tariff, source="auto_renew", operation_id="test-op")
 
     assert mock_gen.call_count == 4
-    assert mock_restart.call_count == 2
+    assert mock_restart.call_count == 0
     assert mock_add.call_count == 0
 
 
-def test_provision_preserves_manual_disable_and_materializes_config(app, db, basic_setup):
+def test_provision_preserves_manual_disable_without_restart(app, db, basic_setup):
 
     tariff = basic_setup
     now_ms = int(_time.time() * 1000)
@@ -328,12 +328,12 @@ def test_provision_preserves_manual_disable_and_materializes_config(app, db, bas
     with (
         patch("panel_core.services.runtime_apply.generate_config_file"),
         patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
-        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=True) as mock_add,
+        patch("panel_core.services.entitlements._api_add_user_grpc", return_value=True) as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(42, tariff, source="auto_renew", operation_id="test-op")
 
-    assert mock_restart.call_count == 2
+    assert mock_restart.call_count == 0
     assert mock_add.call_count == 0
 
 
@@ -351,7 +351,7 @@ def test_provision_non_vless_inbound_requires_restart(app, db):
     with (
         patch("panel_core.services.runtime_apply.generate_config_file"),
         patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
-        patch("panel_core.services.provisioning._api_add_user_grpc") as mock_add,
+        patch("panel_core.services.entitlements._api_add_user_grpc") as mock_add,
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
@@ -360,14 +360,14 @@ def test_provision_non_vless_inbound_requires_restart(app, db):
     assert mock_add.call_count == 0
 
 
-def test_provision_materialization_does_not_depend_on_incremental_grpc(app, db, basic_setup):
+def test_provision_grpc_failure_falls_back_to_restart(app, db, basic_setup):
 
     tariff = basic_setup
 
     with (
         patch("panel_core.services.runtime_apply.generate_config_file"),
         patch("panel_core.services.runtime_apply.restart_xray_container") as mock_restart,
-        patch("panel_core.services.provisioning._api_add_user_grpc", return_value=False),
+        patch("panel_core.services.entitlements._api_add_user_grpc", return_value=False),
         patch("panel_core.services.provisioning.sub_cache"),
     ):
         apply_tariff_for_user(99, tariff, source="trial", operation_id="test-op")
