@@ -344,6 +344,11 @@ An older unapplied revision, failed gRPC operation, unsupported protocol, or act
 `preferred_outbound` requires a full apply. A receipt becomes materialized only after runtime sync
 succeeds; recovery replays the committed grant without adding another period.
 
+The same activation apply is used for account blocks, entitlement revocation, limit enforcement,
+and traffic-cycle reactivation. A counter-only change leaves live users alone. Legacy clients infer
+automatic expiry/quota disables only when no explicit manual disable exists; repeated account
+blocks must not turn the account's own disable into a manual one.
+
 ### Grants
 
 `UserTariffAccess.billing` has two values:
@@ -406,6 +411,9 @@ last 30 days, capped at 200 most recent) and is the only thing that revokes acce
 `TrafficSnapshot` buckets; `check_limits` (60s) disables users past their limit or expiry; monthly
 per-client resets zero the counters **and** delete that client's `traffic_*` `NotificationLog` rows.
 Both jobs emit their notifications inline — there is no separate notification cron.
+When a managed client's selected entitlement expires, `check_limits` settles its traffic and
+selects the remaining source, restoring that source's usage and quota. This is an expiry transition,
+not periodic reconciliation against grants: a still-valid manual extension remains authoritative.
 
 **`TrafficSnapshot` and `DomainStat` live on a node and only on a node.** Their only writers are jobs
 `roles/worker.py` registers, so the master's copies are empty by construction. All five

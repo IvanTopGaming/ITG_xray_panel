@@ -7,8 +7,9 @@ import re
 from datetime import datetime
 
 from panel_core.extensions import db, scheduler
-from panel_core.models import Client, Inbound, LogCheckpoint
+from panel_core.models import AccessEntitlement, Client, Inbound, LogCheckpoint
 from panel_core.services.reality_health import record_failures
+from panel_core.services.entitlements import apply_client_activation_changes, refresh_client_entitlements
 from panel_core.services.runtime_apply import (
     mark_runtime_dirty,
     prepare_runtime_config,
@@ -34,10 +35,6 @@ from panel_core.services.traffic_store import (
     _upsert_snapshot as _upsert_snapshot,
 )
 from panel_core.xray.engine import ACCESS_LOG_PATH, ERROR_LOG_PATH
-from panel_core.xray.facade import (
-    _api_add_user_grpc as _api_add_user_grpc,
-    _api_remove_user_grpc as _api_remove_user_grpc,
-)
 from panel_core.xray.grpc_client import get_channel as get_channel, stats_command_pb2_grpc as stats_command_pb2_grpc
 
 ACCESS_LOG_OFFSET_PATH = f"{ACCESS_LOG_PATH}.offset"
@@ -123,9 +120,22 @@ def check_limits_and_reset():
         now = datetime.now()
         now_ms = int(now.timestamp() * 1000)
         clients = Client.query.all()
+        activation_changes = [(client, bool(client.enable)) for client in clients]
         notify_ids = [client.id for client in clients if client.telegram_id is not None]
         changed = False
         sample = None
+        expired_source_clients = {
+            source.client_id
+            for source in AccessEntitlement.query.join(
+                Client,
+                (Client.id == AccessEntitlement.client_id)
+                & (Client.active_entitlement_source == AccessEntitlement.source_id),
+            ).filter(
+                Client.provisioning_key.isnot(None),
+                AccessEntitlement.expires_at_ms > 0,
+                AccessEntitlement.expires_at_ms <= now_ms,
+            )
+        }
         for client in clients:
             invalid = (
                 any(
@@ -140,6 +150,12 @@ def check_limits_and_reset():
                     changed = True
                 logger.error("Invalid limits for %s/%s; client isolated", client.inbound_tag, client.email)
                 continue
+            if client.id in expired_source_clients:
+                if sample is None:
+                    sample = read_traffic_sample()
+                was_enabled = bool(client.enable)
+                refresh_client_entitlements(client, sample=sample, now_ms=now_ms)
+                changed = changed or was_enabled != bool(client.enable)
             if _reset_due(client, now):
                 if sample is None:
                     sample = read_traffic_sample()
@@ -161,7 +177,7 @@ def check_limits_and_reset():
             prepare_runtime_config()
         revision = mark_runtime_dirty() if changed else None
         db.session.commit()
-        synchronize_runtime(expected_revision=revision)
+        synchronize_runtime(lambda: apply_client_activation_changes(activation_changes), expected_revision=revision)
     try:
         from panel_core.services.notifications import emit_if_new, evaluate_expiry
 

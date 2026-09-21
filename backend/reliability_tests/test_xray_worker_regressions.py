@@ -306,6 +306,82 @@ def test_real_xray_provision_and_renew_keep_other_users(live_xray, monkeypatch):
     assert all(receipt.materialized for receipt in ProvisionReceipt.query.all())
 
 
+@pytest.mark.parametrize("live_xray", ["vless", "vmess"], indirect=True)
+@pytest.mark.parametrize("action", ["quota", "expiry", "block", "revoke", "cycle", "source_expiry"])
+def test_real_xray_access_lifecycle_keeps_other_users(live_xray, monkeypatch, action):
+    from datetime import datetime
+
+    from app.proxyman.command import command_pb2
+    from panel_core.services import entitlements, runtime_apply, stats
+    from panel_core.services.provisioning import provision_single_item
+    from panel_core.xray import gateway
+    from panel_core.xray.local import LocalXrayGateway
+
+    protocol, grpc_client, stub, process = live_xray
+    monkeypatch.setattr(gateway, "_gateway", LocalXrayGateway())
+    monkeypatch.setattr(grpc_client, "_runtime_epoch", lambda: str(process.pid))
+    unrelated = Client(id=str(uuid.uuid4()), email="unrelated", inbound_tag=protocol, enable=True)
+    db.session.add(unrelated)
+    db.session.commit()
+    assert grpc_client._api_add_user_grpc(protocol, unrelated)
+
+    def reject_restart():
+        raise AssertionError("Changing one user's access must not restart Xray")
+
+    monkeypatch.setattr(runtime_apply, "restart_xray_container", reject_restart)
+    arguments = dict(telegram_id=42, inbound_tag=protocol, tariff_id=1, limit_bytes=1000)
+    first = provision_single_item(**arguments, expiry_ms=0, operation_id="grant:base", source_id="grant:base")
+    client = db.session.get(Client, first["client"]["id"])
+    if action in {"quota", "cycle"}:
+        client.up = 1000
+        db.session.commit()
+        stats.check_limits_and_reset()
+        if action == "cycle":
+            entitlements.reset_source_cycle(
+                telegram_id=42,
+                inbound_tag=protocol,
+                tariff_id=1,
+                source_id="grant:base",
+                source_revision=0,
+                operation_id="cycle:1",
+            )
+    elif action == "expiry":
+        client.expiry_time = 1
+        db.session.commit()
+        stats.check_limits_and_reset()
+    elif action == "block":
+        entitlements.apply_account_state(telegram_id=42, revision=1, blocked=True)
+        entitlements.apply_account_state(telegram_id=42, revision=1, blocked=True)
+        entitlements.apply_account_state(telegram_id=42, revision=2, blocked=False)
+    elif action == "revoke":
+        entitlements.revoke_source(telegram_id=42, inbound_tag=protocol, source_id="grant:base", tariff_id=1)
+    else:
+        end = int(datetime.now().timestamp() * 1000) + 100000
+        provision_single_item(
+            **{**arguments, "limit_bytes": 100}, expiry_ms=end, operation_id="temporary", source_id="temporary"
+        )
+
+        class Later(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.fromtimestamp((end + 1000) / 1000, tz)
+
+        monkeypatch.setattr(stats, "datetime", Later)
+        stats.check_limits_and_reset()
+        assert client.limit_bytes == 1000
+
+    users = stub.GetInboundUsers(command_pb2.GetInboundUserRequest(tag=protocol), timeout=3).users
+    if protocol == "vless":
+        from proxy.vless.account_pb2 import Account
+    else:
+        from proxy.vmess.account_pb2 import Account
+    expected = {unrelated.id}
+    if action in {"cycle", "block", "source_expiry"}:
+        expected.add(client.id)
+    assert {Account.FromString(user.account.value).id for user in users} == expected
+    assert process.poll() is None
+
+
 @pytest.mark.parametrize("fail_restart", [False, True])
 def test_geo_pair_activation_and_restart_rollback(worker, monkeypatch, tmp_path, fail_restart):
     engine, client = worker

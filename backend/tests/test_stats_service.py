@@ -136,7 +136,7 @@ class TestIsIpAddress:
 
 _GRPC_PATCHES = {
     "get_channel": "panel_core.services.stats.get_channel",
-    "remove_grpc": "panel_core.services.stats._api_remove_user_grpc",
+    "remove_grpc": "panel_core.services.entitlements._api_remove_user_grpc",
     "gen_config": "panel_core.services.runtime_apply.generate_config_file",
     "restart": "panel_core.services.runtime_apply.restart_xray_container",
 }
@@ -584,8 +584,8 @@ class TestCheckLimitsXrayInteraction:
             check_limits_and_reset()
 
         assert mock_gen.call_args_list == [call(publish=False), call()]
-        mock_remove.assert_not_called()
-        mock_restart.assert_called_once()
+        mock_remove.assert_called_once()
+        mock_restart.assert_not_called()
 
     def test_restarts_when_grpc_remove_fails(self, app, db):
         _make_inbound(db, tag="DE-vless", protocol="vless", port=10001)
@@ -812,7 +812,7 @@ class TestCheckLimitsTransactionShape:
             _SqlOrderRecorder(order),
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
             patch("panel_core.services.stats.stats_command_pb2_grpc.StatsServiceStub", return_value=stub),
-            patch("panel_core.services.stats._api_remove_user_grpc", side_effect=_on_grpc_remove),
+            patch("panel_core.services.entitlements._api_remove_user_grpc", side_effect=_on_grpc_remove),
             patch("panel_core.services.runtime_apply.generate_config_file"),
             patch("panel_core.services.runtime_apply.restart_xray_container"),
         ):

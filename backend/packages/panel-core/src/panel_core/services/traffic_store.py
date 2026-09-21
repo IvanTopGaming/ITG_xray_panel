@@ -187,10 +187,13 @@ def can_reenable(client):
 
 
 def reset_user_traffic(tag, email, *, reenable=False):
+    from panel_core.services.entitlements import apply_client_activation_changes
+
     with runtime_lock():
         client = Client.query.filter_by(inbound_tag=tag, email=email).populate_existing().first()
         if not client:
             raise ValueError("User not found")
+        was_enabled = bool(client.enable)
         start_traffic_cycle(client)
         changed = reenable and not client.enable and can_reenable(client)
         if changed:
@@ -198,7 +201,9 @@ def reset_user_traffic(tag, email, *, reenable=False):
             prepare_runtime_config()
         revision = mark_runtime_dirty() if changed else None
         db.session.commit()
-        synchronize_runtime(expected_revision=revision)
+        synchronize_runtime(
+            lambda: apply_client_activation_changes([(client, was_enabled)]), expected_revision=revision
+        )
 
 
 def reset_inbound_traffic(tag):

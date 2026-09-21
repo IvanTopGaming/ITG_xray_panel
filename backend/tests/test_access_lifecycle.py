@@ -288,3 +288,90 @@ def test_source_cycle_reenables_quota_without_losing_new_traffic(db, live_runtim
     db.session.commit()
     assert client.up == 15
     assert live_runtime.sessions == {"unrelated-session"}
+
+
+@pytest.mark.parametrize("blocked,manual", [(False, False), (True, False), (False, True)])
+def test_expiring_source_restores_usage_and_respects_access_guards(db, live_runtime, monkeypatch, blocked, manual):
+    from datetime import datetime
+    from panel_core.models import AccessEntitlement
+
+    end = int(time.time() * 1000) + 100000
+    grant(None, period_ms=None, expiry_ms=0, source_id="grant:base", operation_id="base", limit_bytes=1000)
+    client = Client.query.one()
+    identity = build_runtime_email(client.inbound_tag, client.email)
+    counter = f"user>>>{identity}>>>traffic>>>uplink"
+    live_runtime.counters[counter] = 40
+    grant(None, period_ms=None, expiry_ms=end, source_id="grant:temporary", operation_id="temporary", limit_bytes=10)
+    live_runtime.counters[counter] = 55
+    settle_client_traffic(client)
+    db.session.commit()
+    stats.check_limits_and_reset()
+    assert client.enable is False
+    if blocked:
+        apply_account_state(telegram_id=42, revision=1, blocked=True)
+    if manual:
+        client.manual_disabled = True
+        db.session.commit()
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp((end + 1000) / 1000, tz)
+
+    monkeypatch.setattr(stats, "datetime", Later)
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: end + 1000)
+    live_runtime.calls.clear()
+    stats.check_limits_and_reset()
+    assert client.active_entitlement_source == "grant:base"
+    assert client.limit_bytes == 1000
+    assert client.up == 40
+    assert client.enable is (not blocked and not manual)
+    assert AccessEntitlement.query.filter_by(source_id="grant:temporary").one().up == 15
+    assert live_runtime.calls == ([] if blocked or manual else ["add"])
+    live_runtime.counters[counter] = 62
+    settle_client_traffic(client)
+    db.session.commit()
+    assert client.up == 47
+    stats.check_limits_and_reset()
+    assert client.up == 47
+
+
+def test_expiry_pass_preserves_manual_extension(db, live_runtime, monkeypatch):
+    from datetime import datetime
+    from panel_core.services.entitlements import capture_manual_entitlement
+
+    end = int(time.time() * 1000) + 100000
+    grant(None, period_ms=None, expiry_ms=end, operation_id="short")
+    client = Client.query.one()
+    client.expiry_time = end + 1000000
+    capture_manual_entitlement(client)
+    db.session.commit()
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp((end + 1000) / 1000, tz)
+
+    monkeypatch.setattr(stats, "datetime", Later)
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: end + 1000)
+    live_runtime.calls.clear()
+    stats.check_limits_and_reset()
+    assert client.expiry_time == end + 1000000
+    assert client.enable is True
+    assert live_runtime.calls == []
+
+
+def test_manual_traffic_reset_reenables_without_restart(db, live_runtime):
+    from panel_core.services.traffic_store import reset_user_traffic
+
+    grant()
+    client = Client.query.one()
+    client.up = 1000
+    db.session.commit()
+    stats.check_limits_and_reset()
+    live_runtime.calls.clear()
+    reset_user_traffic(client.inbound_tag, client.email, reenable=True)
+    assert client.enable is True
+    assert client.up == 0
+    assert live_runtime.calls == ["add"]
+    assert live_runtime.sessions == {"unrelated-session"}
