@@ -525,8 +525,6 @@ Every push runs: `ruff check` + `ruff format --check` (backend & bot), `npm run 
 
 Releases are driven entirely by **`versions.json` on `main`**: bump the services you want to ship, mirror the pins in every `.env.<host>.example` that declares them, and merge. CI diffs `versions.json` against the previous commit and builds **only the services whose version changed**. See `AGENTS.md` for the full workflow, including the federation deploy-ordering rule (deploy the master and every linked panel in the same wave whenever the DB schema version changes).
 
-Release candidate: [worker 3.2.1 notes, update procedure and rollback](docs/releases/worker-3.2.1.md).
-
 </details>
 
 ---

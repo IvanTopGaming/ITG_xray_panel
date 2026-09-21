@@ -13,9 +13,6 @@ secret.key
 docker-compose.override.yml
 docs/*
 !docs/shot-*.webp
-!docs/releases/
-docs/releases/*
-!docs/releases/*.md
 
 .venv/
 .audit-venv/
