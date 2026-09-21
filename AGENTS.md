@@ -337,9 +337,22 @@ date and NULL is damage, not "never". Every surface that shows one date uses it 
 numbers. `backfill_tariff` deliberately keeps its own generous fold (`0` absorbs, else `max`): it
 decides what to *write*, not what to show.
 
-Each call also clears the user's `NotificationClaim` rows for that tariff, and ends in a single
-`_sync_after_provision` — regenerate the config, gRPC-patch for vless/vmess or restart, invalidate
-the sub-cache.
+Node provisioning goes through `entitlements.provision` and the desired/applied runtime revisions.
+For VLESS/VMess, a new or re-enabled user is added over gRPC, an active renewal keeps the existing
+runtime user, and disabling access removes that user. Config preflight and publication still run.
+An older unapplied revision, failed gRPC operation, unsupported protocol, or activation change with
+`preferred_outbound` requires a full apply. A receipt becomes materialized only after runtime sync
+succeeds; recovery replays the committed grant without adding another period.
+
+The same activation apply is used for account blocks, entitlement revocation, limit enforcement,
+and traffic-cycle reactivation. A counter-only change leaves live users alone. Legacy clients infer
+automatic expiry/quota disables only when no explicit manual disable exists; repeated account
+blocks must not turn the account's own disable into a manual one.
+
+**Disabling VLESS/VMess access denies new authentication; existing authenticated connections are
+allowed to finish.** This applies to quota, expiry, account blocks and revocation. The pinned Xray
+RemoveUser API does not terminate those connections, so a sustained stream may continue beyond
+the limit. This behavior is intentional to avoid disconnecting unrelated users on the node.
 
 ### Grants
 
@@ -403,6 +416,9 @@ last 30 days, capped at 200 most recent) and is the only thing that revokes acce
 `TrafficSnapshot` buckets; `check_limits` (60s) disables users past their limit or expiry; monthly
 per-client resets zero the counters **and** delete that client's `traffic_*` `NotificationLog` rows.
 Both jobs emit their notifications inline — there is no separate notification cron.
+When a managed client's selected entitlement expires, `check_limits` settles its traffic and
+selects the remaining source, restoring that source's usage and quota. This is an expiry transition,
+not periodic reconciliation against grants: a still-valid manual extension remains authoritative.
 
 **`TrafficSnapshot` and `DomainStat` live on a node and only on a node.** Their only writers are jobs
 `roles/worker.py` registers, so the master's copies are empty by construction. All five

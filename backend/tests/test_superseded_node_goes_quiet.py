@@ -103,7 +103,7 @@ def test_check_limits_still_disables_but_the_notification_stays_muted_when_super
     redis = MagicMock()
     with (
         patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
-        patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
+        patch("panel_core.services.entitlements._api_remove_user_grpc", return_value=True),
         patch("panel_core.services.runtime_apply.generate_config_file"),
         patch("panel_core.services.runtime_apply.restart_xray_container"),
         patch.object(bot_events, "_get_redis", return_value=redis),

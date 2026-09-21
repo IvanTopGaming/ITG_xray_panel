@@ -442,6 +442,7 @@ def test_failed_runtime_apply_retries_committed_entitlement_without_second_perio
     from panel_core.services import runtime_apply
 
     with node_ledger.app_context():
+        monkeypatch.setattr("panel_core.services.entitlements._api_add_user_grpc", lambda *args: False)
         monkeypatch.setattr(
             runtime_apply, "restart_xray_container", lambda: (_ for _ in ()).throw(RuntimeError("offline"))
         )

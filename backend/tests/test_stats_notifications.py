@@ -139,7 +139,7 @@ def test_check_limits_emits_expired_and_disables(app):
         db.session.commit()
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
-            patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
+            patch("panel_core.services.entitlements._api_remove_user_grpc", return_value=True),
             patch("panel_core.services.runtime_apply.generate_config_file"),
             patch("panel_core.services.runtime_apply.restart_xray_container"),
             patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,
@@ -172,7 +172,7 @@ def test_check_limits_emits_3d_warning_without_disabling(app):
         db.session.commit()
         with (
             patch("panel_core.services.stats.get_channel", return_value=MagicMock()),
-            patch("panel_core.services.stats._api_remove_user_grpc", return_value=True),
+            patch("panel_core.services.entitlements._api_remove_user_grpc", return_value=True),
             patch("panel_core.services.runtime_apply.generate_config_file"),
             patch("panel_core.services.runtime_apply.restart_xray_container"),
             patch("panel_core.jobs.notifications.bot_events.publish_stored") as mock_publish,

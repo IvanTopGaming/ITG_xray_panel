@@ -14,6 +14,7 @@ from panel_core.services.runtime_apply import (
 )
 from panel_core.services.wireguard import ensure_wireguard_addresses
 from panel_core.services.traffic_store import read_traffic_sample, settle_client_traffic, start_traffic_cycle
+from panel_core.xray.facade import _api_add_user_grpc, _api_remove_user_grpc
 from panel_core.xray.protocol import inbound_supports_vless_flow
 
 
@@ -44,12 +45,12 @@ def _save_usage(client):
             source.up, source.down = client.up or 0, client.down or 0
 
 
-def refresh_client_entitlements(client, *, operation_id=None, sample=None):
+def refresh_client_entitlements(client, *, operation_id=None, sample=None, now_ms=None):
     if sample is None:
         sample = read_traffic_sample()
     settle_client_traffic(client, sample=sample)
     _save_usage(client)
-    now = _now_ms()
+    now = _now_ms() if now_ms is None else now_ms
     sources = (
         AccessEntitlement.query.filter_by(client_id=client.id, revoked=False, enabled=True)
         .order_by(AccessEntitlement.created_at.desc(), AccessEntitlement.id.desc())
@@ -115,6 +116,20 @@ def capture_manual_entitlement(client):
     start_traffic_cycle(client, generation=source.operation_id, sample=sample, reset_usage=False)
 
 
+def _legacy_manual_disabled(client):
+    if client.manual_disabled or client.disable_reason == "manual":
+        return True
+    if client.enable:
+        return False
+    if client.disable_reason in {"expiry", "quota"}:
+        return False
+    if client.disable_reason:
+        return True
+    expired = client.expiry_time is not None and 0 < client.expiry_time <= _now_ms()
+    exhausted = client.limit_bytes and (client.up or 0) + (client.down or 0) >= client.limit_bytes
+    return not (expired or exhausted)
+
+
 def _client_for(telegram_id, tariff_id, inbound):
     key = _logical_key(telegram_id, tariff_id, inbound.tag)
     clients = Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id, inbound_tag=inbound.tag).all()
@@ -143,9 +158,7 @@ def _client_for(telegram_id, tariff_id, inbound):
                 )
             )
             client.active_entitlement_source = source_id
-            client.manual_disabled = not bool(client.enable) and (
-                not client.limit_bytes or (client.up or 0) + (client.down or 0) < client.limit_bytes
-            )
+            client.manual_disabled = _legacy_manual_disabled(client)
         return client
     identity = generate_client_credentials(inbound)
     email = f"tg{telegram_id}_{inbound.tag}_{tariff_id or 0}"
@@ -168,7 +181,7 @@ def _client_for(telegram_id, tariff_id, inbound):
     return client
 
 
-def _sync():
+def _sync(callback=None):
     db.session.flush()
     try:
         prepare_runtime_config()
@@ -177,7 +190,24 @@ def _sync():
         raise
     revision = mark_runtime_dirty()
     db.session.commit()
-    synchronize_runtime(expected_revision=revision)
+    synchronize_runtime(callback, expected_revision=revision)
+
+
+def apply_client_activation_changes(changes):
+    for client, was_enabled in changes:
+        if bool(client.enable) == was_enabled:
+            continue
+        inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
+        if inbound is None or inbound.protocol not in {"vless", "vmess"} or client.preferred_outbound:
+            return False
+        succeeded = (
+            _api_add_user_grpc(inbound.tag, client)
+            if client.enable
+            else _api_remove_user_grpc(inbound.tag, client.email)
+        )
+        if not succeeded:
+            return False
+    return True
 
 
 def provision(
@@ -240,6 +270,7 @@ def provision(
         if inbound is None:
             raise ValueError("inbound_not_found")
         client = _client_for(telegram_id, tariff_id, inbound)
+        was_enabled = bool(client.enable)
         sample = read_traffic_sample()
         settle_client_traffic(client, sample=sample)
         _save_usage(client)
@@ -285,7 +316,7 @@ def provision(
             materialized=False,
         )
         db.session.add(receipt)
-        _sync()
+        _sync(lambda: apply_client_activation_changes([(client, was_enabled)]))
         receipt.materialized = True
         db.session.commit()
         return result
@@ -318,6 +349,7 @@ def revoke_source(
                 telegram_id=telegram_id, tariff_id=tariff_id, inbound_tag=inbound_tag
             ).all()
             disabled_count = sum(bool(client.enable) for client in clients)
+            changes = [(client, bool(client.enable)) for client in clients]
             for client in clients:
                 settle_client_traffic(client)
                 _save_usage(client)
@@ -350,7 +382,7 @@ def revoke_source(
                 materialized=False,
             )
             db.session.add(receipt)
-            _sync()
+            _sync(lambda: apply_client_activation_changes(changes))
             receipt.materialized = True
             db.session.commit()
             return result
@@ -376,6 +408,7 @@ def revoke_source(
         if source.telegram_id != telegram_id or source.source_revision > source_revision:
             raise ValueError("entitlement_owner_or_revision_mismatch")
         client = db.session.get(Client, source.client_id) if source.client_id else None
+        was_enabled = bool(client and client.enable)
         sample = read_traffic_sample()
         if client is not None:
             settle_client_traffic(client, sample=sample)
@@ -383,7 +416,7 @@ def revoke_source(
         source.revoked, source.source_revision, source.operation_id = True, source_revision, operation_id
         if client is not None:
             refresh_client_entitlements(client, operation_id=operation_id, sample=sample)
-            _sync()
+            _sync(lambda: apply_client_activation_changes([(client, was_enabled)]))
         else:
             db.session.commit()
         return {
@@ -445,6 +478,7 @@ def reset_source_cycle(*, telegram_id, inbound_tag, source_id, source_revision, 
         client = db.session.get(Client, source.client_id)
         if client is None:
             raise ValueError("entitlement_client_missing")
+        was_enabled = bool(client.enable)
         active = client.active_entitlement_source == source_id
         if active:
             start_traffic_cycle(client, generation=operation_id)
@@ -462,7 +496,7 @@ def reset_source_cycle(*, telegram_id, inbound_tag, source_id, source_revision, 
             materialized=False,
         )
         db.session.add(receipt)
-        _sync()
+        _sync(lambda: apply_client_activation_changes([(client, was_enabled)]))
         receipt.materialized = True
         db.session.commit()
         return result
@@ -472,6 +506,7 @@ def apply_account_state(*, telegram_id, revision, blocked):
     with runtime_lock():
         db.session.expire_all()
         state = db.session.get(AccountAccessState, telegram_id)
+        was_blocked = bool(state and state.blocked)
         if state is None:
             state = AccountAccessState(telegram_id=telegram_id, revision=revision, blocked=blocked)
             db.session.add(state)
@@ -485,7 +520,8 @@ def apply_account_state(*, telegram_id, revision, blocked):
             if client.provisioning_key:
                 refresh_client_entitlements(client)
             elif blocked:
-                client.manual_disabled = client.manual_disabled or not bool(client.enable)
+                if not was_blocked:
+                    client.manual_disabled = _legacy_manual_disabled(client)
                 client.enable = False
             else:
                 expiry_valid = client.expiry_time is not None and (
@@ -494,7 +530,9 @@ def apply_account_state(*, telegram_id, revision, blocked):
                 quota_valid = not client.limit_bytes or (client.up or 0) + (client.down or 0) < client.limit_bytes
                 client.enable = expiry_valid and quota_valid and not client.manual_disabled
         if clients:
-            _sync()
+            _sync(
+                lambda: apply_client_activation_changes([(client, previously_enabled[client.id]) for client in clients])
+            )
         else:
             db.session.commit()
         return {
