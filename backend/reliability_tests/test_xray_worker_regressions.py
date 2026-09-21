@@ -181,15 +181,20 @@ def test_preflight_never_publishes_and_nested_engine_lock_does_not_deadlock(work
     assert not Path(engine.CANDIDATE_PATH).exists()
 
 
-@pytest.mark.parametrize("protocol", ["vless", "vmess"])
-def test_real_xray_add_and_remove_account(worker, monkeypatch, tmp_path, protocol):
+@pytest.fixture
+def live_xray(worker, monkeypatch, tmp_path, request):
+    protocol = request.param
     engine, client = worker
+    from flask import current_app
+
+    current_app.config["XRAY_CONFIG_LOCK_PATH"] = engine.LOCK_PATH
     import grpc
-    from app.proxyman.command import command_pb2, command_pb2_grpc
+    from app.proxyman.command import command_pb2_grpc
 
     binary = os.environ.get("XRAY_TEST_BINARY", "/tmp/itg-xray-audit.s88BH2/xray")
     if not Path(binary).is_file():
         pytest.skip("Set XRAY_TEST_BINARY to pinned Xray executable")
+    monkeypatch.setattr(engine, "XRAY_BIN", binary)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         api_port = listener.getsockname()[1]
@@ -198,7 +203,8 @@ def test_real_xray_add_and_remove_account(worker, monkeypatch, tmp_path, protoco
         user_port = listener.getsockname()[1]
     config = {
         "log": {"loglevel": "none"},
-        "api": {"tag": "api", "services": ["HandlerService"]},
+        "api": {"tag": "api", "services": ["HandlerService", "StatsService"]},
+        "stats": {},
         "inbounds": [
             {
                 "tag": "api",
@@ -229,18 +235,75 @@ def test_real_xray_add_and_remove_account(worker, monkeypatch, tmp_path, protoco
         monkeypatch.setattr(client, "get_channel", lambda: channel)
         db.session.add(Inbound(tag=protocol, port=user_port, protocol=protocol, stream_settings="{}"))
         db.session.commit()
-        user = SimpleNamespace(id=str(uuid.uuid4()), email="person", flow="")
-        assert client._api_add_user_grpc(protocol, user)
         stub = command_pb2_grpc.HandlerServiceStub(channel)
-        users = stub.GetInboundUsers(command_pb2.GetInboundUserRequest(tag=protocol), timeout=3).users
-        assert len(users) == 1
-        assert users[0].account.type == f"xray.proxy.{protocol}.Account"
-        assert client._api_remove_user_grpc(protocol, "person")
-        assert not stub.GetInboundUsers(command_pb2.GetInboundUserRequest(tag=protocol), timeout=3).users
+        yield protocol, client, stub, process
     finally:
         channel.close()
         process.terminate()
         process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("live_xray", ["vless", "vmess"], indirect=True)
+def test_real_xray_add_and_remove_account(live_xray):
+    from app.proxyman.command import command_pb2
+
+    protocol, client, stub, process = live_xray
+    user = SimpleNamespace(id=str(uuid.uuid4()), email="person", flow="")
+    assert client._api_add_user_grpc(protocol, user)
+    users = stub.GetInboundUsers(command_pb2.GetInboundUserRequest(tag=protocol), timeout=3).users
+    assert len(users) == 1
+    assert users[0].account.type == f"xray.proxy.{protocol}.Account"
+    assert client._api_remove_user_grpc(protocol, "person")
+    assert not stub.GetInboundUsers(command_pb2.GetInboundUserRequest(tag=protocol), timeout=3).users
+
+
+@pytest.mark.parametrize("live_xray", ["vless", "vmess"], indirect=True)
+def test_real_xray_provision_and_renew_keep_other_users(live_xray, monkeypatch):
+    from app.proxyman.command import command_pb2
+    from panel_core.models import ProvisionReceipt, RuntimeApplyState
+    from panel_core.services import runtime_apply
+    from panel_core.services.provisioning import provision_single_item
+    from panel_core.xray import gateway
+    from panel_core.xray.local import LocalXrayGateway
+
+    protocol, client, stub, process = live_xray
+    monkeypatch.setattr(gateway, "_gateway", LocalXrayGateway())
+    monkeypatch.setattr(client, "_runtime_epoch", lambda: str(process.pid))
+    unrelated = SimpleNamespace(id=str(uuid.uuid4()), email="unrelated", flow="")
+    assert client._api_add_user_grpc(protocol, unrelated)
+    db.session.add(Client(id=unrelated.id, email=unrelated.email, inbound_tag=protocol, enable=True))
+    db.session.commit()
+
+    def reject_restart():
+        raise AssertionError("Provisioning must not restart Xray")
+
+    monkeypatch.setattr(runtime_apply, "restart_xray_container", reject_restart)
+    arguments = {
+        "telegram_id": 42,
+        "inbound_tag": protocol,
+        "tariff_id": 1,
+        "period_ms": 86400000,
+        "limit_bytes": 1000,
+    }
+    first = provision_single_item(**arguments, idempotency_key="pay:1")
+    second = provision_single_item(**arguments, idempotency_key="pay:2")
+    replay = provision_single_item(**arguments, idempotency_key="pay:2")
+
+    users = stub.GetInboundUsers(command_pb2.GetInboundUserRequest(tag=protocol), timeout=3).users
+    assert len(users) == 2
+    account_type = f"xray.proxy.{protocol}.Account"
+    assert all(user.account.type == account_type for user in users)
+    if protocol == "vless":
+        from proxy.vless.account_pb2 import Account
+    else:
+        from proxy.vmess.account_pb2 import Account
+    assert {Account.FromString(user.account.value).id for user in users} == {unrelated.id, first["client"]["id"]}
+    assert second["expires_at_ms"] == first["expires_at_ms"] + 86400000
+    assert replay["expires_at_ms"] == second["expires_at_ms"]
+    assert process.poll() is None
+    state = db.session.get(RuntimeApplyState, 1)
+    assert state.desired_revision == state.applied_revision
+    assert all(receipt.materialized for receipt in ProvisionReceipt.query.all())
 
 
 @pytest.mark.parametrize("fail_restart", [False, True])
