@@ -868,6 +868,11 @@ Driven entirely by `versions.json` on `main`; nothing auto-bumps.
    If only `xray_core_ref` moved it is a no-op — bump `worker` too, it is the only image that ref affects.
 4. CI commits nothing back.
 
+Worker builds pass both `XRAY_CORE_REF` and `XRAY_IMAGE`, deriving the upstream image tag by removing
+the ref's leading `v`. When changing that ref, update the `Dockerfile.worker` default and
+`.env.node.example` runtime pin too; `test_release_xray_pin.py` checks the three consumers stay aligned.
+Release notes and per-release update/rollback instructions live in `docs/releases/`.
+
 Avoid force-pushing `main`: CI then cannot diff against the old SHA and falls back to `HEAD~1..HEAD`.
 
 **Rebuild fan-out.** `panel-core` → all five backend images. `panel-adminapi` → master + worker.
