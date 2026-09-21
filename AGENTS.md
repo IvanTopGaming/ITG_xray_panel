@@ -349,6 +349,11 @@ and traffic-cycle reactivation. A counter-only change leaves live users alone. L
 automatic expiry/quota disables only when no explicit manual disable exists; repeated account
 blocks must not turn the account's own disable into a manual one.
 
+**Disabling VLESS/VMess access denies new authentication; existing authenticated connections are
+allowed to finish.** This applies to quota, expiry, account blocks and revocation. The pinned Xray
+RemoveUser API does not terminate those connections, so a sustained stream may continue beyond
+the limit. This behavior is intentional to avoid disconnecting unrelated users on the node.
+
 ### Grants
 
 `UserTariffAccess.billing` has two values:

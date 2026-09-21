@@ -382,6 +382,102 @@ def test_real_xray_access_lifecycle_keeps_other_users(live_xray, monkeypatch, ac
     assert process.poll() is None
 
 
+@pytest.mark.parametrize("live_xray", ["vless"], indirect=True)
+@pytest.mark.parametrize("action", ["quota", "expiry", "block", "revoke"])
+def test_disabling_access_denies_new_connections_and_preserves_existing_streams(live_xray, monkeypatch, action):
+    import socketserver
+    import struct
+    import threading
+    from contextlib import ExitStack
+
+    from panel_core.services import entitlements, runtime_apply, stats
+    from panel_core.services.provisioning import provision_single_item
+    from panel_core.xray import gateway
+    from panel_core.xray.local import LocalXrayGateway
+
+    protocol, grpc_client, stub, process = live_xray
+    monkeypatch.setattr(gateway, "_gateway", LocalXrayGateway())
+    monkeypatch.setattr(grpc_client, "_runtime_epoch", lambda: str(process.pid))
+
+    def reject_restart():
+        raise AssertionError("Existing streams must survive disabling another user's credentials")
+
+    monkeypatch.setattr(runtime_apply, "restart_xray_container", reject_restart)
+    result = provision_single_item(
+        telegram_id=42, inbound_tag=protocol, tariff_id=1, limit_bytes=1000, period_ms=86400000, idempotency_key="pay:1"
+    )
+    client = db.session.get(Client, result["client"]["id"])
+    other = Client(id=str(uuid.uuid4()), email="other", inbound_tag=protocol, enable=True)
+    db.session.add(other)
+    db.session.commit()
+    assert grpc_client._api_add_user_grpc(protocol, other)
+    inbound_port = Inbound.query.filter_by(tag=protocol).one().port
+
+    class Echo(socketserver.BaseRequestHandler):
+        def handle(self):
+            while data := self.request.recv(4096):
+                self.request.sendall(data)
+
+    class Server(socketserver.ThreadingTCPServer):
+        daemon_threads = True
+
+    def receive(stream, count):
+        data = b""
+        while len(data) < count:
+            chunk = stream.recv(count - len(data))
+            assert chunk, "Authenticated stream closed unexpectedly"
+            data += chunk
+        return data
+
+    with Server(("127.0.0.1", 0), Echo) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+
+            def header(identity):
+                return (
+                    b"\x00"
+                    + uuid.UUID(identity).bytes
+                    + b"\x00\x01"
+                    + struct.pack("!H", server.server_address[1])
+                    + b"\x01"
+                    + socket.inet_aton("127.0.0.1")
+                )
+
+            with ExitStack() as streams:
+                current = streams.enter_context(socket.create_connection(("127.0.0.1", inbound_port), timeout=3))
+                unrelated = streams.enter_context(socket.create_connection(("127.0.0.1", inbound_port), timeout=3))
+                for stream, identity in [(current, client.id), (unrelated, other.id)]:
+                    stream.sendall(header(identity) + b"before")
+                    assert receive(stream, 8) == b"\x00\x00before"
+                if action == "block":
+                    entitlements.apply_account_state(telegram_id=42, revision=1, blocked=True)
+                elif action == "revoke":
+                    entitlements.revoke_source(telegram_id=42, inbound_tag=protocol, source_id="pay:1", tariff_id=1)
+                else:
+                    if action == "quota":
+                        client.up = 1000
+                    else:
+                        client.expiry_time = 1
+                    db.session.commit()
+                    stats.check_limits_and_reset()
+                assert client.enable is False
+                for stream in [current, unrelated]:
+                    stream.sendall(b"after")
+                    assert receive(stream, 5) == b"after"
+                with socket.create_connection(("127.0.0.1", inbound_port), timeout=3) as denied:
+                    denied.sendall(header(client.id) + b"denied")
+                    try:
+                        response = denied.recv(16)
+                    except ConnectionResetError:
+                        response = b""
+                    assert response == b""
+                assert process.poll() is None
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
 @pytest.mark.parametrize("fail_restart", [False, True])
 def test_geo_pair_activation_and_restart_rollback(worker, monkeypatch, tmp_path, fail_restart):
     engine, client = worker

@@ -418,7 +418,7 @@ def test_revoke_empty_is_idempotent(app_with_admin, db, client, admin_headers, t
 @pytest.mark.parametrize("operation", ["block", "unblock", "revoke"])
 @pytest.mark.parametrize("protocol", ["vless", "trojan"])
 def test_access_mutation_applies_committed_runtime(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, runtime_io, operation, protocol
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, runtime_io, operation, protocol, monkeypatch
 ):
     tariff = two_inbounds_and_tariff
     clients = _make_user_with_active_clients(db, tariff)
@@ -432,11 +432,14 @@ def test_access_mutation_applies_committed_runtime(
     order = []
     observed = []
 
-    def restart():
+    def apply_runtime(*args):
         order.append("runtime")
         observed.append([row.enable for row in Client.query.filter_by(telegram_id=42).all()])
+        return True
 
-    runtime_io[1].side_effect = restart
+    runtime_io[1].side_effect = apply_runtime
+    monkeypatch.setattr("panel_core.services.entitlements._api_add_user_grpc", apply_runtime)
+    monkeypatch.setattr("panel_core.services.entitlements._api_remove_user_grpc", apply_runtime)
     with _SqlOrderRecorder(order):
         response = _operation_request(client, admin_headers, operation, tariff.id)
     assert response.status_code == 200, response.get_json()
@@ -450,7 +453,7 @@ def test_access_mutation_applies_committed_runtime(
 
 @pytest.mark.parametrize("operation", ["block", "unblock", "revoke"])
 def test_runtime_failure_is_pending_then_retry_recovers(
-    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, runtime_io, operation
+    app_with_admin, db, client, admin_headers, two_inbounds_and_tariff, runtime_io, operation, monkeypatch
 ):
     tariff = two_inbounds_and_tariff
     clients = _make_user_with_active_clients(db, tariff)
@@ -459,6 +462,8 @@ def test_runtime_failure_is_pending_then_retry_recovers(
         for row in clients:
             row.enable = False
     db.session.commit()
+    monkeypatch.setattr("panel_core.services.entitlements._api_add_user_grpc", lambda *args: False)
+    monkeypatch.setattr("panel_core.services.entitlements._api_remove_user_grpc", lambda *args: False)
     runtime_io[1].side_effect = RuntimeError("runtime offline")
     response = _operation_request(client, admin_headers, operation, tariff.id)
     assert response.status_code == 202, response.get_json()

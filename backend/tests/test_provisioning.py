@@ -323,6 +323,7 @@ def test_provision_preserves_manual_disable_without_restart(app, db, basic_setup
     de = _make_client(db, telegram_id=42, inbound_tag="DE-vless", expiry_ms=now_ms, limit_bytes=0)
     _make_client(db, telegram_id=42, inbound_tag="MSK-vless", expiry_ms=now_ms, limit_bytes=0)
     de.enable = False
+    de.manual_disabled = True
     db.session.commit()
 
     with (
