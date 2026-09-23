@@ -65,6 +65,13 @@ def test_bind_ips_503_when_token_unset(client, monkeypatch):
     assert client.get("/api/system/egress/bind-ips", headers={"X-Egress-Token": "x"}).status_code == 503
 
 
+@pytest.mark.parametrize("endpoint", ["bind-ips", "host-plan"])
+def test_egress_refuses_example_token(client, monkeypatch, endpoint):
+    monkeypatch.setenv("EGRESS_INTERNAL_TOKEN", "change-me-long-random")
+    response = client.get(f"/api/system/egress/{endpoint}", headers={"X-Egress-Token": "change-me-long-random"})
+    assert response.status_code == 503
+
+
 def test_host_script_route_is_gone(client, auth_headers, app):
     """§8.11: the endpoint was removed from every role, not gated.
 

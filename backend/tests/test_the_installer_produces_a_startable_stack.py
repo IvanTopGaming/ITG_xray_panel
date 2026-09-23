@@ -21,6 +21,7 @@ import os
 import pathlib
 import re
 import shutil
+import ssl
 import subprocess
 import threading
 
@@ -388,10 +389,37 @@ class _TransferIdentityStub(http.server.BaseHTTPRequestHandler):
 def _run_stubbed_transfer(tmp_path, tag, status, identity, *, extra_len=0):
     handler = type("_Handler", (_TransferIdentityStub,), {"identity": json.dumps(identity).encode(), "status": status})
     server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    certificate = tmp_path / "master.crt"
+    key = tmp_path / "master.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-keyout",
+            str(key),
+            "-out",
+            str(certificate),
+            "-subj",
+            "/CN=127.0.0.1",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certificate, key)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        master_url = f"http://127.0.0.1:{server.server_address[1]}"
+        master_url = f"https://127.0.0.1:{server.server_address[1]}"
         raw_token = "raw-token-for-installer-test" + "x" * extra_len
         composite = base64.urlsafe_b64encode(f"{master_url}|{raw_token}".encode()).decode().rstrip("=")
 
@@ -420,6 +448,7 @@ def _run_stubbed_transfer(tmp_path, tag, status, identity, *, extra_len=0):
                 "BUNDLE": bundle,
                 "NODE_KIND": "replace",
                 "NODE_TRANSFER_TOKEN_IN": composite,
+                "CURL_CA_BUNDLE": str(certificate),
                 "SUB_DOMAIN": "sub.example.com",
                 "PATH": _strict_base64_path(tmp_path),
             },

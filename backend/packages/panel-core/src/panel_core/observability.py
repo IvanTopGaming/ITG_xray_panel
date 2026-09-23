@@ -44,6 +44,9 @@ def init_request_logging(app):
         dur_ms = (time.monotonic() - t0) * 1000 if t0 is not None else -1.0
         path = request.full_path.rstrip("?") if request.query_string else request.path
 
+        if request.path.startswith("/api/sub/"):
+            path = "/api/sub/[redacted]"
+
         if request.path == "/healthz":
             _request_logger.debug("%s %s -> %s in %.0f ms", request.method, path, response.status_code, dur_ms)
             return response

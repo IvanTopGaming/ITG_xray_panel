@@ -32,7 +32,12 @@ def engine_options(uri):
         "pool_recycle": 1800,
         "pool_size": 5,
         "max_overflow": 10,
-        "connect_args": {"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+        "connect_args": {
+            "connect_timeout": CONNECT_TIMEOUT_SECONDS,
+            "options": (
+                parse_qs(urlparse(uri).query).get("options", [os.getenv("PGOPTIONS", "")])[0] + " -c timezone=UTC"
+            ).strip(),
+        },
     }
 
 

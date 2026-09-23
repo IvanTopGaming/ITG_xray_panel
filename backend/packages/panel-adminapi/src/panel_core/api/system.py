@@ -97,6 +97,7 @@ def get_system_stats():
             }
         )
     except Exception:
+        logger.exception("get_system_stats failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -120,6 +121,7 @@ def restart():
     except RuntimeApplyError as exc:
         return jsonify({"error": str(exc), "status": "pending", "saved": True}), 503
     except Exception:
+        logger.exception("restart failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -203,6 +205,7 @@ def system_settings_get():
     try:
         return jsonify(get_system_settings())
     except Exception:
+        logger.exception("system_settings_get failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -250,6 +253,7 @@ def system_settings_update():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("system_settings_update failed")
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500
 
@@ -285,6 +289,7 @@ def keys():
             return jsonify(generate_wireguard_keys())
         return jsonify({"error": "Unsupported key type"}), 400
     except Exception:
+        logger.exception("keys failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -308,6 +313,7 @@ def get_config():
         audit_privileged_change(logger, "Xray config read (REALITY private key, WireGuard keys, client UUIDs)")
         return jsonify(data)
     except Exception:
+        logger.exception("get_config failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -326,13 +332,15 @@ def geo_update():
         update_geo_db()
         return jsonify({"status": "updated"}), 200
     except Exception:
+        logger.exception("geo_update failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
 @bp.route("/system/egress/bind-ips", methods=["GET"])
+@limiter.limit("60 per minute")
 def egress_bind_ips():
     expected = os.environ.get("EGRESS_INTERNAL_TOKEN", "")
-    if not expected:
+    if not expected or expected.lower().startswith("change-me"):
         return jsonify({"error": "egress token not configured"}), 503
     provided = request.headers.get("X-Egress-Token", "")
     if not hmac.compare_digest(provided, expected):
@@ -341,9 +349,10 @@ def egress_bind_ips():
 
 
 @bp.route("/system/egress/host-plan", methods=["GET"])
+@limiter.limit("60 per minute")
 def egress_host_plan():
     expected = os.environ.get("EGRESS_INTERNAL_TOKEN", "")
-    if not expected:
+    if not expected or expected.lower().startswith("change-me"):
         return jsonify({"error": "egress token not configured"}), 503
     provided = request.headers.get("X-Egress-Token", "")
     if not hmac.compare_digest(provided, expected):

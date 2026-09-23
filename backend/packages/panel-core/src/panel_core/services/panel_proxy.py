@@ -2,7 +2,7 @@ import json
 import logging
 import time
 
-import requests
+from panel_core.services.federation_http import federation_session
 
 from panel_core.extensions import db, get_shared_redis
 from panel_core.models import LinkedPanel
@@ -34,7 +34,7 @@ class FederationClient:
     def __init__(self, url: str, federation_token: str) -> None:
         self.base_url = url.rstrip("/")
         self.token = federation_token
-        self._session = requests.Session()
+        self._session = federation_session()
         self._session.headers["X-Federation-Token"] = self.token
         self._session.max_redirects = 0
 

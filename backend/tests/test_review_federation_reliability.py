@@ -472,7 +472,7 @@ def test_handshake_uses_canonical_master_path_and_relink_restores_identity(feder
         sent.append(kwargs["json"])
         return Reply()
 
-    monkeypatch.setattr(panels.requests, "post", handshake_reply)
+    monkeypatch.setattr(panels, "federation_post", handshake_reply)
     monkeypatch.setattr(panels, "_nudge_panel_refresh", lambda *args: None)
     panel = _panel()
     panel.current_instance_id = "replacement"

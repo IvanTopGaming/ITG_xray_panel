@@ -125,6 +125,32 @@ def _make_client(inbound_tag="vless-in", email="alice", client_id=None, **kwargs
     return c
 
 
+def test_inbound_mutation_audits_actor_and_result(client, auth_headers, caplog):
+    import logging
+
+    inbound = _make_inbound()
+    with caplog.at_level(logging.INFO):
+        response = client.delete(f"/api/inbounds/{inbound.tag}", headers=auth_headers)
+    assert response.status_code == 200
+    assert "by a panel admin" in caplog.text
+    assert inbound.tag in caplog.text
+
+
+def test_handled_inbound_failure_keeps_traceback(client, auth_headers, monkeypatch, caplog):
+    import logging
+    from panel_core.api import inbound as api
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected database failure")
+
+    inbound = _make_inbound()
+    monkeypatch.setattr(api, "prepare_runtime_config", fail)
+    with caplog.at_level(logging.ERROR):
+        response = client.delete(f"/api/inbounds/{inbound.tag}", headers=auth_headers)
+    assert response.status_code == 500
+    assert any(record.exc_info for record in caplog.records)
+
+
 class TestGetInbounds:
     def test_empty_list(self, client, auth_headers):
         resp = client.get("/api/inbounds?panel=local", headers=auth_headers)
@@ -873,6 +899,16 @@ class TestBulkDelete:
     def test_bulk_delete_missing_users(self, client, auth_headers):
         resp = client.post("/api/users/bulk-delete", headers=auth_headers, json={})
         assert resp.status_code == 400
+
+    def test_bulk_delete_rejects_an_overlarge_payload(self, client, auth_headers):
+        users = [{"tag": "bd-ib", "email": f"u{i}@x"} for i in range(501)]
+        resp = client.post(
+            "/api/users/bulk-delete",
+            headers=auth_headers,
+            json={"users": users},
+        )
+        assert resp.status_code == 400
+        assert "500" in resp.get_json()["error"]
 
 
 class TestBulkAdjustDays:

@@ -168,7 +168,7 @@ jobs:
           unzip -q /tmp/rclone.zip -d /tmp/rclone-unpack
           sudo install -m 755 "/tmp/rclone-unpack/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
           rm -rf /tmp/rclone.zip /tmp/rclone-unpack
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client haproxy
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0

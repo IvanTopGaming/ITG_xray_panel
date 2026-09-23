@@ -18,6 +18,7 @@ services:
     restart: always
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./scripts/docker-socket-proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg.template:ro
     environment:
       - CONTAINERS=1
       - VERSION=1

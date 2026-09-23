@@ -579,6 +579,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "redis" },
     { name = "requests" },
+    { name = "urllib3" },
 ]
 
 [package.metadata]
@@ -598,6 +599,7 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "redis" },
     { name = "requests" },
+    { name = "urllib3", specifier = ">=2,<3" },
 ]
 
 [[package]]
