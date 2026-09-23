@@ -272,7 +272,7 @@ class TestExhaustiveHasLocalXrayInventory:
                 "const supersededAt = hasLocalXray ? (versionQuery.data?.running.superseded_at ?? null) : null;",
                 "const [activeTab, setActiveTab] = useState<SettingsTab>(hasLocalXray ? 'core' : 'security');",
                 "const xrayScope = hasLocalXray ? '' : panelId != null ? `?panel_id=${panelId}` : '';",
-                "hasLocalXray ? 'lg:grid-cols-3' : 'max-w-xl mx-auto w-full'",
+                "hasLocalXray ? 'lg:grid-cols-3' : `${contentWidth} mx-auto w-full`",
                 "{hasLocalXray ? '' : ` on ${xrayTargetName}`}",
                 "{hasLocalXray ? (",
                 "title={hasLocalXray ? 'Current Xray Config' : `Xray Config — ${xrayTargetName}`}",

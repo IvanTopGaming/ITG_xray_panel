@@ -306,6 +306,32 @@ export interface PaymentWorkflow {
   cancel_requested_at?: string | null;
 }
 
+export interface UserWarning {
+  id: number;
+  type: 'traffic' | 'expiry';
+  kind: string | null;
+  state: 'pending' | 'leased' | 'delivered' | 'permanent' | 'review' | 'suppressed';
+  detail: string;
+  node: string | null;
+  inbound_tag: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface UserWarningHistory {
+  total: number;
+  sent: number;
+  traffic_sent: number;
+  expiry_sent: number;
+  pending: number;
+  failed: number;
+  suppressed: number;
+  days: number;
+  limit: number;
+  offset: number;
+  items: UserWarning[];
+}
+
 export interface BotUserDetail extends BotUser {
   clients: Client[];
   grants: UserTariffGrant[];

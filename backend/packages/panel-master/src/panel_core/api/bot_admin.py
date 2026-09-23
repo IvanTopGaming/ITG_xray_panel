@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from panel_core.extensions import db
 from panel_core.models import (
     BotText,
+    BotDelivery,
     Client,
     Payment,
     ProvisionOperation,
@@ -574,6 +575,63 @@ def get_telegram_user(tg_id):
             "payments": [_serialize_payment(p) for p in payments],
         }
     )
+
+
+@bp.get("/bot/users/<int:tg_id>/warnings")
+@token_required
+def get_user_warnings(tg_id):
+    from datetime import timezone
+    from sqlalchemy import BigInteger, func
+
+    if db.session.get(TelegramUser, tg_id) is None:
+        return jsonify({"error": "telegram user not found"}), 404
+    try:
+        limit = int(request.args.get("limit", "20"))
+        offset = int(request.args.get("offset", "0"))
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError
+    except ValueError:
+        return jsonify({"error": "invalid_pagination"}), 400
+    event_type = BotDelivery.event["type"].as_string()
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=90)
+    query = BotDelivery.query.filter(
+        BotDelivery.event["telegram_id"].as_string().cast(BigInteger) == tg_id,
+        event_type.in_(("traffic_notification", "expiry_notification")),
+        BotDelivery.updated_at >= cutoff,
+    )
+    counts = (
+        query.with_entities(event_type, BotDelivery.state, func.count()).group_by(event_type, BotDelivery.state).all()
+    )
+    summary = {"total": 0, "sent": 0, "traffic_sent": 0, "expiry_sent": 0, "pending": 0, "failed": 0, "suppressed": 0}
+    for kind, state, count in counts:
+        summary["total"] += count
+        if state == "delivered":
+            summary["sent"] += count
+            summary["traffic_sent" if kind == "traffic_notification" else "expiry_sent"] += count
+        elif state in ("pending", "leased"):
+            summary["pending"] += count
+        elif state in ("permanent", "review"):
+            summary["failed"] += count
+        elif state == "suppressed":
+            summary["suppressed"] += count
+    rows = query.order_by(BotDelivery.updated_at.desc(), BotDelivery.id.desc()).offset(offset).limit(limit).all()
+    items = []
+    for row in rows:
+        payload = row.event.get("payload") or {}
+        items.append(
+            {
+                "id": row.id,
+                "type": "traffic" if row.event["type"] == "traffic_notification" else "expiry",
+                "kind": payload.get("kind"),
+                "state": row.state,
+                "detail": row.detail,
+                "node": payload.get("node") or None,
+                "inbound_tag": payload.get("inbound_tag") or None,
+                "created_at": _payment_timestamp(row.created_at),
+                "updated_at": _payment_timestamp(row.updated_at),
+            }
+        )
+    return jsonify({**summary, "items": items, "days": 90, "limit": limit, "offset": offset})
 
 
 @bp.route("/bot/users/<int:tg_id>/grants", methods=["POST"])

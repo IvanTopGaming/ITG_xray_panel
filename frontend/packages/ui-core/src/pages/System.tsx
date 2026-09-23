@@ -352,14 +352,12 @@ export default function System() {
     saveSystemSettingsMutation.mutate();
   };
 
+  const contentWidth = activeTab === 'about' ? 'max-w-4xl' : 'max-w-xl';
+
   return (
     <div
       className={`grid grid-cols-1 gap-8 pb-10 items-start ${
-        hasLocalXray
-          ? 'lg:grid-cols-3'
-          : activeTab === 'about'
-            ? 'max-w-4xl mx-auto w-full'
-            : 'max-w-xl mx-auto w-full'
+        hasLocalXray ? 'lg:grid-cols-3' : `${contentWidth} mx-auto w-full`
       }`}
     >
       {showTransferBanners && (

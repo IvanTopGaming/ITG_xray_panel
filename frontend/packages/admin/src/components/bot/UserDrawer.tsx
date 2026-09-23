@@ -18,6 +18,7 @@ import { ConfirmationModal } from '@ui/components/ui/ConfirmationModal';
 import { Select } from '@ui/components/ui/Select';
 import { cn } from '@ui/lib/utils';
 import { PaymentState } from './PaymentState';
+import { UserWarnings } from './UserWarnings';
 import { grantProvisioningLabel, notifyGrantResult } from './grantStatus';
 import type { BotUserDetail, GrantBilling, Tariff, UserTariffGrant, Client } from '@ui/lib/types';
 
@@ -849,6 +850,8 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                     </div>
                   )}
                 </section>
+
+                <UserWarnings key={detail.telegram_id} telegramId={detail.telegram_id} />
 
                 <section>
                   <h3 className="mb-3 text-base font-semibold text-white">
