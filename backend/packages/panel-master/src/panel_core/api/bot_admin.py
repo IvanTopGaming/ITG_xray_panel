@@ -878,6 +878,7 @@ def rotate_bot_service_token():
         db.session.add(setting)
     setting.value = new_token
     db.session.commit()
+    logger.warning("bot service token rotated by a panel admin from %s", request.remote_addr)
     return jsonify({"token": new_token})
 
 
@@ -957,9 +958,9 @@ def get_bot_settings():
         {
             "yookassa_shop_id": _read_setting("yookassa_shop_id"),
             "yookassa_return_url": _read_setting("yookassa_return_url"),
-            "yookassa_secret_key": yookassa_secret,
-            "bot_token": bot_token,
-            "bot_service_token": bot_service_token,
+            "yookassa_secret_key": "",
+            "bot_token": "",
+            "bot_service_token": "",
             "has_yookassa_secret": bool(yookassa_secret),
             "has_bot_service_token": bool(bot_service_token),
             "has_bot_token": bool(bot_token),

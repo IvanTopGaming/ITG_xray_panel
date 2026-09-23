@@ -17,6 +17,7 @@ from panel_core.services.panel_proxy import (
     get_panel_snapshot,
 )
 from panel_core.services.state_mirror import forget_mirror
+from panel_core.services.federation_http import federation_post, federation_get, require_public_address
 from panel_core.services.tariffs import purge_tariff_items
 from panel_core.utils import token_required
 
@@ -38,7 +39,7 @@ def _handshake(url: str, link_token: str) -> dict:
     master_url = _master_url(require_config=False)
 
     try:
-        resp = requests.post(
+        resp = federation_post(
             f"{url}/api/federation/handshake",
             json={
                 "link_token": link_token,
@@ -120,18 +121,7 @@ def _validate_panel_url(url: str) -> str:
         return url
     ip = _coerce_ip(host)
     if ip is not None:
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            raise ValueError(
-                "Panel URL resolves to a non-routable address. If the master and this node share a private "
-                "network on purpose, set FEDERATION_ALLOW_PRIVATE_URLS=true on the master."
-            )
+        _reject_private_ip(ip)
     else:
         low = host.lower()
         if low == "localhost" or "." not in low or low.endswith((".local", ".internal", ".localhost")):
@@ -139,7 +129,23 @@ def _validate_panel_url(url: str) -> str:
                 "Panel URL host is not a public domain. If the master and this node share a private network "
                 "on purpose, set FEDERATION_ALLOW_PRIVATE_URLS=true on the master."
             )
+        _reject_private_resolution(host)
     return url
+
+
+def _reject_private_ip(ip) -> None:
+    require_public_address(str(ip))
+
+
+def _reject_private_resolution(host: str) -> None:
+    import socket
+
+    try:
+        addresses = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return
+    for entry in addresses:
+        require_public_address(entry[4][0])
 
 
 @bp.route("/panels", methods=["GET"])
@@ -204,6 +210,7 @@ def create_panel():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("create_panel failed")
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500
 
@@ -235,6 +242,7 @@ def update_panel(panel_id):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("update_panel failed")
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500
 
@@ -292,6 +300,7 @@ def relink_panel(panel_id):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("relink_panel failed")
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500
 
@@ -325,6 +334,7 @@ def delete_panel(panel_id):
             200,
         )
     except Exception:
+        logger.exception("delete_panel failed")
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500
 
@@ -336,7 +346,7 @@ def panel_backup(panel_id):
     if not panel:
         return jsonify({"error": "Panel not found"}), 404
     try:
-        resp = requests.get(
+        resp = federation_get(
             f"{panel.url}/api/backup",
             headers={"X-Federation-Token": panel.federation_token},
             timeout=300,
@@ -379,7 +389,7 @@ def panel_restore(panel_id):
         return jsonify({"error": "No file provided"}), 400
     try:
         f = request.files["file"]
-        resp = requests.post(
+        resp = federation_post(
             f"{panel.url}/api/restore",
             headers={"X-Federation-Token": panel.federation_token},
             files={"file": (f.filename, f.stream, f.content_type)},
@@ -513,6 +523,7 @@ def panel_transfer_claim():
         )
         return jsonify({"error": exc.message}), exc.status
     except Exception:
+        logger.exception("panel_transfer_claim failed")
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500
 

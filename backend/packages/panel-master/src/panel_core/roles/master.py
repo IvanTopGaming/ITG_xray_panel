@@ -32,5 +32,10 @@ def create_app():
 
     bootstrap_defaults(app, system_outbounds=False)
 
+    from panel_core.services.federation_http import sync_private_network_policy
+
+    with app.app_context():
+        sync_private_network_policy()
+
     app.logger.info("backend ready (db=%s, no scheduled jobs on this role)", sqlite_path)
     return app

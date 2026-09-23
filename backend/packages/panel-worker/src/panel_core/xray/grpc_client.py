@@ -110,10 +110,12 @@ def reset_user_counters(tag, email, runtime_email):
         channel = get_channel()
         stub = stats_command_pb2_grpc.StatsServiceStub(channel)
         stub.QueryStats(
-            stats_command_pb2.QueryStatsRequest(pattern=f"user>>>{runtime_email}>>>traffic>>>uplink", reset=True)
+            stats_command_pb2.QueryStatsRequest(pattern=f"user>>>{runtime_email}>>>traffic>>>uplink", reset=True),
+            timeout=3,
         )
         stub.QueryStats(
-            stats_command_pb2.QueryStatsRequest(pattern=f"user>>>{runtime_email}>>>traffic>>>downlink", reset=True)
+            stats_command_pb2.QueryStatsRequest(pattern=f"user>>>{runtime_email}>>>traffic>>>downlink", reset=True),
+            timeout=3,
         )
     except grpc.RpcError as e:
         logger.debug("Failed to reset user traffic counters for %s/%s: %s", tag, email, e)
@@ -123,9 +125,13 @@ def reset_inbound_counters(tag):
     try:
         channel = get_channel()
         stub = stats_command_pb2_grpc.StatsServiceStub(channel)
-        stub.QueryStats(stats_command_pb2.QueryStatsRequest(pattern=f"inbound>>>{tag}>>>traffic>>>uplink", reset=True))
         stub.QueryStats(
-            stats_command_pb2.QueryStatsRequest(pattern=f"inbound>>>{tag}>>>traffic>>>downlink", reset=True)
+            stats_command_pb2.QueryStatsRequest(pattern=f"inbound>>>{tag}>>>traffic>>>uplink", reset=True),
+            timeout=3,
+        )
+        stub.QueryStats(
+            stats_command_pb2.QueryStatsRequest(pattern=f"inbound>>>{tag}>>>traffic>>>downlink", reset=True),
+            timeout=3,
         )
     except grpc.RpcError as e:
         logger.debug("Failed to reset inbound traffic counters for %s: %s", tag, e)

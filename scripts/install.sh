@@ -159,19 +159,47 @@ done
 [ "$INTERACTIVE" -eq 1 ] && banner
 
 env_get() {
-    sed -n "s/^$2=\([^#]*\).*/\1/p" "$1" | head -1 | sed 's/[[:space:]]*$//'
+    awk -v key="$2" '
+        index($0, key "=") == 1 {
+            value = substr($0, length(key) + 2)
+            sub(/^[[:space:]]+/, "", value)
+            quote = substr(value, 1, 1)
+            if (quote == "\"" || quote == sprintf("%c", 39)) {
+                result = ""
+                for (i = 2; i <= length(value); i++) {
+                    char = substr(value, i, 1)
+                    if (char == quote) break
+                    if (char == "\\" && (substr(value, i + 1, 1) == quote || substr(value, i + 1, 1) == "\\")) {
+                        i++
+                        char = substr(value, i, 1)
+                    }
+                    result = result char
+                }
+                print result
+            } else {
+                sub(/[[:space:]]+#.*/, "", value)
+                sub(/[[:space:]]+$/, "", value)
+                print value
+            }
+            exit
+        }
+    ' "$1"
 }
 
 env_set() {
-    local file="$1" key="$2" value="$3" line rest comment tmp
+    local file="$1" key="$2" value="$3" line tmp
+    case "$value" in
+        *[[:space:]#\'\"\\]*)
+            value="${value//\\/\\\\}"
+            value="${value//\'/\\\'}"
+            value="'$value'"
+            ;;
+    esac
     tmp="$file.tmp"
     : > "$tmp"
     while IFS= read -r line || [ -n "$line" ]; do
         if [[ "$line" =~ ^${key}=(.*)$ ]]; then
-            rest="${BASH_REMATCH[1]}"
-            comment=""
-            case "$rest" in *"#"*) comment="  #${rest#*#}" ;; esac
-            printf '%s=%s%s\n' "$key" "$value" "$comment" >> "$tmp"
+            printf '%s=%s\n' "$key" "$value" >> "$tmp"
         else
             printf '%s\n' "$line" >> "$tmp"
         fi
@@ -234,7 +262,7 @@ uri_host() { printf '%s' "$1" | sed -n 's|.*@\([^:/?]*\).*|\1|p'; }
 uri_port() { printf '%s' "$1" | sed -n 's|.*@[^:]*:\([0-9]*\).*|\1|p'; }
 
 tcp_open() {
-    timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null
+    timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$1" "$2" 2>/dev/null
 }
 
 GHCR="ghcr.io/ivantopgaming"
@@ -353,6 +381,14 @@ fetch_transfer_identity() {
     secret="${decoded#*|}"
     [ -n "$master_url" ] && [ "$master_url" != "$decoded" ] ||
         die "that transfer string carries no master address" "Issue a fresh one from the node's card on the master."
+
+    case "$master_url" in
+        https://?*) ;;
+        *) die "transfer master address must use HTTPS" "Issue a fresh transfer string from the master." ;;
+    esac
+    case "$master_url" in
+        *'@'*|*'?'*|*'#'*) die "invalid transfer master address" ;;
+    esac
 
     reply="$(printf '{"transfer_token":"%s"}' "$secret" | curl -sS --max-time 15 -w '\n%{http_code}' \
         -X POST "${master_url}/api/panels/transfer/identity" \
@@ -891,8 +927,8 @@ api_token() {
 
     while :; do
         body="$(jq -n --arg u "$user" --arg p "$pass" '{username:$u,password:$p}')"
-        reply="$(curl -sS --max-time 10 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
-            -d "$body" "$API_URL/login" 2>&1 || true)"
+        reply="$(printf '%s' "$body" | curl -sS --max-time 10 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d @- "$API_URL/login" 2>&1 || true)"
         code="${reply##*$'\n'}"
         API_TOKEN="$(printf '%s' "${reply%$'\n'*}" | jq -r '.token // empty' 2>/dev/null || true)"
         [ -n "$API_TOKEN" ] && return 0
@@ -958,14 +994,11 @@ stage_update_assets() {
     UPDATE_ASSET_EXISTING=()
     UPDATE_ASSET_CREATED=()
     UPDATE_ASSETS_CHANGED=0
-    [ "$ROLE" = "data" ] || return 0
-
-    UPDATE_ASSETS=(
-        "$COMPOSE_FILE"
-        "scripts/pg_backup.sh"
-        "scripts/pg_backup_health.sh"
-        "scripts/offsite_backup.sh"
-    )
+    case "$ROLE" in
+        data) UPDATE_ASSETS=("$COMPOSE_FILE" "scripts/pg_backup.sh" "scripts/pg_backup_health.sh" "scripts/offsite_backup.sh") ;;
+        node) UPDATE_ASSETS=("$COMPOSE_FILE" "scripts/docker-socket-proxy.cfg") ;;
+        *) return 0 ;;
+    esac
     UPDATE_ASSET_STAGE="$WORK/update-assets"
     UPDATE_ASSET_BACKUP="$WORK/update-assets-before"
     local relative staged current
@@ -1499,6 +1532,9 @@ case "$ROLE" in
         fetch "scripts/offsite_backup.sh" "$DIR/scripts/offsite_backup.sh"; chmod +x "$DIR/scripts/offsite_backup.sh"
         ;;
 esac
+if [ "$ROLE" = "node" ]; then
+    fetch "scripts/docker-socket-proxy.cfg" "$DIR/scripts/docker-socket-proxy.cfg"
+fi
 spinner_stop
 ok "$COMPOSE_FILE"
 case "$ROLE" in master|node|sub|bot) ok "caddy/routes.yaml" ;; esac

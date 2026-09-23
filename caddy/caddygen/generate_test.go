@@ -216,9 +216,10 @@ func TestLoadConfig_DropsEmptyBot(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN": "proxy.example.com",
-		"PANEL_DOMAIN": "panel.example.com",
-		"SUB_DOMAIN":   "sub.example.com",
+		"PROXY_DOMAIN":      "proxy.example.com",
+		"PANEL_DOMAIN":      "panel.example.com",
+		"PANEL_SECRET_PATH": "test-secret",
+		"SUB_DOMAIN":        "sub.example.com",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -236,10 +237,11 @@ func TestLoadConfig_KeepsBotWhenSet(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN": "proxy.example.com",
-		"PANEL_DOMAIN": "panel.example.com",
-		"SUB_DOMAIN":   "sub.example.com",
-		"BOT_DOMAIN":   "bot.example.com",
+		"PROXY_DOMAIN":      "proxy.example.com",
+		"PANEL_DOMAIN":      "panel.example.com",
+		"PANEL_SECRET_PATH": "test-secret",
+		"SUB_DOMAIN":        "sub.example.com",
+		"BOT_DOMAIN":        "bot.example.com",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -267,10 +269,11 @@ func TestGenerate_BotServerPathFilters(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN": "proxy.example.com",
-		"PANEL_DOMAIN": "panel.example.com",
-		"SUB_DOMAIN":   "sub.example.com",
-		"BOT_DOMAIN":   "bot.example.com",
+		"PROXY_DOMAIN":      "proxy.example.com",
+		"PANEL_DOMAIN":      "panel.example.com",
+		"PANEL_SECRET_PATH": "test-secret",
+		"SUB_DOMAIN":        "sub.example.com",
+		"BOT_DOMAIN":        "bot.example.com",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -297,9 +300,10 @@ func TestGenerate_DefaultRoutesFileValidJSON(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN": "proxy.example.com",
-		"PANEL_DOMAIN": "panel.example.com",
-		"SUB_DOMAIN":   "sub.example.com",
+		"PROXY_DOMAIN":      "proxy.example.com",
+		"PANEL_DOMAIN":      "panel.example.com",
+		"PANEL_SECRET_PATH": "test-secret",
+		"SUB_DOMAIN":        "sub.example.com",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig real routes.yaml: %v", err)
@@ -345,13 +349,12 @@ func TestGenerate_PanelAPIRoute(t *testing.T) {
 	}
 }
 
-func TestGenerate_PanelAPIRouteSkippedWithoutSecret(t *testing.T) {
-	cfg, _ := LoadConfig([]byte(routesYAMLWithAPI), envMap(map[string]string{
+func TestGenerate_PanelAPIRouteRequiresSecret(t *testing.T) {
+	_, err := LoadConfig([]byte(routesYAMLWithAPI), envMap(map[string]string{
 		"PANEL_DOMAIN": "panel.example.com",
 	}))
-	b, _ := Generate(cfg)
-	if containsString(string(b), "backend:5000") {
-		t.Fatal("API route must be skipped when PANEL_SECRET_PATH is empty")
+	if err == nil {
+		t.Fatal("an enabled API route must report its missing secret path")
 	}
 }
 

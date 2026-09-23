@@ -240,6 +240,7 @@ def create_profile():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("create_profile failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -292,6 +293,7 @@ def update_profile(pid):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("update_profile failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -333,4 +335,5 @@ def delete_profile(pid):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("delete_profile failed")
         return jsonify({"error": "Internal server error"}), 500

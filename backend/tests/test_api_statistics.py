@@ -656,3 +656,25 @@ class TestTopDomainsCoveringIndex:
         assert resp.status_code == 200
         top = [d["domain"] for d in resp.get_json()["top_domains"]]
         assert "alpha.com" in top
+
+
+@pytest.mark.parametrize("endpoint", ["overview", "traffic", "domains", "domain-users", "users-ranking"])
+@pytest.mark.parametrize("start,end", [(10**20, 10**20 + 3600), (-(10**20), 0)])
+def test_statistics_rejects_unrepresentable_dates(client, admin_token, endpoint, start, end):
+    response = client.get(
+        f"/api/stats/{endpoint}",
+        query_string={"from": start, "to": end, "domain": "example.com"},
+        headers=_auth(admin_token),
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("endpoint", ["domains", "domain-users", "users-ranking"])
+@pytest.mark.parametrize("limit", ["-1", "0", "nope", "1.5"])
+def test_statistics_rejects_invalid_limits(client, admin_token, endpoint, limit):
+    response = client.get(
+        f"/api/stats/{endpoint}",
+        query_string={"limit": limit, "domain": "example.com"},
+        headers=_auth(admin_token),
+    )
+    assert response.status_code == 400

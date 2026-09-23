@@ -197,6 +197,7 @@ def build_base_app(role, *, public_surface=True):
     }
     app.config["RATELIMIT_IN_MEMORY_FALLBACK_ENABLED"] = True
     app.config["RATELIMIT_STORAGE_URI"] = local_redis_uri()
+    app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 
     panel_host = _panel_domain_host()
     if public_surface:

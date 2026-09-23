@@ -2,7 +2,7 @@ import json
 import jwt
 import datetime
 import logging
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from werkzeug.security import check_password_hash, generate_password_hash
 from panel_core.extensions import db, limiter
 from panel_core.models import Admin, Client, Outbound, Balancer
@@ -172,18 +172,26 @@ def set_user_routing():
 
 @bp.route("/admin/password", methods=["PUT"])
 @token_required
+@limiter.limit("5 per minute")
 def change_password():
     data = request.get_json(silent=True) or {}
+    current_password = data.get("current_password")
     new_password = data.get("new_password")
-    if not new_password:
+    if not isinstance(new_password, str) or not new_password:
         return jsonify({"error": "New password required"}), 400
+    if not isinstance(current_password, str) or not current_password:
+        return jsonify({"error": "Current password required"}), 400
     validation_error = validate_password(new_password)
     if validation_error:
         return jsonify({"error": validation_error}), 400
-    admin = Admin.query.first()
-    if admin:
-        admin.password = generate_password_hash(new_password)
-        admin.password_changed_at = int(datetime.datetime.utcnow().timestamp())
-        db.session.commit()
-        return jsonify({"status": "changed"}), 200
-    return jsonify({"error": "Admin not found"}), 404
+    admin = db.session.get(Admin, g.admin_id)
+    if not admin:
+        return jsonify({"error": "Admin not found"}), 404
+    if not check_password_hash(admin.password, current_password):
+        return jsonify({"error": "Current password is incorrect"}), 403
+    admin.password = generate_password_hash(new_password)
+    admin.password_changed_at = max(
+        int(datetime.datetime.now(datetime.timezone.utc).timestamp()), int(admin.password_changed_at or 0) + 1
+    )
+    db.session.commit()
+    return jsonify({"status": "changed"}), 200

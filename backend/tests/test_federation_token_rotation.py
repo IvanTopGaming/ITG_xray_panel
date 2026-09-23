@@ -37,6 +37,11 @@ from panel_core.models import (
 from panel_core.utils import SECRET_KEY
 
 
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("8.8.8.8", 443))])
+
+
 def _reset_scheduler():
     from panel_core.extensions import scheduler
 
@@ -249,7 +254,7 @@ class TestTheMasterRelinksInPlace:
         panel, _ = _panel_with_a_tariff(db)
         panel_id, created_at = panel.id, panel.created_at
 
-        with patch("panel_core.api.panels.requests.post", return_value=_handshake_answers()):
+        with patch("panel_core.api.panels.federation_post", return_value=_handshake_answers()):
             resp = master.post(
                 f"/api/panels/{panel_id}/relink",
                 headers=master_headers,
@@ -267,7 +272,7 @@ class TestTheMasterRelinksInPlace:
         panel, tariff = _panel_with_a_tariff(db)
         panel_id, tariff_id = panel.id, tariff.id
 
-        with patch("panel_core.api.panels.requests.post", return_value=_handshake_answers()):
+        with patch("panel_core.api.panels.federation_post", return_value=_handshake_answers()):
             resp = master.post(
                 f"/api/panels/{panel_id}/relink",
                 headers=master_headers,
@@ -283,7 +288,7 @@ class TestTheMasterRelinksInPlace:
         panel_id = panel.id
         composite = base64.urlsafe_b64encode(b"https://moved.example.com|raw-token").decode().rstrip("=")
 
-        with patch("panel_core.api.panels.requests.post", return_value=_handshake_answers()) as mock_post:
+        with patch("panel_core.api.panels.federation_post", return_value=_handshake_answers()) as mock_post:
             resp = master.post(
                 f"/api/panels/{panel_id}/relink",
                 headers=master_headers,
@@ -298,7 +303,7 @@ class TestTheMasterRelinksInPlace:
         panel, _ = _panel_with_a_tariff(db)
         panel_id = panel.id
 
-        with patch("panel_core.api.panels.requests.post", return_value=_handshake_answers()) as mock_post:
+        with patch("panel_core.api.panels.federation_post", return_value=_handshake_answers()) as mock_post:
             master.post(
                 f"/api/panels/{panel_id}/relink",
                 headers=master_headers,
@@ -315,7 +320,7 @@ class TestTheMasterRelinksInPlace:
         refused.status_code = 401
         refused.json.return_value = {"error": "no pending link token"}
 
-        with patch("panel_core.api.panels.requests.post", return_value=refused):
+        with patch("panel_core.api.panels.federation_post", return_value=refused):
             resp = master.post(
                 f"/api/panels/{panel_id}/relink",
                 headers=master_headers,
@@ -330,7 +335,7 @@ class TestTheMasterRelinksInPlace:
         panel, _ = _panel_with_a_tariff(db)
         panel_id = panel.id
 
-        with patch("panel_core.api.panels.requests.post", return_value=_handshake_answers(token="")):
+        with patch("panel_core.api.panels.federation_post", return_value=_handshake_answers(token="")):
             resp = master.post(
                 f"/api/panels/{panel_id}/relink",
                 headers=master_headers,
@@ -420,7 +425,7 @@ def test_the_whole_procedure_end_to_end(master, master_headers, node, node_heade
         answer.json.return_value = inner.get_json()
         return answer
 
-    with patch("panel_core.api.panels.requests.post", side_effect=_through_the_node):
+    with patch("panel_core.api.panels.federation_post", side_effect=_through_the_node):
         resp = master.post(f"/api/panels/{panel_id}/relink", headers=master_headers, json={"link_token": issued})
 
     assert resp.status_code == 200

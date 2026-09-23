@@ -8,6 +8,11 @@ from panel_core.models import Admin, LinkedPanel, SystemSetting, Tariff, TariffI
 from panel_core.utils import SECRET_KEY
 
 
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("8.8.8.8", 443))])
+
+
 @pytest.mark.parametrize(
     "bad_url",
     [
@@ -164,7 +169,7 @@ def test_list_panels_keeps_db_values_when_redis_empty(client, admin_token, db):
     assert item["last_poll"] == 111
 
 
-@patch("panel_core.api.panels.requests.post")
+@patch("panel_core.api.panels.federation_post")
 def test_create_panel_success(mock_post, client, admin_token, db):
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -195,7 +200,7 @@ def test_create_panel_success(mock_post, client, admin_token, db):
     assert panel.current_instance_id == "new-node"
 
 
-@patch("panel_core.api.panels.requests.post")
+@patch("panel_core.api.panels.federation_post")
 def test_create_panel_uses_custom_master_name(mock_post, client, admin_token, db):
     db.session.add(SystemSetting(key="panel_name", value="My Master"))
     db.session.commit()
@@ -235,7 +240,7 @@ def test_create_panel_missing_url(client, admin_token):
     assert "url" in resp.get_json()["error"].lower()
 
 
-@patch("panel_core.api.panels.requests.post")
+@patch("panel_core.api.panels.federation_post")
 def test_create_panel_duplicate_name(mock_post, client, admin_token, db):
     _make_panel(db, name="taken")
     resp = client.post(
@@ -247,7 +252,7 @@ def test_create_panel_duplicate_name(mock_post, client, admin_token, db):
     assert "already exists" in resp.get_json()["error"]
 
 
-@patch("panel_core.api.panels.requests.post")
+@patch("panel_core.api.panels.federation_post")
 def test_create_panel_connection_error(mock_post, client, admin_token):
     mock_post.side_effect = __import__("requests").ConnectionError("refused")
     resp = client.post(
@@ -259,7 +264,7 @@ def test_create_panel_connection_error(mock_post, client, admin_token):
     assert "connect" in resp.get_json()["error"].lower()
 
 
-@patch("panel_core.api.panels.requests.post")
+@patch("panel_core.api.panels.federation_post")
 def test_create_panel_timeout(mock_post, client, admin_token):
     mock_post.side_effect = __import__("requests").Timeout("timed out")
     resp = client.post(
@@ -271,7 +276,7 @@ def test_create_panel_timeout(mock_post, client, admin_token):
     assert "timed out" in resp.get_json()["error"].lower()
 
 
-@patch("panel_core.api.panels.requests.post")
+@patch("panel_core.api.panels.federation_post")
 def test_create_panel_handshake_rejected(mock_post, client, admin_token):
     mock_resp = MagicMock()
     mock_resp.status_code = 403

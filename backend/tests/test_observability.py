@@ -48,6 +48,16 @@ class TestSetupLogging:
 
 
 class TestRequestLogging:
+    @pytest.mark.parametrize("path", ["/api/sub/u/private-token/info?secret=value", "/api/sub/private-uuid?format=raw"])
+    def test_subscription_credentials_are_not_logged(self, caplog, path):
+        app = self._make_app()
+        with caplog.at_level(logging.INFO, logger="app.requests"):
+            app.test_client().get(path)
+        assert "private-token" not in caplog.text
+        assert "private-uuid" not in caplog.text
+        assert "secret=value" not in caplog.text
+        assert "/api/sub/" in caplog.text
+
     def _make_app(self):
         app = Flask(__name__)
         init_request_logging(app)

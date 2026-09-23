@@ -1,14 +1,16 @@
+import logging
 import json
 import os
 import uuid
 import secrets
 from datetime import datetime
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from panel_core.extensions import db, limiter
 from panel_core.models import Inbound, Client, TelegramUser, TariffItem
 from panel_core.services.sub_links import build_aggregate_sub_url, build_client_sub_url
 from panel_core.services.panel_proxy import RemotePanelError
 from panel_core.utils import (
+    audit_privileged_change,
     remote_panel_failure,
     token_required,
     admin_or_federation_token_required,
@@ -49,7 +51,28 @@ from panel_core.services.runtime_apply import (
     synchronize_runtime,
 )
 
+logger = logging.getLogger(__name__)
+
 bp = Blueprint("inbound", __name__)
+
+
+@bp.after_request
+def audit_inbound_mutation(response):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and getattr(g, "auth_via", None):
+        result = response.get_json(silent=True) or {}
+        if response.status_code < 300 or (isinstance(result, dict) and result.get("saved")):
+            counts = {
+                key: result[key]
+                for key in ("deleted", "updated", "reset", "skipped")
+                if isinstance(result, dict) and isinstance(result.get(key), int)
+            }
+            audit_privileged_change(
+                logger,
+                f"{request.endpoint} {request.view_args} completed with HTTP {response.status_code}; counts={counts}",
+            )
+    return response
+
+
 MAX_CLIENT_ID_LEN = 128
 ALLOWED_INBOUND_PROTOCOLS = {
     "vless",
@@ -329,6 +352,7 @@ def create_inbound():
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("create_inbound failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -538,6 +562,7 @@ def update_inbound(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("update_inbound failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -600,6 +625,7 @@ def delete_inbound(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("delete_inbound failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -629,6 +655,7 @@ def reset_ib_traffic(tag):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("reset_ib_traffic failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -721,6 +748,7 @@ def add_user(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("add_user failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -844,6 +872,7 @@ def update_user(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("update_user failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -906,6 +935,7 @@ def delete_user_route(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("delete_user_route failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -913,6 +943,8 @@ def _split_users_by_panel(users):
 
     if not isinstance(users, list) or not users:
         raise ValueError("users array required")
+    if len(users) > 500:
+        raise ValueError("users array too large (max 500)")
     local = []
     remote = {}
     for user in users:
@@ -978,6 +1010,7 @@ def bulk_delete_users_route():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("bulk_delete_users_route failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -1051,6 +1084,7 @@ def reset_user_traffic_route():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("reset_user_traffic_route failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -1146,6 +1180,7 @@ def bulk_enable_users_route():
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("bulk_enable_users_route failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -1222,6 +1257,7 @@ def bulk_adjust_days_route():
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("bulk_adjust_days_route failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -1300,6 +1336,7 @@ def bulk_adjust_traffic_route():
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("bulk_adjust_traffic_route failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -1389,6 +1426,7 @@ def bulk_set_flow_route():
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("bulk_set_flow_route failed")
         return jsonify({"error": "Internal server error"}), 500
 
 

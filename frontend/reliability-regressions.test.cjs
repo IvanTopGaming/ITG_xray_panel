@@ -1195,3 +1195,24 @@ test('Subscription data refreshes periodically, on focus, and at a known expiry'
       window[key] = originals[key];
   }
 });
+
+test('A newly generated bot service token is available once for copying', async () => {
+  const { SettingsTab } = await load('admin/src/components/bot/SettingsTab.tsx');
+  api.get = async () => ({ data: { has_bot_service_token: false, admin_ids: [] } });
+  api.post = async () => ({ data: { token: 'new-service-token' } });
+  const mounted = await mount(SettingsTab);
+  try {
+    act(() => button(mounted.tree, 'Generate token').props.onClick());
+    await settle();
+    await settle();
+    const section = mounted.tree.root
+      .findAllByType('section')
+      .find((node) => text(node).startsWith('Bot service token'));
+    const show = section.findAllByType('button').find((node) => node.props.title === 'Show');
+    assert.equal(show.props.disabled, false);
+    act(() => show.props.onClick());
+    assert.match(text(section), /new-service-token/);
+  } finally {
+    mounted.close();
+  }
+});

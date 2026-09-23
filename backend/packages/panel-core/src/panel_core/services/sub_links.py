@@ -1,4 +1,5 @@
 import os
+from urllib.parse import quote
 
 
 def sub_base_url():
@@ -26,4 +27,4 @@ def build_client_sub_url(client_id):
     base = sub_base_url()
     if not base:
         return None
-    return f"{base}/api/sub/{client_id}"
+    return f"{base}/api/sub/{quote(str(client_id), safe='')}"

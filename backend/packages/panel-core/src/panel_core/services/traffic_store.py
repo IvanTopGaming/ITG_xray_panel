@@ -82,8 +82,10 @@ def cleanup_old_domain_stats():
         if deleted:
             db.session.commit()
             logger.info("Cleaned up %d old domain stat rows", deleted)
-    except Exception as e:
-        logger.info("Domain stat cleanup failed: %s", e)
+    except Exception:
+        db.session.rollback()
+        logger.exception("Domain stat cleanup failed")
+        raise
 
 
 def cleanup_stats_job():
