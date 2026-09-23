@@ -3,14 +3,36 @@ import os
 import socket
 
 import requests
+from flask import has_app_context
 from requests.adapters import HTTPAdapter
 from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.exceptions import NewConnectionError, ConnectTimeoutError
 
+from panel_core.extensions import db
+from panel_core.models import SystemSetting
+
+_PRIVATE_POLICY_KEY = "federation_allow_private_urls"
+
 
 def private_urls_allowed():
-    return os.getenv("FEDERATION_ALLOW_PRIVATE_URLS", "").strip().lower() in ("1", "true", "yes", "on")
+    value = os.getenv("FEDERATION_ALLOW_PRIVATE_URLS")
+    if value is not None:
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    if not has_app_context():
+        return False
+    policy = SystemSetting.query.filter_by(key=_PRIVATE_POLICY_KEY).first()
+    return policy is not None and policy.value == "true"
+
+
+def sync_private_network_policy():
+    allowed = os.getenv("FEDERATION_ALLOW_PRIVATE_URLS", "").strip().lower() in ("1", "true", "yes", "on")
+    policy = SystemSetting.query.filter_by(key=_PRIVATE_POLICY_KEY).first()
+    if policy is None:
+        policy = SystemSetting(key=_PRIVATE_POLICY_KEY)
+        db.session.add(policy)
+    policy.value = "true" if allowed else "false"
+    db.session.commit()
 
 
 def require_public_address(value):

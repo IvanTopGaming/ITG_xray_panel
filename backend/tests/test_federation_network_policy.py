@@ -107,3 +107,16 @@ def test_federation_session_preserves_custom_ca_without_environment_proxy(monkey
     with federation_session() as session:
         assert session.verify == "/configured/ca.pem"
         assert not session.trust_env
+
+
+def test_master_private_network_opt_in_is_shared_with_other_roles(db, monkeypatch):
+    from panel_core.services.federation_http import private_urls_allowed, sync_private_network_policy
+
+    monkeypatch.setenv("FEDERATION_ALLOW_PRIVATE_URLS", "true")
+    sync_private_network_policy()
+    monkeypatch.delenv("FEDERATION_ALLOW_PRIVATE_URLS")
+    assert private_urls_allowed()
+    monkeypatch.setenv("FEDERATION_ALLOW_PRIVATE_URLS", "false")
+    sync_private_network_policy()
+    monkeypatch.delenv("FEDERATION_ALLOW_PRIVATE_URLS")
+    assert not private_urls_allowed()
