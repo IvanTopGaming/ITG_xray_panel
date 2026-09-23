@@ -421,9 +421,27 @@ def cancel_payment_for_bot(payment_id):
         return jsonify({"error": "not_found"}), 404
     from panel_core.services import billing
 
-    p.cancel_requested_at = billing._now()
+    db.session.execute(
+        update(Payment)
+        .where(
+            Payment.id == p.id,
+            Payment.telegram_id == tg_id,
+            Payment.status == "pending",
+            Payment.provider_status.in_(("pending", "waiting_for_capture")),
+            Payment.fulfillment_status == "pending",
+            Payment.cancel_requested_at.is_(None),
+        )
+        .values(cancel_requested_at=billing._now())
+    )
     db.session.commit()
-    return jsonify({"id": p.id, "status": p.status, "ui_closed": True, **billing.payment_state(p)})
+    db.session.refresh(p)
+    ui_closed = (
+        p.status == "pending"
+        and p.provider_status in ("pending", "waiting_for_capture")
+        and p.fulfillment_status == "pending"
+        and p.cancel_requested_at is not None
+    )
+    return jsonify({"id": p.id, "status": p.status, "ui_closed": ui_closed, **billing.payment_state(p)})
 
 
 @bp.route("/bot-service/payments/<int:payment_id>/chat-coords", methods=["POST"])

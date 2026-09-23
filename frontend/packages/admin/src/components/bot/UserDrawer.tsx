@@ -94,7 +94,7 @@ function formatDateOnly(input: string | number | null): string {
 }
 
 function bytes(n: number): string {
-  if (n === 0) return '∞';
+  if (n === 0) return '0 B';
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
   return `${(n / 1024 ** 3).toFixed(1)} GB`;
 }
@@ -359,9 +359,9 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-            className="fixed right-0 top-0 z-50 flex h-full w-full flex-col gap-6 overflow-y-auto border-l border-white/[0.05] bg-zinc-950 px-7 py-6 md:max-w-[640px]"
+            className="fixed right-0 top-0 z-50 flex h-full w-full flex-col gap-6 overflow-y-auto scroll-pt-32 border-l border-white/[0.05] bg-zinc-950 px-7 pb-6 md:max-w-[640px]"
           >
-            <div className="flex items-start justify-between">
+            <div className="sticky top-0 z-10 -mx-7 flex shrink-0 items-start justify-between gap-4 border-b border-white/[0.05] bg-zinc-950 px-7 py-6">
               <div className="min-w-0">
                 <h2 className="truncate text-xl font-bold text-white">
                   {detail
@@ -376,6 +376,7 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
               </div>
               <button
                 onClick={onClose}
+                aria-label="Close user details"
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.04] text-white/60 hover:bg-white/[0.10] hover:text-white"
               >
                 <X size={16} />
@@ -543,7 +544,7 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
                               {c.email}
                             </span>
                             <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-white/50">
-                              <span>Limit {bytes(c.limit_bytes)}</span>
+                              <span>Limit {c.limit_bytes === 0 ? '∞' : bytes(c.limit_bytes)}</span>
                               <span className="text-white/20">·</span>
                               <span>
                                 Expires {c.expiry_time ? formatDateOnly(c.expiry_time) : '—'}

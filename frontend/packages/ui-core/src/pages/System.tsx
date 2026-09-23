@@ -355,7 +355,11 @@ export default function System() {
   return (
     <div
       className={`grid grid-cols-1 gap-8 pb-10 items-start ${
-        hasLocalXray ? 'lg:grid-cols-3' : 'max-w-xl mx-auto w-full'
+        hasLocalXray
+          ? 'lg:grid-cols-3'
+          : activeTab === 'about'
+            ? 'max-w-4xl mx-auto w-full'
+            : 'max-w-xl mx-auto w-full'
       }`}
     >
       {showTransferBanners && (
@@ -819,7 +823,7 @@ export default function System() {
                     </div>
                   </div>
 
-                  <div className="w-full grid grid-cols-2 gap-2 text-[11px] font-mono">
+                  <div className="w-full grid grid-cols-2 gap-3 text-xs font-mono">
                     {services.map((s) => (
                       <VersionPill
                         key={s.key}
@@ -1005,11 +1009,13 @@ function HealthLine({
   }[tone];
   return (
     <div
-      className="flex items-center justify-between gap-3 px-3 py-2 bg-black/20 rounded-lg border border-white/5"
+      className="flex min-w-0 flex-col items-start justify-center gap-2 px-3 py-3 bg-black/20 rounded-lg border border-white/5"
       title={hint}
     >
-      <span className="shrink-0 text-gray-500 uppercase tracking-wider">{label}</span>
-      <span className={`text-right ${colour}`}>{value}</span>
+      <span className="text-[10px] text-gray-500 uppercase tracking-wider break-words max-w-full">
+        {label}
+      </span>
+      <span className={`text-left break-words max-w-full ${colour}`}>{value}</span>
     </div>
   );
 }
@@ -1034,25 +1040,26 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
   const jobs = health.jobs;
   const jobItems = jobs?.items ?? [];
   lines.push(
-    <HealthLine
-      key="jobs"
-      label="scheduler jobs"
-      value={
-        jobs?.available
-          ? `${jobItems.filter((job) => job.status === 'failed').length} failed · ${jobItems.filter((job) => job.stale).length} overdue · ${jobItems.filter((job) => job.status === 'waiting').length} waiting`
-          : jobs?.error || 'unknown'
-      }
-      tone={
-        !jobs?.available
-          ? 'muted'
-          : jobs.needs_attention
-            ? 'bad'
-            : jobItems.some((job) => job.status === 'waiting')
-              ? 'warn'
-              : 'ok'
-      }
-      hint="Persisted scheduler outcomes, not process liveness. Overdue means no successful pass within the job interval and grace window."
-    />
+    <div key="jobs" className="col-span-2">
+      <HealthLine
+        label="scheduler jobs"
+        value={
+          jobs?.available
+            ? `${jobItems.filter((job) => job.status === 'failed').length} failed · ${jobItems.filter((job) => job.stale).length} overdue · ${jobItems.filter((job) => job.status === 'waiting').length} waiting`
+            : jobs?.error || 'unknown'
+        }
+        tone={
+          !jobs?.available
+            ? 'muted'
+            : jobs.needs_attention
+              ? 'bad'
+              : jobItems.some((job) => job.status === 'waiting')
+                ? 'warn'
+                : 'ok'
+        }
+        hint="Persisted scheduler outcomes, not process liveness. Overdue means no successful pass within the job interval and grace window."
+      />
+    </div>
   );
   if (jobs?.available && jobItems.length) {
     lines.push(
@@ -1191,7 +1198,7 @@ function HealthLines({ health, isLoading }: { health?: SystemHealth; isLoading: 
     );
   }
 
-  return <div className="w-full grid grid-cols-2 gap-2 text-[11px] font-mono">{lines}</div>;
+  return <div className="w-full grid grid-cols-2 gap-3 text-xs font-mono">{lines}</div>;
 }
 
 function silentFor(sinceSeconds: number): string {
