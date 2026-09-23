@@ -6,7 +6,7 @@ import uuid
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-from sqlalchemy import or_
+from sqlalchemy import BigInteger, or_
 from sqlalchemy.exc import IntegrityError
 
 from panel_core.extensions import db
@@ -187,7 +187,7 @@ def _warning_key(event):
             expiry = client.get("expiry_time")
             if not isinstance(expiry, int) or expiry != payload.get("expiry_time_ms"):
                 return None, "stale_expiry"
-            generation = f"legacy:{expiry}"
+            generation = "legacy" if payload.get("tariff_id") else f"legacy:{expiry}"
     value = SimpleNamespace(
         expiry_time=client.get("expiry_time"),
         limit_bytes=client.get("limit_bytes"),
@@ -197,10 +197,33 @@ def _warning_key(event):
     actual_kind = evaluate_traffic(value) if traffic else evaluate_expiry(value, now_ms)
     if actual_kind != payload.get("kind"):
         return None, "warning_no_longer_current"
+    if not traffic and not current_generation and payload.get("tariff_id"):
+        existing_key = _existing_legacy_expiry_key(event)
+        if existing_key is not None:
+            return existing_key, None
     parts = [event["telegram_id"], payload.get("tariff_id") or 0, payload["kind"], generation]
     if traffic or not payload.get("tariff_id"):
         parts.extend((event["source"], payload.get("inbound_tag"), payload.get("client_id")))
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest(), None
+
+
+def _existing_legacy_expiry_key(event):
+    payload = BotDelivery.event["payload"]
+    generation = payload["access_generation"].as_string()
+    return (
+        db.session.query(BotDelivery.dedup_key)
+        .filter(
+            BotDelivery.dedup_key.isnot(None),
+            BotDelivery.event["type"].as_string() == "expiry_notification",
+            BotDelivery.event["telegram_id"].as_string().cast(BigInteger) == event["telegram_id"],
+            payload["tariff_id"].as_integer() == event["payload"]["tariff_id"],
+            payload["kind"].as_string() == event["payload"]["kind"],
+            or_(generation.is_(None), generation == ""),
+        )
+        .order_by(BotDelivery.id)
+        .limit(1)
+        .scalar()
+    )
 
 
 def _verdict(delivery, claimed=False, lease_token=None):

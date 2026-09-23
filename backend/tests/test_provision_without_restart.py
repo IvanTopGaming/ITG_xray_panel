@@ -79,6 +79,47 @@ def grant(operation="pay:1", **overrides):
     return provision_single_item(**arguments)
 
 
+def test_renewing_a_legacy_client_allows_a_new_expiry_warning(db, live_runtime, monkeypatch):
+    from panel_core.services import bot_delivery, bot_events
+
+    monkeypatch.setenv("PANEL_ROLE", "bot")
+    client = Client(
+        id="legacy-user",
+        email="legacy-user",
+        inbound_tag="vpn",
+        telegram_id=42,
+        tariff_id=1,
+        expiry_time=int(time.time() * 1000) + 2 * 3600000,
+    )
+    db.session.add(client)
+    db.session.commit()
+
+    def warning():
+        event = bot_events.enqueue(
+            "expiry_notification",
+            42,
+            {
+                "client_id": client.id,
+                "inbound_tag": "vpn",
+                "tariff_id": 1,
+                "kind": "expiry_1d",
+                "access_generation": client.access_generation or "",
+                "expiry_time_ms": client.expiry_time,
+            },
+        )
+        db.session.commit()
+        verdict = bot_delivery.claim_event(bot_delivery._envelope(event))
+        if verdict["claimed"]:
+            assert bot_delivery.ack_event(event.source, event.origin_event_id, verdict["lease_token"], "delivered")
+        return verdict["claimed"]
+
+    assert warning()
+    grant("pay:renewal", period_ms=3600000)
+    assert client.access_generation == "pay:renewal"
+    assert warning()
+    assert not warning()
+
+
 def assert_applied(db):
     state = db.session.get(RuntimeApplyState, 1)
     assert state.desired_revision == state.applied_revision
