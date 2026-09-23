@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import func, literal_column, text
 from datetime import datetime, timedelta
 
-from panel_core.extensions import db
+from panel_core.extensions import db, limiter
 from panel_core.models import Client, Inbound, TrafficSnapshot, DomainStat
 from panel_core.utils import admin_or_federation_token_required, remote_panel_failure
 from panel_core.xray.facade import has_local_xray
@@ -56,15 +56,28 @@ def _resolve_range(args):
         until_bucket = (t_ts // 3600) * 3600
         if until_bucket == since_bucket:
             until_bucket += 3600
-        since_date = datetime.fromtimestamp(since_bucket).date().isoformat()
-        end = datetime.fromtimestamp(until_bucket)
-        until_date = (
-            end.date() + (timedelta(days=1) if end.time() != datetime.min.time() else timedelta())
-        ).isoformat()
+        try:
+            since_date = datetime.fromtimestamp(since_bucket).date().isoformat()
+            end = datetime.fromtimestamp(until_bucket)
+            until_date = (
+                end.date() + (timedelta(days=1) if end.time() != datetime.min.time() else timedelta())
+            ).isoformat()
+        except (OverflowError, OSError, ValueError) as exc:
+            raise ValueError("requested dates are outside the supported range") from exc
         return since_bucket, since_date, until_bucket, until_date
     period = args.get("period", "7d")
     since_bucket, since_date = _since_bucket(period)
     return since_bucket, since_date, None, None
+
+
+def _result_limit(default):
+    try:
+        value = int(request.args.get("limit", default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be a positive integer") from exc
+    if value < 1:
+        raise ValueError("limit must be a positive integer")
+    return min(value, 200)
 
 
 def _granularity_for_duration(secs: int) -> int:
@@ -151,6 +164,7 @@ def _top_domains(since_date, until_date, email_filter="", tag_filter="", limit=1
 
 @bp.get("/stats/overview")
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def get_overview():
     panel_id = _requested_panel_id()
     if panel_id:
@@ -252,6 +266,7 @@ def get_overview():
 
 @bp.get("/stats/traffic")
 @admin_or_federation_token_required
+@limiter.limit("120 per minute")
 def get_traffic():
 
     panel_id = _requested_panel_id()
@@ -314,6 +329,7 @@ def get_traffic():
 
 @bp.get("/stats/domains")
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def get_domains():
 
     panel_id = _requested_panel_id()
@@ -323,10 +339,10 @@ def get_domains():
     if not has_local_xray():
         return jsonify({"error": XRAY_STATS_UNSUPPORTED}), 501
 
-    limit = min(int(request.args.get("limit", 50)), 200)
     email_filter = request.args.get("email", "")
     tag_filter = request.args.get("inbound_tag", "")
     try:
+        limit = _result_limit(50)
         _, since_date, _, until_date = _resolve_range(request.args)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -350,6 +366,7 @@ def get_domains():
 
 @bp.get("/stats/domain-users")
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def get_domain_users():
 
     panel_id = _requested_panel_id()
@@ -364,6 +381,7 @@ def get_domain_users():
         return jsonify({"error": "domain is required"}), 400
 
     try:
+        limit = _result_limit(100)
         _, since_date, _, until_date = _resolve_range(request.args)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -382,6 +400,7 @@ def get_domain_users():
     rows = (
         q.group_by(DomainStat.client_email, DomainStat.inbound_tag)
         .order_by(func.sum(DomainStat.hit_count).desc())
+        .limit(limit)
         .all()
     )
 
@@ -404,6 +423,7 @@ def get_domain_users():
 
 @bp.get("/stats/users-ranking")
 @admin_or_federation_token_required
+@limiter.limit("60 per minute")
 def get_users_ranking():
 
     panel_id = _requested_panel_id()
@@ -414,6 +434,7 @@ def get_users_ranking():
         return jsonify({"error": XRAY_STATS_UNSUPPORTED}), 501
 
     try:
+        limit = _result_limit(100)
         since_bucket, _, until_bucket, _ = _resolve_range(request.args)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -433,6 +454,7 @@ def get_users_ranking():
     rows = (
         rows.group_by(TrafficSnapshot.entity_id, TrafficSnapshot.inbound_tag)
         .order_by((func.sum(TrafficSnapshot.up) + func.sum(TrafficSnapshot.down)).desc())
+        .limit(limit)
         .all()
     )
 

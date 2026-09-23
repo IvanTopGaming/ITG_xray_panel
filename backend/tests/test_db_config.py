@@ -33,6 +33,42 @@ def test_engine_options_empty_for_sqlite():
     assert engine_options("sqlite:////data/panel.db") == {}
 
 
+def test_postgres_utc_clock_preserves_other_connection_options(monkeypatch):
+    monkeypatch.setenv("PGOPTIONS", "-c statement_timeout=5000 -c timezone=Europe/Moscow")
+    options = engine_options("postgresql://u:p@host/db")["connect_args"]["options"]
+    assert options.endswith("-c timezone=UTC")
+    assert "statement_timeout=5000" in options
+    options = engine_options("postgresql://u:p@host/db?options=-c%20statement_timeout%3D2000")["connect_args"][
+        "options"
+    ]
+    assert options == "-c statement_timeout=2000 -c timezone=UTC"
+
+
+def test_postgres_timestamp_defaults_match_utc_application_clock(monkeypatch):
+    import os
+    from sqlalchemy import create_engine, text
+
+    uri = os.getenv("DATABASE_URL_TEST", "")
+    if not is_postgres(uri):
+        pytest.skip("DATABASE_URL_TEST must point to PostgreSQL")
+    monkeypatch.setenv("PGOPTIONS", "-c timezone=Europe/Moscow")
+    engine = create_engine(uri, **engine_options(uri))
+    try:
+        with engine.connect() as connection, connection.begin():
+            connection.execute(
+                text("CREATE TEMP TABLE clock_probe (created_at timestamp DEFAULT current_timestamp) ON COMMIT DROP")
+            )
+            connection.execute(text("INSERT INTO clock_probe DEFAULT VALUES"))
+            delta = connection.scalar(
+                text(
+                    "SELECT EXTRACT(EPOCH FROM (created_at - (current_timestamp AT TIME ZONE 'UTC'))) FROM clock_probe"
+                )
+            )
+            assert delta == 0
+    finally:
+        engine.dispose()
+
+
 def test_engine_options_for_postgres():
     opts = engine_options("postgresql://u:p@h/db")
     assert opts["pool_pre_ping"] is True

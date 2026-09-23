@@ -14,6 +14,7 @@ dependencies = [
     "flask-migrate",
     "flask-apscheduler",
     "requests",
+    "urllib3>=2,<3",
     "pyyaml",
     "cryptography",
     "psycopg2-binary==2.9.10",

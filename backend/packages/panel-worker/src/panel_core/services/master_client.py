@@ -1,5 +1,6 @@
 import base64
 import logging
+from urllib.parse import urlsplit
 
 import requests
 
@@ -17,11 +18,28 @@ def decode_transfer_token(raw: str) -> tuple[str, str]:
     url, _, secret = decoded.partition("|")
     if not url or not secret:
         raise ValueError("transfer token does not carry a master URL")
+    _validate_master_url(url)
     return url.rstrip("/"), secret
+
+
+def _validate_master_url(url):
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Transfer master URL must use HTTPS without credentials, query or fragment")
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise ValueError("Transfer master URL has an invalid port")
 
 
 class MasterClient:
     def __init__(self, master_url: str) -> None:
+        _validate_master_url(master_url)
         self.base_url = master_url.rstrip("/")
         self._session = requests.Session()
         self._session.max_redirects = 0

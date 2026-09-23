@@ -47,7 +47,7 @@ def admin_token(app, db):
     return token
 
 
-def test_get_settings_returns_secret(app, client, admin_token):
+def test_get_settings_does_not_return_secret(app, client, admin_token):
     with app.app_context():
         db.session.add_all(
             [
@@ -66,7 +66,7 @@ def test_get_settings_returns_secret(app, client, admin_token):
     assert body["yookassa_shop_id"] == "shop1"
     assert body["yookassa_return_url"] == "https://t.me/itg"
     assert body["has_yookassa_secret"] is True
-    assert body["yookassa_secret_key"] == "secret-x"
+    assert body["yookassa_secret_key"] == ""
 
 
 def test_get_settings_indicates_missing_secret(client, admin_token):

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -49,6 +50,13 @@ func LoadConfig(data []byte, lookup func(string) string) (*Config, error) {
 	kept := cfg.SNIRoutes[:0]
 	for _, r := range cfg.SNIRoutes {
 		r.Match = interpolate(r.Match, lookup)
+		if r.Match != "" {
+			for _, variable := range envPattern.FindAllStringSubmatch(r.APIPath, -1) {
+				if strings.Trim(strings.TrimSpace(lookup(variable[1])), "/") == "" {
+					return nil, fmt.Errorf("route %q requires %s for its API path", r.Name, variable[1])
+				}
+			}
+		}
 		r.Upstream = interpolate(r.Upstream, lookup)
 		r.APIPath = interpolate(r.APIPath, lookup)
 		r.APIUpstream = interpolate(r.APIUpstream, lookup)

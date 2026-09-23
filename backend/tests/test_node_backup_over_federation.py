@@ -158,6 +158,26 @@ def federation_token(node, node_headers):
     return shaken.get_json()["federation_token"]
 
 
+def test_restore_rejects_oversized_upload_before_saving(node, node_headers, monkeypatch):
+    import io
+    from werkzeug.datastructures import FileStorage
+
+    def must_not_save(*args, **kwargs):
+        pytest.fail("oversized upload reached disk storage")
+
+    monkeypatch.setattr(FileStorage, "save", must_not_save)
+    response = node.post(
+        "/api/restore",
+        headers=node_headers,
+        environ_overrides={
+            "CONTENT_LENGTH": str(65 * 1024 * 1024),
+            "CONTENT_TYPE": "multipart/form-data; boundary=oversized",
+            "wsgi.input": io.BytesIO(b"--oversized\r\n"),
+        },
+    )
+    assert response.status_code == 413
+
+
 def _a_valid_sqlite_file(path):
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
@@ -298,7 +318,7 @@ class TestTheMasterServesNoBackupOfItsOwn:
         refused = MagicMock(status_code=401)
         refused.json.return_value = {"error": "invalid or missing federation token"}
 
-        with patch("panel_core.api.panels.requests.get", return_value=refused):
+        with patch("panel_core.api.panels.federation_get", return_value=refused):
             resp = master.get(f"/api/panels/{panel_id}/backup", headers=_admin_headers(master_app))
 
         assert resp.status_code == 401

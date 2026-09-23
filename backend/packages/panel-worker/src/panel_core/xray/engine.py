@@ -95,10 +95,9 @@ def _validate_xray_config(candidate_path, asset_dir=None):
 def restart_xray_container():
     try:
         client = docker.from_env()
-        container = client.containers.get(XRAY_CONTAINER_NAME)
-        container.restart()
+        client.api.restart(XRAY_CONTAINER_NAME)
         try:
-            client.containers.get("xray-egress").restart()
+            client.api.restart("xray-egress")
         except docker.errors.NotFound:
             pass
         except docker.errors.DockerException as e:
@@ -140,8 +139,7 @@ def stream_xray_logs(tail_lines=LOG_TAIL_LINES):
 
     try:
         client = docker.from_env()
-        container = client.containers.get(XRAY_CONTAINER_NAME)
-        container_tail = container.logs(stdout=True, stderr=True, tail=tail_lines)
+        container_tail = client.api.logs(XRAY_CONTAINER_NAME, stdout=True, stderr=True, tail=tail_lines)
         for raw_line in _safe_decode(container_tail).splitlines():
             line = raw_line.strip()
             if line:

@@ -354,6 +354,7 @@ def create_outbound():
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("create_outbound failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -414,6 +415,7 @@ def update_outbound(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("update_outbound failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -477,6 +479,7 @@ def delete_outbound(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("delete_outbound failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -568,6 +571,7 @@ def create_balancer():
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("create_balancer failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -637,6 +641,7 @@ def update_balancer(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("update_balancer failed")
         return jsonify({"error": "Internal server error"}), 500
 
 
@@ -681,4 +686,5 @@ def delete_balancer(tag):
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
     except Exception:
+        logger.exception("delete_balancer failed")
         return jsonify({"error": "Internal server error"}), 500

@@ -1,8 +1,10 @@
 import logging
+import time
 
 from panel_core.xray.facade import has_local_xray
 
 logger = logging.getLogger(__name__)
+_last_warning = {}
 
 
 def undeliverable_items(tariff):
@@ -26,6 +28,16 @@ def log_undeliverable(tariff, where):
 
     if tariff is None:
         return
+    orphans = undeliverable_items(tariff)
+    if tariff.items and not orphans:
+        return
+    now = time.monotonic()
+    key = (tariff.id, tuple(sorted(item.inbound_tag for item in orphans)))
+    if now - _last_warning.get(key, float("-inf")) < 300:
+        return
+    if len(_last_warning) >= 1024:
+        _last_warning.pop(next(iter(_last_warning)))
+    _last_warning[key] = now
     if not tariff.items:
         logger.warning(
             "%s: tariff %r (id=%s) carries no items at all, so granting it would produce no key. "
@@ -34,9 +46,6 @@ def log_undeliverable(tariff, where):
             tariff.name,
             tariff.id,
         )
-        return
-    orphans = undeliverable_items(tariff)
-    if not orphans:
         return
     tags = ", ".join(sorted(repr(item.inbound_tag) for item in orphans))
     logger.warning(
