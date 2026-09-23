@@ -31,11 +31,11 @@ export function SettingsTab() {
   const data = settings.data;
   const [draft, setDraft, clearDraft] = useSettingsDraft({
     yookassa_shop_id: data?.yookassa_shop_id || '',
-    yookassa_secret_key: data?.yookassa_secret_key || '',
+    yookassa_secret_key: '',
     yookassa_return_url: data?.yookassa_return_url || '',
   });
   const [botDraft, setBotDraft, clearBotDraft] = useSettingsDraft({
-    bot_token: data?.bot_token || '',
+    bot_token: '',
     telegram_proxy_url: data?.telegram_proxy_url || '',
     admin_ids_text: data?.admin_ids?.join(', ') ?? '',
     display_timezone: data?.display_timezone || 'Europe/Moscow',
@@ -171,7 +171,9 @@ export function SettingsTab() {
               <SecretField
                 label="Bot token"
                 value={botDraft.bot_token}
-                placeholder="123456789:ABCdef…"
+                placeholder={
+                  data.has_bot_token ? 'Configured — leave blank to keep' : '123456789:ABCdef…'
+                }
                 onChange={(v) => setBotDraft({ ...botDraft, bot_token: v })}
               />
               <Field
@@ -304,6 +306,9 @@ export function SettingsTab() {
               />
               <SecretField
                 label="Secret key"
+                placeholder={
+                  data.has_yookassa_secret ? 'Configured — leave blank to keep' : 'Secret key'
+                }
                 value={draft.yookassa_secret_key}
                 onChange={(v) => setDraft({ ...draft, yookassa_secret_key: v })}
               />
@@ -344,7 +349,12 @@ export function SettingsTab() {
               one immediately — update <code>BOT_SERVICE_TOKEN</code> in the bot config after
               rotation.
             </p>
-            <SecretView value={data.bot_service_token || ''} placeholder="not set" />
+            <SecretView
+              value={rotate.data || ''}
+              placeholder={
+                data.has_bot_service_token ? 'Configured — rotate to obtain a new token' : 'not set'
+              }
+            />
             <div className="flex items-center gap-3">
               <button
                 onClick={() =>

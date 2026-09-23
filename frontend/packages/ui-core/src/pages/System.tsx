@@ -75,6 +75,7 @@ export default function System() {
   const [searchTerm, setSearchTerm] = useState('');
   const logEndRef = useRef<HTMLDivElement>(null);
   const [password, setPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [passError, setPassError] = useState('');
   const [xrayLogLevel, setXrayLogLevel] = useState('info');
   const [geoipUrl, setGeoipUrl] = useState('');
@@ -218,7 +219,8 @@ export default function System() {
   });
 
   const passwordMutation = useMutation({
-    mutationFn: () => api.put('/admin/password', { new_password: password }),
+    mutationFn: () =>
+      api.put('/admin/password', { current_password: currentPassword, new_password: password }),
     onSuccess: () => {
       toast.success('Password changed. Please log in again.');
       logout();
@@ -252,6 +254,10 @@ export default function System() {
 
   const handlePasswordChange = () => {
     setPassError('');
+    if (!currentPassword) {
+      setPassError('Current password required');
+      return;
+    }
     if (password.length < 8) {
       setPassError('Must be at least 8 characters');
       return;
@@ -540,6 +546,14 @@ export default function System() {
                 <div className="space-y-4">
                   <Input
                     type="password"
+                    placeholder="Current Password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    className="bg-black/20"
+                    autoComplete="current-password"
+                  />
+                  <Input
+                    type="password"
                     placeholder="New Password (min 8 chars)"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -550,7 +564,7 @@ export default function System() {
                   <Button
                     className="w-full h-11"
                     onClick={handlePasswordChange}
-                    disabled={!password}
+                    disabled={!password || !currentPassword}
                   >
                     <KeyRound size={16} className="mr-2" /> Change Password
                   </Button>

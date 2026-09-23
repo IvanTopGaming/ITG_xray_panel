@@ -101,6 +101,7 @@ def token_required(f):
         if token_pwd_version != current_pwd_version:
             return jsonify({"message": "Token is invalid!"}), 401
         g.auth_via = "admin"
+        g.admin_id = admin.id
         return f(*args, **kwargs)
 
     return decorated
@@ -197,6 +198,7 @@ def admin_or_federation_token_required(f):
         if token_pwd_version != current_pwd_version:
             return jsonify({"message": "Token is invalid!"}), 401
         g.auth_via = "admin"
+        g.admin_id = admin.id
         return f(*args, **kwargs)
 
     return decorated
