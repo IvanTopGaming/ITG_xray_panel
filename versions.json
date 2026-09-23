@@ -1,14 +1,14 @@
 {
-  "master": "3.2.0",
-  "worker": "3.2.1",
-  "sub": "3.2.0",
+  "master": "3.2.1",
+  "worker": "3.2.2",
+  "sub": "3.2.1",
   "bot_api": "3.2.1",
-  "cron": "3.2.0",
-  "frontend_admin": "3.2.0",
-  "frontend_node": "3.2.0",
-  "caddy": "3.0.1",
+  "cron": "3.2.1",
+  "frontend_admin": "3.2.1",
+  "frontend_node": "3.2.1",
+  "caddy": "3.0.2",
   "bot": "3.2.0",
-  "xray_egress": "3.0.0",
+  "xray_egress": "3.0.1",
   "offsite": "3.1.0",
   "xray_core_ref": "v26.3.27"
 }
