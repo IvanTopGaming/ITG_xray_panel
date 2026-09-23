@@ -1,7 +1,11 @@
 import datetime as dt
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 
 from panel_core.models import BotDelivery, LinkedPanel
 from panel_core.services import bot_delivery
@@ -106,7 +110,12 @@ def test_renewal_can_deliver_the_same_stage_after_legacy_warning(db, fleet):
 
 
 def test_expiry_stages_remain_independent(db, fleet):
-    for kind, remaining in [("expiry_3d", 2 * 86400000), ("expiry_1d", 36000000), ("expiry_1h", 1800000), ("expired", -2000)]:
+    for kind, remaining in [
+        ("expiry_3d", 2 * 86400000),
+        ("expiry_1d", 36000000),
+        ("expiry_1h", 1800000),
+        ("expired", -2000),
+    ]:
         assert fleet.deliver(fleet.event(1, kind=kind, remaining=remaining))["claimed"]
         assert not fleet.deliver(fleet.event(2, 936, kind=kind, remaining=remaining))["claimed"]
     assert BotDelivery.query.filter_by(state="delivered").count() == 4
@@ -135,7 +144,12 @@ def test_pre_upgrade_legacy_claim_still_suppresses_other_nodes(db, fleet, state)
     old = fleet.event(1)
     db.session.add(
         BotDelivery(
-            source=old["source"], event_id=old["id"], event=old, dedup_key="a" * 64, state=state, source_acked=True,
+            source=old["source"],
+            event_id=old["id"],
+            event=old,
+            dedup_key="a" * 64,
+            state=state,
+            source_acked=True,
             next_attempt_at=bot_delivery._now(),
         )
     )
@@ -147,7 +161,12 @@ def test_pre_upgrade_retry_keeps_its_own_claim(db, fleet):
     old = fleet.event(1)
     db.session.add(
         BotDelivery(
-            source=old["source"], event_id=old["id"], event=old, dedup_key="a" * 64, state="pending", source_acked=True,
+            source=old["source"],
+            event_id=old["id"],
+            event=old,
+            dedup_key="a" * 64,
+            state="pending",
+            source_acked=True,
             next_attempt_at=bot_delivery._now(),
         )
     )
@@ -159,3 +178,30 @@ def test_pre_upgrade_retry_keeps_its_own_claim(db, fleet):
 def test_modern_delivery_does_not_consume_legacy_warning(db, fleet):
     assert fleet.deliver(fleet.event(1, generation="pay:other-period"))["claimed"]
     assert fleet.deliver(fleet.event(2))["claimed"]
+
+
+def test_legacy_expiry_lookup_supports_large_telegram_ids_on_postgres(db, monkeypatch):
+    url = os.getenv("DATABASE_URL_TEST", "")
+    if not url.startswith("postgresql"):
+        pytest.skip("DATABASE_URL_TEST must point to PostgreSQL")
+    event = {
+        "type": "expiry_notification",
+        "telegram_id": 6000000000,
+        "payload": {"tariff_id": 3, "kind": "expiry_1d", "access_generation": ""},
+    }
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection, connection.begin():
+            connection.execute(
+                text("CREATE TEMP TABLE bot_delivery (id integer, dedup_key varchar(64), event json) ON COMMIT DROP")
+            )
+            connection.execute(
+                text("INSERT INTO bot_delivery VALUES (1, :key, CAST(:event AS json))"),
+                {"key": "a" * 64, "event": json.dumps(event)},
+            )
+            with Session(bind=connection) as session:
+                with monkeypatch.context() as patch:
+                    patch.setattr(db, "session", session)
+                    assert bot_delivery._existing_legacy_expiry_key(event) == "a" * 64
+    finally:
+        engine.dispose()
