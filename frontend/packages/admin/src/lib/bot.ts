@@ -8,6 +8,7 @@ import type {
   BotTextKeyMeta,
   BotUser,
   BotUserDetail,
+  UserWarningHistory,
   UserTariffGrant,
   GrantBilling,
   GrantRow,
@@ -143,6 +144,16 @@ export async function listBotUsers(): Promise<BotUser[]> {
 
 export async function getBotUser(tgId: number): Promise<BotUserDetail> {
   const { data } = await api.get<BotUserDetail>(`/bot/users/${tgId}`);
+  return data;
+}
+
+export async function getUserWarnings(tgId: number, offset = 0): Promise<UserWarningHistory> {
+  const { data } = await api.get<UserWarningHistory>(`/bot/users/${tgId}/warnings`, {
+    params: { limit: 20, offset },
+  });
+  if (!data || !Array.isArray(data.items) || typeof data.sent !== 'number') {
+    throw new Error('Invalid warning history response');
+  }
   return data;
 }
 

@@ -67,42 +67,54 @@ export function PaymentsTab() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 gap-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4 sm:grid-cols-2 md:grid-cols-5">
-        <Select
-          value={status}
-          onChange={(e) => {
-            setStatus(e.target.value as 'all' | PaymentStatus);
-            setPage(0);
-          }}
-          options={STATUS_SELECT_OPTIONS}
-        />
-        <input
-          placeholder="Telegram ID"
-          value={telegramId}
-          onChange={(e) => {
-            setTelegramId(e.target.value.replace(/\D/g, ''));
-            setPage(0);
-          }}
-          className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white placeholder-white/30 transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50"
-        />
-        <input
-          type="date"
-          value={from}
-          onChange={(e) => {
-            setFrom(e.target.value);
-            setPage(0);
-          }}
-          className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50 [color-scheme:dark]"
-        />
-        <input
-          type="date"
-          value={to}
-          onChange={(e) => {
-            setTo(e.target.value);
-            setPage(0);
-          }}
-          className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50 [color-scheme:dark]"
-        />
+      <div className="grid grid-cols-1 gap-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] p-4 sm:grid-cols-2 md:grid-cols-5 md:items-end">
+        <label className="flex min-w-0 flex-col gap-1.5 text-xs text-white/50">
+          Status
+          <Select
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value as 'all' | PaymentStatus);
+              setPage(0);
+            }}
+            options={STATUS_SELECT_OPTIONS}
+          />
+        </label>
+        <label className="flex min-w-0 flex-col gap-1.5 text-xs text-white/50">
+          Telegram ID
+          <input
+            placeholder="Telegram ID"
+            value={telegramId}
+            onChange={(e) => {
+              setTelegramId(e.target.value.replace(/\D/g, ''));
+              setPage(0);
+            }}
+            className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white placeholder-white/30 transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50"
+          />
+        </label>
+        <label className="flex min-w-0 flex-col gap-1.5 text-xs text-white/50">
+          From
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setPage(0);
+            }}
+            className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50 [color-scheme:dark]"
+          />
+        </label>
+        <label className="flex min-w-0 flex-col gap-1.5 text-xs text-white/50">
+          To (inclusive)
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => {
+              setTo(e.target.value);
+              setPage(0);
+            }}
+            className="rounded-xl border border-white/[0.08] bg-black/40 px-3 py-2.5 text-sm text-white transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50 [color-scheme:dark]"
+          />
+        </label>
         <button
           onClick={reset}
           disabled={!hasFilters}

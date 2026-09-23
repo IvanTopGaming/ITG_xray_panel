@@ -384,3 +384,42 @@ def test_partial_refund_does_not_complete_blocked_payment_delivery(ledger, monke
     billing.apply_payment(payment)
     assert payment.fulfillment_status == "succeeded"
     assert len(issued) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "provider", "fulfillment"),
+    [
+        ("succeeded", "succeeded", "succeeded"),
+        ("pending", "succeeded", "pending"),
+        ("processing", "succeeded", "processing"),
+        ("cancelled", "canceled", "pending"),
+        ("refunded", "succeeded", "succeeded"),
+    ],
+)
+def test_closing_a_terminal_or_paid_invoice_does_not_record_cancellation(ledger, status, provider, fulfillment):
+    from panel_core.api.bot_service import cancel_payment_for_bot
+
+    payment, _ = purchase(status)
+    payment.provider_status = provider
+    payment.fulfillment_status = fulfillment
+    db.session.commit()
+    with ledger.test_request_context(json={"telegram_id": 42}):
+        response = cancel_payment_for_bot.__wrapped__(payment.id)
+    db.session.refresh(payment)
+    assert payment.cancel_requested_at is None
+    assert response.json["ui_closed"] is False
+    assert (payment.status, payment.provider_status, payment.fulfillment_status) == (status, provider, fulfillment)
+
+
+def test_closing_an_unpaid_invoice_preserves_the_first_close_time(ledger):
+    from panel_core.api.bot_service import cancel_payment_for_bot
+
+    payment, _ = purchase()
+    with ledger.test_request_context(json={"telegram_id": 42}):
+        first = cancel_payment_for_bot.__wrapped__(payment.id)
+        closed_at = payment.cancel_requested_at
+        second = cancel_payment_for_bot.__wrapped__(payment.id)
+    assert first.json["ui_closed"] is True
+    assert second.json["ui_closed"] is True
+    assert closed_at is not None
+    assert payment.cancel_requested_at == closed_at

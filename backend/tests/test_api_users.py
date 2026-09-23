@@ -685,3 +685,64 @@ def test_live_enumeration_scopes_to_given_panel_ids(app_with_admin, db):
     assert fetched == [1]
     assert bucket == {}
     assert unreachable == []
+
+
+def test_warning_history_counts_only_delivered_messages_and_separates_users(client, admin_headers, db):
+    from datetime import datetime, timedelta, timezone
+    from panel_core.models import BotDelivery
+
+    tg_id = 8_000_000_042
+    db.session.add(TelegramUser(telegram_id=tg_id, language="ru"))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    records = [
+        ("traffic_notification", "traffic_80", "delivered", tg_id, now),
+        ("expiry_notification", "expiry_1d", "delivered", tg_id, now),
+        ("expiry_notification", "expiry_1d", "suppressed", tg_id, now),
+        ("traffic_notification", "traffic_95", "pending", tg_id, now),
+        ("expiry_notification", "expiry_1h", "permanent", tg_id, now),
+        ("payment_succeeded", "", "delivered", tg_id, now),
+        ("traffic_notification", "traffic_80", "delivered", 99, now),
+        ("expiry_notification", "expiry_3d", "delivered", tg_id, now - timedelta(days=91)),
+    ]
+    for i, (event_type, kind, state, recipient, when) in enumerate(records):
+        db.session.add(
+            BotDelivery(
+                source="node:test",
+                event_id=i + 1,
+                state=state,
+                created_at=when,
+                updated_at=when,
+                event={
+                    "type": event_type,
+                    "telegram_id": recipient,
+                    "payload": {"kind": kind, "node": "node.example", "inbound_tag": "vpn"},
+                },
+            )
+        )
+    db.session.commit()
+    result = client.get(f"/api/bot/users/{tg_id}/warnings?limit=2", headers=admin_headers)
+    assert result.status_code == 200
+    data = result.json
+    assert data["total"] == 5
+    assert data["sent"] == 2
+    assert data["traffic_sent"] == data["expiry_sent"] == 1
+    assert data["pending"] == data["failed"] == data["suppressed"] == 1
+    assert data["days"] == 90
+    assert [item["kind"] for item in data["items"]] == ["expiry_1h", "traffic_95"]
+    assert all(item["updated_at"].endswith("Z") for item in data["items"])
+    second = client.get(f"/api/bot/users/{tg_id}/warnings?limit=2&offset=2", headers=admin_headers).json
+    assert second["items"][0]["state"] == "suppressed"
+    assert second["sent"] == 2
+    assert second["items"][0]["node"] == "node.example"
+
+
+@pytest.mark.parametrize("query", ["limit=0", "limit=101", "limit=no", "offset=-1"])
+def test_warning_history_rejects_invalid_pagination(client, admin_headers, db, query):
+    db.session.add(TelegramUser(telegram_id=42, language="ru"))
+    db.session.commit()
+    assert client.get("/api/bot/users/42/warnings?" + query, headers=admin_headers).status_code == 400
+
+
+def test_warning_history_requires_admin_and_existing_user(client, admin_headers):
+    assert client.get("/api/bot/users/42/warnings").status_code == 401
+    assert client.get("/api/bot/users/42/warnings", headers=admin_headers).status_code == 404

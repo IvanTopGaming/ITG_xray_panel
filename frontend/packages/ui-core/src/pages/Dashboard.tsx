@@ -78,7 +78,7 @@ const parseUserKey = (key: string) => {
 };
 
 type UserStatus = 'online' | 'offline' | 'expired' | 'overlimit' | 'disabled';
-type StatusFilter = 'all' | UserStatus;
+type StatusFilter = 'all' | 'available' | UserStatus;
 
 function getClientStatus(client: Client, now: number): UserStatus {
   if (client.expiry_time > 0 && now > client.expiry_time) return 'expired';
@@ -101,6 +101,13 @@ const STATUS_FILTERS: Array<{
     dotCls: '',
     pillCls: 'bg-white/10 border-white/15',
     textCls: 'text-white',
+  },
+  {
+    key: 'available',
+    label: 'Online + Offline',
+    dotCls: 'bg-sky-400',
+    pillCls: 'bg-sky-500/15 border-sky-500/30',
+    textCls: 'text-sky-300',
   },
   {
     key: 'online',
@@ -336,7 +343,12 @@ export default function Dashboard() {
         }
 
         if (statusFilter !== 'all' && supportsUsers(ib)) {
-          clients = clients.filter((c) => getClientStatus(c, now) === statusFilter);
+          clients = clients.filter((c) => {
+            const status = getClientStatus(c, now);
+            return statusFilter === 'available'
+              ? status === 'online' || status === 'offline'
+              : status === statusFilter;
+          });
         }
 
         if ((lowerTerm || statusFilter !== 'all') && supportsUsers(ib) && clients.length === 0)
@@ -346,7 +358,8 @@ export default function Dashboard() {
 
         return { ...ib, settings: { ...ib.settings, clients } };
       })
-      .filter(Boolean) as Inbound[];
+      .filter((ib): ib is Inbound => ib !== null)
+      .sort((a, b) => a.tag.localeCompare(b.tag, 'en') || (a.panel_id ?? 0) - (b.panel_id ?? 0));
   }, [inbounds, searchTerm, statusFilter, panelFilter, now]);
 
   const totalUsers = inbounds?.reduce((acc, curr) => acc + curr.settings.clients.length, 0) || 0;
@@ -357,6 +370,7 @@ export default function Dashboard() {
       (acc, c) => {
         const s = getClientStatus(c, now);
         acc[s] = (acc[s] || 0) + 1;
+        if (s === 'online' || s === 'offline') acc.available = (acc.available || 0) + 1;
         return acc;
       },
       {} as Record<string, number>
@@ -430,8 +444,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-        <div className="relative flex items-center gap-1.5 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] flex-nowrap">
+      <div className="flex flex-wrap items-center gap-2 pb-1">
+        <div className="relative flex items-center gap-1.5 bg-white/[0.04] p-1 rounded-2xl border border-white/[0.05] flex-wrap">
           {STATUS_FILTERS.map((f) => {
             const isActive = statusFilter === f.key;
             const count = f.key === 'all' ? totalUsers : statusCounts[f.key] || 0;
