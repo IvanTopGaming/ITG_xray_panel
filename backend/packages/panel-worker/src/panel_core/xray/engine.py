@@ -62,9 +62,11 @@ def _extract_reason(output):
     return "Xray could not parse the configuration"
 
 
-def _validate_xray_config(candidate_path, asset_dir=None):
+def _validate_xray_config(candidate_path, asset_dir=None, *, required=False):
 
     if not os.path.exists(XRAY_BIN):
+        if required:
+            raise RuntimeError("Xray configuration validation is unavailable")
         logger.warning("Config validation skipped — xray binary not bundled at %s", XRAY_BIN)
         return
 
@@ -211,6 +213,14 @@ def _wg_peer_ip(client_id, used):
 
 
 def generate_config_file(validate=True, *, publish=True):
+    return _generate_config_file(validate, publish=publish)
+
+
+def preview_validated_config():
+    return _generate_config_file(publish=False, require_validation=True)
+
+
+def _generate_config_file(validate=True, *, publish=True, require_validation=False):
     t0 = time.monotonic()
     lock = runtime_lock(LOCK_PATH, timeout=5)
     try:
@@ -645,7 +655,9 @@ def generate_config_file(validate=True, *, publish=True):
             with open(candidate, "w", encoding="utf-8") as f:
                 json.dump(full_config, f, indent=2)
             try:
-                if validate:
+                if require_validation:
+                    _validate_xray_config(candidate, required=True)
+                elif validate:
                     _validate_xray_config(candidate)
                 if publish:
                     os.replace(candidate, CONFIG_PATH)
@@ -662,5 +674,6 @@ def generate_config_file(validate=True, *, publish=True):
             len(outbounds_json),
             validate,
         )
+        return full_config
     except TimeoutError:
         raise Exception("Could not acquire lock")

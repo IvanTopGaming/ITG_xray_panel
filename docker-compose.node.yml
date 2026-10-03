@@ -73,6 +73,7 @@ services:
       - xray_logs:/var/log/xray
     environment:
       - XRAY_API_HOST=xray:10085
+      - XRAY_STARTUP_MODE=${XRAY_STARTUP_MODE:-synchronize}
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
       - GRPC_DNS_RESOLVER=native
       - PYTHONUNBUFFERED=1
