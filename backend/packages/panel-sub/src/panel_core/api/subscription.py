@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request, Response, send_from_directory
 from panel_core.extensions import limiter, db
 from panel_core.models import Client, Inbound, SystemSetting, TelegramUser
 from panel_core.services import sub_cache
+from panel_core.services.client_credentials import resolve_client
 from panel_core.services.expiry import nearest_expiry
 from panel_core.services.subscription_sources import (
     SubscriptionUnavailable,
@@ -633,7 +634,7 @@ def get_subscription_aggregate(token):
 def get_subscription(uuid_str):
     user_agent = _resolve_user_agent()
 
-    client = db.session.get(Client, uuid_str)
+    client = resolve_client(uuid_str)
     if client:
         inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
         if not inbound:
@@ -694,7 +695,7 @@ def get_subscription(uuid_str):
 def get_subscription_content(uuid_str):
 
     local = _get_local_subscription_content(uuid_str)
-    client = db.session.get(Client, uuid_str)
+    client = resolve_client(uuid_str)
     if not client:
         return local
     remote = _get_remote_links_for_client(uuid_str, None)
@@ -721,7 +722,7 @@ def get_subscription_content_for_user(telegram_id):
 
 
 def _get_local_subscription_content(uuid_str):
-    client = db.session.get(Client, uuid_str)
+    client = resolve_client(uuid_str)
     if not client or not client.enable:
         return None
     ib = Inbound.query.filter_by(tag=client.inbound_tag).first()
@@ -948,7 +949,7 @@ def _singbox_document(outbounds):
 
 
 def generate_clash_config(uuid_str):
-    client = db.session.get(Client, uuid_str)
+    client = resolve_client(uuid_str)
     if not client or not client.enable:
         return None
     ib = Inbound.query.filter_by(tag=client.inbound_tag).first()
@@ -963,7 +964,7 @@ def generate_clash_config(uuid_str):
 
 
 def generate_singbox_config(uuid_str):
-    client = db.session.get(Client, uuid_str)
+    client = resolve_client(uuid_str)
     if not client or not client.enable:
         return None
     ib = Inbound.query.filter_by(tag=client.inbound_tag).first()

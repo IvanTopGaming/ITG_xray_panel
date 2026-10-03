@@ -107,3 +107,42 @@ def test_deleting_a_tariff_without_holders_still_works(app_with_bot_api, db, aut
         f"a tariff nobody holds and nobody paid for stays deletable; got {resp.get_data(as_text=True)}"
     )
     assert Tariff.query.count() == 0
+
+
+@pytest.mark.parametrize(
+    "expiry,revoked,status", [(4102444800000, False, 409), (0, False, 409), (1, False, 200), (4102444800000, True, 200)]
+)
+def test_source_only_holder_blocks_tariff_delete(app_with_bot_api, db, auth_headers, tariff, expiry, revoked, status):
+    from panel_core.models import AccessEntitlement, Client, Inbound
+
+    db.session.add(Inbound(tag="edge", protocol="vless", port=12345, stream_settings="{}"))
+    db.session.add(
+        Client(
+            id="shared",
+            email="shared",
+            inbound_tag="edge",
+            telegram_id=42,
+            tariff_id=999,
+            enable=True,
+            expiry_time=4102444800000,
+        )
+    )
+    db.session.add(
+        AccessEntitlement(
+            source_id="old-purchase",
+            operation_id="old-purchase",
+            telegram_id=42,
+            tariff_id=tariff.id,
+            inbound_tag="edge",
+            client_id="shared",
+            expires_at_ms=expiry,
+            enabled=True,
+            revoked=revoked,
+        )
+    )
+    db.session.commit()
+    response = app_with_bot_api.test_client().delete(f"/api/bot/tariffs/{tariff.id}/permanent", headers=auth_headers)
+    assert response.status_code == status
+    if status == 409:
+        assert response.get_json()["holder_count"] == 1
+        assert db.session.get(Tariff, tariff.id) is not None

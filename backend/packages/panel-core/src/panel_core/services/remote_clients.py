@@ -34,6 +34,8 @@ def _bucket_panel_clients(bucket: dict[int, list[dict]], snapshot: dict, panel) 
                     "preferred_outbound": c.get("preferred_outbound", ""),
                     "telegram_id": tg_id,
                     "tariff_id": c.get("tariff_id"),
+                    "tariff_sources": c.get("tariff_sources", []),
+                    "credential_aliases": c.get("credential_aliases", []),
                     "panel_id": panel.id,
                     "panel_name": panel.name,
                 }

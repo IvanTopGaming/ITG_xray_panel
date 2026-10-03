@@ -358,7 +358,7 @@ def test_real_xray_access_lifecycle_keeps_other_users(live_xray, monkeypatch, ac
     else:
         end = int(datetime.now().timestamp() * 1000) + 100000
         provision_single_item(
-            **{**arguments, "limit_bytes": 100}, expiry_ms=end, operation_id="temporary", source_id="temporary"
+            **{**arguments, "limit_bytes": 2000}, expiry_ms=end, operation_id="temporary", source_id="temporary"
         )
 
         class Later(datetime):
@@ -479,7 +479,11 @@ def test_disabling_access_denies_new_connections_and_preserves_existing_streams(
 
 
 @pytest.mark.parametrize("fail_restart", [False, True])
-def test_geo_pair_activation_and_restart_rollback(worker, monkeypatch, tmp_path, fail_restart):
+@pytest.mark.parametrize("umask", [0o022, 0o077], ids=["umask022", "umask077"])
+@pytest.mark.parametrize("existing_generation", [False, True], ids=["legacy-files", "existing-generation"])
+def test_geo_pair_activation_and_restart_rollback(
+    worker, monkeypatch, tmp_path, fail_restart, umask, existing_generation
+):
     engine, client = worker
     from app.router.config_pb2 import CIDR, Domain, GeoIP, GeoIPList, GeoSite, GeoSiteList
 
@@ -493,6 +497,17 @@ def test_geo_pair_activation_and_restart_rollback(worker, monkeypatch, tmp_path,
     }
     (tmp_path / "geoip.dat").write_bytes(b"old-ip")
     (tmp_path / "geosite.dat").write_bytes(b"old-site")
+    (tmp_path / "geoip.dat").chmod(0o600)
+    (tmp_path / "geosite.dat").chmod(0o600)
+    if existing_generation:
+        generations = tmp_path / ".geo"
+        generations.mkdir(mode=0o700)
+        previous = generations / "generation-legacy"
+        previous.mkdir(mode=0o700)
+        (generations / "current").symlink_to(previous.name)
+        for filename in ("geoip.dat", "geosite.dat"):
+            (tmp_path / filename).rename(previous / filename)
+            (tmp_path / filename).symlink_to(f".geo/current/{filename}")
     binary = os.environ.get("XRAY_TEST_BINARY", "/tmp/itg-xray-audit.s88BH2/xray")
     if not Path(binary).is_file():
         pytest.skip("Set XRAY_TEST_BINARY to pinned Xray executable")
@@ -529,21 +544,92 @@ def test_geo_pair_activation_and_restart_rollback(worker, monkeypatch, tmp_path,
             yield self.content
 
     restarts = []
+    access_modes = []
 
     def restart():
         restarts.append(((tmp_path / "geoip.dat").read_bytes(), (tmp_path / "geosite.dat").read_bytes()))
+        generation = (tmp_path / ".geo/current").resolve()
+        access_modes.append(
+            (
+                [(path, path.stat().st_mode) for path in (tmp_path / ".geo", generation)],
+                [(path, path.stat().st_mode) for path in (generation / "geoip.dat", generation / "geosite.dat")],
+            )
+        )
         if fail_restart and len(restarts) == 1:
             raise RuntimeError("restart failed")
 
     monkeypatch.setattr(requests, "get", lambda url, **kwargs: Response(url))
     monkeypatch.setattr(engine, "restart_xray_container", restart)
-    if fail_restart:
-        with pytest.raises(RuntimeError):
+    previous_umask = os.umask(umask)
+    try:
+        if fail_restart:
+            with pytest.raises(RuntimeError):
+                engine.update_geo_db()
+            assert restarts == [(pair["geoip"], pair["geosite"]), (b"old-ip", b"old-site")]
+            assert (tmp_path / "geoip.dat").read_bytes() == b"old-ip"
+        else:
             engine.update_geo_db()
-        assert restarts == [(pair["geoip"], pair["geosite"]), (b"old-ip", b"old-site")]
-        assert (tmp_path / "geoip.dat").read_bytes() == b"old-ip"
+            assert restarts == [(pair["geoip"], pair["geosite"])]
+            assert (tmp_path / "geoip.dat").is_symlink()
+            assert (tmp_path / "geosite.dat").read_bytes() == pair["geosite"]
+    finally:
+        os.umask(previous_umask)
+    for directories, files in access_modes:
+        for path, mode in directories:
+            assert mode & 0o005 == 0o005, f"Xray cannot traverse {path}: {oct(mode)}"
+            assert mode & 0o022 == 0, f"Xray can modify {path}: {oct(mode)}"
+        for path, mode in files:
+            assert mode & 0o004, f"Xray cannot read {path}: {oct(mode)}"
+            assert mode & 0o022 == 0, f"Xray can modify {path}: {oct(mode)}"
+
+
+@pytest.mark.parametrize("target_kind", ["outside-directory", "file-symlink", "missing-generation"])
+def test_geo_pair_rejects_unsafe_rollback_target(worker, monkeypatch, tmp_path, target_kind):
+    from app.router.config_pb2 import GeoIP, GeoIPList, GeoSite, GeoSiteList
+    from panel_core.xray.geo import update_geo_pair
+
+    pair = {
+        "geoip.dat": GeoIPList(entry=[GeoIP(country_code="ZZ")]).SerializeToString(),
+        "geosite.dat": GeoSiteList(entry=[GeoSite(country_code="ZZ")]).SerializeToString(),
+    }
+    generations = tmp_path / ".geo"
+    generations.mkdir()
+    previous = generations / "generation-legacy"
+    previous.mkdir(mode=0o700)
+    external = tmp_path / "outside"
+    external.mkdir(mode=0o700)
+    for filename in pair:
+        (previous / filename).write_bytes(b"old")
+        (previous / filename).chmod(0o600)
+        (external / filename).write_bytes(b"private")
+        (external / filename).chmod(0o600)
+        (tmp_path / filename).symlink_to(f".geo/current/{filename}")
+    target = previous.name
+    if target_kind == "outside-directory":
+        target = "../outside"
+    elif target_kind == "file-symlink":
+        (previous / "geoip.dat").unlink()
+        (previous / "geoip.dat").symlink_to(external / "geoip.dat")
     else:
-        engine.update_geo_db()
-        assert restarts == [(pair["geoip"], pair["geosite"])]
-        assert (tmp_path / "geoip.dat").is_symlink()
-        assert (tmp_path / "geosite.dat").read_bytes() == pair["geosite"]
+        target = "generation-missing"
+    (generations / "current").symlink_to(target)
+
+    def download(url, **kwargs):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = pair[url]
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests, "get", download)
+    with pytest.raises(RuntimeError, match="Failed to update GeoDB pair"):
+        update_geo_pair(tmp_path, {name: name for name in pair}, lambda path: None, lambda: None)
+
+    assert os.readlink(generations / "current") == target
+    assert external.stat().st_mode & 0o777 == 0o700
+    assert previous.stat().st_mode & 0o777 == 0o700
+    for filename in pair:
+        assert (external / filename).read_bytes() == b"private"
+        assert (external / filename).stat().st_mode & 0o777 == 0o600
+        assert (previous / filename).stat().st_mode & 0o777 == 0o600
+    assert sorted(path.name for path in generations.iterdir()) == ["current", "generation-legacy"]

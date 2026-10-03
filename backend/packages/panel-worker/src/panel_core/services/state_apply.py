@@ -11,6 +11,7 @@ from panel_core.models import (
     Balancer,
     BotEvent,
     Client,
+    ClientCredential,
     Inbound,
     NotificationLog,
     Outbound,
@@ -21,6 +22,7 @@ from panel_core.models import (
     LogCheckpoint,
 )
 from panel_core.services.state_fingerprint import MIRRORED_SETTING_KEYS
+from panel_core.services.egress import TRANSFER_EGRESS_SETTING, set_pending_transfer_egress
 
 
 def _parse_sent_at(raw):
@@ -89,6 +91,7 @@ def _apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
         AccountAccessState,
         NotificationLog,
         ProvisionReceipt,
+        ClientCredential,
         Client,
         Inbound,
         Balancer,
@@ -99,6 +102,12 @@ def _apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
 
     _apply_settings(cold.get("settings") or [])
     egress_disabled = _apply_outbounds(cold.get("outbounds") or [])
+    pending_egress = {
+        tag for row in cold["settings"] if row["key"] == TRANSFER_EGRESS_SETTING for tag in json.loads(row["value"])
+    }
+    pending_egress.update(row["tag"] for row in cold["outbounds"] if row.get("public_ip"))
+    pending_egress.intersection_update(row["tag"] for row in cold["outbounds"])
+    set_pending_transfer_egress(pending_egress)
 
     for row in cold.get("routing_profiles") or []:
         db.session.add(
@@ -178,6 +187,20 @@ def _apply_state(hot: dict, cold: dict, *, carry_admin: bool) -> dict:
     db.session.flush()
     if damaged_expiry_ids:
         db.session.execute(update(Client).where(Client.id.in_(damaged_expiry_ids)).values(expiry_time=None))
+
+    for inbound in hot["inbounds"]:
+        for client in inbound.get("clients", []):
+            for alias in client.get("credential_aliases", []):
+                db.session.add(
+                    ClientCredential(
+                        id=alias["id"],
+                        client_id=client["id"],
+                        email=alias["email"],
+                        flow=alias.get("flow") or None,
+                        wg_address=alias.get("wg_address"),
+                        original_data=alias.get("original_data"),
+                    )
+                )
 
     for row in cold.get("receipts") or []:
         db.session.add(

@@ -291,7 +291,7 @@ def test_source_cycle_reenables_quota_without_losing_new_traffic(db, live_runtim
 
 
 @pytest.mark.parametrize("blocked,manual", [(False, False), (True, False), (False, True)])
-def test_expiring_source_restores_usage_and_respects_access_guards(db, live_runtime, monkeypatch, blocked, manual):
+def test_expiring_source_starts_fresh_usage_and_respects_access_guards(db, live_runtime, monkeypatch, blocked, manual):
     from datetime import datetime
     from panel_core.models import AccessEntitlement
 
@@ -301,8 +301,8 @@ def test_expiring_source_restores_usage_and_respects_access_guards(db, live_runt
     identity = build_runtime_email(client.inbound_tag, client.email)
     counter = f"user>>>{identity}>>>traffic>>>uplink"
     live_runtime.counters[counter] = 40
-    grant(None, period_ms=None, expiry_ms=end, source_id="grant:temporary", operation_id="temporary", limit_bytes=10)
-    live_runtime.counters[counter] = 55
+    grant(None, period_ms=None, expiry_ms=end, source_id="grant:temporary", operation_id="temporary", limit_bytes=2000)
+    live_runtime.counters[counter] = 2045
     settle_client_traffic(client)
     db.session.commit()
     stats.check_limits_and_reset()
@@ -324,16 +324,16 @@ def test_expiring_source_restores_usage_and_respects_access_guards(db, live_runt
     stats.check_limits_and_reset()
     assert client.active_entitlement_source == "grant:base"
     assert client.limit_bytes == 1000
-    assert client.up == 40
+    assert client.up == 0
     assert client.enable is (not blocked and not manual)
-    assert AccessEntitlement.query.filter_by(source_id="grant:temporary").one().up == 15
+    assert AccessEntitlement.query.filter_by(source_id="grant:temporary").one().up == 2005
     assert live_runtime.calls == ([] if blocked or manual else ["add"])
-    live_runtime.counters[counter] = 62
+    live_runtime.counters[counter] = 2052
     settle_client_traffic(client)
     db.session.commit()
-    assert client.up == 47
+    assert client.up == 7
     stats.check_limits_and_reset()
-    assert client.up == 47
+    assert client.up == 7
 
 
 def test_expiry_pass_preserves_manual_extension(db, live_runtime, monkeypatch):

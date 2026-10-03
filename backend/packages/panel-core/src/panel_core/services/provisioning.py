@@ -9,6 +9,7 @@ from panel_core.extensions import db
 from panel_core.models import Client, Inbound, LinkedPanel
 from panel_core.services import sub_cache
 from panel_core.services.panel_proxy import fetch_panel_snapshot_live
+from panel_core.services.tariff_membership import client_tariff_sources
 from panel_core.xray.facade import (
     _api_add_user_grpc,
     generate_config_file,
@@ -311,11 +312,24 @@ def revoke_payment_access(
 def _collect_tariff_holders(tariff: "Tariff", now_ms: int, *, panel_ids=None):
 
     records = []
-    for c in Client.query.filter(Client.telegram_id.isnot(None), Client.tariff_id == tariff.id).all():
-        if c.expiry_time is None:
-            raise ValueError(f"Missing expiry for tariff client {c.id}")
-        active = bool(c.enable) and (c.expiry_time == 0 or c.expiry_time > now_ms)
-        records.append((c.telegram_id, None, c.inbound_tag, c.tariff_id, active, c.expiry_time or 0))
+
+    def collect(client, panel_id, tag):
+        for source in client_tariff_sources(client):
+            if source.get("tariff_id") != tariff.id:
+                continue
+            exp = source.get("expires_at_ms")
+            if exp is None:
+                raise ValueError(f"Missing expiry for tariff holder {client['telegram_id']} on panel {panel_id}")
+            active = (
+                bool(client.get("enable"))
+                and bool(source.get("enabled"))
+                and not source.get("revoked")
+                and (exp == 0 or exp > now_ms)
+            )
+            records.append((client["telegram_id"], panel_id, tag, tariff.id, active, exp))
+
+    for c in Client.query.filter(Client.telegram_id.isnot(None)).all():
+        collect(c.to_dict(), None, c.inbound_tag)
 
     unreachable_ids: set[int] = set()
     child_panel_ids = {it.panel_id for it in tariff.items if it.panel_id is not None}
@@ -333,13 +347,7 @@ def _collect_tariff_holders(tariff: "Tariff", now_ms: int, *, panel_ids=None):
                 tg = cl.get("telegram_id")
                 if tg is None:
                     continue
-                if cl.get("tariff_id") != tariff.id:
-                    continue
-                exp = cl.get("expiry_time")
-                if exp is None:
-                    raise ValueError(f"Missing expiry for tariff holder {tg} on panel {pid}")
-                active = bool(cl.get("enable")) and (exp == 0 or exp > now_ms)
-                records.append((tg, pid, tag, cl.get("tariff_id"), active, exp))
+                collect(cl, pid, tag)
 
     holders: dict[int, dict] = {}
     for tg, _panel_id, _tag, tid, active, exp in records:

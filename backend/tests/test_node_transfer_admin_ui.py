@@ -202,12 +202,20 @@ class TestSystemPageSurfacesTwoNodeOnlyBanners:
 
         body = _flat(_system())
 
-        assert "egressOutbounds.filter((o)=>!!o.send_through&&!o.public_ip&&o.enable===false)" in body
+        assert (
+            "egressOutbounds.filter((o)=>o.transfer_pending||(!!o.send_through&&!o.public_ip&&o.enable===false))"
+            in body
+        )
+        assert "consthasLegacyEgress=strandedEgress.some((o)=>o.transfer_pending!==true);" in body
+        legacy_branch, protected_branch = body.split("{hasLegacyEgress?(", 1)[1].split("):(", 1)
+        assert "canpreventXrayfromapplyingitsconfigurationandaffectotherusers" in legacy_branch
+        assert "Otherrouteskeepworking" not in legacy_branch
+        assert "Otherrouteskeepworking" in protected_branch.split(")}", 1)[0]
 
     def test_the_egress_banner_is_amber_not_red(self):
         body = _system()
 
-        assert "Dedicated outgoing IPs are waiting for new addresses" in body
+        assert "Dedicated outgoing routes need configuration" in body
         banner = body.split("strandedEgress.length > 0 && (", 1)[1]
         assert "border-amber-500/20" in banner
         assert "bg-amber-500/10" in banner
@@ -242,7 +250,7 @@ class TestSystemPageSurfacesTwoNodeOnlyBanners:
 
         body = _system()
 
-        assert "address on the Routing page" in body
+        assert "On the Routing page, assign a new dedicated address" in re.sub(r"\s+", " ", body)
         assert "Outbounds page" not in body
 
     def test_the_banner_container_does_not_distort_the_masters_single_column_layout(self):

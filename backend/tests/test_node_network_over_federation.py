@@ -512,6 +512,7 @@ class TestTheNodeAcceptsTheMastersCredential:
                 "send_through": "",
                 "public_ip": "",
                 "gateway": "",
+                "transfer_pending": False,
             },
             {
                 "tag": "block",
@@ -523,6 +524,7 @@ class TestTheNodeAcceptsTheMastersCredential:
                 "send_through": "",
                 "public_ip": "",
                 "gateway": "",
+                "transfer_pending": False,
             },
         ]
 

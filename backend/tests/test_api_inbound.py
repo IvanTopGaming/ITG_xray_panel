@@ -1374,3 +1374,104 @@ class TestBulkSetFlow:
         assert resp.status_code == 200
         assert resp.get_json()["updated"] == 1
         assert Client.query.filter_by(inbound_tag="fl-xhttp2", email="f1").first().flow == ""
+
+
+@pytest.mark.parametrize("operation", ["update", "delete", "bulk-disable"])
+def test_alias_credentials_are_included_in_runtime_access_changes(client, auth_headers, _mock_infra, operation):
+    from panel_core.models import ClientCredential
+
+    _make_inbound()
+    owner = _make_client()
+    db.session.add(ClientCredential(id=str(uuid.uuid4()), client_id=owner.id, email="old-key"))
+    db.session.commit()
+    with patch("panel_core.services.runtime_apply.restart_xray_container", return_value=True) as fallback:
+        if operation == "update":
+            response = client.put(
+                "/api/inbounds/vless-in/users", headers=auth_headers, json={"old_email": "alice", "enable": False}
+            )
+        elif operation == "delete":
+            response = client.delete("/api/inbounds/vless-in/users?email=alice", headers=auth_headers)
+        else:
+            response = client.post(
+                "/api/users/bulk-enable",
+                headers=auth_headers,
+                json={"users": [{"tag": "vless-in", "email": "alice"}], "enable": False},
+            )
+        assert response.status_code == 200, response.get_json()
+        assert fallback.called or _mock_infra["panel_core.api.inbound.restart_xray_container"].called
+
+
+@pytest.mark.parametrize("field", ["id", "email"])
+def test_create_user_rejects_retained_credential_collision(client, auth_headers, field):
+    from panel_core.models import ClientCredential
+
+    _make_inbound()
+    owner = _make_client()
+    alias_id = str(uuid.uuid4())
+    db.session.add(ClientCredential(id=alias_id, client_id=owner.id, email="old-key"))
+    db.session.commit()
+    payload = {"email": "new-user", "id": str(uuid.uuid4())}
+    payload[field] = alias_id if field == "id" else "old-key"
+    response = client.post("/api/inbounds/vless-in/users", headers=auth_headers, json=payload)
+    assert response.status_code == 400
+
+
+def test_switch_to_inbound_auth_removes_retained_credentials(client, auth_headers):
+    from panel_core.models import ClientCredential
+
+    _make_inbound()
+    owner = _make_client()
+    db.session.add(ClientCredential(id=str(uuid.uuid4()), client_id=owner.id, email="old-key"))
+    db.session.commit()
+    response = client.put(
+        "/api/inbounds/vless-in", headers=auth_headers, json={"protocol": "http", "port": 10443, "stream_settings": {}}
+    )
+    assert response.status_code == 200, response.get_json()
+    assert ClientCredential.query.count() == 0
+
+
+def test_user_flow_update_also_updates_retained_credentials(client, auth_headers):
+    from panel_core.models import ClientCredential
+
+    _make_inbound()
+    owner = _make_client(flow="xtls-rprx-vision")
+    alias = ClientCredential(id=str(uuid.uuid4()), client_id=owner.id, email="old-key", flow="xtls-rprx-vision")
+    db.session.add(alias)
+    db.session.commit()
+    response = client.put("/api/inbounds/vless-in/users", headers=auth_headers, json={"old_email": "alice", "flow": ""})
+    assert response.status_code == 200, response.get_json()
+    assert alias.flow == ""
+
+
+def test_bulk_flow_updates_alias_even_when_primary_already_matches(client, auth_headers):
+    from panel_core.models import ClientCredential
+
+    _make_inbound()
+    owner = _make_client(flow="")
+    alias = ClientCredential(id=str(uuid.uuid4()), client_id=owner.id, email="old-key", flow="xtls-rprx-vision")
+    db.session.add(alias)
+    db.session.commit()
+    response = client.post(
+        "/api/users/bulk-set-flow",
+        headers=auth_headers,
+        json={"users": [{"tag": "vless-in", "email": "alice"}], "flow": ""},
+    )
+    assert response.status_code == 200, response.get_json()
+    assert alias.flow == ""
+
+
+def test_transport_change_clears_incompatible_alias_flow(client, auth_headers):
+    from panel_core.models import ClientCredential
+
+    _make_inbound()
+    owner = _make_client(flow="xtls-rprx-vision")
+    alias = ClientCredential(id=str(uuid.uuid4()), client_id=owner.id, email="old-key", flow="xtls-rprx-vision")
+    db.session.add(alias)
+    db.session.commit()
+    response = client.put(
+        "/api/inbounds/vless-in",
+        headers=auth_headers,
+        json={"protocol": "vless", "port": 10443, "stream_settings": {"network": "ws", "security": "none"}},
+    )
+    assert response.status_code == 200, response.get_json()
+    assert alias.flow == ""

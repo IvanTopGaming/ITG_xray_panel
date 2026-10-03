@@ -1,8 +1,32 @@
 import ipaddress
+import json
 import os
 
 DEFAULT_POOL_RANGE = "172.28.0.128-172.28.0.254"
 DEFAULT_BIND_PREFIX = 24
+TRANSFER_EGRESS_SETTING = "transfer_pending_egress"
+
+
+def pending_transfer_egress():
+    from panel_core.extensions import db
+    from panel_core.models import SystemSetting
+
+    row = db.session.get(SystemSetting, TRANSFER_EGRESS_SETTING)
+    return set(json.loads(row.value)) if row else set()
+
+
+def set_pending_transfer_egress(tags):
+    from panel_core.extensions import db
+    from panel_core.models import SystemSetting
+
+    row = db.session.get(SystemSetting, TRANSFER_EGRESS_SETTING)
+    if tags:
+        if row is None:
+            row = SystemSetting(key=TRANSFER_EGRESS_SETTING)
+            db.session.add(row)
+        row.value = json.dumps(sorted(tags))
+    elif row is not None:
+        db.session.delete(row)
 
 
 def _valid_ip(v):

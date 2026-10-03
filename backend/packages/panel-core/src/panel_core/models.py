@@ -88,6 +88,8 @@ class Client(db.Model):
     )
 
     def to_dict(self):
+        from panel_core.services.client_credentials import credential_aliases
+
         ips = []
         try:
             if self.source_ips:
@@ -115,6 +117,20 @@ class Client(db.Model):
             "preferred_outbound": self.preferred_outbound or "",
             "telegram_id": self.telegram_id,
             "tariff_id": self.tariff_id,
+            "credential_aliases": credential_aliases(self),
+            "tariff_sources": [
+                {
+                    "source_id": source.source_id,
+                    "tariff_id": source.tariff_id,
+                    "expires_at_ms": source.expires_at_ms,
+                    "limit_bytes": source.limit_bytes,
+                    "up": self.up if source.source_id == self.active_entitlement_source else source.up,
+                    "down": self.down if source.source_id == self.active_entitlement_source else source.down,
+                    "enabled": source.enabled,
+                    "revoked": source.revoked,
+                }
+                for source in AccessEntitlement.query.filter_by(client_id=self.id).order_by(AccessEntitlement.id).all()
+            ],
         }
 
 
@@ -623,3 +639,23 @@ class ProvisionOperation(db.Model):
     processing_owner = db.Column(db.String(36), nullable=True)
     processing_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
     processing_expires_at = db.Column(db.DateTime, nullable=True, index=True)
+
+
+class ClientCredential(db.Model):
+    __tablename__ = "client_credential"
+
+    id = db.Column(db.String(128), primary_key=True)
+    client_id = db.Column(db.String(128), db.ForeignKey("client.id"), nullable=False, index=True)
+    email = db.Column(db.String(100), nullable=False)
+    flow = db.Column(db.String(50), nullable=True)
+    wg_address = db.Column(db.String(64), nullable=True)
+    original_data = db.Column(db.JSON, nullable=True)
+    client = db.relationship("Client", backref=db.backref("credential_records", cascade="all, delete-orphan"))
+
+    @property
+    def inbound_tag(self):
+        return self.client.inbound_tag
+
+    @property
+    def enable(self):
+        return self.client.enable

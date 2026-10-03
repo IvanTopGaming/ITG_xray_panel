@@ -364,7 +364,7 @@ def test_the_endpoint_preserves_zero_as_an_open_ended_expiry(node_app):
     assert _node_expiry(node_app, 792) == 0
 
 
-def test_a_grant_does_not_shorten_or_take_over_another_tariffs_key(node_app):
+def test_a_grant_shares_existing_key_without_shortening_other_tariff(node_app):
     now_ms = int(time.time() * 1000)
     paid_until = now_ms + 23 * _DAY_MS
     _seed_node(node_app, telegram_id=793, expiry_ms=paid_until)
@@ -397,9 +397,13 @@ def test_a_grant_does_not_shorten_or_take_over_another_tariffs_key(node_app):
         assert client.expiry_time == paid_until
         assert client.tariff_id == 99
         assert client.limit_bytes == 300
-        granted = Client.query.filter_by(telegram_id=793, tariff_id=7).one()
-        assert granted.id != client.id
+        from panel_core.models import AccessEntitlement
+
+        assert Client.query.filter_by(telegram_id=793).count() == 1
+        granted = AccessEntitlement.query.filter_by(telegram_id=793, tariff_id=7).one()
+        assert granted.client_id == client.id
         assert granted.limit_bytes == 1
+        assert granted.expires_at_ms == now_ms + 7 * _DAY_MS
 
 
 def test_backfill_still_sends_an_absolute_expiry(app, db):

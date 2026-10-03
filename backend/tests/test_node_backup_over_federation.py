@@ -356,3 +356,44 @@ class TestAPostgresRoleRefusesInsteadOfPretending:
         assert resp.status_code == 409
         assert resp.get_json() != {"status": "restored"}
         assert os.stat(live_db).st_mtime_ns == before
+
+
+def test_backup_restore_keeps_transferred_egress_blocked(node, node_app, federation_token, tmp_path):
+    import io
+    import json
+    from pathlib import Path
+
+    from panel_core.models import Outbound
+    from panel_core.services.state_apply import apply_state
+    from panel_core.services.state_export import export_cold_state, export_hot_state
+    from panel_core.xray import engine
+
+    with node_app.app_context():
+        db.session.add(
+            Outbound(tag="transferred-egress", protocol="freedom", public_ip="203.0.113.8", send_through="172.28.0.130")
+        )
+        db.session.commit()
+        apply_state(export_hot_state(), export_cold_state(), carry_admin=False)
+    headers = {"X-Federation-Token": federation_token}
+    taken = node.get("/api/backup", headers=headers)
+    assert taken.status_code == 200
+    with node_app.app_context():
+        SystemSetting.query.filter_by(key="transfer_pending_egress").delete()
+        Outbound.query.filter_by(tag="transferred-egress").delete()
+        db.session.commit()
+    response = node.post(
+        "/api/restore",
+        headers=headers,
+        data={"file": (io.BytesIO(taken.data), "node.db")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200, response.get_json()
+    config = json.loads(Path(engine.CONFIG_PATH).read_text())
+    assert (
+        next(outbound for outbound in config["outbounds"] if outbound["tag"] == "transferred-egress")["protocol"]
+        == "blackhole"
+    )
+    with node_app.app_context():
+        outbound = Outbound.query.filter_by(tag="transferred-egress").one()
+        assert outbound.enable is False
+        assert not outbound.public_ip

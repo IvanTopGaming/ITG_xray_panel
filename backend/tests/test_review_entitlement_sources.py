@@ -41,7 +41,7 @@ def node_ledger(tmp_path, monkeypatch):
         db.drop_all()
 
 
-def test_two_tariffs_on_one_inbound_have_independent_clients(node_ledger):
+def test_two_tariffs_on_one_inbound_share_one_client(node_ledger):
     with node_ledger.app_context():
         first = provisioning.provision_single_item(
             telegram_id=42, inbound_tag="vpn", limit_bytes=100, period_ms=86400000, tariff_id=1, idempotency_key="pay:1"
@@ -49,10 +49,10 @@ def test_two_tariffs_on_one_inbound_have_independent_clients(node_ledger):
         second = provisioning.provision_single_item(
             telegram_id=42, inbound_tag="vpn", limit_bytes=200, period_ms=86400000, tariff_id=2, idempotency_key="pay:2"
         )
-        assert first["client"]["id"] != second["client"]["id"]
-        assert Client.query.count() == 2
-        assert len({client.email for client in Client.query.all()}) == 2
-        assert sorted(client.limit_bytes for client in Client.query.all()) == [100, 200]
+        assert first["client"]["id"] == second["client"]["id"]
+        assert Client.query.count() == 1
+        assert Client.query.one().limit_bytes == 200
+        assert second["expires_at_ms"] == first["expires_at_ms"] + 86400000
 
 
 def test_tariff_target_gate_rejects_wireguard_and_missing_inbounds(node_ledger):
@@ -349,7 +349,7 @@ def test_missing_receipt_client_is_not_reported_materialized(node_ledger):
         assert json.loads(receipt.response_json)["client"]["id"] == reply["client"]["id"]
 
 
-def test_concurrent_first_purchases_share_one_same_tariff_client(node_ledger):
+def test_concurrent_first_purchases_share_one_client_across_tariffs(node_ledger):
     def grant(index):
         with node_ledger.app_context():
             return provisioning.provision_single_item(
@@ -357,7 +357,7 @@ def test_concurrent_first_purchases_share_one_same_tariff_client(node_ledger):
                 inbound_tag="vpn",
                 limit_bytes=100,
                 period_ms=86400000,
-                tariff_id=1,
+                tariff_id=index,
                 idempotency_key=f"pay:{index}",
             )
 
@@ -540,3 +540,229 @@ def test_two_node_paid_operation_recovers_after_crash_without_duplicate_extensio
     with apps["node-b"].app_context():
         assert Client.query.count() == 1
         assert Client.query.one().limit_bytes == 1024**3
+
+
+@pytest.mark.parametrize(
+    "old_limit,new_limit,expected", [(100, 10, 100), (10, 100, 100), (0, 10, 0), (10, 0, 0), (100, 100, 100)]
+)
+def test_shared_purchase_preserves_key_extends_and_resets_selected_quota(
+    node_ledger, monkeypatch, old_limit, new_limit, expected
+):
+    from panel_core.models import AccessEntitlement
+    from panel_core.services import entitlements
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        first = provisioning.provision_single_item(
+            telegram_id=42,
+            inbound_tag="vpn",
+            tariff_id=1,
+            limit_bytes=old_limit,
+            period_ms=10000,
+            idempotency_key="trial:first",
+        )
+        client = Client.query.one()
+        client.up, client.down = 3, 4
+        db.session.commit()
+        second = provisioning.provision_single_item(
+            telegram_id=42,
+            inbound_tag="vpn",
+            tariff_id=2,
+            limit_bytes=new_limit,
+            period_ms=30000,
+            idempotency_key="pay:second",
+        )
+        assert Client.query.count() == 1
+        assert second["client"]["id"] == first["client"]["id"]
+        assert client.expiry_time == 140000
+        assert client.limit_bytes == expected
+        assert (client.up, client.down) == (0, 0)
+        assert AccessEntitlement.query.filter_by(source_id="trial:first").one().expires_at_ms == 110000
+        client.up = 2
+        db.session.commit()
+        provisioning.provision_single_item(
+            telegram_id=42,
+            inbound_tag="vpn",
+            tariff_id=2,
+            limit_bytes=new_limit,
+            period_ms=30000,
+            idempotency_key="pay:second",
+        )
+        assert client.up == 2
+        assert client.expiry_time == 140000
+
+
+def test_shared_quota_expiry_starts_fresh_lower_cycle_only_once(node_ledger, monkeypatch):
+    from panel_core.models import AccessEntitlement
+    from panel_core.services import entitlements
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        provisioning.provision_single_item(
+            telegram_id=42, inbound_tag="vpn", tariff_id=1, limit_bytes=10, period_ms=10000, idempotency_key="pay:low"
+        )
+        client = Client.query.one()
+        client.up = 6
+        db.session.commit()
+        provisioning.provision_single_item(
+            telegram_id=42,
+            inbound_tag="vpn",
+            tariff_id=2,
+            limit_bytes=100,
+            expiry_ms=105000,
+            operation_id="grant:high",
+            source_id="grant:high",
+        )
+        assert client.limit_bytes == 100
+        client.up = 30
+        db.session.commit()
+        entitlements.refresh_client_entitlements(client, now_ms=105001)
+        assert client.limit_bytes == 10
+        assert client.expiry_time == 110000
+        assert client.up == client.down == 0
+        assert AccessEntitlement.query.filter_by(source_id="grant:high").one().up == 30
+        generation = client.traffic_generation
+        assert generation
+        client.down = 4
+        db.session.commit()
+        entitlements.refresh_client_entitlements(client, now_ms=105002)
+        assert client.down == 4
+        assert client.traffic_generation == generation
+
+
+def test_revoke_one_tariff_preserves_other_source_and_usage(node_ledger, monkeypatch):
+    from panel_core.models import AccessEntitlement
+    from panel_core.services import entitlements
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        provisioning.provision_single_item(
+            telegram_id=42, inbound_tag="vpn", tariff_id=1, limit_bytes=100, period_ms=10000, idempotency_key="pay:one"
+        )
+        provisioning.provision_single_item(
+            telegram_id=42, inbound_tag="vpn", tariff_id=2, limit_bytes=10, period_ms=10000, idempotency_key="pay:two"
+        )
+        client = Client.query.one()
+        client.up = 35
+        db.session.commit()
+        result = entitlements.revoke_source(
+            telegram_id=42, inbound_tag="vpn", tariff_id=2, source_id="tariff:42:2", operation_id="revoke:two"
+        )
+        assert result["disabled_clients"] == 0
+        assert client.enable
+        assert client.up == 35
+        assert client.limit_bytes == 100
+        assert client.expiry_time == 110000
+        assert not AccessEntitlement.query.filter_by(source_id="pay:one").one().revoked
+        assert AccessEntitlement.query.filter_by(source_id="pay:two").one().revoked
+
+
+def test_refund_selected_source_restores_prior_usage_without_free_reset(node_ledger, monkeypatch):
+    from panel_core.services import entitlements
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        provisioning.provision_single_item(
+            telegram_id=42, inbound_tag="vpn", tariff_id=1, limit_bytes=10, period_ms=10000, idempotency_key="pay:one"
+        )
+        client = Client.query.one()
+        client.up = 6
+        db.session.commit()
+        provisioning.provision_single_item(
+            telegram_id=42,
+            inbound_tag="vpn",
+            tariff_id=2,
+            limit_bytes=100,
+            expiry_ms=105000,
+            operation_id="grant:high",
+            source_id="grant:high",
+        )
+        entitlements.revoke_source(telegram_id=42, inbound_tag="vpn", tariff_id=2, source_id="grant:high")
+        assert client.up == 6
+        assert client.limit_bytes == 10
+        assert client.enable
+
+
+def test_exhausted_legacy_trial_keeps_remaining_time_on_paid_purchase(node_ledger, monkeypatch):
+    from panel_core.services import entitlements
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        db.session.add(
+            Client(
+                id="old-trial",
+                email="trial",
+                inbound_tag="vpn",
+                telegram_id=42,
+                tariff_id=1,
+                expiry_time=110000,
+                limit_bytes=100,
+                up=100,
+                down=0,
+                enable=False,
+                disable_reason="quota",
+            )
+        )
+        db.session.commit()
+        result = provisioning.provision_single_item(
+            telegram_id=42, inbound_tag="vpn", tariff_id=2, limit_bytes=10, period_ms=30000, idempotency_key="pay:new"
+        )
+        assert result["client"]["id"] == "old-trial"
+        assert result["expires_at_ms"] == 140000
+        assert result["client"]["limit_bytes"] == 100
+        assert result["client"]["enable"]
+
+
+def test_absolute_source_update_resets_its_own_usage(node_ledger, monkeypatch):
+    from panel_core.services import entitlements
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        arguments = dict(
+            telegram_id=42, inbound_tag="vpn", tariff_id=1, limit_bytes=100, expiry_ms=110000, source_id="grant:one"
+        )
+        provisioning.provision_single_item(**arguments, operation_id="grant:one:1", source_revision=1)
+        client = Client.query.one()
+        client.up = 30
+        db.session.commit()
+        provisioning.provision_single_item(**arguments, operation_id="grant:one:2", source_revision=2)
+        assert client.up == client.down == 0
+
+
+def test_delayed_tariff_revocation_leaves_newer_purchase(node_ledger, monkeypatch):
+    from panel_core.services import entitlements
+    from panel_core.models import AccessEntitlement
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        arguments = dict(telegram_id=42, inbound_tag="vpn", tariff_id=1, limit_bytes=100, period_ms=10000)
+        provisioning.provision_single_item(**arguments, idempotency_key="pay:old")
+        provisioning.provision_single_item(**arguments, idempotency_key="pay:new")
+        entitlements.revoke_source(
+            telegram_id=42,
+            inbound_tag="vpn",
+            tariff_id=1,
+            source_id="tariff:42:1",
+            operation_id="revoke:old",
+            revoked_sources={"pay:old": 1},
+        )
+        assert Client.query.one().enable
+        assert not AccessEntitlement.query.filter_by(source_id="pay:new").one().revoked
+
+
+def test_manual_quota_survives_account_unblock_until_next_purchase(node_ledger, monkeypatch):
+    from panel_core.services import entitlements
+
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: 100000)
+    with node_ledger.app_context():
+        args = dict(telegram_id=42, inbound_tag="vpn", tariff_id=1, period_ms=10000)
+        provisioning.provision_single_item(**args, limit_bytes=100, idempotency_key="pay:one")
+        client = Client.query.one()
+        client.limit_bytes = 10
+        entitlements.capture_manual_entitlement(client)
+        db.session.commit()
+        entitlements.apply_account_state(telegram_id=42, revision=1, blocked=True)
+        entitlements.apply_account_state(telegram_id=42, revision=2, blocked=False)
+        assert client.limit_bytes == 10
+        provisioning.provision_single_item(**args, limit_bytes=100, idempotency_key="pay:two", account_revision=2)
+        assert client.limit_bytes == 100

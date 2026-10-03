@@ -147,6 +147,7 @@ class TestGetOutbounds:
             "send_through",
             "public_ip",
             "gateway",
+            "transfer_pending",
         }
         assert item["protocol"] == "freedom"
         assert item["enable"] is True
