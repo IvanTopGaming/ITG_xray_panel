@@ -236,7 +236,7 @@ def test_a_shrunk_reply_still_raises_the_shrink_flag(app, db):
     panel = _panel(db)
     write_hot(
         panel.id,
-        {"inbounds": [{"clients": [{"email": f"u{i}"} for i in range(10)]}]},
+        {"inbounds": [{"clients": [{"id": f"id{i}", "email": f"u{i}"} for i in range(10)]}]},
         taken_at=1_700_000_000_000,
         instance_id="i",
         app_version="3.2.0",
@@ -245,7 +245,7 @@ def test_a_shrunk_reply_still_raises_the_shrink_flag(app, db):
 
     with patch.object(panel_transfer, "FederationClient") as client_cls:
         client_cls.return_value.state.return_value = {
-            "hot": {"inbounds": [{"clients": [{"email": "u0"}]}]},
+            "hot": {"inbounds": [{"clients": [{"id": "id0", "email": "u0"}]}]},
             "cold": cold_state(),
             "fingerprint": "d" * 64,
             "instance_id": "inst-4",

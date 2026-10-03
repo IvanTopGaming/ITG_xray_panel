@@ -79,6 +79,7 @@ def lock_panel(panel_id):
 def validate_state(hot, cold):
     if not isinstance(hot, dict) or not isinstance(hot.get("inbounds"), list):
         raise ValueError("state has no complete hot snapshot")
+    _validate_credentials(hot)
     if not isinstance(cold, dict) or any(
         not isinstance(cold.get(key), list)
         for key in (
@@ -99,6 +100,51 @@ def validate_state(hot, cold):
     for event in cold["events"]:
         if not isinstance(event, dict) or not event.get("source") or not isinstance(event.get("origin_event_id"), int):
             raise ValueError("state has an event without a durable origin")
+
+
+def _validate_credentials(hot):
+    ids = set()
+    emails = set()
+    for inbound in hot["inbounds"]:
+        if not isinstance(inbound, dict) or not isinstance(inbound.get("clients", []), list):
+            raise ValueError("state has invalid client credentials")
+        for client in inbound.get("clients", []):
+            if not isinstance(client, dict):
+                raise ValueError("state has invalid client credentials")
+            inbound_tag = inbound.get("tag")
+            if client.get("inbound_tag", inbound_tag) != inbound_tag:
+                raise ValueError("state has a credential attached to another inbound")
+            aliases = client.get("credential_aliases", [])
+            if not isinstance(aliases, list):
+                raise ValueError("state has invalid credential aliases")
+            for credential in [client, *aliases]:
+                if not isinstance(credential, dict):
+                    raise ValueError("state has an invalid credential alias")
+                identifier = credential.get("id")
+                if not isinstance(identifier, str) or not identifier or identifier in ids:
+                    raise ValueError("state has an invalid or duplicate credential id")
+                ids.add(identifier)
+                email = credential.get("email")
+                if credential is not client:
+                    if not isinstance(email, str) or not email:
+                        raise ValueError("state has an invalid credential alias email")
+                    if credential.get("client_id", client["id"]) != client["id"]:
+                        raise ValueError("state has a credential alias attached to another client")
+                    if credential.get("inbound_tag", inbound_tag) != inbound_tag:
+                        raise ValueError("state has a credential alias attached to another inbound")
+                    if any(
+                        credential.get(key) is not None and not isinstance(credential[key], str)
+                        for key in ("flow", "wg_address")
+                    ):
+                        raise ValueError("state has invalid credential alias settings")
+                    if credential.get("original_data") is not None and not isinstance(
+                        credential["original_data"], dict
+                    ):
+                        raise ValueError("state has an invalid credential alias archive")
+                if email is not None:
+                    if not isinstance(email, str) or (inbound_tag, email) in emails:
+                        raise ValueError("state has an invalid or duplicate credential email")
+                    emails.add((inbound_tag, email))
 
 
 def write_full(

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 from panel_core.extensions import db
 from panel_core.models import (
+    AccessEntitlement,
     BotText,
     BotDelivery,
     Client,
@@ -342,6 +343,28 @@ def delete_tariff_permanent(tariff_id):
             ),
             409,
         )
+
+    now_ms = int(datetime.now().timestamp() * 1000)
+    holder_count = (
+        db.session.query(AccessEntitlement.telegram_id)
+        .join(Client, Client.id == AccessEntitlement.client_id)
+        .filter(
+            AccessEntitlement.tariff_id == tariff_id,
+            AccessEntitlement.enabled.is_(True),
+            AccessEntitlement.revoked.is_(False),
+            db.or_(AccessEntitlement.expires_at_ms == 0, AccessEntitlement.expires_at_ms > now_ms),
+        )
+        .distinct()
+        .count()
+    )
+    if holder_count:
+        return jsonify(
+            {
+                "error": "tariff has active sources",
+                "holder_count": holder_count,
+                "hint": "revoke access or archive the tariff instead",
+            }
+        ), 409
 
     db.session.delete(t)
     db.session.commit()

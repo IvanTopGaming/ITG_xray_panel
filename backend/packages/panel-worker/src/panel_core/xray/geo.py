@@ -48,6 +48,7 @@ def update_geo_pair(asset_directory, urls, validate_config, restart):
     assets = Path(asset_directory)
     generations = assets / ".geo"
     generations.mkdir(exist_ok=True)
+    generations.chmod(0o755)
     stage = Path(tempfile.mkdtemp(prefix="generation-", dir=generations))
     try:
         for filename, url in urls.items():
@@ -61,6 +62,7 @@ def update_geo_pair(asset_directory, urls, validate_config, restart):
                             raise ValueError(f"{filename} exceeds the size limit")
                         destination.write(chunk)
                     destination.flush()
+                    os.fchmod(destination.fileno(), 0o644)
                     os.fsync(destination.fileno())
                 content_length = getattr(response, "headers", {}).get("Content-Length")
                 content_encoding = getattr(response, "headers", {}).get("Content-Encoding")
@@ -68,17 +70,33 @@ def update_geo_pair(asset_directory, urls, validate_config, restart):
                     raise ValueError(f"Incomplete {filename} download")
         _validate_geo(stage / "geoip.dat", GeoIPList)
         _validate_geo(stage / "geosite.dat", GeoSiteList)
+        stage.chmod(0o755)
         validate_config(str(stage))
         _sync_directory(stage)
         current = generations / "current"
-        if not current.is_symlink():
+        if current.is_symlink():
+            previous = current.resolve(strict=True)
+            if previous.parent != generations.resolve() or not previous.name.startswith("generation-"):
+                raise ValueError("Invalid GeoDB rollback generation")
+            sources = [previous / filename for filename in urls]
+            if any(source.is_symlink() or not source.is_file() for source in sources):
+                raise ValueError("Invalid GeoDB rollback files")
+            for source in sources:
+                with source.open("rb") as stream:
+                    os.fchmod(stream.fileno(), 0o644)
+                    os.fsync(stream.fileno())
+            previous.chmod(0o755)
+            _sync_directory(previous)
+        else:
             previous = Path(tempfile.mkdtemp(prefix="generation-", dir=generations))
             for filename in urls:
                 source = assets / filename
                 if source.exists():
                     shutil.copy2(source, previous / filename)
                     with (previous / filename).open("rb") as stream:
+                        os.fchmod(stream.fileno(), 0o644)
                         os.fsync(stream.fileno())
+            previous.chmod(0o755)
             _sync_directory(previous)
             _replace_link(current, previous.name)
         previous_target = os.readlink(current)

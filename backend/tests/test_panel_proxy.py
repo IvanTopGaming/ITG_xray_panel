@@ -42,6 +42,36 @@ def _mock_response(json_data, status_code=200):
     return resp
 
 
+RUNTIME_MUTATIONS = [
+    ("create_outbound", ({"tag": "egress", "protocol": "freedom"},)),
+    ("update_outbound", ("egress", {"enable": True})),
+    ("delete_outbound", ("egress",)),
+    ("create_balancer", ({"tag": "pool", "selector": ["direct"]},)),
+    ("update_balancer", ("pool", {"selector": ["direct"]})),
+    ("delete_balancer", ("pool",)),
+    ("create_routing_profile", ({"name": "split", "rules": []},)),
+    ("update_routing_profile", (1, {"rules": []})),
+    ("delete_routing_profile", (1,)),
+    ("create_inbound", ({"tag": "wg", "protocol": "wireguard", "port": 51820},)),
+    ("update_inbound", ("wg", {"port": 51821})),
+    ("delete_inbound", ("wg",)),
+    ("create_user", ("wg", {"email": "alice"})),
+    ("update_user", ("wg", {"email": "alice", "enable": True})),
+    ("delete_user", ("wg", "alice")),
+    ("provision", (42, "wg", {"period_ms": 86400000, "idempotency_key": "pay:42"})),
+    ("reset_inbound_traffic", ("wg",)),
+    ("bulk_delete_users", ([{"tag": "wg", "email": "alice"}],)),
+    ("bulk_enable_users", ([{"tag": "wg", "email": "alice"}], True)),
+    ("bulk_adjust_days", ([{"tag": "wg", "email": "alice"}], 1, "add")),
+    ("bulk_adjust_traffic", ([{"tag": "wg", "email": "alice"}], 1, "add")),
+    ("reset_traffic", ([{"tag": "wg", "email": "alice"}],)),
+    ("bulk_set_flow", ([{"tag": "vless", "email": "alice"}], "xtls-rprx-vision")),
+    ("update_system_settings", ({"xrayLogLevel": "warning"},)),
+    ("restart_xray", ()),
+    ("set_user_routing", ({"email": "alice", "outbound_tag": "direct"},)),
+]
+
+
 class TestFederationClient:
     def setup_method(self):
         self.client = FederationClient(
@@ -87,6 +117,41 @@ class TestFederationClient:
         assert caught.value.status_code == 502
         assert "unreachable" in str(caught.value)
 
+    @pytest.mark.parametrize("method,args", RUNTIME_MUTATIONS)
+    def test_runtime_mutation_waits_for_slow_apply_without_resending(self, method, args):
+        def slow_apply(request, **kwargs):
+            timeout = kwargs["timeout"]
+            read_timeout = timeout[1] if isinstance(timeout, tuple) else timeout
+            if read_timeout < 12:
+                raise requests.ReadTimeout("The node is still applying its runtime configuration")
+            response = requests.Response()
+            response.status_code = 200
+            response._content = b'{"status":"applied","expires_at_ms":86400000}'
+            return response
+
+        with patch.object(self.client._session, "send", side_effect=slow_apply) as send:
+            result = getattr(self.client, method)(*args)
+        assert result == {"status": "applied", "expires_at_ms": 86400000}
+        assert send.call_count == 1
+
+    @pytest.mark.parametrize("method,args", RUNTIME_MUTATIONS)
+    def test_runtime_mutation_does_not_retry_after_a_read_timeout(self, method, args):
+        with patch.object(self.client._session, "send", side_effect=requests.ReadTimeout("apply stalled")) as send:
+            with pytest.raises(RemotePanelError) as caught:
+                getattr(self.client, method)(*args)
+        assert caught.value.status_code == 502
+        assert "apply stalled" in str(caught.value)
+        assert send.call_count == 1
+
+    @pytest.mark.parametrize(
+        "method", ["list_outbounds", "list_balancers", "list_routing_profiles", "get_system_settings"]
+    )
+    def test_read_requests_keep_the_short_timeout(self, method):
+        with patch.object(self.client._session, "get", return_value=_mock_response([])) as get:
+            assert getattr(self.client, method)() == []
+        assert get.call_args.kwargs["timeout"] == 8
+        assert get.call_count == 1
+
     def test_create_inbound_posts_json(self):
         payload = {"tag": "vless-in", "port": 443}
         with patch.object(self.client._session, "post", return_value=_mock_response({"ok": True})) as mock_post:
@@ -94,7 +159,7 @@ class TestFederationClient:
         mock_post.assert_called_once_with(
             "https://child.example.com/api/inbounds",
             json=payload,
-            timeout=8,
+            timeout=30,
         )
         assert result == {"ok": True}
 
@@ -104,7 +169,7 @@ class TestFederationClient:
         mock_put.assert_called_once_with(
             "https://child.example.com/api/inbounds/vless-in",
             json={"port": 444},
-            timeout=8,
+            timeout=30,
         )
 
     def test_delete_inbound_sends_delete(self):
@@ -112,7 +177,7 @@ class TestFederationClient:
             self.client.delete_inbound("vless-in")
         mock_delete.assert_called_once_with(
             "https://child.example.com/api/inbounds/vless-in",
-            timeout=8,
+            timeout=30,
         )
 
     def test_create_user_posts_to_inbound_users(self):
@@ -122,7 +187,7 @@ class TestFederationClient:
         mock_post.assert_called_once_with(
             "https://child.example.com/api/inbounds/vless-in/users",
             json=user_data,
-            timeout=8,
+            timeout=30,
         )
 
     def test_update_user_puts_to_inbound_users(self):
@@ -132,7 +197,7 @@ class TestFederationClient:
         mock_put.assert_called_once_with(
             "https://child.example.com/api/inbounds/vless-in/users",
             json=user_data,
-            timeout=8,
+            timeout=30,
         )
 
     def test_delete_user_passes_email_as_query_param(self):
@@ -141,7 +206,7 @@ class TestFederationClient:
         mock_delete.assert_called_once_with(
             "https://child.example.com/api/inbounds/vless-in/users",
             params={"email": "alice@panel"},
-            timeout=8,
+            timeout=30,
         )
 
     def test_provision_posts_telegram_id_and_inbound_tag(self):
@@ -151,7 +216,7 @@ class TestFederationClient:
         mock_post.assert_called_once_with(
             "https://child.example.com/api/federation/provision",
             json={"telegram_id": 12345, "inbound_tag": "vless-in", **params},
-            timeout=8,
+            timeout=30,
         )
 
     def test_bulk_set_flow_posts_users_and_flow(self):

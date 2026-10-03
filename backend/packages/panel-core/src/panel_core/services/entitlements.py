@@ -6,6 +6,7 @@ import uuid
 from panel_core.extensions import db
 from panel_core.models import AccessEntitlement, AccountAccessState, Client, Inbound, ProvisionReceipt, NotificationLog
 from panel_core.services.credentials import generate_client_credentials
+from panel_core.services.client_credentials import resolve_client, credential_aliases, clients_for_runtime_email
 from panel_core.services.runtime_apply import (
     mark_runtime_dirty,
     prepare_runtime_config,
@@ -23,7 +24,7 @@ def _now_ms():
 
 
 def _logical_key(telegram_id, tariff_id, inbound_tag):
-    return f"{telegram_id}:{tariff_id or 0}:{inbound_tag}"
+    return f"{telegram_id}:{inbound_tag}"
 
 
 def _account_guard(telegram_id, revision):
@@ -45,12 +46,18 @@ def _save_usage(client):
             source.up, source.down = client.up or 0, client.down or 0
 
 
-def refresh_client_entitlements(client, *, operation_id=None, sample=None, now_ms=None):
+def refresh_client_entitlements(client, *, operation_id=None, sample=None, now_ms=None, reset_usage=False):
     if sample is None:
         sample = read_traffic_sample()
     settle_client_traffic(client, sample=sample)
     _save_usage(client)
     now = _now_ms() if now_ms is None else now_ms
+    previous_source = client.active_entitlement_source
+    previous = (
+        AccessEntitlement.query.filter_by(client_id=client.id, source_id=previous_source).first()
+        if previous_source
+        else None
+    )
     sources = (
         AccessEntitlement.query.filter_by(client_id=client.id, revoked=False, enabled=True)
         .order_by(AccessEntitlement.created_at.desc(), AccessEntitlement.id.desc())
@@ -64,13 +71,27 @@ def refresh_client_entitlements(client, *, operation_id=None, sample=None, now_m
         client.expiry_time = now - 1
         client.active_entitlement_source = None
     else:
-        owner = sources[0]
+        newest = max(sources, key=lambda row: (row.created_at, row.id))
+        owner = (
+            newest
+            if newest.source_id.startswith("manual:")
+            else max(sources, key=lambda row: (row.limit_bytes == 0, row.limit_bytes, row.created_at, row.id))
+        )
+        expired_transition = (
+            previous is not None
+            and previous.source_id != owner.source_id
+            and not previous.revoked
+            and 0 < previous.expires_at_ms <= now
+        )
+        if reset_usage or expired_transition:
+            owner.up = owner.down = 0
         client.expiry_time = (
             0
             if any(source.expires_at_ms == 0 for source in sources)
             else max(source.expires_at_ms for source in sources)
         )
         client.limit_bytes = owner.limit_bytes
+        client.tariff_id = owner.tariff_id
         client.up, client.down = owner.up, owner.down
         client.active_entitlement_source = owner.source_id
         quota_available = not client.limit_bytes or client.up + client.down < client.limit_bytes
@@ -78,9 +99,10 @@ def refresh_client_entitlements(client, *, operation_id=None, sample=None, now_m
         client.disable_reason = (
             "" if client.enable else "manual" if client.manual_disabled or (account and account.blocked) else "quota"
         )
-    if operation_id:
-        client.access_generation = operation_id
-        start_traffic_cycle(client, generation=operation_id, sample=sample, reset_usage=False)
+    if operation_id or previous_source != client.active_entitlement_source or reset_usage:
+        generation = operation_id or f"quota:{uuid.uuid4().hex}"
+        client.access_generation = generation
+        start_traffic_cycle(client, generation=generation, sample=sample, reset_usage=False)
     return client
 
 
@@ -132,7 +154,7 @@ def _legacy_manual_disabled(client):
 
 def _client_for(telegram_id, tariff_id, inbound):
     key = _logical_key(telegram_id, tariff_id, inbound.tag)
-    clients = Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id, inbound_tag=inbound.tag).all()
+    clients = Client.query.filter_by(telegram_id=telegram_id, inbound_tag=inbound.tag).all()
     if len(clients) > 1:
         raise ValueError("duplicate_logical_clients_require_review")
     if clients:
@@ -147,23 +169,24 @@ def _client_for(telegram_id, tariff_id, inbound):
                     source_id=source_id,
                     operation_id=source_id,
                     telegram_id=telegram_id,
-                    tariff_id=tariff_id,
+                    tariff_id=client.tariff_id,
                     inbound_tag=inbound.tag,
                     client_id=client.id,
                     expires_at_ms=client.expiry_time,
                     limit_bytes=client.limit_bytes or 0,
                     up=client.up or 0,
                     down=client.down or 0,
-                    enabled=bool(client.enable),
+                    enabled=True,
                 )
             )
             client.active_entitlement_source = source_id
             client.manual_disabled = _legacy_manual_disabled(client)
+        client.provisioning_key = key
         return client
     identity = generate_client_credentials(inbound)
-    email = f"tg{telegram_id}_{inbound.tag}_{tariff_id or 0}"
-    if Client.query.filter_by(inbound_tag=inbound.tag, email=email).first() is not None:
-        raise ValueError("duplicate_client_email_requires_review")
+    email = f"tg{telegram_id}_{inbound.tag}"
+    if clients_for_runtime_email(inbound.tag, email):
+        email = f"{email}_{uuid.uuid4().hex[:8]}"
     client = Client(
         id=identity,
         email=email,
@@ -197,6 +220,8 @@ def apply_client_activation_changes(changes):
     for client, was_enabled in changes:
         if bool(client.enable) == was_enabled:
             continue
+        if credential_aliases(client):
+            return False
         inbound = Inbound.query.filter_by(tag=client.inbound_tag).first()
         if inbound is None or inbound.protocol not in {"vless", "vmess"} or client.preferred_outbound:
             return False
@@ -245,7 +270,7 @@ def provision(
             if receipt.request_json != payload:
                 raise ValueError("provision_receipt_payload_mismatch")
             result = json.loads(receipt.response_json)
-            client = db.session.get(Client, result.get("client", {}).get("id"))
+            client = resolve_client(result.get("client", {}).get("id"))
             if (
                 client is None
                 or source is None
@@ -294,7 +319,7 @@ def provision(
         source.up, source.down, source.enabled, source.revoked = 0, 0, True, False
         db.session.flush()
         client.active_entitlement_source = None
-        refresh_client_entitlements(client, operation_id=operation_id, sample=sample)
+        refresh_client_entitlements(client, operation_id=operation_id, sample=sample, reset_usage=period_ms is not None)
         NotificationLog.query.filter(
             NotificationLog.client_id == client.id,
             (NotificationLog.kind.like("expiry_%")) | (NotificationLog.kind == "expired"),
@@ -345,19 +370,39 @@ def revoke_source(
                 receipt.materialized = True
                 db.session.commit()
                 return json.loads(receipt.response_json)
-            clients = Client.query.filter_by(
+            rows = AccessEntitlement.query.filter_by(
                 telegram_id=telegram_id, tariff_id=tariff_id, inbound_tag=inbound_tag
             ).all()
-            disabled_count = sum(bool(client.enable) for client in clients)
-            changes = [(client, bool(client.enable)) for client in clients]
-            for client in clients:
-                settle_client_traffic(client)
+            legacy = Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id, inbound_tag=inbound_tag).all()
+            clients = {client.id: client for client in legacy if not client.provisioning_key}
+            for row in rows:
+                client = db.session.get(Client, row.client_id) if row.client_id else None
+                if client is not None:
+                    clients[client.id] = client
+            changes = [(client, bool(client.enable)) for client in clients.values()]
+            sample = read_traffic_sample()
+            for client in clients.values():
+                settle_client_traffic(client, sample=sample)
                 _save_usage(client)
-                for row in AccessEntitlement.query.filter_by(client_id=client.id).all():
-                    row.revoked = True
-                    row.source_revision += 1
-                client.enable, client.expiry_time = False, _now_ms() - 1
-                client.access_generation = operation_id
+            for row in rows:
+                if (
+                    revoked_sources is not None
+                    and row.source_id not in revoked_sources
+                    and not row.source_id.startswith(("legacy:", "manual:"))
+                ):
+                    continue
+                revision = (revoked_sources or {}).get(row.source_id, row.source_revision + 1)
+                if revision < row.source_revision:
+                    continue
+                row.revoked = True
+                row.source_revision = revision
+            for client in clients.values():
+                if client.provisioning_key:
+                    refresh_client_entitlements(client, operation_id=operation_id, sample=sample)
+                else:
+                    client.enable, client.expiry_time = False, _now_ms() - 1
+                    client.access_generation = operation_id
+            disabled_count = sum(was_enabled and not client.enable for client, was_enabled in changes)
             for revoked_id, revision in (revoked_sources or {}).items():
                 existing = AccessEntitlement.query.filter_by(source_id=revoked_id, inbound_tag=inbound_tag).first()
                 if existing is None:

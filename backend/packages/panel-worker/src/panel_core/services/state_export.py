@@ -19,9 +19,11 @@ from panel_core.models import (
     SystemSetting,
 )
 from panel_core.services.state_fingerprint import MIRRORED_SETTING_KEYS
+from panel_core.services.client_credentials import credentials_for
 
 MIRROR_EXCLUDED_COLUMNS = {
     "Client": frozenset({"device_limit"}),
+    "ClientCredential": frozenset({"client_id"}),
     "Inbound": frozenset({"device_limit"}),
     "Outbound": frozenset({"id"}),
     "RoutingProfile": frozenset(),
@@ -59,6 +61,7 @@ def _client_row(c):
         "preferred_outbound": c.preferred_outbound or "",
         "telegram_id": c.telegram_id,
         "tariff_id": c.tariff_id,
+        "tariff_sources": c.to_dict()["tariff_sources"],
         "wg_address": c.wg_address,
         "access_generation": c.access_generation,
         "traffic_generation": c.traffic_generation,
@@ -66,6 +69,16 @@ def _client_row(c):
         "active_entitlement_source": c.active_entitlement_source,
         "manual_disabled": bool(c.manual_disabled),
         "disable_reason": c.disable_reason,
+        "credential_aliases": [
+            {
+                "id": alias.id,
+                "email": alias.email,
+                "flow": alias.flow or "",
+                "wg_address": alias.wg_address,
+                **({"original_data": alias.original_data} if alias.original_data is not None else {}),
+            }
+            for alias in credentials_for(c)[1:]
+        ],
     }
 
 

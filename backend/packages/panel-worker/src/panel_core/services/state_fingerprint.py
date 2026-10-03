@@ -2,6 +2,7 @@ import hashlib
 import json
 
 from panel_core.extensions import db
+from panel_core.services.egress import TRANSFER_EGRESS_SETTING
 from panel_core.models import (
     Balancer,
     AccessEntitlement,
@@ -14,7 +15,7 @@ from panel_core.models import (
     SystemSetting,
 )
 
-MIRRORED_SETTING_KEYS = ("xray_log_level", "geoip_url", "geosite_url")
+MIRRORED_SETTING_KEYS = ("xray_log_level", "geoip_url", "geosite_url", TRANSFER_EGRESS_SETTING)
 
 
 def _config_digest_input():

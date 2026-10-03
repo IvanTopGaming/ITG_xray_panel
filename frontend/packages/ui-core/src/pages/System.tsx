@@ -118,8 +118,9 @@ export default function System() {
     enabled: xrayScopeResolved,
   });
   const strandedEgress = egressOutbounds.filter(
-    (o) => !!o.send_through && !o.public_ip && o.enable === false
+    (o) => o.transfer_pending || (!!o.send_through && !o.public_ip && o.enable === false)
   );
+  const hasLegacyEgress = strandedEgress.some((o) => o.transfer_pending !== true);
   const showTransferBanners = supersededAt != null || strandedEgress.length > 0;
 
   const { data: federation } = useQuery<FederationConfig>({
@@ -381,15 +382,27 @@ export default function System() {
               <Globe size={18} className="mt-0.5 shrink-0 text-amber-400" />
               <div>
                 <p className="font-semibold text-amber-200">
-                  Dedicated outgoing IPs are waiting for new addresses
+                  Dedicated outgoing routes need configuration
                   {hasLocalXray ? '' : ` on ${xrayTargetName}`}
                 </p>
                 <p className="mt-0.5 text-amber-300/80">
                   {strandedEgress.length} outbound{strandedEgress.length === 1 ? '' : 's'} (
                   {strandedEgress.map((o) => o.tag).join(', ')}){' '}
-                  {strandedEgress.length === 1 ? 'is' : 'are'} disabled with no public IP assigned —
-                  this is what a fresh install leaves behind after a transfer. Assign a dedicated
-                  address on the Routing page or the people who had one stay without it.
+                  {strandedEgress.length === 1 ? 'needs' : 'need'} configuration after transfer.{' '}
+                  {hasLegacyEgress ? (
+                    <>
+                      Some routes have no confirmed transfer protection. Their missing dedicated
+                      addresses can prevent Xray from applying its configuration and affect other
+                      users. Check Xray runtime readiness after reconfiguration.{' '}
+                    </>
+                  ) : (
+                    <>
+                      Traffic using these routes or their dependent balancers stays blocked,
+                      including fallback routes. Other routes keep working.{' '}
+                    </>
+                  )}
+                  On the Routing page, assign a new dedicated address and enable the outbound, or
+                  explicitly remove its dedicated IP setting and enable it.
                 </p>
               </div>
             </div>

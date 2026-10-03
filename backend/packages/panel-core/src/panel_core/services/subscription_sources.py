@@ -80,7 +80,11 @@ def remote_subscription_clients(*, telegram_id=None, client_uuid=None, only_enab
                 if telegram_id is not None and client.get("telegram_id") != telegram_id:
                     continue
                 if client_uuid is not None and client.get("id") != client_uuid:
-                    continue
+                    aliases = client.get("credential_aliases") or []
+                    if not isinstance(aliases, list) or not any(
+                        isinstance(alias, dict) and alias.get("id") == client_uuid for alias in aliases
+                    ):
+                        continue
                 if only_enabled and access_reason(client) != "active":
                     continue
                 stream = inbound.get("stream_settings", {})

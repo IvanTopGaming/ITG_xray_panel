@@ -567,7 +567,7 @@ else. A node's SQLite: that node. Master, sub and bot-api migrate nothing — th
 into an existing schema and calls `_require_schema()` first, refusing to start on a virgin database.
 
 `panel_core.db_migration` (entrypoint `backend/migrate_db.py`) is a custom system, not Flask-Migrate.
-Schema version **27** via `PRAGMA user_version`; idempotent, `CREATE TABLE IF NOT EXISTS` plus guarded
+Schema version **30** via `PRAGMA user_version`; idempotent, `CREATE TABLE IF NOT EXISTS` plus guarded
 `ALTER TABLE ADD COLUMN` (all metadata-only, so migration time is independent of row count). New
 table → add `_ensure_<name>_table`, call it from `migrate_sqlite_db`, bump `CURRENT_DB_VERSION`.
 Retired tables are listed once in `RETIRED_TABLES` and dropped by both paths from that list —

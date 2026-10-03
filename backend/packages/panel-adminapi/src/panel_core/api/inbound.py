@@ -7,6 +7,12 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify, g
 from panel_core.extensions import db, limiter
 from panel_core.models import Inbound, Client, TelegramUser, TariffItem
+from panel_core.services.client_credentials import (
+    credential_aliases,
+    clients_for_runtime_email,
+    resolve_client,
+    credentials_for,
+)
 from panel_core.services.sub_links import build_aggregate_sub_url, build_client_sub_url
 from panel_core.services.panel_proxy import RemotePanelError
 from panel_core.utils import (
@@ -530,14 +536,16 @@ def update_inbound(tag):
         ib.stream_settings = json.dumps(built_stream_settings)
         ib.fallback_address = _normalize_fallback_address(ib.fallback_address, ib.protocol)
         if ib.protocol not in PANEL_USER_PROTOCOLS:
-            Client.query.filter_by(inbound_tag=ib.tag).delete()
+            for existing_client in list(ib.clients):
+                db.session.delete(existing_client)
 
         if ib.protocol in PANEL_USER_PROTOCOLS and not (
             ib.protocol == "vless" and stream_supports_vless_flow(built_stream_settings)
         ):
-            for c in ib.clients:
-                if c.flow:
-                    c.flow = ""
+            for owner in ib.clients:
+                for c in credentials_for(owner):
+                    if c.flow:
+                        c.flow = ""
 
         ensure_wireguard_addresses(ib)
         prepare_runtime_config()
@@ -690,7 +698,7 @@ def add_user(tag):
                 "This inbound does not support panel users. Configure username/password in inbound settings."
             )
         email = normalize_email(data.get("email"))
-        if Client.query.filter_by(inbound_tag=tag, email=email).first():
+        if clients_for_runtime_email(tag, email):
             raise ValueError("Email exists")
 
         ss_method = _extract_ss_method(ib.stream_settings)
@@ -707,7 +715,7 @@ def add_user(tag):
             if not normalized_ss_client_id:
                 raise ValueError("User ID must be a valid Shadowsocks 2022 key for selected method")
             provided_id = normalized_ss_client_id
-        if db.session.get(Client, provided_id):
+        if resolve_client(provided_id):
             raise ValueError("User ID exists")
 
         new_client = Client(
@@ -789,7 +797,7 @@ def update_user(tag):
             return jsonify({"error": "User not found"}), 404
 
         new_email = normalize_email(data.get("new_email", client.email), "New email")
-        if new_email != old_email and Client.query.filter_by(inbound_tag=tag, email=new_email).first():
+        if new_email != old_email and clients_for_runtime_email(tag, new_email):
             raise ValueError("Email exists")
 
         ss_method = _extract_ss_method(ib.stream_settings)
@@ -802,7 +810,7 @@ def update_user(tag):
             if not normalized_ss_client_id:
                 raise ValueError("User ID must be a valid Shadowsocks 2022 key for selected method")
             new_id = normalized_ss_client_id
-        if new_id != client.id and db.session.get(Client, new_id):
+        if new_id != client.id and resolve_client(new_id):
             raise ValueError("User ID exists")
         limit_bytes = parse_int(data.get("limit_bytes", client.limit_bytes), "limit_bytes", min_value=0)
         expiry_time = parse_int(data.get("expiry_time", client.expiry_time), "expiry_time", min_value=0)
@@ -831,6 +839,8 @@ def update_user(tag):
         client.reset_day = reset_day
         client.enable = enable
         client.flow = flow
+        for alias in client.credential_records:
+            alias.flow = flow
         if old_runtime_enabled != enable:
             client.manual_disabled = not enable
             client.disable_reason = "manual" if not enable else ""
@@ -858,9 +868,13 @@ def update_user(tag):
             return succeeded
 
         callback = apply_user
-        if ib.protocol not in ["vless", "vmess"] or (
-            client.preferred_outbound
-            and (old_runtime_email != client.email or old_runtime_enabled != bool(client.enable))
+        if (
+            credential_aliases(client)
+            or ib.protocol not in ["vless", "vmess"]
+            or (
+                client.preferred_outbound
+                and (old_runtime_email != client.email or old_runtime_enabled != bool(client.enable))
+            )
         ):
             callback = restart_xray_container
         synchronize_runtime(callback, expected_revision=revision)
@@ -910,6 +924,7 @@ def delete_user_route(tag):
             return jsonify({"error": "User not found"}), 404
         was_enabled = bool(client.enable)
         had_routing = bool(client.preferred_outbound)
+        had_aliases = bool(credential_aliases(client))
         deleted_client_id = client.id
         db.session.delete(client)
 
@@ -924,7 +939,7 @@ def delete_user_route(tag):
 
         callback = (
             (lambda: _api_remove_user_grpc(tag, email))
-            if ib and ib.protocol in ["vless", "vmess"] and was_enabled and not had_routing
+            if ib and ib.protocol in ["vless", "vmess"] and was_enabled and not had_routing and not had_aliases
             else restart_xray_container
         )
         synchronize_runtime(callback, expected_revision=revision)
@@ -1159,7 +1174,12 @@ def bulk_enable_users_route():
             for item in updated:
                 client = item["client"]
                 ib = item["inbound"]
-                if not ib or ib.protocol not in ["vless", "vmess"] or client.preferred_outbound:
+                if (
+                    not ib
+                    or ib.protocol not in ["vless", "vmess"]
+                    or client.preferred_outbound
+                    or credential_aliases(client)
+                ):
                     return False
                 if item["was_enabled"]:
                     succeeded = _api_remove_user_grpc(ib.tag, client.email) and succeeded
@@ -1384,11 +1404,13 @@ def bulk_set_flow_route():
             if flow and not inbound_supports_vless_flow(ib):
                 skipped += 1
                 continue
-            if (client.flow or "") == flow:
+            if all((credential.flow or "") == flow for credential in credentials_for(client)):
                 skipped += 1
                 continue
             changed.append({"client": client, "old_email": client.email, "was_enabled": bool(client.enable)})
             client.flow = flow
+            for alias in client.credential_records:
+                alias.flow = flow
 
         if changed:
             prepare_runtime_config()
@@ -1407,6 +1429,8 @@ def bulk_set_flow_route():
                     if not item["was_enabled"]:
                         continue
                     client = item["client"]
+                    if credential_aliases(client):
+                        return False
                     succeeded = _api_remove_user_grpc(client.inbound_tag, item["old_email"]) and succeeded
                     succeeded = _api_add_user_grpc(client.inbound_tag, client) and succeeded
                 return succeeded

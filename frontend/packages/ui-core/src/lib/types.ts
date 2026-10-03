@@ -10,6 +10,17 @@ export interface SystemStats {
   mem_percent: number;
 }
 
+export interface ClientTariffSource {
+  source_id: string;
+  tariff_id: number | null;
+  expires_at_ms: number;
+  limit_bytes: number;
+  up: number;
+  down: number;
+  enabled: boolean;
+  revoked: boolean;
+}
+
 export interface Client {
   id: string;
   email: string;
@@ -27,6 +38,7 @@ export interface Client {
   device_count?: number;
   telegram_id?: number | null;
   tariff_id?: number | null;
+  tariff_sources?: ClientTariffSource[];
   panel_id?: number | null;
   panel_name?: string;
   sub_url?: string | null;
@@ -110,6 +122,7 @@ export interface Outbound {
   send_through?: string;
   public_ip?: string;
   gateway?: string;
+  transfer_pending?: boolean;
 }
 
 export interface OutboundHealth {

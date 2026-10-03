@@ -12,6 +12,7 @@ from panel_core.services.runtime_apply import (
     runtime_lock,
     synchronize_runtime,
 )
+from panel_core.services.client_credentials import credentials_for
 from panel_core.services.runtime_identity import build_runtime_email
 from panel_core.xray.gateway import get_xray_gateway
 
@@ -107,7 +108,7 @@ def read_traffic_sample():
     return epoch, values, generations
 
 
-def _settle_traffic(entity, entity_type, identity, sample):
+def _settle_traffic(entity, entity_type, identity, sample, *, credential_id=None):
     if sample is None:
         return 0, 0
     epoch, values, generations = sample
@@ -118,7 +119,7 @@ def _settle_traffic(entity, entity_type, identity, sample):
     raw = [int(values.get(prefix + direction, 0)) for direction in ("uplink", "downlink")]
     if any(value < 0 for value in raw):
         raise ValueError("Negative traffic counter")
-    entity_id = entity.id if entity_type == "user" else entity.tag
+    entity_id = (credential_id or entity.id) if entity_type == "user" else entity.tag
     tag = entity.inbound_tag if entity_type == "user" else ""
     key = (entity_type, entity_id, tag)
     baseline = db.session.get(TrafficCounterBaseline, key)
@@ -150,12 +151,18 @@ def _settle_traffic(entity, entity_type, identity, sample):
 
 def settle_client_traffic(client, *, sample=None):
     with runtime_lock():
-        return _settle_traffic(
-            client,
-            "user",
-            build_runtime_email(client.inbound_tag, client.email),
-            read_traffic_sample() if sample is None else sample,
-        )
+        sample = read_traffic_sample() if sample is None else sample
+        deltas = [
+            _settle_traffic(
+                client,
+                "user",
+                build_runtime_email(client.inbound_tag, credential.email),
+                sample,
+                credential_id=credential.id,
+            )
+            for credential in credentials_for(client)
+        ]
+        return tuple(sum(delta[index] for delta in deltas) for index in (0, 1))
 
 
 def settle_inbound_traffic(inbound, *, sample):
@@ -170,9 +177,10 @@ def start_traffic_cycle(client, *, generation=None, sample=None, reset_usage=Tru
         client.last_reset_time = int(datetime.now().timestamp() * 1000)
         if reset_usage:
             client.up = client.down = 0
-        baseline = db.session.get(TrafficCounterBaseline, ("user", client.id, client.inbound_tag))
-        if baseline is not None:
-            baseline.traffic_generation = client.traffic_generation
+        for credential in credentials_for(client):
+            baseline = db.session.get(TrafficCounterBaseline, ("user", credential.id, client.inbound_tag))
+            if baseline is not None:
+                baseline.traffic_generation = client.traffic_generation
         NotificationLog.query.filter(
             NotificationLog.client_id == client.id, NotificationLog.kind.like("traffic_%")
         ).delete(synchronize_session=False)

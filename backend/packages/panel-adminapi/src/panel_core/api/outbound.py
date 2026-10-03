@@ -14,7 +14,7 @@ from panel_core.utils import (
     remote_panel_failure,
     token_required,
 )
-from panel_core.services.egress import allocate_bind_ip
+from panel_core.services.egress import allocate_bind_ip, pending_transfer_egress, set_pending_transfer_egress
 from panel_core.xray.facade import has_local_xray, restart_xray_container
 from panel_core.services.runtime_apply import (
     RuntimeApplyError,
@@ -211,6 +211,7 @@ def get_outbounds():
             return jsonify({"error": str(e)}), 400
 
     outbounds = Outbound.query.all()
+    pending_egress = pending_transfer_egress()
     return jsonify(
         [
             {
@@ -223,6 +224,7 @@ def get_outbounds():
                 "send_through": o.send_through or "",
                 "public_ip": o.public_ip or "",
                 "gateway": o.gateway or "",
+                "transfer_pending": o.tag in pending_egress,
             }
             for o in outbounds
         ]
@@ -399,10 +401,19 @@ def update_outbound(tag):
             ob.mux = json.dumps(data["mux"])
         if "enable" in data:
             ob.enable = _parse_bool(data.get("enable"), bool(getattr(ob, "enable", True)))
+        pending_egress = pending_transfer_egress()
         if "public_ip" in data or "gateway" in data:
             public_ip = _normalize_ip(data["public_ip"]) if "public_ip" in data else (ob.public_ip or "")
             gateway = _normalize_ip(data["gateway"]) if "gateway" in data else (ob.gateway or "")
+            if ob.tag in pending_egress and ob.send_through and not public_ip and "public_ip" not in data:
+                raise ValueError("Set public_ip or explicitly clear public_ip before changing transferred egress")
             _assign_egress_fields(ob, ob.protocol, public_ip, gateway, current_tag=ob.tag)
+        if ob.tag in pending_egress and ob.enable:
+            if not ob.public_ip and ob.send_through and "public_ip" not in data:
+                raise ValueError(
+                    "Configure public_ip before enabling a transferred outbound, or explicitly clear public_ip to remove dedicated egress"
+                )
+            set_pending_transfer_egress(pending_egress - {ob.tag})
         prepare_runtime_config()
         revision = mark_runtime_dirty()
         db.session.commit()
@@ -467,6 +478,7 @@ def delete_outbound(tag):
             client.preferred_outbound = None
 
         db.session.delete(ob)
+        set_pending_transfer_egress(pending_transfer_egress() - {tag})
         prepare_runtime_config()
         revision = mark_runtime_dirty()
         db.session.commit()

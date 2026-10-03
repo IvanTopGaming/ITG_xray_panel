@@ -327,3 +327,38 @@ def test_unsupported_protocol_keeps_full_apply(db, live_runtime):
     assert live_runtime.calls == ["restart"]
     assert live_runtime.users == live_runtime.published
     assert_applied(db)
+
+
+def test_shared_tariff_expiry_settles_runtime_and_resets_lower_cycle_once(db, live_runtime, monkeypatch):
+    from datetime import datetime
+    from panel_core.models import AccessEntitlement
+    from panel_core.services import entitlements, stats
+
+    moment = int(time.time() * 1000)
+    monkeypatch.setattr(entitlements, "_now_ms", lambda: moment)
+    first = grant("pay:large", limit_bytes=1000, period_ms=10000)
+    grant("pay:small", tariff_id=2, limit_bytes=100, period_ms=30000)
+    client = db.session.get(Client, first["client"]["id"])
+    identity = build_runtime_email("vpn", client.email)
+    live_runtime.counters[f"user>>>{identity}>>>traffic>>>uplink"] = 300
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp((moment + 11000) / 1000, tz)
+
+    monkeypatch.setattr(stats, "datetime", Later)
+    stats.check_limits_and_reset()
+    assert Client.query.count() == 1
+    assert client.limit_bytes == 100
+    assert client.expiry_time == moment + 40000
+    assert client.up == 0
+    assert AccessEntitlement.query.filter_by(source_id="pay:large").one().up == 300
+    generation = client.traffic_generation
+    live_runtime.counters[f"user>>>{identity}>>>traffic>>>uplink"] = 315
+    stats.sync_traffic_stats()
+    assert client.up == 15
+    stats.check_limits_and_reset()
+    assert client.up == 15
+    assert client.traffic_generation == generation
+    assert live_runtime.sessions == {"unrelated-session"}

@@ -15,11 +15,10 @@ from panel_core.models import (
     SystemSetting,
     Tariff,
     TelegramUser,
-    UserTariffAccess,
 )
 from panel_core.services import bot_events, tariff_delivery
 from panel_core.services.bot_status import record_bot_username, record_bot_version
-from panel_core.services.open_access import has_open_ended_access
+from panel_core.services.open_access import eligible_tariff_access, has_open_ended_access
 from panel_core.utils import bot_service_token_required
 
 bp = Blueprint("bot_service", __name__)
@@ -343,7 +342,7 @@ def list_tariffs_for_bot():
     ).all()
     private = []
     if telegram_id is not None:
-        granted_ids = [access.tariff_id for access in UserTariffAccess.query.filter_by(telegram_id=telegram_id).all()]
+        granted_ids = [access.tariff_id for access in eligible_tariff_access(telegram_id).all()]
         if granted_ids:
             private = Tariff.query.filter(
                 Tariff.id.in_(granted_ids),
@@ -363,24 +362,15 @@ def list_tariffs_for_bot():
         ordered.append(t)
     ordered.sort(key=lambda t: (t.sort_order or 0, t.id))
 
-    active_tariff_ids: set[int] = set()
-    if telegram_id is not None:
-        now_ms = int(time.time() * 1000)
-        rows = (
-            db.session.query(Client.tariff_id)
-            .filter(
-                Client.telegram_id == telegram_id,
-                Client.tariff_id.isnot(None),
-                Client.enable.is_(True),
-                db.or_(Client.expiry_time == 0, Client.expiry_time > now_ms),
-            )
-            .distinct()
-            .all()
-        )
-        active_tariff_ids = {r[0] for r in rows if r[0] is not None}
-
     from panel_core.services.panel_proxy import get_panel_snapshot
     from panel_core.services.subscription_sources import access_reason
+    from panel_core.services.tariff_membership import active_tariff_ids as client_active_tariffs
+
+    active_tariff_ids: set[int] = set()
+    now_ms = int(time.time() * 1000)
+    if telegram_id is not None:
+        for client in Client.query.filter_by(telegram_id=telegram_id, enable=True).all():
+            active_tariff_ids.update(client_active_tariffs(client.to_dict(), now_ms))
 
     inbound_labels: dict[tuple[int | None, str], str | None] = {
         (None, tag): label for tag, label in db.session.query(Inbound.tag, Inbound.label).all()
@@ -398,11 +388,10 @@ def list_tariffs_for_bot():
                 for remote_client in ib_data.get("clients", []):
                     if (
                         remote_client.get("telegram_id") == telegram_id
-                        and remote_client.get("tariff_id") is not None
                         and remote_client.get("expiry_time") is not None
                         and access_reason(remote_client) == "active"
                     ):
-                        active_tariff_ids.add(remote_client["tariff_id"])
+                        active_tariff_ids.update(client_active_tariffs(remote_client, now_ms))
 
     return jsonify(
         [_serialize_tariff_for_bot(t, active_ids=active_tariff_ids, inbound_labels=inbound_labels) for t in ordered]

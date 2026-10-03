@@ -16,6 +16,7 @@ from panel_core.services.runtime_apply import (
     runtime_lock,
     synchronize_runtime,
 )
+from panel_core.services.client_credentials import clients_for_runtime_email
 from panel_core.services.runtime_identity import parse_runtime_email
 from panel_core.services.traffic_store import (
     _upsert_domain_stat,
@@ -242,14 +243,11 @@ def _parse_access_logs_logic():
             if not _is_ip_address(ip):
                 continue
             tag, email = parse_runtime_email(identity)
-            query = Client.query.filter_by(email=email)
-            if tag:
-                query = query.filter_by(inbound_tag=tag)
             try:
                 seen = datetime.strptime(line[:19], "%Y/%m/%d %H:%M:%S")
             except ValueError:
                 seen = datetime.now()
-            for client in query.all():
+            for client in clients_for_runtime_email(tag, email):
                 client.last_seen = max(client.last_seen or 0, int(seen.timestamp() * 1000))
                 try:
                     ips = json.loads(client.source_ips or "[]")
@@ -259,7 +257,7 @@ def _parse_access_logs_logic():
                     ips = []
                 client.source_ips = json.dumps(([ip] + [old for old in ips if old != ip])[:10])
                 if host and not _is_ip_address(host):
-                    _upsert_domain_stat(seen.date().isoformat(), host, email, client.inbound_tag, 1)
+                    _upsert_domain_stat(seen.date().isoformat(), host, client.email, client.inbound_tag, 1)
         db.session.commit()
 
 

@@ -1216,3 +1216,74 @@ test('A newly generated bot service token is available once for copying', async 
     mounted.close();
   }
 });
+
+test('Shared client drawer shows source tariffs once with their own expiry', async () => {
+  const { UserDrawer } = await load('admin/src/components/bot/UserDrawer.tsx');
+  const largeExpiry = Date.UTC(2099, 1, 5);
+  const smallExpiry = Date.UTC(2099, 2, 9);
+  const source = (tariff_id, expires_at_ms, extras = {}) => ({
+    source_id: `source-${tariff_id}`,
+    tariff_id,
+    expires_at_ms,
+    limit_bytes: 100,
+    up: 0,
+    down: 0,
+    enabled: true,
+    revoked: false,
+    ...extras,
+  });
+  const detail = {
+    telegram_id: 123,
+    blocked: false,
+    payments: [],
+    grants: [],
+    clients: [
+      {
+        id: 'one',
+        email: 'one',
+        inbound_tag: 'edge',
+        enable: true,
+        tariff_id: 1,
+        expiry_time: smallExpiry,
+        up: 0,
+        down: 0,
+        limit_bytes: 100,
+        tariff_sources: [
+          source(1, largeExpiry),
+          source(2, smallExpiry),
+          source(2, smallExpiry, { source_id: 'second-purchase' }),
+          source(3, 1),
+          source(4, smallExpiry, { revoked: true }),
+          source(5, smallExpiry, { enabled: false }),
+        ],
+      },
+    ],
+  };
+  api.get = async (url) => ({
+    data:
+      url === '/bot/tariffs'
+        ? {
+            tariffs: ['Large', 'Small', 'Expired', 'Revoked', 'Disabled'].map((name, i) => ({
+              id: i + 1,
+              name,
+              enabled: true,
+              visibility: 'public',
+              items: [],
+            })),
+          }
+        : detail,
+  });
+  const ui = await mount(UserDrawer, { open: true, telegramId: 123, onClose() {} });
+  const section = ui.tree.root
+    .findAllByType('section')
+    .find((node) => text(node).includes('Active Tariffs'));
+  assert.ok(section);
+  const displayed = text(section);
+  assert.match(displayed, /Large/);
+  assert.match(displayed, /Small/);
+  assert.match(displayed, /02\/05\/2099/);
+  assert.match(displayed, /03\/09\/2099/);
+  assert.doesNotMatch(displayed, /Expired|Revoked|Disabled|2 inbounds/);
+  assert.equal(section.findAllByType('button').filter((node) => text(node) === 'Revoke').length, 2);
+  ui.close();
+});

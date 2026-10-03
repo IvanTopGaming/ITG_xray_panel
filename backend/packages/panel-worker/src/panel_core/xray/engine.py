@@ -15,6 +15,8 @@ from panel_core.models import (
     Client,
 )
 from panel_core.extensions import db
+from panel_core.services.client_credentials import credentials_for
+from panel_core.services.egress import pending_transfer_egress
 from panel_core.services.runtime_identity import build_runtime_email, parse_runtime_email
 from panel_core.services.wireguard import wireguard_addresses
 from panel_core.services.runtime_apply import runtime_lock
@@ -229,8 +231,11 @@ def generate_config_file(validate=True, *, publish=True):
             outbounds_json = []
 
             observed_tags = []
+            quarantined_tags = pending_transfer_egress() & {outbound.tag for outbound in outbounds_db}
 
             for ob in outbounds_db:
+                if ob.tag in quarantined_tags:
+                    continue
                 is_system_outbound = ob.tag in ["direct", "block", "api"]
                 if not is_system_outbound and not _flag_enabled(getattr(ob, "enable", True), True):
                     continue
@@ -253,9 +258,30 @@ def generate_config_file(validate=True, *, publish=True):
 
                 if not is_system_outbound:
                     observed_tags.append(ob.tag)
+            outbounds_json.extend(
+                {"tag": tag, "protocol": "blackhole", "settings": {}} for tag in sorted(quarantined_tags)
+            )
             known_outbound_tags = {item["tag"] for item in outbounds_json}
 
             balancers_db = Balancer.query.all()
+            while True:
+                previous_quarantined_tags = quarantined_tags.copy()
+                for bal in balancers_db:
+                    if bal.tag in quarantined_tags or not _flag_enabled(getattr(bal, "enable", True), True):
+                        continue
+                    selector = json.loads(bal.selector) if bal.selector else []
+                    prefixes = (
+                        tuple(str(item).strip() for item in selector if str(item).strip())
+                        if isinstance(selector, list)
+                        else ()
+                    )
+                    if (
+                        any(tag.startswith(prefixes) for tag in quarantined_tags)
+                        or (bal.fallback_tag or "").strip() in quarantined_tags
+                    ):
+                        quarantined_tags.add(bal.tag)
+                if quarantined_tags == previous_quarantined_tags:
+                    break
             balancers_json = []
             balancer_tags = set()
             for bal in balancers_db:
@@ -266,6 +292,10 @@ def generate_config_file(validate=True, *, publish=True):
                 selector = json.loads(bal.selector) if bal.selector else []
                 if not isinstance(selector, list):
                     selector = []
+                if bal.tag in quarantined_tags:
+                    outbounds_json.append({"tag": bal.tag, "protocol": "blackhole", "settings": {}})
+                    known_outbound_tags.add(bal.tag)
+                    continue
                 normalized_selector = [
                     str(item).strip()
                     for item in selector
@@ -296,7 +326,9 @@ def generate_config_file(validate=True, *, publish=True):
                     tag = c.preferred_outbound
                     if tag not in clients_by_pref:
                         clients_by_pref[tag] = []
-                    clients_by_pref[tag].append(build_runtime_email(c.inbound_tag, c.email))
+                    clients_by_pref[tag].extend(
+                        build_runtime_email(c.inbound_tag, row.email) for row in credentials_for(c)
+                    )
 
             for tag, emails in clients_by_pref.items():
                 rule = {
@@ -366,8 +398,9 @@ def generate_config_file(validate=True, *, publish=True):
                             "flow": c.flow if (c.flow and flow_allowed) else "",
                             "level": 0,
                         }
-                        for c in ib.clients
-                        if c.enable
+                        for owner in ib.clients
+                        for c in credentials_for(owner)
+                        if owner.enable
                     ]
                     settings = {"clients": active_clients, "decryption": "none"}
                 elif ib.protocol == "trojan":
@@ -377,8 +410,9 @@ def generate_config_file(validate=True, *, publish=True):
                             "email": build_runtime_email(c.inbound_tag, c.email),
                             "level": 0,
                         }
-                        for c in ib.clients
-                        if c.enable
+                        for owner in ib.clients
+                        for c in credentials_for(owner)
+                        if owner.enable
                     ]
                     settings = {"clients": active_clients}
                 elif ib.protocol == "shadowsocks":
@@ -389,7 +423,7 @@ def generate_config_file(validate=True, *, publish=True):
                         if normalized_server_pass:
                             server_pass = normalized_server_pass
                     clients_list = []
-                    for c in ib.clients:
+                    for c in [credential for owner in ib.clients for credential in credentials_for(owner)]:
                         if c.enable:
                             client_password = c.id
                             if is_shadowsocks_2022_method(method):

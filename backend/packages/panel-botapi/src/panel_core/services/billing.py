@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 from yookassa import Configuration
 
 from panel_core.extensions import db
-from panel_core.models import BotEvent, Payment, SystemSetting, Tariff, TelegramUser, UserTariffAccess
+from panel_core.models import BotEvent, Payment, SystemSetting, Tariff, TelegramUser
 from panel_core.services import bot_events, provisioning, tariff_delivery
-from panel_core.services.open_access import has_open_ended_access
+from panel_core.services.open_access import eligible_tariff_access, has_open_ended_access
 
 logger = logging.getLogger(__name__)
 _YK_CALL_TIMEOUT_S = 8
@@ -88,7 +88,7 @@ def _ensure_tariff_available(tariff, telegram_id, *, where="billing", check_open
         raise ValueError("tariff_not_available")
     if (
         tariff.visibility == "private"
-        and UserTariffAccess.query.filter_by(telegram_id=telegram_id, tariff_id=tariff.id).first() is None
+        and eligible_tariff_access(telegram_id).filter_by(tariff_id=tariff.id).first() is None
     ):
         raise ValueError("tariff_not_available")
     if not tariff_delivery.is_deliverable(tariff):
@@ -117,9 +117,8 @@ def _checkout_result(payment):
 
 
 def create_checkout(*, telegram_id, tariff_id, lang):
-    user = db.session.get(TelegramUser, telegram_id)
-    if user is not None and user.blocked:
-        raise ValueError("account_blocked")
+    tariff = db.session.get(Tariff, tariff_id)
+    _ensure_tariff_available(tariff, telegram_id, where="billing.create_checkout")
     prior = (
         Payment.query.filter(
             Payment.telegram_id == telegram_id,
@@ -142,8 +141,6 @@ def create_checkout(*, telegram_id, tariff_id, lang):
         is not None
     ):
         raise ValueError("checkout_requires_review")
-    tariff = db.session.get(Tariff, tariff_id)
-    _ensure_tariff_available(tariff, telegram_id, where="billing.create_checkout")
     _configure_sdk()
     payment = Payment(
         yookassa_id=f"pending-{uuid.uuid4().hex}",

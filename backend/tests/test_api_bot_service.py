@@ -668,3 +668,77 @@ def test_bot_service_tariffs_inbound_label_resolves_from_linked_panel(
     item = resp.get_json()[0]["items"][0]
     assert item["inbound_label"] == "🇩🇪 Gateway"
     assert item["panel_id"] == panel_id
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_catalog_marks_each_valid_shared_client_source(app_with_service_api, db, service_headers, monkeypatch, remote):
+    from panel_core.models import AccessEntitlement, Client, Inbound, LinkedPanel
+    from panel_core.services import panel_proxy, tariff_targets
+
+    db.session.add(Inbound(tag="edge", protocol="vless", port=12345, stream_settings="{}"))
+    tariffs = [Tariff(name=name, price_rub=10, period_days=30) for name in ("large", "small", "expired", "revoked")]
+    db.session.add_all(tariffs)
+    db.session.flush()
+    if remote:
+        db.session.add(LinkedPanel(id=3, name="node", url="https://node.example", federation_token="x", created_at=1))
+    for tariff in tariffs:
+        db.session.add(
+            TariffItem(tariff_id=tariff.id, inbound_tag="edge", traffic_gb=1, panel_id=3 if remote else None)
+        )
+    sources = [
+        {
+            "source_id": t.name,
+            "tariff_id": t.id,
+            "expires_at_ms": 1 if t.name == "expired" else 4102444800000,
+            "enabled": True,
+            "revoked": t.name == "revoked",
+        }
+        for t in tariffs
+    ]
+    if remote:
+        snapshot = {
+            "inbounds": [
+                {
+                    "tag": "edge",
+                    "protocol": "vless",
+                    "clients": [
+                        {
+                            "telegram_id": 42,
+                            "tariff_id": tariffs[0].id,
+                            "expiry_time": 4102444800000,
+                            "enable": True,
+                            "tariff_sources": sources,
+                        }
+                    ],
+                }
+            ]
+        }
+        monkeypatch.setattr(panel_proxy, "get_panel_snapshot", lambda _: snapshot)
+        monkeypatch.setattr(tariff_targets, "get_panel_snapshot", lambda _: snapshot)
+    else:
+        db.session.add(
+            Client(
+                id="shared",
+                email="shared",
+                inbound_tag="edge",
+                telegram_id=42,
+                tariff_id=tariffs[0].id,
+                expiry_time=4102444800000,
+                enable=True,
+            )
+        )
+        for source in sources:
+            db.session.add(
+                AccessEntitlement(
+                    **source, operation_id=source["source_id"], telegram_id=42, inbound_tag="edge", client_id="shared"
+                )
+            )
+    db.session.commit()
+    response = app_with_service_api.test_client().get("/api/bot-service/tariffs?for=42", headers=service_headers)
+    assert response.status_code == 200
+    assert {t["name"]: t["is_active"] for t in response.get_json()} == {
+        "large": True,
+        "small": True,
+        "expired": False,
+        "revoked": False,
+    }

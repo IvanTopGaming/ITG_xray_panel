@@ -3,7 +3,7 @@ import datetime as dt
 from sqlalchemy import update
 
 from panel_core.extensions import db
-from panel_core.models import Client, LinkedPanel, ProvisionOperation, TelegramUser, UserTariffAccess
+from panel_core.models import AccessEntitlement, Client, LinkedPanel, ProvisionOperation, TelegramUser, UserTariffAccess
 from panel_core.services.provisioning_operations import now, queue_grant, queue_operation, run_operation
 from panel_core.xray.facade import has_local_xray
 
@@ -155,6 +155,8 @@ def revoke_tariff(telegram_id, tariff_id):
                 }
     for client in Client.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id).all():
         targets[(None, client.inbound_tag)] = {"panel_id": None, "inbound_tag": client.inbound_tag}
+    for source in AccessEntitlement.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id).all():
+        targets[(None, source.inbound_tag)] = {"panel_id": None, "inbound_tag": source.inbound_tag}
     from panel_core.models import TariffItem
 
     for item in TariffItem.query.filter_by(tariff_id=tariff_id).all():
@@ -170,6 +172,10 @@ def revoke_tariff(telegram_id, tariff_id):
     )
     if current is None:
         revoked_sources = {}
+        for source in AccessEntitlement.query.filter_by(telegram_id=telegram_id, tariff_id=tariff_id).all():
+            revoked_sources[source.source_id] = max(
+                revoked_sources.get(source.source_id, 0), source.source_revision + 1
+            )
         for previous in ProvisionOperation.query.filter_by(
             telegram_id=telegram_id, tariff_id=tariff_id, kind="grant"
         ).all():

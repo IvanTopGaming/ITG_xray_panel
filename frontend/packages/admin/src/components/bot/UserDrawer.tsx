@@ -316,19 +316,43 @@ export function UserDrawer({ open, telegramId, onClose }: UserDrawerProps) {
 
   const activeTariffs: ActiveTariffGroup[] = useMemo(() => {
     if (!detail) return [];
-    const buckets = new Map<number, Client[]>();
+    const now = Date.now();
+    const buckets = new Map<number, number[]>();
     for (const c of detail.clients) {
-      if (!c.enable || c.tariff_id == null) continue;
-      const list = buckets.get(c.tariff_id) ?? [];
-      list.push(c);
-      buckets.set(c.tariff_id, list);
+      if (!c.enable) continue;
+      const sources = c.tariff_sources?.length
+        ? c.tariff_sources
+        : [
+            {
+              tariff_id: c.tariff_id,
+              expires_at_ms: c.expiry_time,
+              enabled: c.enable,
+              revoked: false,
+            },
+          ];
+      const clientExpiries = new Map<number, number>();
+      for (const source of sources) {
+        if (source.tariff_id == null || !source.enabled || source.revoked) continue;
+        const expiry = source.expires_at_ms;
+        if (expiry == null || (expiry !== 0 && expiry <= now)) continue;
+        const previous = clientExpiries.get(source.tariff_id);
+        clientExpiries.set(
+          source.tariff_id,
+          previous === 0 || expiry === 0 ? 0 : Math.max(previous ?? expiry, expiry)
+        );
+      }
+      for (const [tariffId, expiry] of clientExpiries) {
+        const expiries = buckets.get(tariffId) ?? [];
+        expiries.push(expiry);
+        buckets.set(tariffId, expiries);
+      }
     }
-    return Array.from(buckets.entries()).map(([tariff_id, clients]) => {
-      const expiries = clients.map((c) => c.expiry_time).filter((e) => e && e > 0) as number[];
+    return Array.from(buckets.entries()).map(([tariff_id, clientExpiries]) => {
+      const expiries = clientExpiries.filter((expiry) => expiry > 0);
       return {
         tariff_id,
         tariff: tariffs.find((t) => t.id === tariff_id),
-        clientCount: clients.length,
+        clientCount: clientExpiries.length,
         earliestExpiry: expiries.length ? Math.min(...expiries) : null,
         grant: detail.grants.find((g) => g.tariff_id === tariff_id),
       };

@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-CURRENT_DB_VERSION = 29
+CURRENT_DB_VERSION = 30
 CURRENT_BOT_TEXTS_VERSION = 20
 
 
