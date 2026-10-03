@@ -455,6 +455,13 @@ config is written to a candidate path, validated with `xray run -test`, then ren
 regeneration and restart happen together when inbounds or outbounds change. `grpc_gevent.init_gevent()`
 runs before any gRPC use; current pin `grpcio==1.66.2` on Python 3.12.
 
+`XRAY_STARTUP_MODE=preserve` lets a worker attach to an existing Xray without publishing or
+restarting it. It requires an already migrated schema, clean runtime revisions, a validated generated
+configuration equal to the published one, and an unchanged running container with working gRPC.
+Any mismatch refuses startup before scheduler activation; there is no restart fallback. The default
+`synchronize` mode retains normal startup migration and runtime synchronization. Preserve mode is a
+startup prerequisite for a drained deployment, not a replacement for scheduler and HTTP handover.
+
 **Stream settings are one JSON blob** on `Inbound.stream_settings`, carrying UI-only keys beyond what
 Xray understands (`ssMethod`, `ssPassword`, `ssNetwork`, `authUser`, `authPass`, `wgSecretKey`,
 `wgPublicKey`, `wgMTU`). `generate_config_file()` strips them at the bottom. New protocol → store

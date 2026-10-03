@@ -29,11 +29,15 @@ from panel_core.services.runtime_apply import (
 from panel_core.extensions import db
 from panel_core.xray.gateway import set_xray_gateway, xray_gateway_configured
 from panel_core.xray.local import LocalXrayGateway
+from panel_core.xray.startup import preserve_existing_runtime
 
 grpc_gevent.init_gevent()
 
 
 def create_app():
+    startup_mode = os.getenv("XRAY_STARTUP_MODE", "synchronize").strip()
+    if startup_mode not in {"synchronize", "preserve"}:
+        raise ValueError("XRAY_STARTUP_MODE must be synchronize or preserve")
     app = build_base_app(ROLE_WORKER)
     from panel_core.services.maintenance import register_maintenance_hooks
 
@@ -73,15 +77,20 @@ def create_app():
     app.register_blueprint(federation.bp, url_prefix="/api")
     app.register_blueprint(backup.bp, url_prefix="/api")
 
-    migrate_schema(app, sqlite_path, seed_bot_texts=False)
-    bootstrap_defaults(app, bot_service_token=False)
-    with app.app_context():
-        mark_runtime_dirty()
-        db.session.commit()
-        try:
-            synchronize_runtime()
-        except RuntimeApplyError:
-            app.logger.exception("initial Xray synchronization failed; automatic recovery is pending")
+    if startup_mode == "preserve":
+        with app.app_context():
+            preserve_existing_runtime()
+        app.logger.info("existing Xray runtime preserved without configuration publication or restart")
+    else:
+        migrate_schema(app, sqlite_path, seed_bot_texts=False)
+        bootstrap_defaults(app, bot_service_token=False)
+        with app.app_context():
+            mark_runtime_dirty()
+            db.session.commit()
+            try:
+                synchronize_runtime()
+            except RuntimeApplyError:
+                app.logger.exception("initial Xray synchronization failed; automatic recovery is pending")
     start_scheduler()
 
     if not (os.getenv("SHARED_REDIS_URI", "") or "").strip():
