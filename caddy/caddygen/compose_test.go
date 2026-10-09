@@ -30,11 +30,17 @@ type composeFile struct {
 var composeRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[-?][^}]*)?\}`)
 
 var sharedDotEnv = map[string]string{
-	"PANEL_DOMAIN":      "panel.example.com",
-	"PROXY_DOMAIN":      "www.google.com",
-	"SUB_DOMAIN":        "sub.example.com",
-	"BOT_DOMAIN":        "bot.example.com",
-	"PANEL_SECRET_PATH": "s3cret",
+	"PANEL_DOMAIN":             "panel.example.com",
+	"PROXY_DOMAIN":             "www.google.com",
+	"SUB_DOMAIN":               "sub.example.com",
+	"BOT_DOMAIN":               "bot.example.com",
+	"PANEL_SECRET_PATH":        "s3cret",
+	"BOT_WEBHOOK_PATH":         "s3cret",
+	"CADDY_PROXY_UPSTREAM":     "xray:443",
+	"CADDY_PANEL_UPSTREAM":     "frontend:80",
+	"CADDY_PANEL_API_UPSTREAM": "backend:5000",
+	"CADDY_SUB_UPSTREAM":       "sub-backend:5000",
+	"CADDY_BOT_UPSTREAM":       "bot-api:5000",
 }
 
 type hostCase struct {
@@ -68,7 +74,7 @@ var hostCases = []hostCase{
 		compose:     "../../docker-compose.sub.yml",
 		wantRoutes:  []string{"sub"},
 		wantServers: "http_redirect,sub_security_layer",
-		mustContain: []string{"/api/sub/", "backend:5000"},
+		mustContain: []string{"/api/sub/", "sub-backend:5000"},
 		mustNotHave: []string{"frontend:80", "strip_path_prefix", "xray:443", "/api/billing/yookassa/webhook"},
 	},
 	{
@@ -76,8 +82,8 @@ var hostCases = []hostCase{
 		compose:     "../../docker-compose.bot.yml",
 		wantRoutes:  []string{"bot"},
 		wantServers: "bot_security_layer,http_redirect",
-		mustContain: []string{"/api/billing/yookassa/webhook", "backend:5000"},
-		mustNotHave: []string{"frontend:80", "strip_path_prefix", "/api/sub/", "xray:443"},
+		mustContain: []string{"/api/billing/yookassa/webhook", "bot-api:5000"},
+		mustNotHave: []string{"frontend:80", "/api/sub/", "xray:443"},
 	},
 }
 

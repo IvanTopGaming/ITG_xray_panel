@@ -165,7 +165,7 @@ def test_the_master_no_longer_demands_a_decoy_domain_it_cannot_serve():
 def test_the_bot_route_allowlists_only_the_webhook_path():
     routes = {route.get("name"): route for route in _routes()}
     only_paths = routes["bot"].get("only_paths")
-    assert only_paths == ["/${BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"], (
+    assert only_paths == ["/${CADDY_BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"], (
         f"the bot route's only_paths allowlist is {only_paths!r}, not exactly "
         '["/${BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"]. only_paths is the mechanism that keeps '
         "the bot host from publishing the rest of bot-api -- /bot-service/* and /api/billing/checkout "
@@ -188,12 +188,12 @@ def test_the_bot_webhook_sits_under_a_secret_segment():
     routes = {route.get("name"): route for route in _routes()}
     bot = routes["bot"]
 
-    assert bot.get("strip_prefix") == "/${BOT_WEBHOOK_PATH}", (
+    assert bot.get("strip_prefix") == "/${CADDY_BOT_WEBHOOK_PATH}", (
         f"the bot route strips {bot.get('strip_prefix')!r}. Without stripping the secret the request "
         "reaches bot-api as /<secret>/api/billing/... and 404s -- every notification lost, and the "
         "payment only confirmed later by the 30-second poller."
     )
-    assert all("${BOT_WEBHOOK_PATH}" in path for path in bot.get("only_paths", [])), (
+    assert all("${CADDY_BOT_WEBHOOK_PATH}" in path for path in bot.get("only_paths", [])), (
         "the webhook is allowlisted at a fixed path, so it is published at a guessable address."
     )
 

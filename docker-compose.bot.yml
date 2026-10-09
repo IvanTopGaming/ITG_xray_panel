@@ -34,9 +34,7 @@ services:
       retries: 3
       start_period: 20s
     networks:
-      bot-net:
-        aliases:
-          - backend
+      - bot-net
 
     volumes:
       - ./ca.crt:/etc/ssl/panel-ca.crt:ro
@@ -72,8 +70,9 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      - BOT_DOMAIN=${BOT_DOMAIN:?BOT_DOMAIN is required}
-      - BOT_WEBHOOK_PATH=${BOT_WEBHOOK_PATH:?BOT_WEBHOOK_PATH is required}
+      - CADDY_BOT_DOMAIN=${BOT_DOMAIN:?BOT_DOMAIN is required}
+      - CADDY_BOT_WEBHOOK_PATH=${BOT_WEBHOOK_PATH:?BOT_WEBHOOK_PATH is required}
+      - CADDY_BOT_UPSTREAM=${CADDY_BOT_UPSTREAM:-bot-api:5000}
       - ACME_EMAIL=${ACME_EMAIL:-}
       - ACME_CA=${ACME_CA:-}
     depends_on:

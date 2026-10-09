@@ -70,6 +70,15 @@ func LoadConfig(data []byte, lookup func(string) string) (*Config, error) {
 		if r.Match == "" {
 			continue
 		}
+		if strings.TrimSpace(r.Upstream) == "" {
+			return nil, fmt.Errorf("route %q requires an upstream", r.Name)
+		}
+		if (r.APIPath == "") != (r.APIUpstream == "") {
+			if r.APIPath == "" {
+				return nil, fmt.Errorf("route %q requires an API path", r.Name)
+			}
+			return nil, fmt.Errorf("route %q requires an API upstream", r.Name)
+		}
 		if len(r.OnlyPaths) > 0 {
 			r.TLS = true
 		}

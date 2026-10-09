@@ -1,26 +1,26 @@
 sni_routes:
   - name: proxy
-    match: "${PROXY_DOMAIN}"
-    upstream: "xray:443"
+    match: "${CADDY_PROXY_DOMAIN}"
+    upstream: "${CADDY_PROXY_UPSTREAM}"
 
   - name: panel
-    match: "${PANEL_DOMAIN}"
-    upstream: "frontend:80"
+    match: "${CADDY_PANEL_DOMAIN}"
+    upstream: "${CADDY_PANEL_UPSTREAM}"
     tls: true
-    api_path: "/${PANEL_SECRET_PATH}/api/"
-    api_upstream: "backend:5000"
+    api_path: "/${CADDY_PANEL_SECRET_PATH}/api/"
+    api_upstream: "${CADDY_PANEL_API_UPSTREAM}"
 
   - name: sub
-    match: "${SUB_DOMAIN}"
-    upstream: "backend:5000"
+    match: "${CADDY_SUB_DOMAIN}"
+    upstream: "${CADDY_SUB_UPSTREAM}"
     tls: true
     only_paths:
       - "/api/sub/"
 
   - name: bot
-    match: "${BOT_DOMAIN}"
-    upstream: "backend:5000"
+    match: "${CADDY_BOT_DOMAIN}"
+    upstream: "${CADDY_BOT_UPSTREAM}"
     tls: true
-    strip_prefix: "/${BOT_WEBHOOK_PATH}"
+    strip_prefix: "/${CADDY_BOT_WEBHOOK_PATH}"
     only_paths:
-      - "/${BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"
+      - "/${CADDY_BOT_WEBHOOK_PATH}/api/billing/yookassa/webhook"
