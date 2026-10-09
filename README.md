@@ -428,6 +428,15 @@ catch-all 308 redirect on `:80` does not shadow it.
 Certificates and the ACME account live in the `caddy_data` volume — **keep it across upgrades**, or
 each rebuild re-issues against Let's Encrypt's limit of 5 identical certificates per week.
 
+### Caddy upstreams
+
+All roles use the same `caddy/routes.yaml`. Each Caddy service enables only its own routes through
+explicit `CADDY_*_DOMAIN` variables and receives a default `CADDY_*_UPSTREAM` target from its Compose
+file. If service names, networks, or replica targets differ, override the relevant upstream variable
+in the host environment; the route file itself does not need to change. A mixed deployment may pass
+several route families to one Caddy instance as long as every selected upstream is reachable on its
+network. Keep Caddy's environment explicit and do not add `env_file` to it.
+
 **The data tier is the exception**: Postgres and Redis share one pair from `./pg_certs`, on a machine
 with no Caddy and no public `:80`. It runs on its own long-lived CA rather than ACME.
 

@@ -52,7 +52,8 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      - SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
+      - CADDY_SUB_DOMAIN=${SUB_DOMAIN:?SUB_DOMAIN is required}
+      - CADDY_SUB_UPSTREAM=${CADDY_SUB_UPSTREAM:-sub-backend:5000}
       - ACME_EMAIL=${ACME_EMAIL:-}
       - ACME_CA=${ACME_CA:-}
     depends_on:

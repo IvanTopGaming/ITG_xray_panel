@@ -156,9 +156,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      - PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
-      - PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
-      - PROXY_DOMAIN=${PROXY_DOMAIN:?PROXY_DOMAIN is required}
+      - CADDY_PANEL_SECRET_PATH=${PANEL_SECRET_PATH:?PANEL_SECRET_PATH is required}
+      - CADDY_PANEL_DOMAIN=${PANEL_DOMAIN:?PANEL_DOMAIN is required}
+      - CADDY_PANEL_UPSTREAM=${CADDY_PANEL_UPSTREAM:-frontend:80}
+      - CADDY_PANEL_API_UPSTREAM=${CADDY_PANEL_API_UPSTREAM:-backend:5000}
+      - CADDY_PROXY_DOMAIN=${PROXY_DOMAIN:?PROXY_DOMAIN is required}
+      - CADDY_PROXY_UPSTREAM=${CADDY_PROXY_UPSTREAM:-xray:443}
       - ACME_EMAIL=${ACME_EMAIL:-}
       - ACME_CA=${ACME_CA:-}
     depends_on:

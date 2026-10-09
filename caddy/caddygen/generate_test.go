@@ -216,10 +216,14 @@ func TestLoadConfig_DropsEmptyBot(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN":      "proxy.example.com",
-		"PANEL_DOMAIN":      "panel.example.com",
-		"PANEL_SECRET_PATH": "test-secret",
-		"SUB_DOMAIN":        "sub.example.com",
+		"CADDY_PROXY_DOMAIN":       "proxy.example.com",
+		"CADDY_PROXY_UPSTREAM":     "xray:443",
+		"CADDY_PANEL_DOMAIN":       "panel.example.com",
+		"CADDY_PANEL_UPSTREAM":     "frontend:80",
+		"CADDY_PANEL_API_UPSTREAM": "backend:5000",
+		"CADDY_PANEL_SECRET_PATH":  "test-secret",
+		"CADDY_SUB_DOMAIN":         "sub.example.com",
+		"CADDY_SUB_UPSTREAM":       "sub-backend:5000",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -237,11 +241,17 @@ func TestLoadConfig_KeepsBotWhenSet(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN":      "proxy.example.com",
-		"PANEL_DOMAIN":      "panel.example.com",
-		"PANEL_SECRET_PATH": "test-secret",
-		"SUB_DOMAIN":        "sub.example.com",
-		"BOT_DOMAIN":        "bot.example.com",
+		"CADDY_PROXY_DOMAIN":       "proxy.example.com",
+		"CADDY_PROXY_UPSTREAM":     "xray:443",
+		"CADDY_PANEL_DOMAIN":       "panel.example.com",
+		"CADDY_PANEL_UPSTREAM":     "frontend:80",
+		"CADDY_PANEL_API_UPSTREAM": "backend:5000",
+		"CADDY_PANEL_SECRET_PATH":  "test-secret",
+		"CADDY_SUB_DOMAIN":         "sub.example.com",
+		"CADDY_SUB_UPSTREAM":       "sub-backend:5000",
+		"CADDY_BOT_DOMAIN":         "bot.example.com",
+		"CADDY_BOT_UPSTREAM":       "bot-api:5000",
+		"CADDY_BOT_WEBHOOK_PATH":   "test-secret",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -255,10 +265,10 @@ func TestLoadConfig_KeepsBotWhenSet(t *testing.T) {
 	if bot == nil {
 		t.Fatal("bot route missing")
 	}
-	if bot.Match != "bot.example.com" || bot.Upstream != "backend:5000" {
+	if bot.Match != "bot.example.com" || bot.Upstream != "bot-api:5000" {
 		t.Fatalf("bot route not interpolated: %+v", bot)
 	}
-	if !bot.TLS || len(bot.OnlyPaths) != 1 || bot.OnlyPaths[0] != "/api/billing/yookassa/webhook" {
+	if !bot.TLS || len(bot.OnlyPaths) != 1 || bot.OnlyPaths[0] != "/test-secret/api/billing/yookassa/webhook" {
 		t.Fatalf("bot route flags wrong: %+v", bot)
 	}
 }
@@ -269,11 +279,17 @@ func TestGenerate_BotServerPathFilters(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN":      "proxy.example.com",
-		"PANEL_DOMAIN":      "panel.example.com",
-		"PANEL_SECRET_PATH": "test-secret",
-		"SUB_DOMAIN":        "sub.example.com",
-		"BOT_DOMAIN":        "bot.example.com",
+		"CADDY_PROXY_DOMAIN":       "proxy.example.com",
+		"CADDY_PROXY_UPSTREAM":     "xray:443",
+		"CADDY_PANEL_DOMAIN":       "panel.example.com",
+		"CADDY_PANEL_UPSTREAM":     "frontend:80",
+		"CADDY_PANEL_API_UPSTREAM": "backend:5000",
+		"CADDY_PANEL_SECRET_PATH":  "test-secret",
+		"CADDY_SUB_DOMAIN":         "sub.example.com",
+		"CADDY_SUB_UPSTREAM":       "sub-backend:5000",
+		"CADDY_BOT_DOMAIN":         "bot.example.com",
+		"CADDY_BOT_UPSTREAM":       "bot-api:5000",
+		"CADDY_BOT_WEBHOOK_PATH":   "test-secret",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -286,7 +302,7 @@ func TestGenerate_BotServerPathFilters(t *testing.T) {
 	if !containsString(str, "/api/billing/yookassa/webhook") {
 		t.Fatal("bot webhook path matcher missing")
 	}
-	if !containsString(str, "backend:5000") {
+	if !containsString(str, "bot-api:5000") {
 		t.Fatal("bot backend upstream missing")
 	}
 	if !containsString(str, "\"status_code\": 404") && !containsString(str, "\"status_code\":404") {
@@ -300,10 +316,14 @@ func TestGenerate_DefaultRoutesFileValidJSON(t *testing.T) {
 		t.Skipf("routes.yaml not found: %v", err)
 	}
 	cfg, err := LoadConfig(data, envMap(map[string]string{
-		"PROXY_DOMAIN":      "proxy.example.com",
-		"PANEL_DOMAIN":      "panel.example.com",
-		"PANEL_SECRET_PATH": "test-secret",
-		"SUB_DOMAIN":        "sub.example.com",
+		"CADDY_PROXY_DOMAIN":       "proxy.example.com",
+		"CADDY_PROXY_UPSTREAM":     "xray:443",
+		"CADDY_PANEL_DOMAIN":       "panel.example.com",
+		"CADDY_PANEL_UPSTREAM":     "frontend:80",
+		"CADDY_PANEL_API_UPSTREAM": "backend:5000",
+		"CADDY_PANEL_SECRET_PATH":  "test-secret",
+		"CADDY_SUB_DOMAIN":         "sub.example.com",
+		"CADDY_SUB_UPSTREAM":       "sub-backend:5000",
 	}))
 	if err != nil {
 		t.Fatalf("LoadConfig real routes.yaml: %v", err)
